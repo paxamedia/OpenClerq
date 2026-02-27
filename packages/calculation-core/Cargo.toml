@@ -1,0 +1,22 @@
+[package]
+name = "clerq-calculation-core"
+version = "0.1.0"
+description = "Clerq — Deterministic local arithmetic engine. All sensitive calculations run here."
+authors = ["Clerq Team"]
+license = "MIT"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+evalexpr = "13"
+
+[[bin]]
+name = "clerq-calc"
+path = "src/bin/clerq-calc.rs"
+
+[dev-dependencies]
+approx = "0.5"

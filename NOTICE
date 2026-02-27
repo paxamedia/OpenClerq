@@ -1,0 +1,15 @@
+Clerq — Open-Source Local MCS
+============================
+
+Attribution: OpenClerq was inspired by OpenClaw
+(https://github.com/openclaw/openclaw) in its approach to gateway,
+skills, and local-first agent orchestration. Our implementation is original.
+
+- The open-source Clerq software is provided AS IS. Use at your own risk.
+- No warranty, no responsibility. Developers run it on their local machine,
+  with their own API keys, and may build and use any modules they want.
+- Clerq also offers (or will offer) a hosted service (accounts, subscriptions,
+  modules with built-in skills on our servers with our API keys). Implementation
+  and terms for that service are separate from this repo.
+
+Clerq is licensed under the MIT License. See LICENSE file.

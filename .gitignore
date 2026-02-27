@@ -1,0 +1,22 @@
+node_modules
+
+# Environment (never commit keys)
+.env
+.env.local
+.env.*.local
+
+# OS cruft
+.DS_Store
+
+# Build artifacts (CI builds from source)
+dist/
+**/target/
+
+# Tauri updater signing keys (never commit private key)
+.tauri/
+
+# Sidecar binaries (built by build:sidecars per platform)
+apps/desktop/src-tauri/binaries/
+
+# Internal planning (keep locally, not for public push)
+docs/CONTROL_TOWER_VISION.md

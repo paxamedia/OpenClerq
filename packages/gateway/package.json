@@ -1,0 +1,32 @@
+{
+  "name": "@clerq/gateway",
+  "version": "0.1.0",
+  "description": "Clerq agent gateway for local administrative automation",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "pnpm exec tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "chokidar": "^5.0.0",
+    "dotenv": "^16.4.0",
+    "express": "^5.0.0",
+    "node-cron": "^4.2.1",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  }
+}

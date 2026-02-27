@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Round eyeglasses — clerk-style spectacles, wire-frame -->
+  <g stroke="#2c2b28" stroke-width="3" stroke-linecap="round" fill="none">
+    <!-- Left lens -->
+    <circle cx="20" cy="32" r="11"/>
+    <!-- Right lens -->
+    <circle cx="44" cy="32" r="11"/>
+    <!-- Bridge -->
+    <line x1="28" y1="24" x2="36" y2="24"/>
+    <!-- Left temple -->
+    <line x1="9" y1="32" x2="2" y2="32"/>
+    <!-- Right temple -->
+    <line x1="55" y1="32" x2="62" y2="32"/>
+  </g>
+</svg>
