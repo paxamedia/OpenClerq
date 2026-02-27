@@ -95,7 +95,7 @@ export function SkillsSection({
 
   const skillsList =
     skills && typeof skills !== 'string' ? skills.skills : [];
-  const allSlugs = new Set(skillsList.map((s) => s.slug));
+  const allSlugs = new Set(skillsList.map((s: SkillMeta) => s.slug));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -117,7 +117,7 @@ export function SkillsSection({
         <>
           <p className="skills-source">Loaded from: {skills.source}</p>
           <div className="skills-grid">
-            {skills.skills.map((s) => (
+            {skills.skills.map((s: SkillMeta) => (
               <button
                 key={s.slug}
                 type="button"

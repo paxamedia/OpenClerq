@@ -38,22 +38,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build sidecars
-        run: pnpm run build:sidecars
-
-      - name: Build desktop (macOS)
-        if: matrix.platform == 'macos-latest'
+      - name: Build sidecars and desktop
         run: pnpm run build:installers
         env:
           CI: true
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-      - name: Build desktop (Windows)
-        if: matrix.platform == 'windows-latest'
-        run: pnpm --filter @clerq/desktop exec tauri build
-        env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 

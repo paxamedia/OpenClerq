@@ -56,11 +56,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build sidecars
-        run: pnpm run build:sidecars
-
-      - name: Build desktop
-        run: pnpm --filter @clerq/desktop exec tauri build
+      - name: Build sidecars and desktop
+        run: pnpm run build:installers
+        env:
+          CI: true
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4

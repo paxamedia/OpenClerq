@@ -14,7 +14,19 @@ const env = { ...process.env };
 if (process.env.UNSET_CI === '1') {
   delete env.CI;
   env.TAURI_CI = 'false';
+} else {
+  // Tauri expects CI/TAURI_CI to be "true" or "false", not "1"
+  if (env.CI) {
+    env.CI = 'true';
+    env.TAURI_CI = 'true';
+  } else {
+    env.TAURI_CI = 'false';
+  }
 }
+
+// Desktop depends on @clerq/gateway-client and @clerq/module-schema; build them first
+execSync('pnpm --filter @clerq/gateway-client build', { cwd: path.join(__dirname, '..'), stdio: 'inherit' });
+execSync('pnpm --filter @clerq/module-schema build', { cwd: path.join(__dirname, '..'), stdio: 'inherit' });
 
 execSync('pnpm exec tauri build', {
   cwd: desktopDir,
