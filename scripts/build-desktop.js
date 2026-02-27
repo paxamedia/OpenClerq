@@ -26,9 +26,14 @@ if (process.env.UNSET_CI === '1') {
   }
 }
 
+const rootDir = path.join(__dirname, '..');
+const execOpts = { cwd: rootDir, stdio: 'inherit' };
+// On Windows, use shell so pnpm/npm scripts resolve correctly (pnpm.cmd)
+if (process.platform === 'win32') execOpts.shell = true;
+
 // Desktop depends on @clerq/gateway-client and @clerq/module-schema; build them first
-execSync('pnpm --filter @clerq/gateway-client build', { cwd: path.join(__dirname, '..'), stdio: 'inherit' });
-execSync('pnpm --filter @clerq/module-schema build', { cwd: path.join(__dirname, '..'), stdio: 'inherit' });
+execSync('pnpm --filter @clerq/gateway-client build', execOpts);
+execSync('pnpm --filter @clerq/module-schema build', execOpts);
 
 // Skip updater artifacts (.sig) when private key is not available (build workflow, local test)
 // Use a temp config file to avoid CLI encoding issues on Windows
@@ -38,8 +43,10 @@ if (skipUpdater) {
   const overridePath = path.join(os.tmpdir(), `tauri-override-${Date.now()}.json`);
   fs.writeFileSync(overridePath, JSON.stringify({ bundle: { createUpdaterArtifacts: false } }), 'utf8');
   tauriArgs = ['exec', 'tauri', 'build', '-c', overridePath];
+  const spawnOpts = { cwd: desktopDir, stdio: 'inherit', env };
+  if (process.platform === 'win32') spawnOpts.shell = true;
   try {
-    const result = spawnSync('pnpm', tauriArgs, { cwd: desktopDir, stdio: 'inherit', env });
+    const result = spawnSync('pnpm', tauriArgs, spawnOpts);
     fs.unlinkSync(overridePath);
     if (result.status !== 0) process.exit(result.status ?? 1);
   } catch (e) {
@@ -47,6 +54,8 @@ if (skipUpdater) {
     throw e;
   }
 } else {
-  const result = spawnSync('pnpm', tauriArgs, { cwd: desktopDir, stdio: 'inherit', env });
+  const spawnOpts = { cwd: desktopDir, stdio: 'inherit', env };
+  if (process.platform === 'win32') spawnOpts.shell = true;
+  const result = spawnSync('pnpm', tauriArgs, spawnOpts);
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
