@@ -8,8 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-> **GitHub repo description** (paste into the repo’s About → Description):  
-> *World-standard, open-source local MCS for agentic automation. Small desktop worker that runs on your machine, with knowledge, tools, and context kept locally.*
+> *Open-source local MCS for agentic automation. Small desktop worker that runs on your machine, with knowledge, tools, and context kept locally.*
 
 **Clerq** is a small, generic desktop automation platform: programmable by developers on their local machine (as is, use at your own risk, no responsibility), and also offered as a hosted service with accounts, subscriptions, and modules that bundle built-in skills.
 
