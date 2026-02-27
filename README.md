@@ -50,7 +50,7 @@ Full text: [Installer disclaimer](docs/INSTALLER_DISCLAIMER.md).
 
 To **build installers** from this repo: `pnpm build:installers` (requires [Bun](https://bun.sh) — `pnpm add -D bun -w`; if Bun fails, run `cd node_modules/bun && node install.js`). Outputs: macOS → `apps/desktop/src-tauri/target/release/bundle/dmg/`; Windows → `apps/desktop/src-tauri/target/release/bundle/msi/` or `nsis/`.
 
-**Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS and Windows installers and publishes them to [GitHub Releases](https://github.com/officeworkersforfree/clerq/releases). For signed macOS builds and in-app updates, see [Distribution](docs/DISTRIBUTION.md).
+**Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS and Windows installers and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases). For signed macOS builds and in-app updates, see [Distribution](docs/DISTRIBUTION.md).
 
 ### macOS
 
@@ -65,8 +65,8 @@ To **build installers** from this repo: `pnpm build:installers` (requires [Bun](
 **Install and build (first time)**
 
 ```bash
-git clone https://github.com/<your-org>/openclerq.git
-cd openclerq
+git clone https://github.com/paxamedia/OpenClerq.git
+cd OpenClerq
 pnpm install
 cp .env.example .env
 # Edit .env: set CLERQ_DEV=1 and your LLM (ANTHROPIC_API_KEY or CLERQ_LLM_PROVIDER=ollama)
@@ -98,8 +98,8 @@ pnpm build:core
 **Install and build (first time)**
 
 ```powershell
-git clone https://github.com/<your-org>/openclerq.git
-cd openclerq
+git clone https://github.com/paxamedia/OpenClerq.git
+cd OpenClerq
 pnpm install
 copy .env.example .env
 REM Edit .env: set CLERQ_DEV=1 and your LLM (ANTHROPIC_API_KEY or CLERQ_LLM_PROVIDER=ollama)

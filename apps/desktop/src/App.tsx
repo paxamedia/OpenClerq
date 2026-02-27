@@ -17,7 +17,7 @@ import { ModuleHost } from './ModuleHost';
 
 const bundledComponents: Record<string, import('./moduleSlots').ModuleUIComponent> = {};
 
-const GITHUB_URL = 'https://github.com/officeworkersforfree/clerq';
+const GITHUB_URL = 'https://github.com/paxamedia/OpenClerq';
 const OPENCLAW_URL = 'https://github.com/openclaw/openclaw';
 
 type View = 'entry' | 'module-select' | 'module' | 'developer';
@@ -950,7 +950,7 @@ function DeveloperView({
         <section className="section dev-section" style={{ background: 'transparent', border: '1px dashed var(--card-border)', boxShadow: 'none' }}>
           <p className="section-desc" style={{ marginBottom: 0 }}>
             Features: memory layer, triggers, capabilities, secrets vault, observability, builder/operator modes.
-            <button type="button" className="link-button" style={{ marginLeft: 4 }} onClick={() => openUrl('https://github.com/officeworkersforfree/clerq/blob/main/docs/CONTROL_TOWER_VISION.md')}>Control tower vision →</button>
+            <button type="button" className="link-button" style={{ marginLeft: 4 }} onClick={() => openUrl('https://github.com/paxamedia/OpenClerq')}>Control tower vision →</button>
           </p>
         </section>
         )}

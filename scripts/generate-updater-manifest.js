@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const version = process.argv[2] || process.env.VERSION || '0.1.0';
-const baseUrl = process.argv[3] || process.env.RELEASE_URL || 'https://github.com/officeworkersforfree/clerq/releases/download/v' + version;
+const baseUrl = process.argv[3] || process.env.RELEASE_URL || 'https://github.com/paxamedia/OpenClerq/releases/download/v' + version;
 
 const releaseDir = path.join(process.cwd(), 'release');
 if (!fs.existsSync(releaseDir)) {

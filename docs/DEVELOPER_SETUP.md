@@ -16,10 +16,10 @@ This guide shows how to **install and run the OSS OpenClerq core** on your own m
 
 ## 2. Install dependencies
 
-From the repo root (where `openclerq/package.json` lives), run:
+From the repo root (where `OpenClerq/package.json` lives), run:
 
 ```bash
-cd clerq
+cd OpenClerq
 pnpm install
 ```
 
@@ -70,7 +70,7 @@ This compiles:
 In one terminal:
 
 ```bash
-cd clerq
+cd OpenClerq
 CLERQ_DEV=1 pnpm gateway
 ```
 
@@ -87,7 +87,7 @@ You should see something like:
 In a **second terminal**:
 
 ```bash
-cd clerq
+cd OpenClerq
 pnpm desktop
 ```
 
@@ -95,8 +95,8 @@ This builds and launches the Tauri desktop shell (Control Tower UI), which talks
 
 After you have a built desktop bundle, you can also use the launcher scripts:
 
-- **macOS:** double‑click `openclerq/scripts/Start-Clerq-Mac.command`
-- **Windows:** double‑click `openclerq\\scripts\\Start-Clerq-Win.bat`
+- **macOS:** double‑click `OpenClerq/scripts/Start-Clerq-Mac.command`
+- **Windows:** double‑click `OpenClerq\\scripts\\Start-Clerq-Win.bat`
 
 These scripts start the gateway and then open the desktop app, so a non‑developer can just “download and run”.
 
@@ -107,7 +107,7 @@ These scripts start the gateway and then open the desktop app, so a non‑develo
 With the gateway running, from the repo root:
 
 ```bash
-cd openclerq
+cd OpenClerq
 ./scripts/verify-local.sh
 ```
 
