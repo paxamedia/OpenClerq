@@ -85,6 +85,9 @@ The gateway is the control plane. Endpoints:
 | Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                       |
 | Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key` |
 | Runs        | `GET /runs`, `GET /runs/:id`                                                                      |
+| Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                       |
+| Events      | `GET /events` (SSE)                                                                               |
+| Kill switch | `POST /kill`                                                                                      |
 | Config      | `GET                                                                                              | POST /capabilities`, `GET            | POST /reasoning`, `GET | POST /system-prompt` |
 | Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                          |
 | Automation  | `GET                                                                                              | POST /triggers`, `POST /webhook/:id` |
