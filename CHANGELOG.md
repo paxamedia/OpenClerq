@@ -37,6 +37,8 @@ API now requires authentication.
 
 ### Fixed
 
+- **Dependency vulnerabilities: 14 high + 1 critical → 0.** Removed `ws` and `zod` from the gateway (both declared since 0.1, imported nowhere) plus `@types/ws`; pinned `path-to-regexp >= 8.4.0` via a pnpm override, since `express@5 > router@2` still resolves the vulnerable 8.3.0; upgraded `vitest` 2 → 5, `vite` 6 → 8 and `@vitejs/plugin-react` 4 → 6, clearing the remaining dev-tree advisories.
+- **Vitest collected stale compiled tests.** With no config, vitest's default include matched `dist/**` as well as `src/**`, so a prior `pnpm build:gateway` left duplicate compiled tests that ran against outdated fixtures. Added `vitest.config.ts` scoping collection to `src/`.
 - **Single-quoted YAML frontmatter in `SKILL.md` is now parsed.** The parser stripped double quotes only, so `slug: 'my-skill'` kept its quotes and silently failed every lookup — valid YAML that produced a skill the router could never select.
 
 ### Removed

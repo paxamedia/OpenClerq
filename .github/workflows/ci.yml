@@ -87,8 +87,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      # Prebuilt binary: `cargo install cargo-audit` compiles for several
+      # minutes on every run.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
 
       - name: cargo audit
         run: cargo audit --file packages/calculation-core/Cargo.lock
