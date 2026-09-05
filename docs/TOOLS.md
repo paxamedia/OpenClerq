@@ -43,9 +43,14 @@ OpenClerq OSS ships a small, safe default set:
 }
 ```
 
-- Safety:
-  - Paths are resolved against a configured root.
-  - Any attempt to escape the root (e.g. `../../..`) is rejected.
+- Output also includes `bytes`, the file size on disk.
+- Safety — the path is resolved against a `realpath`'d root (`capabilities.fsRoot`) and refused if any of the following hold:
+  - it traverses out of the root (`../../etc/passwd`);
+  - it lands in a sibling directory that merely shares a prefix (`/srv/repo-secrets` against a root of `/srv/repo` — this passed the pre-0.4 check);
+  - it is absolute, drive-qualified, or UNC;
+  - it contains a NUL byte;
+  - it passes through a symlink whose target leaves the root;
+  - it is not a regular file, or exceeds `capabilities.fsMaxReadBytes` (default 1 MiB), checked by `stat` before any read.
 
 ### 2.2 `http.request`
 
@@ -76,7 +81,27 @@ OpenClerq OSS ships a small, safe default set:
 }
 ```
 
+Output also includes `truncated` (true when the body hit `httpMaxBytes`) and `chain`, every
+URL visited including redirect hops.
+
 Use this to call **your own APIs or services**, never arbitrary third‑party hosts.
+
+Requests are refused when:
+
+- the scheme is not in `httpAllowedSchemes` (default: https only);
+- the host is not in `httpAllowlist` (`*.example.com` matches subdomains, not the apex);
+- the URL carries credentials (`https://user:pass@host/`);
+- the host resolves to a loopback, private, CGNAT, link-local, multicast or reserved address — including the cloud metadata endpoints `169.254.169.254` and `fd00:ec2::254`, and IPv4-mapped forms like `::ffff:127.0.0.1`. Override with `httpAllowPrivateAddresses` only when deliberately targeting your own network;
+- the method is outside the allowed set (default: GET, HEAD, POST);
+- a redirect hop fails any of the above — **every hop is revalidated**, not just the first;
+- more than `maxRedirects` hops (default 3) are needed;
+- the request exceeds `httpTimeoutMs` (default 10s).
+
+Bodies over `httpMaxBytes` (default 256 KiB) are truncated rather than buffered whole.
+
+> **Residual risk.** Addresses are checked after DNS resolution, but the connection resolves
+> again, leaving a narrow DNS-rebinding window. Closing it needs a pinned-address dispatcher,
+> tracked for release 0.5.
 
 ---
 

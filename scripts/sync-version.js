@@ -19,13 +19,30 @@ const updates = [
   { file: path.join(root, 'apps/desktop/package.json'), get: (j) => j.version, set: (j, v) => { j.version = v; return j; } },
   { file: path.join(root, 'apps/desktop/src-tauri/tauri.conf.json'), get: (j) => j.version, set: (j, v) => { j.version = v; return j; } },
   { file: path.join(root, 'apps/desktop/src-tauri/Cargo.toml'), raw: true },
+  { file: path.join(root, 'packages/gateway/package.json'), get: (j) => j.version, set: (j, v) => { j.version = v; return j; } },
+  { file: path.join(root, 'packages/gateway-client/package.json'), get: (j) => j.version, set: (j, v) => { j.version = v; return j; } },
+  { file: path.join(root, 'packages/module-schema/package.json'), get: (j) => j.version, set: (j, v) => { j.version = v; return j; } },
+  // The version reported by /health and /metrics. Previously drifted because
+  // nothing synced it.
+  {
+    file: path.join(root, 'packages/gateway/src/gateway.ts'),
+    raw: true,
+    pattern: /export const GATEWAY_VERSION = '[^']+';/,
+    replace: (v) => `export const GATEWAY_VERSION = '${v}';`,
+  },
 ];
 
 for (const u of updates) {
   if (u.raw) {
     const content = fs.readFileSync(u.file, 'utf8');
-    const updated = content.replace(/^version\s*=\s*"[^"]+"/m, `version = "${version}"`);
-    fs.writeFileSync(u.file, updated);
+    const pattern = u.pattern ?? /^version\s*=\s*"[^"]+"/m;
+    const replacement = u.replace ? u.replace(version) : `version = "${version}"`;
+    if (!pattern.test(content)) {
+      console.error(`No version match in ${u.file} — sync incomplete.`);
+      process.exitCode = 1;
+      continue;
+    }
+    fs.writeFileSync(u.file, content.replace(pattern, replacement));
     console.log('Updated', u.file);
   } else {
     const j = JSON.parse(fs.readFileSync(u.file, 'utf8'));

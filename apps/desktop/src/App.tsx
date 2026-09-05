@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
-import { setGatewayBaseUrl, gateway, type HealthResponse, type SkillsResponse, type ExplainResponse, type TaskResponse } from './gateway';
+import { setGatewayBaseUrl, initGatewayAuth, gateway, type HealthResponse, type SkillsResponse, type ExplainResponse, type TaskResponse } from './gateway';
 import { SettingsWindow } from './SettingsWindow';
 import { StatusCard } from './components/StatusCard';
 import { CalculatorPanel } from './components/CalculatorPanel';
@@ -367,6 +367,22 @@ function DeveloperView({
     setRunTaskMessage(config?.settings?.runTaskMessage ?? '');
   }, [config]);
 
+  const [authReady, setAuthReady] = useState(false);
+
+  // Load the gateway token once at startup. The gateway writes it on first run,
+  // so on a cold launch this retries while the sidecar comes up.
+  useEffect(() => {
+    let cancelled = false;
+    initGatewayAuth()
+      .catch(() => false)
+      .then(() => {
+        if (!cancelled) setAuthReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const checkConnection = useCallback(async () => {
     setConnectionStatus('unknown');
     setGatewayStatus(null);
@@ -379,9 +395,10 @@ function DeveloperView({
     }
   }, []);
   useEffect(() => {
+    if (!authReady) return;
     if (gatewayUrl.trim()) checkConnection();
     else setConnectionStatus('unknown');
-  }, [gatewayUrl.trim(), checkConnection]);
+  }, [authReady, gatewayUrl.trim(), checkConnection]);
 
   useEffect(() => {
     if (connectionStatus !== 'connected') return;

@@ -37,7 +37,7 @@ cp .env.example .env
 
 Edit `.env` and set:
 
-- `CLERQ_DEV=1` so the gateway runs in local‑dev mode without any license header
+- your LLM provider (see `.env.example`). No token setup is needed — the gateway generates one on first run.
 - **LLM provider** (pick one; GET /health reports which mode is active):
   - **API (cloud):** `ANTHROPIC_API_KEY=sk-ant-...` — uses Anthropic API (Claude).
   - **Local (Ollama):** `CLERQ_LLM_PROVIDER=ollama`, `CLERQ_MODEL=llama3.2` — runs on your machine, no API key. Run `ollama run llama3.2` first.
@@ -71,7 +71,7 @@ In one terminal:
 
 ```bash
 cd OpenClerq
-CLERQ_DEV=1 pnpm gateway
+pnpm gateway
 ```
 
 You should see something like:
@@ -124,17 +124,26 @@ You should see `Verification passed. Gateway is up and responding.` at the end.
 
 ## 8. Basic HTTP API (for scripts)
 
-With the gateway running on `http://127.0.0.1:18790`:
+With the gateway running on `http://127.0.0.1:18790`.
+
+Every endpoint except `/health` needs the bearer token the gateway wrote on first start:
 
 ```bash
-curl http://127.0.0.1:18790/health
-curl http://127.0.0.1:18790/skills
+export CLERQ_TOKEN=$(cat ~/.clerq/gateway-token)
 ```
+
+```bash
+curl http://127.0.0.1:18790/health                                   # public
+curl -H "Authorization: Bearer $CLERQ_TOKEN" http://127.0.0.1:18790/skills
+```
+
+Without the header you get `401 {"error":"unauthorized"}`.
 
 To call the arithmetic engine:
 
 ```bash
 curl -X POST http://127.0.0.1:18790/calculate/eval \
+  -H "Authorization: Bearer $CLERQ_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"expression":"a * 1.25","inputs":{"a":100}}'
 ```
@@ -143,6 +152,7 @@ To call the agent:
 
 ```bash
 curl -X POST http://127.0.0.1:18790/task \
+  -H "Authorization: Bearer $CLERQ_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"message":"Calculate 25% on 100 units"}'
 ```
@@ -151,6 +161,7 @@ Dry-run (no LLM call):
 
 ```bash
 curl -X POST http://127.0.0.1:18790/task \
+  -H "Authorization: Bearer $CLERQ_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"message":"Calculate 25% on 100","dryRun":true}'
 ```
@@ -159,6 +170,7 @@ Context preview (see what would be sent to the LLM):
 
 ```bash
 curl -X POST http://127.0.0.1:18790/context/preview \
+  -H "Authorization: Bearer $CLERQ_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"question":"What is VAT?"}'
 ```
@@ -166,8 +178,11 @@ curl -X POST http://127.0.0.1:18790/context/preview \
 Memory (list, add, delete):
 
 ```bash
-curl http://127.0.0.1:18790/memory
-curl -X POST http://127.0.0.1:18790/memory -H "Content-Type: application/json" -d '{"key":"test","value":{"note":"sample"}}'
+curl -H "Authorization: Bearer $CLERQ_TOKEN" http://127.0.0.1:18790/memory
+curl -X POST http://127.0.0.1:18790/memory \
+  -H "Authorization: Bearer $CLERQ_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"key":"test","value":{"note":"sample"}}'
 ```
 
 These endpoints are meant as **examples**; you can add your own tools, skills, and calculation operations on top.

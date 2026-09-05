@@ -25,6 +25,16 @@
 
 **Skills are available by module. You can build and load your own modules (for different roles and countries) on top of the core engine. See [About Clerq](docs/ABOUT_CLERQ.md).
 
+> **Security.** As of 0.4 the gateway is authenticated and binds loopback only. Every endpoint
+> except `/health` needs a bearer token, generated on first run at `~/.clerq/gateway-token`:
+>
+> ```bash
+> curl -H "Authorization: Bearer $(cat ~/.clerq/gateway-token)" http://127.0.0.1:18790/skills
+> ```
+>
+> Treat that token as a credential — it permits tool execution on your machine. See
+> [SECURITY.md](docs/SECURITY.md) for the threat model and what is still open.
+
 ## Why Clerq?
 
 - **Local-first calculations** — All numeric work runs locally on your machine (Rust-based calculation engine). AI provides guidance and explanations only.
@@ -68,7 +78,7 @@ git clone https://github.com/paxamedia/OpenClerq.git
 cd OpenClerq
 pnpm install
 cp .env.example .env
-# Edit .env: set CLERQ_DEV=1 and your LLM (ANTHROPIC_API_KEY or CLERQ_LLM_PROVIDER=ollama)
+# Edit .env: set your LLM (ANTHROPIC_API_KEY or CLERQ_LLM_PROVIDER=ollama)
 pnpm build:gateway
 pnpm build:core
 ```
@@ -76,7 +86,7 @@ pnpm build:core
 **Run (choose one)**
 
 - **Two terminals:**  
-  Terminal 1: `CLERQ_DEV=1 pnpm gateway`  
+  Terminal 1: `pnpm gateway`  
   Terminal 2: `pnpm desktop`
 
 - **Easy run (after building the app once):**  
@@ -101,7 +111,7 @@ git clone https://github.com/paxamedia/OpenClerq.git
 cd OpenClerq
 pnpm install
 copy .env.example .env
-REM Edit .env: set CLERQ_DEV=1 and your LLM (ANTHROPIC_API_KEY or CLERQ_LLM_PROVIDER=ollama)
+REM Edit .env: set your LLM (ANTHROPIC_API_KEY or CLERQ_LLM_PROVIDER=ollama)
 pnpm build:gateway
 pnpm build:core
 ```
@@ -109,7 +119,7 @@ pnpm build:core
 **Run (choose one)**
 
 - **Two terminals:**  
-  Terminal 1: `set CLERQ_DEV=1 && pnpm gateway`  
+  Terminal 1: `pnpm gateway`  
   Terminal 2: `pnpm desktop`
 
 - **Easy run (after building the app once):**  
@@ -156,9 +166,9 @@ pnpm build:core
 
 After [Installing](#installing) (macOS or Windows), from the repo root:
 
-1. **Copy env:** `cp .env.example .env` (macOS/Linux) or `copy .env.example .env` (Windows). Set `CLERQ_DEV=1` and your LLM: **API (cloud)** via `ANTHROPIC_API_KEY`, or **local** via `CLERQ_LLM_PROVIDER=ollama`.
+1. **Copy env:** `cp .env.example .env` (macOS/Linux) or `copy .env.example .env` (Windows). Set your LLM: **API (cloud)** via `ANTHROPIC_API_KEY`, or **local** via `CLERQ_LLM_PROVIDER=ollama`.
 2. **Build:** `pnpm build:gateway` and (for rate calc) `pnpm build:core`.
-3. **Start gateway:** `CLERQ_DEV=1 pnpm gateway` (leave running).
+3. **Start gateway:** `pnpm gateway` (leave running). It prints where to find the bearer token.
 4. **Start desktop:** `pnpm desktop` in a second terminal.
 
 The desktop **Control Tower** lets you check gateway health, load and edit skills (schemas, dependencies), run tools, manage file-backed memory, and **Ask** (explain or task). Task mode supports dry-run (no LLM call) and context preview. Builder/Operator modes toggle between full configuration and streamlined use. Full steps: **[Developer setup](docs/DEVELOPER_SETUP.md)**.
@@ -193,7 +203,7 @@ clerq/
 ├── packages/
 │   ├── gateway/          # OpenClerq agent runtime
 │   └── calculation-core/ # Rust — advanced arithmetic engine (deterministic, auditable)
-├── docs/                # ABOUT_CLERQ, PRD, ARCHITECTURE, MODULE_SYSTEM, etc.
+├── docs/                # ROADMAP, ARCHITECTURE, SECURITY, TOOLS, etc.
 └── package.json
 ```
 
@@ -211,13 +221,15 @@ clerq/
 
 | Doc | Purpose |
 |-----|---------|
+| [**ROADMAP**](docs/ROADMAP.md) | Where this is going: audit, target architecture, release trains |
 | [**ABOUT_CLERQ**](docs/ABOUT_CLERQ.md) | What OpenClerq is; attribution; OSS vs hosted scope |
 | [**DEVELOPER_SETUP**](docs/DEVELOPER_SETUP.md) | Install, run, and verify OpenClerq locally (macOS + Windows) |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | Components and local data flow |
 | [ARITHMETIC_API](docs/ARITHMETIC_API.md) | Calculation engine: operators, functions, examples |
 | [MODULE_SYSTEM](docs/MODULE_SYSTEM.md) | How skills and modules are structured (schemas, dependencies) |
 | [TOOLS](docs/TOOLS.md) | Built‑in tools (filesystem, HTTP) and how to extend them |
-| [SAFETY_CHECKLIST](docs/SAFETY_CHECKLIST.md) | Quick safety checks before shipping changes |
+| [SECURITY](docs/SECURITY.md) | Threat model, binding rules, release checklist |
+| [DISTRIBUTION](docs/DISTRIBUTION.md) | Code signing, notarization, and the updater |
 | [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution |
 
 ## License

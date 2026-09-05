@@ -3,6 +3,7 @@ import fssync from 'node:fs';
 import type { Server } from 'node:http';
 import type { GatewayConfig } from './types.js';
 import { licenseCheck } from './middleware/license.js';
+import { requireAuth, resolveGatewayToken } from './security/auth.js';
 import { logger } from './logger.js';
 import { getCalcBinaryPath, runEvalCalc } from './calc.js';
 import { getSkillsDir, loadSkillsFromDir, loadSkillContent, saveSkillFrontmatter } from './skills-loader.js';
@@ -23,9 +24,28 @@ import { listMemory, getMemory, setMemory, deleteMemory } from './memory-layer.j
 
 const DEFAULT_PORT = 18790;
 
+/**
+ * Origins allowed to call the gateway from a browser context: the Vite dev server
+ * and the Tauri webview on each platform. Override with CLERQ_CORS_ORIGINS.
+ */
+const DEFAULT_CORS_ORIGINS = [
+  'http://localhost:1420',
+  'http://127.0.0.1:1420',
+  'tauri://localhost',
+  'http://tauri.localhost',
+].join(',');
+
+/** Single source of truth for the version reported over the API. */
+export const GATEWAY_VERSION = '0.4.0';
+
 export function createGateway(config: GatewayConfig = {}): { app: express.Express; server: Server } {
   const port = config.port ?? DEFAULT_PORT;
+  // Loopback unless an operator deliberately opts out. Binding a wider interface
+  // exposes tool execution to the network and is gated on explicit configuration.
+  const host = config.host ?? process.env.CLERQ_HOST ?? '127.0.0.1';
   const devMode = config.devMode ?? (process.env.CLERQ_DEV === '1' || process.env.CLERQ_DEV === 'true');
+  // Authentication is not optional and has no dev bypass. Licensing is separate.
+  const auth = config.authToken ? { token: config.authToken, source: 'config' as const } : resolveGatewayToken();
   const skillsDir = config.skillsDir ?? getSkillsDir();
   const calcPath = config.calculationEnginePath ?? getCalcBinaryPath();
   const initialToolsConfig = config.toolsConfig ?? capabilitiesToToolConfig(loadCapabilities());
@@ -34,22 +54,28 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
   const app = express();
   let loadedModules: Awaited<ReturnType<typeof loadModulesFromDir>> = [];
 
+  // Origins are reflected only when explicitly allow-listed. There is no wildcard
+  // path: a wildcard lets any page the user visits drive their local gateway.
+  const corsOrigins = new Set(
+    (process.env.CLERQ_CORS_ORIGINS ?? DEFAULT_CORS_ORIGINS)
+      .split(',')
+      .map((o) => o.trim())
+      .filter(Boolean)
+  );
   app.use((req, res, next) => {
-    if (devMode) {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-    } else {
-      const origins = process.env.CLERQ_CORS_ORIGINS?.split(',').map((o) => o.trim()).filter(Boolean) ?? [];
-      const origin = req.headers.origin;
-      if (origins.length > 0 && typeof origin === 'string' && origins.includes(origin)) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-      }
+    const origin = req.headers.origin;
+    if (typeof origin === 'string' && corsOrigins.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Clerq-Token');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
-  app.use(express.json());
+  // Body limit: an unbounded JSON parser is a trivial memory exhaustion vector.
+  app.use(express.json({ limit: process.env.CLERQ_MAX_BODY ?? '1mb' }));
+  app.use(requireAuth(auth.token));
   app.use(licenseCheck(devMode));
 
   app.get('/health', (_req, res) => {
@@ -58,7 +84,7 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
     res.json({
       status: 'ok',
       service: 'clerq-gateway',
-      version: '0.1.0',
+      version: GATEWAY_VERSION,
       llm: {
         mode: llmMode,
         provider: llmStatus.provider,
@@ -153,12 +179,21 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
       return res.status(400).json({ error: 'invalid config' });
     }
     try {
+      const positive = (v: unknown): number | undefined =>
+        typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : undefined;
       const c: CapabilitiesConfig = {
         fsRoot: typeof body.fsRoot === 'string' ? body.fsRoot : undefined,
-        fsAllowWrite: typeof body.fsAllowWrite === 'boolean' ? body.fsAllowWrite : undefined,
+        fsMaxReadBytes: positive(body.fsMaxReadBytes),
         httpAllowlist: Array.isArray(body.httpAllowlist)
           ? body.httpAllowlist.filter((h): h is string => typeof h === 'string')
           : undefined,
+        httpAllowedSchemes: Array.isArray(body.httpAllowedSchemes)
+          ? body.httpAllowedSchemes.filter((h): h is string => typeof h === 'string')
+          : undefined,
+        httpMaxBytes: positive(body.httpMaxBytes),
+        httpTimeoutMs: positive(body.httpTimeoutMs),
+        httpAllowPrivateAddresses:
+          typeof body.httpAllowPrivateAddresses === 'boolean' ? body.httpAllowPrivateAddresses : undefined,
       };
       saveCapabilities(c);
       toolRegistry = createToolRegistry(capabilitiesToToolConfig(loadCapabilities()));
@@ -194,7 +229,7 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
   app.get('/metrics', (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.json({
-      version: '0.1.0',
+      version: GATEWAY_VERSION,
       uptime_seconds: Math.floor((Date.now() - startTime) / 1000),
       service: 'clerq-gateway',
       ...getObservability(),
@@ -529,12 +564,19 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
     }
   });
 
-  const server = app.listen(port, async () => {
-    logger.info('Gateway started', { port, url: `http://127.0.0.1:${port}` });
-    startTriggers(runTaskFromContext);
-    if (!devMode && !process.env.CLERQ_LICENSE) {
-      logger.warn('No CLERQ_LICENSE set; non-health requests will get 403. Set CLERQ_DEV=1 for development.');
+  const server = app.listen(port, host, async () => {
+    logger.info('Gateway started', { host, port, url: `http://${host}:${port}` });
+    if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+      logger.warn(
+        'Gateway is bound to a non-loopback interface and is reachable from the network. ' +
+          'Ensure it sits behind TLS and that the gateway token is not shared.',
+        { host }
+      );
     }
+    if (auth.source === 'generated') {
+      logger.info('Generated a new gateway token at ~/.clerq/gateway-token (mode 0600).');
+    }
+    startTriggers(runTaskFromContext);
     try {
       const modules = await loadModulesFromDir(config.modulesDir ?? process.env.CLERQ_MODULES_DIR);
       loadedModules = modules;

@@ -96,6 +96,27 @@ fn clerq_calc_path() -> Result<PathBuf, String> {
     Err(format!("clerq-calc not found in {:?}", dir))
 }
 
+/// Read the gateway bearer token from ~/.clerq/gateway-token.
+///
+/// The gateway itself creates this file (mode 0600) on first start, so the
+/// desktop only ever reads it. Returns an error while the gateway is still
+/// starting up; the frontend retries.
+#[tauri::command]
+fn gateway_token() -> Result<String, String> {
+    let path = clerq_dir()?.join("gateway-token");
+    match fs::read_to_string(&path) {
+        Ok(contents) => {
+            let token = contents.trim().to_string();
+            if token.is_empty() {
+                Err("Gateway token file is empty.".to_string())
+            } else {
+                Ok(token)
+            }
+        }
+        Err(_) => Err("Gateway token not available yet. Is the gateway running?".to_string()),
+    }
+}
+
 fn gateway_running() -> bool {
     std::net::TcpStream::connect(std::net::SocketAddr::from(([127, 0, 0, 1], GATEWAY_PORT))).is_ok()
 }
@@ -117,8 +138,8 @@ fn main() {
                                 .and_then(|p| p.parent().map(|d| d.to_path_buf()));
                             let mut cmd = shell
                                 .env("CLERQ_CALC_PATH", calc_path.to_string_lossy().as_ref())
-                                .env("CLERQ_DEV", "1")
-                                .env("CLERQ_PORT", GATEWAY_PORT.to_string());
+                                .env("CLERQ_PORT", GATEWAY_PORT.to_string())
+                                .env("CLERQ_HOST", "127.0.0.1");
                             if let Some(ref dir) = exe_dir {
                                 cmd = cmd.current_dir(dir);
                             }
@@ -142,7 +163,8 @@ fn main() {
             write_api_key,
             read_config,
             write_config,
-            read_module_manifest
+            read_module_manifest,
+            gateway_token
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clerq desktop application");

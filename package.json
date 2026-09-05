@@ -1,7 +1,7 @@
 {
   "name": "clerq",
-  "version": "0.1.0",
-  "description": "Local administrative agent & model context server (MCS) — small desktop automation for generic clerical work.",
+  "version": "0.4.0",
+  "description": "Local administrative agent & model context server (MCS) \u2014 small desktop automation for generic clerical work.",
   "keywords": [
     "ai",
     "clerq"

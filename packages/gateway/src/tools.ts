@@ -1,6 +1,5 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { URL } from 'node:url';
+import { readTextFileWithin, PathContainmentError } from './security/paths.js';
+import { safeFetch, NetworkPolicyError, type NetworkPolicy } from './security/network.js';
 
 export interface ToolInvocation<TInput = unknown, TOutput = unknown> {
   name: string;
@@ -17,10 +16,18 @@ export interface ToolSpec<TInput = unknown, TOutput = unknown> {
 export interface ToolConfig {
   /** Root directory for filesystem tools. Defaults to process.cwd(). */
   fsRoot?: string;
-  /** Whether filesystem write operations are allowed. Defaults to false. */
-  fsAllowWrite?: boolean;
-  /** Allowed HTTP hostnames for http.request tool. When unset, http.request is disabled. */
+  /** Largest file fs.read will return, in bytes. Default: 1 MiB. */
+  fsMaxReadBytes?: number;
+  /** Allowed HTTP hostnames. When empty or unset, http.request is not registered. */
   httpAllowlist?: string[];
+  /** URL schemes http.request may use. Default: https only. */
+  httpAllowedSchemes?: string[];
+  /** Largest response body retained, in bytes. Default: 256 KiB. */
+  httpMaxBytes?: number;
+  /** Whole-request timeout in milliseconds. Default: 10000. */
+  httpTimeoutMs?: number;
+  /** Permit private, loopback and link-local destinations. Default: false. */
+  httpAllowPrivateAddresses?: boolean;
 }
 
 export interface ToolRegistry {
@@ -28,23 +35,20 @@ export interface ToolRegistry {
   run<TInput, TOutput>(name: string, input: TInput): Promise<TOutput>;
 }
 
-function createFsReadTool(config: ToolConfig): ToolSpec<{ relativePath: string }, { path: string; content: string }> {
-  const root = path.resolve(config.fsRoot || process.cwd());
+const DEFAULT_FS_MAX_READ_BYTES = 1_048_576;
+
+function createFsReadTool(
+  config: ToolConfig
+): ToolSpec<{ relativePath: string }, { path: string; content: string; bytes: number }> {
+  const root = config.fsRoot || process.cwd();
+  const maxBytes = config.fsMaxReadBytes ?? DEFAULT_FS_MAX_READ_BYTES;
 
   return {
     name: 'fs.read',
     description: 'Read a UTF-8 text file from within the configured root directory.',
     async run(input) {
-      const rel = input?.relativePath ?? '';
-      if (typeof rel !== 'string' || !rel) {
-        throw new Error('fs.read requires a non-empty relativePath string');
-      }
-      const resolved = path.resolve(root, rel);
-      if (!resolved.startsWith(root)) {
-        throw new Error('fs.read: access outside configured root is not allowed');
-      }
-      const content = await fs.promises.readFile(resolved, 'utf8');
-      return { path: resolved, content };
+      // Containment, symlink resolution and size limits all live in readTextFileWithin.
+      return readTextFileWithin(root, input?.relativePath ?? '', maxBytes);
     },
   };
 }
@@ -53,51 +57,35 @@ function createHttpRequestTool(
   config: ToolConfig
 ): ToolSpec<
   { method?: string; url: string; headers?: Record<string, string>; body?: string },
-  { status: number; headers: Record<string, string>; bodyText: string }
+  { status: number; headers: Record<string, string>; bodyText: string; truncated: boolean; chain: string[] }
 > | null {
   const allowlist = config.httpAllowlist ?? [];
   if (!Array.isArray(allowlist) || allowlist.length === 0) {
-    // Disabled by default for safety.
+    // Disabled by default. No allowlist, no outbound HTTP.
     return null;
   }
 
+  const policy: NetworkPolicy = {
+    allowlist,
+    allowedSchemes: config.httpAllowedSchemes,
+    maxBytes: config.httpMaxBytes,
+    timeoutMs: config.httpTimeoutMs,
+    allowPrivateAddresses: config.httpAllowPrivateAddresses,
+  };
+
   return {
     name: 'http.request',
-    description: 'Make an HTTP(S) request to allowed hostnames (configured via httpAllowlist).',
+    description:
+      'Make an HTTP(S) request to an allow-listed host. Redirects are revalidated; private and loopback addresses are refused.',
     async run(input) {
-      const url = input?.url;
-      if (typeof url !== 'string' || !url) {
-        throw new Error('http.request requires a non-empty url string');
+      if (typeof input?.url !== 'string' || !input.url) {
+        throw new NetworkPolicyError('http.request requires a non-empty url string.');
       }
-      let parsed: URL;
-      try {
-        parsed = new URL(url);
-      } catch {
-        throw new Error('http.request: invalid URL');
-      }
-      const host = parsed.hostname.toLowerCase();
-      const allowed = allowlist.map((h) => h.toLowerCase().trim());
-      if (!allowed.includes(host)) {
-        throw new Error(`http.request: host "${host}" is not in httpAllowlist`);
-      }
-
-      const method = (input.method || 'GET').toUpperCase();
-      const headers = input.headers ?? {};
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: input.body,
-      });
-      const bodyText = await res.text();
-      const outHeaders: Record<string, string> = {};
-      res.headers.forEach((value, key) => {
-        outHeaders[key] = value;
-      });
-      return {
-        status: res.status,
-        headers: outHeaders,
-        bodyText,
-      };
+      return safeFetch(
+        input.url,
+        { method: input.method, headers: input.headers, body: input.body },
+        policy
+      );
     },
   };
 }
@@ -130,3 +118,4 @@ export function createToolRegistry(config: ToolConfig = {}): ToolRegistry {
   };
 }
 
+export { PathContainmentError, NetworkPolicyError };

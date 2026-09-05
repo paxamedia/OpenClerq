@@ -118,4 +118,4 @@ curl -X POST http://127.0.0.1:18790/calculate/eval \
 ## See Also
 
 - [DEVELOPER_SETUP](DEVELOPER_SETUP.md) — Run the gateway and test locally
-- [ERROR_RESPONSE_SHAPE](ERROR_RESPONSE_SHAPE.md) — Error format
+- [ARCHITECTURE](ARCHITECTURE.md) — Error response shape

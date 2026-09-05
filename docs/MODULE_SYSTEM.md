@@ -47,7 +47,7 @@ domains: ["admin"]          # Optional domain tags (admin, ops, hr, etc.)
 jurisdiction: []            # Optional region codes if you choose to use them
 
 moduleType: "calc"          # "calc" | "guidance" | "filing" | "compliance"
-guardrails: []              # High‑level safety rules; see SAFETY_CHECKLIST
+guardrails: []              # High‑level safety rules; see SECURITY.md
 
 triggers: ["inbox", "email", "messages"]
 ---
@@ -93,5 +93,5 @@ Modules and skills must respect the **safety guarantees** of the OSS core:
 - Tools should be **scoped** (filesystem roots, HTTP allow‑lists, etc.).
 - Skills should describe any constraints, required approvals, and audit notes.
 
-See `docs/SAFETY_CHECKLIST.md` for a short checklist before you ship or share a module.
+See `docs/SECURITY.md` for the binding rules and the checklist to run before you ship or share a module.
 

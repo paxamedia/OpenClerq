@@ -82,7 +82,7 @@ No formal code style guide yet; match the existing style in the file you edit.
 
 - [Developer setup](docs/DEVELOPER_SETUP.md) — Run locally, API summary, add skills
 - [About Clerq](docs/ABOUT_CLERQ.md) — Attribution, OSS vs hosted
-- [Safety checklist](docs/SAFETY_CHECKLIST.md) — Secrets, API keys, audit
+- [Security](docs/SECURITY.md) — Threat model, binding rules, release checklist
 - [NOTICE](NOTICE) — Attribution and license
 
 ## License

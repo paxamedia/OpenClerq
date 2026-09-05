@@ -5,7 +5,49 @@ All notable changes to OpenClerq will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — Security foundation
+
+Closes the four S1 blockers from [docs/ROADMAP.md](docs/ROADMAP.md). **Breaking:** the gateway
+API now requires authentication.
+
+### Security
+
+- **Gateway authentication.** Every endpoint except `GET /health` requires `Authorization: Bearer <token>`, compared in constant time. The token is generated on first run at `~/.clerq/gateway-token` (mode 0600) or supplied via `CLERQ_GATEWAY_TOKEN`. There is no development bypass — `CLERQ_DEV` no longer affects access.
+- **Authentication separated from licensing.** `middleware/license.ts` now attaches entitlement information and never rejects; it had been the only thing standing between the network and the tool registry.
+- **Loopback binding.** The listener binds `127.0.0.1` unless `CLERQ_HOST` is set, which also logs a warning. It previously bound all interfaces while logging `127.0.0.1`.
+- **Canonical path containment.** `fs.read` resolves against a `realpath`'d root and rejects traversal, prefix-sibling escapes (`/srv/repo-secrets` against `/srv/repo`), absolute/UNC paths, NUL bytes, escaping symlinks, non-regular files, and reads over `fsMaxReadBytes`. Replaces a `startsWith` prefix comparison.
+- **SSRF hardening.** `http.request` now enforces a scheme allowlist (https by default), refuses URL credentials, resolves DNS and blocks loopback, private, CGNAT, link-local, multicast, reserved and cloud-metadata addresses (including IPv4-mapped forms), revalidates **every** redirect hop, and bounds redirects, time and response size.
+- **CORS lockdown.** Origins are reflected only from an allowlist. The `*` development path is gone.
+- **Request body limit.** JSON parsing capped at 1 MiB (`CLERQ_MAX_BODY`).
+
+### Added
+
+- `packages/gateway/src/security/` — `auth.ts`, `paths.ts`, `network.ts`
+- `capabilities.json` gains `fsMaxReadBytes`, `httpAllowedSchemes`, `httpMaxBytes`, `httpTimeoutMs`, `httpAllowPrivateAddresses`
+- `gateway_token` Tauri command; the desktop loads the token before its first API call
+- `setGatewayToken()` / `hasGatewayToken()` in `@clerq/gateway-client`
+- `.github/workflows/ci.yml` — typecheck, tests, Rust fmt/clippy/test, `pnpm audit`, `cargo audit`, secret scan. CI previously ran no tests at all.
+- 49 new tests covering the auth boundary, path containment and network policy (29 → 78)
+
+### Changed
+
+- Version unified at 0.4.0 across root, gateway, client, schema, desktop, `tauri.conf.json`, `Cargo.toml` and the `/health` and `/metrics` payloads; `sync-version.js` now covers all of them
+- `scripts/verify-local.sh` and the documented `curl` examples send the bearer token
+
+### Removed
+
+- `fsAllowWrite` capability flag — declared and stored since 0.1, read by no tool, implying a write capability that never existed
+
 ## [Unreleased]
+
+### Documentation
+
+- **ROADMAP.md** — consolidated roadmap merging two independent architecture reviews: 18-finding audit, target architecture, release trains 0.4 → 1.0, automations-as-code spec, provider/driver model
+- **ROADMAP.md §8 — Chat console.** Raw and managed pipeline modes, multi-model comparison, conversational automation authoring (draft → preview → dry run → save disabled), shipped as a removable first-party module over the existing module slot contract
+- **SECURITY.md** — threat model, nine binding rules, honest inventory of unprotected surfaces, release checklist (supersedes `SAFETY_CHECKLIST.md`)
+- **ARCHITECTURE.md** — corrected: the `/task` path is a prompt router, not an agent loop; error response shape absorbed from `ERROR_RESPONSE_SHAPE.md`; endpoint table and local-state table added
+- **TOOLS.md** — documented the actual limits of `fs.read` path containment and `http.request` allowlisting, replacing an overstated safety claim
+- Removed `SAFETY_CHECKLIST.md` and `ERROR_RESPONSE_SHAPE.md` (content absorbed above)
 
 ### Added
 

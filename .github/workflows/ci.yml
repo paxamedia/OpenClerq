@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Quality gates that must pass before the build workflow's artifacts mean anything.
+# Before release 0.4 none of this ran: CI only built installers.
+jobs:
+  verify:
+    name: Typecheck, lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: pnpm --filter @clerq/module-schema --filter @clerq/gateway-client build
+
+      - name: Typecheck gateway
+        run: pnpm --filter @clerq/gateway exec tsc --noEmit
+
+      - name: Typecheck desktop
+        run: pnpm --filter @clerq/desktop exec tsc --noEmit
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Unit and integration tests
+        run: pnpm --filter @clerq/gateway test
+
+  rust:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/calculation-core
+
+      - name: Format check
+        run: cargo fmt --manifest-path packages/calculation-core/Cargo.toml --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path packages/calculation-core/Cargo.toml -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path packages/calculation-core/Cargo.toml
+
+  audit:
+    name: Dependency and secret audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Advisory: fails the job on high/critical only, so a low-severity
+      # transitive advisory does not block every PR.
+      - name: pnpm audit
+        run: pnpm audit --audit-level high
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        run: cargo audit --file packages/calculation-core/Cargo.lock
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

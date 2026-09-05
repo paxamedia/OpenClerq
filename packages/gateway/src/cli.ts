@@ -21,7 +21,27 @@ dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 import { createGateway } from './gateway.js';
 
+import { resolveGatewayToken } from './security/auth.js';
+
 const port = parseInt(process.env.CLERQ_PORT ?? '18790', 10);
+const host = process.env.CLERQ_HOST ?? '127.0.0.1';
+
+const { token, source } = resolveGatewayToken();
 
 console.log('[Clerq] Starting gateway...');
-createGateway({ port });
+console.log(`[Clerq] Listening on http://${host}:${port}`);
+
+if (source === 'generated') {
+  console.log('[Clerq] Generated a gateway token at ~/.clerq/gateway-token (mode 0600).');
+}
+if (source !== 'env') {
+  console.log('[Clerq] Authenticate with: Authorization: Bearer $(cat ~/.clerq/gateway-token)');
+}
+if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+  console.warn(
+    `[Clerq] WARNING: bound to ${host}, which is reachable from the network. ` +
+      'Put TLS in front of it and treat the gateway token as a production credential.'
+  );
+}
+
+createGateway({ port, host, authToken: token });

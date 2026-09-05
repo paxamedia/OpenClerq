@@ -6,6 +6,7 @@
 const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:18790';
 
 let gatewayBaseUrl: string = DEFAULT_GATEWAY_URL;
+let gatewayToken: string | null = null;
 
 function getUrl(path: string): string {
   const base = gatewayBaseUrl.replace(/\/$/, '');
@@ -16,10 +17,26 @@ export function setGatewayBaseUrl(baseUrl: string): void {
   gatewayBaseUrl = baseUrl?.trim() || DEFAULT_GATEWAY_URL;
 }
 
+/**
+ * Set the bearer token sent with every request. Read from ~/.clerq/gateway-token
+ * by the host application; every endpoint except /health requires it.
+ */
+export function setGatewayToken(token: string | null): void {
+  gatewayToken = token?.trim() || null;
+}
+
+export function hasGatewayToken(): boolean {
+  return gatewayToken !== null;
+}
+
+function authHeaders(): Record<string, string> {
+  return gatewayToken ? { Authorization: `Bearer ${gatewayToken}` } : {};
+}
+
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(getUrl(path), {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options?.headers },
   });
   if (!res.ok) {
     const body = await res.text();
@@ -92,8 +109,13 @@ export const gateway = {
     return fetchJson('/metrics');
   },
 
+  /**
+   * SSE endpoint URL. EventSource cannot set headers, so the token travels as a
+   * query parameter — accepted by the gateway on this endpoint only.
+   */
   logsStreamUrl(): string {
-    return getUrl('/logs/stream');
+    const url = getUrl('/logs/stream');
+    return gatewayToken ? `${url}?token=${encodeURIComponent(gatewayToken)}` : url;
   },
 
   models(): Promise<{ models: string[]; current: string }> {
@@ -112,7 +134,10 @@ export const gateway = {
   },
 
   async deleteSecret(name: string): Promise<{ ok: boolean }> {
-    const res = await fetch(getUrl(`/secrets/${encodeURIComponent(name)}`), { method: 'DELETE' });
+    const res = await fetch(getUrl(`/secrets/${encodeURIComponent(name)}`), {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
     if (!res.ok) {
       const j = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(j.error ?? `Gateway ${res.status}`);
