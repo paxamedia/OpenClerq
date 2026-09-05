@@ -1,0 +1,24 @@
+{
+  "name": "@clerq/workspaces",
+  "version": "0.4.0",
+  "description": "Repository checkouts, per-run git worktrees, and the branch/commit/push/PR publish path",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.0",
+    "@types/node": "^22.0.0"
+  }
+}

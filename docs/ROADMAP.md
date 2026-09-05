@@ -347,8 +347,8 @@ The phase that decides whether this is safe to leave running overnight.
 - [ ] Egress allowlist enforced at the sandbox boundary, not in application code
 - [x] `packages/policy` — tool groups (`fs`/`runtime`/`web`/`sessions`/`memory`/`automation`), profiles, allow/deny, `maxCallsPerRun`
 - [ ] Approval system with risk tiers; `POST /approvals/:id/approve|deny`; allow once / allow for session / deny
-- [ ] `packages/workspaces` — register local paths, clone remotes to a content-addressed cache, one `git worktree` per run
-- [ ] Git publish path: branch, commit with a machine-identifiable trailer, push, PR via GitHub/GitLab API
+- [x] `packages/workspaces` — register local paths, clone remotes to a content-addressed cache, one `git worktree` per run
+- [x] Git publish path: branch, commit with a machine-identifiable trailer, push, PR via GitHub/GitLab API
 - [x] Secret injection as sandbox env only, with output redaction on the way back
 - [ ] `packages/providers` + `providers.yaml` — base URL, auth env var, model list, context window, price per million tokens
 - [ ] Per-call token and cost accounting into `run_steps`
