@@ -39,6 +39,8 @@ import {
 import { listMemory, getMemory, setMemory, deleteMemory, searchMemory } from './memory-layer.js';
 import { initStore } from './store.js';
 import { recordRun, listRuns, getRun } from './runs.js';
+import { emit, subscribeEvents, recentEvents } from './events.js';
+import { listPending, decide, denyAllPending } from './approvals.js';
 
 const DEFAULT_PORT = 18790;
 
@@ -415,6 +417,67 @@ export function createGateway(config: GatewayConfig = {}): {
       logger.error('memory delete error', { key, err: e instanceof Error ? e.message : String(e) });
       res.status(500).json({ error: 'memory_delete_failed' });
     }
+  });
+
+  app.get('/approvals', (_req: Request, res: Response) => {
+    try {
+      res.json({ approvals: listPending() });
+    } catch (e) {
+      logger.error('approvals list error', { err: e instanceof Error ? e.message : String(e) });
+      res.status(500).json({ error: 'approvals_list_failed' });
+    }
+  });
+
+  const decideRoute = (verdict: 'approved' | 'denied') => (req: Request, res: Response) => {
+    const id = Number(req.params?.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'id required' });
+    const body = (req.body ?? {}) as { by?: string; reason?: string };
+    try {
+      const ok = decide(id, {
+        decision: verdict,
+        decidedBy: typeof body.by === 'string' ? body.by : undefined,
+        reason: typeof body.reason === 'string' ? body.reason : undefined,
+      });
+      if (!ok) {
+        return res.status(404).json({ error: 'approval_not_pending', id });
+      }
+      res.json({ ok: true, id, decision: verdict });
+    } catch (e) {
+      logger.error('approval decide error', {
+        id,
+        err: e instanceof Error ? e.message : String(e),
+      });
+      res.status(500).json({ error: 'approval_decide_failed' });
+    }
+  };
+
+  app.post('/approvals/:id/approve', decideRoute('approved'));
+  app.post('/approvals/:id/deny', decideRoute('denied'));
+
+  /**
+   * Kill switch: stop everything and refuse every pending approval.
+   * Required by SECURITY.md, and reachable from any client.
+   */
+  app.post('/kill', (_req: Request, res: Response) => {
+    try {
+      const denied = denyAllPending('Kill switch engaged');
+      emit('gateway.stopped', { reason: 'kill switch', deniedApprovals: denied });
+      logger.warn('Kill switch engaged', { deniedApprovals: denied });
+      res.json({ ok: true, deniedApprovals: denied });
+    } catch (e) {
+      logger.error('kill switch error', { err: e instanceof Error ? e.message : String(e) });
+      res.status(500).json({ error: 'kill_failed' });
+    }
+  });
+
+  app.get('/events', (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    for (const e of recentEvents(100)) res.write(`data: ${JSON.stringify(e)}\n\n`);
+    const unsub = subscribeEvents((e) => res.write(`data: ${JSON.stringify(e)}\n\n`));
+    req.on('close', unsub);
   });
 
   app.get('/runs', (req: Request, res: Response) => {

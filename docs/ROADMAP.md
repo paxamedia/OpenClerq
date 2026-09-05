@@ -333,7 +333,7 @@ everything downstream writes into.
 - [x] Migrate `memory.json` / `triggers.json` / `capabilities.json` into SQLite with a one-time importer _(landed)_
 - [x] Lock CORS to the desktop origin; drop the `*` dev path
 - [ ] Secrets master key → OS keychain (Keychain / DPAPI), age-encrypted file for headless _(moved to 0.5)_
-- [ ] Typed event bus + append-only audit log _(moved to 0.5)_
+- [x] Typed event bus + append-only audit log
 - [x] Remove the dead `fsAllowWrite` flag or implement it
 - [x] Fix version drift; extend `sync-version.js` to cover `/health`
 - [x] CI gates: typecheck, lint, Vitest, `cargo test`, `pnpm audit`, `cargo audit`, secret scan — all required before build
@@ -346,7 +346,7 @@ The phase that decides whether this is safe to leave running overnight.
 - [x] Per-run limits: wall clock, CPU, memory, disk, process count; hard kill on breach
 - [ ] Egress allowlist enforced at the sandbox boundary, not in application code
 - [x] `packages/policy` — tool groups (`fs`/`runtime`/`web`/`sessions`/`memory`/`automation`), profiles, allow/deny, `maxCallsPerRun`
-- [ ] Approval system with risk tiers; `POST /approvals/:id/approve|deny`; allow once / allow for session / deny
+- [x] Approval system with risk tiers; `POST /approvals/:id/approve|deny`; allow once / allow for session / deny
 - [x] `packages/workspaces` — register local paths, clone remotes to a content-addressed cache, one `git worktree` per run
 - [x] Git publish path: branch, commit with a machine-identifiable trailer, push, PR via GitHub/GitLab API
 - [x] Secret injection as sandbox env only, with output redaction on the way back

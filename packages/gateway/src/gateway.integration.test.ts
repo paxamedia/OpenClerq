@@ -198,6 +198,41 @@ describe('gateway integration', () => {
     expect((await fetch(`${baseUrl}/runs`)).status).toBe(401);
   });
 
+  it('exposes the approvals inbox', async () => {
+    const res = await authed(`${baseUrl}/approvals`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(((await res.json()) as { approvals: unknown[] }).approvals)).toBe(true);
+  });
+
+  it('404s a decision on an approval that is not pending', async () => {
+    const res = await authed(`${baseUrl}/approvals/9999/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error?: string }).error).toBe('approval_not_pending');
+  });
+
+  it('offers a kill switch', async () => {
+    const res = await authed(`${baseUrl}/kill`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: true });
+  });
+
+  it('requires a token for approvals and the kill switch', async () => {
+    expect((await fetch(`${baseUrl}/approvals`)).status).toBe(401);
+    expect((await fetch(`${baseUrl}/kill`, { method: 'POST' })).status).toBe(401);
+  });
+
+  it('streams events, accepting the token as a query parameter', async () => {
+    const ok = await fetch(`${baseUrl}/events?token=${TEST_TOKEN}`);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('content-type')).toContain('text/event-stream');
+    await ok.body?.cancel();
+    expect((await fetch(`${baseUrl}/events`)).status).toBe(401);
+  });
+
   it('does not send a wildcard CORS header', async () => {
     const res = await fetch(`${baseUrl}/health`, { headers: { Origin: 'https://evil.example' } });
     expect(res.headers.get('access-control-allow-origin')).not.toBe('*');
