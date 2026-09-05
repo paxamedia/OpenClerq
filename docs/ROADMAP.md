@@ -350,7 +350,7 @@ The phase that decides whether this is safe to leave running overnight.
 - [x] `packages/workspaces` — register local paths, clone remotes to a content-addressed cache, one `git worktree` per run
 - [x] Git publish path: branch, commit with a machine-identifiable trailer, push, PR via GitHub/GitLab API
 - [x] Secret injection as sandbox env only, with output redaction on the way back
-- [ ] `packages/providers` + `providers.yaml` — base URL, auth env var, model list, context window, price per million tokens
+- [x] `packages/providers` + `providers.yaml` — base URL, auth env var, model list, context window, price per million tokens
 - [ ] Per-call token and cost accounting into `run_steps`
 - [ ] **Chat console — raw mode.** Per-provider conversations, streaming, full request/response inspection. Needs only 0.4 auth plus the provider registry
 - [ ] **Chat console — comparison mode.** One message fanned out to N models, side by side with latency, tokens and cost

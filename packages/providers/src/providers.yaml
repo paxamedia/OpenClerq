@@ -1,0 +1,113 @@
+# Model provider registry.
+#
+# Edit this file, or drop a copy at ~/.clerq/providers.yaml to override it,
+# without rebuilding. Base URLs, model ids, context windows and prices change
+# every few weeks — that volatility is exactly why this is data and not code.
+#
+# adapter:
+#   anthropic       Anthropic Messages API
+#   openai-compat   Any /chat/completions endpoint
+#
+# prices are US dollars per million tokens. Verify them against the vendor's
+# current pricing page before relying on a cost estimate.
+
+version: 1
+
+providers:
+  - id: anthropic
+    label: Anthropic (Claude)
+    adapter: anthropic
+    baseUrl: https://api.anthropic.com/v1
+    authEnv: ANTHROPIC_API_KEY
+    models:
+      - id: claude-opus-4-5
+        context: 200000
+        inputPerM: 5.00
+        outputPerM: 25.00
+      - id: claude-sonnet-4-5
+        context: 200000
+        inputPerM: 3.00
+        outputPerM: 15.00
+      - id: claude-haiku-4-5
+        context: 200000
+        inputPerM: 1.00
+        outputPerM: 5.00
+
+  - id: openai
+    label: OpenAI
+    adapter: openai-compat
+    baseUrl: https://api.openai.com/v1
+    authEnv: OPENAI_API_KEY
+    models:
+      - id: gpt-5.2
+        context: 400000
+        inputPerM: 1.25
+        outputPerM: 10.00
+
+  - id: deepseek
+    label: DeepSeek
+    adapter: openai-compat
+    baseUrl: https://api.deepseek.com/v1
+    authEnv: DEEPSEEK_API_KEY
+    models:
+      - id: deepseek-chat
+        context: 128000
+        inputPerM: 0.27
+        outputPerM: 1.10
+      - id: deepseek-reasoner
+        context: 128000
+        inputPerM: 0.55
+        outputPerM: 2.19
+
+  - id: moonshot
+    label: Moonshot (Kimi)
+    adapter: openai-compat
+    # Mainland China endpoint is https://api.moonshot.cn/v1
+    baseUrl: https://api.moonshot.ai/v1
+    authEnv: MOONSHOT_API_KEY
+    models:
+      - id: kimi-k2-0905-preview
+        context: 256000
+        inputPerM: 0.60
+        outputPerM: 2.50
+
+  - id: zai
+    label: Z.ai (GLM)
+    adapter: openai-compat
+    baseUrl: https://api.z.ai/api/paas/v4
+    authEnv: ZAI_API_KEY
+    models:
+      - id: glm-4.6
+        context: 200000
+        inputPerM: 0.60
+        outputPerM: 2.20
+
+  - id: minimax
+    label: MiniMax
+    adapter: openai-compat
+    baseUrl: https://api.minimax.io/v1
+    authEnv: MINIMAX_API_KEY
+    models:
+      - id: MiniMax-M2
+        context: 200000
+        inputPerM: 0.30
+        outputPerM: 1.20
+
+  - id: ollama
+    label: Ollama (local)
+    adapter: openai-compat
+    baseUrl: http://localhost:11434/v1
+    # No key needed for a local model.
+    authEnv: null
+    models:
+      - id: llama3.2
+        context: 128000
+        inputPerM: 0
+        outputPerM: 0
+
+  - id: lmstudio
+    label: LM Studio (local)
+    adapter: openai-compat
+    baseUrl: http://localhost:1234/v1
+    authEnv: null
+    models: []
