@@ -6,7 +6,7 @@ This guide shows how to **install and run the OSS OpenClerq core** on your own m
 
 ## 1. Prerequisites
 
-- Node.js ≥ 22
+- Node.js ≥ 24
 - `pnpm`
 - Rust (for the desktop shell and calculation engine)
 - [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS

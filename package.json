@@ -14,7 +14,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm -r build",
-    "build:gateway": "pnpm --filter @clerq/gateway build",
+    "build:gateway": "pnpm --filter @clerq/gateway... build",
     "build:desktop": "pnpm --filter @clerq/desktop build",
     "build:core": "cd packages/calculation-core && cargo build --release",
     "dev": "pnpm --filter @clerq/gateway dev",
@@ -34,7 +34,7 @@
     "release": "pnpm run sync-version && pnpm run build:installers"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24.0.0"
   },
   "packageManager": "pnpm@10.0.0",
   "devDependencies": {

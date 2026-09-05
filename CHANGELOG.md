@@ -5,6 +5,20 @@ All notable changes to OpenClerq will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 0.5 Execution
+
+### Added
+
+- **`packages/store`** — SQLite-backed durable store with WAL, a migration runner, and the full roadmap §4.4 schema: sessions, messages, repos, automations, automation_targets, runs, run_steps, artifacts, approvals, memory, triggers and an append-only audit log. Runs are constrained to the documented state machine at the database level.
+- **Runtime-adaptive SQLite driver.** The gateway runs under Node (development) and Bun (the compiled desktop sidecar), so the driver selects `node:sqlite` or `bun:sqlite` at runtime through a computed import specifier. No native addon is involved — `better-sqlite3` cannot be embedded by `bun build --compile` and would break the desktop installer build.
+- **Legacy JSON importer.** `memory.json` and `triggers.json` are imported into SQLite on start, idempotently, and archived as `*.migrated` rather than deleted. A corrupt file is skipped and left in place instead of blocking startup.
+
+### Changed
+
+- **Node 24 is now the development requirement** (was 22). `node:sqlite` needs `--experimental-sqlite` on Node 22. End users are unaffected: the desktop app ships the Bun-compiled sidecar and needs no Node at all.
+- `build:gateway` builds the gateway's workspace dependencies first, so a pristine checkout can resolve `@clerq/store` types.
+- CI builds all packages topologically and runs every package's tests, not just the gateway's.
+
 ## [0.4.0] — Security foundation
 
 Closes the four S1 blockers from [docs/ROADMAP.md](docs/ROADMAP.md). **Breaking:** the gateway

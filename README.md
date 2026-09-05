@@ -65,7 +65,7 @@ To **build installers** from this repo: `pnpm build:installers` (requires [Bun](
 
 **Prerequisites**
 
-- Node.js ≥ 22 ([nodejs.org](https://nodejs.org) or Homebrew: `brew install node`)
+- Node.js ≥ 24 ([nodejs.org](https://nodejs.org) or Homebrew: `brew install node`)
 - pnpm: `npm install -g pnpm`
 - Rust: [rustup.rs](https://rustup.rs)
 - Xcode Command Line Tools (or full Xcode): `xcode-select --install`
@@ -98,7 +98,7 @@ pnpm build:core
 
 **Prerequisites**
 
-- Node.js ≥ 22 ([nodejs.org](https://nodejs.org))
+- Node.js ≥ 24 ([nodejs.org](https://nodejs.org))
 - pnpm: `npm install -g pnpm`
 - Rust: [rustup.rs](https://rustup.rs)
 - Visual Studio Build Tools with the “Desktop development with C++” workload
