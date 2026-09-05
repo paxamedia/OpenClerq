@@ -76,7 +76,7 @@ which is active.
 The gateway is the control plane. Endpoints:
 
 | Group       | Endpoints                                                                                         |
-| ----------- | ------------------------------------------------------------------------------------------------- | ------------------------------------ | ---------------------- | -------------------- |
+| ----------- | ------------------------------------------------------------------------------------------------- |
 | Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                           |
 | Models      | `GET /models`                                                                                     |
 | Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                            |
@@ -88,9 +88,9 @@ The gateway is the control plane. Endpoints:
 | Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                       |
 | Events      | `GET /events` (SSE)                                                                               |
 | Kill switch | `POST /kill`                                                                                      |
-| Config      | `GET                                                                                              | POST /capabilities`, `GET            | POST /reasoning`, `GET | POST /system-prompt` |
+| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`               |
 | Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                          |
-| Automation  | `GET                                                                                              | POST /triggers`, `POST /webhook/:id` |
+| Automation  | `GET \| POST /triggers`, `POST /webhook/:id`                                                      |
 | Modules     | mounted at `/api/modules/:moduleId/*`                                                             |
 
 Responsibilities: loading skills from disk and normalising metadata (`inputSchema`,
