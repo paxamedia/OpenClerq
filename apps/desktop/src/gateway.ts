@@ -16,7 +16,8 @@ import {
   type TaskResponse,
 } from '@clerq/gateway-client';
 
-const viteUrl = (import.meta as unknown as { env?: { VITE_GATEWAY_URL?: string } }).env?.VITE_GATEWAY_URL;
+const viteUrl = (import.meta as unknown as { env?: { VITE_GATEWAY_URL?: string } }).env
+  ?.VITE_GATEWAY_URL;
 if (viteUrl) setGatewayBaseUrl(viteUrl);
 
 /**

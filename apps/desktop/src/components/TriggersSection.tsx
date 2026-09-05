@@ -46,22 +46,22 @@ export function TriggersSection() {
     load();
   }, [load]);
 
-  const save = useCallback(
-    async (next: TriggersConfig) => {
-      setMessage(null);
-      try {
-        await gateway.saveTriggers(next);
-        setConfig(next);
-        setMessage('Triggers saved.');
-      } catch (e) {
-        setMessage(e instanceof Error ? e.message : 'Failed');
-      }
-    },
-    []
-  );
+  const save = useCallback(async (next: TriggersConfig) => {
+    setMessage(null);
+    try {
+      await gateway.saveTriggers(next);
+      setConfig(next);
+      setMessage('Triggers saved.');
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'Failed');
+    }
+  }, []);
 
   const addCron = () => {
-    const cron = [...(config.cron ?? []), { id: `cron-${Date.now()}`, schedule: '0 9 * * *', message: 'Check pending tasks' }];
+    const cron = [
+      ...(config.cron ?? []),
+      { id: `cron-${Date.now()}`, schedule: '0 9 * * *', message: 'Check pending tasks' },
+    ];
     save({ ...config, cron });
   };
 
@@ -77,7 +77,10 @@ export function TriggersSection() {
   };
 
   const addFile = () => {
-    const file = [...(config.file ?? []), { id: `file-${Date.now()}`, path: '', message: 'File changed' }];
+    const file = [
+      ...(config.file ?? []),
+      { id: `file-${Date.now()}`, path: '', message: 'File changed' },
+    ];
     save({ ...config, file });
   };
 
@@ -120,12 +123,21 @@ export function TriggersSection() {
       </p>
 
       <div>
-        <div className="row" style={{ alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        <div
+          className="row"
+          style={{ alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}
+        >
           <strong>Cron</strong>
-          <button type="button" className="btn btn-ghost" onClick={addCron}>+ Add</button>
+          <button type="button" className="btn btn-ghost" onClick={addCron}>
+            + Add
+          </button>
         </div>
         {(config.cron ?? []).map((t, i) => (
-          <div key={t.id} className="row" style={{ gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+          <div
+            key={t.id}
+            className="row"
+            style={{ gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}
+          >
             <input
               placeholder="0 9 * * *"
               value={t.schedule}
@@ -138,18 +150,29 @@ export function TriggersSection() {
               onChange={(e) => updateCron(i, { message: e.target.value })}
               style={{ flex: 1, minWidth: 160 }}
             />
-            <button type="button" className="btn btn-ghost" onClick={() => removeCron(i)}>✕</button>
+            <button type="button" className="btn btn-ghost" onClick={() => removeCron(i)}>
+              ✕
+            </button>
           </div>
         ))}
       </div>
 
       <div>
-        <div className="row" style={{ alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        <div
+          className="row"
+          style={{ alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}
+        >
           <strong>File watchers</strong>
-          <button type="button" className="btn btn-ghost" onClick={addFile}>+ Add</button>
+          <button type="button" className="btn btn-ghost" onClick={addFile}>
+            + Add
+          </button>
         </div>
         {(config.file ?? []).map((t, i) => (
-          <div key={t.id} className="row" style={{ gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+          <div
+            key={t.id}
+            className="row"
+            style={{ gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}
+          >
             <input
               placeholder="/path/to/watch"
               value={t.path}
@@ -162,21 +185,32 @@ export function TriggersSection() {
               onChange={(e) => updateFile(i, { message: e.target.value })}
               style={{ width: 160 }}
             />
-            <button type="button" className="btn btn-ghost" onClick={() => removeFile(i)}>✕</button>
+            <button type="button" className="btn btn-ghost" onClick={() => removeFile(i)}>
+              ✕
+            </button>
           </div>
         ))}
       </div>
 
       <div>
-        <div className="row" style={{ alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        <div
+          className="row"
+          style={{ alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}
+        >
           <strong>Webhooks</strong>
-          <button type="button" className="btn btn-ghost" onClick={addWebhook}>+ Add</button>
+          <button type="button" className="btn btn-ghost" onClick={addWebhook}>
+            + Add
+          </button>
         </div>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
-          POST {webhookUrl}/webhook/&lt;id&gt; — optional body: {"{ \"message\": \"...\" }"}
+          POST {webhookUrl}/webhook/&lt;id&gt; — optional body: {'{ "message": "..." }'}
         </p>
         {Object.entries(config.webhooks ?? {}).map(([id, v]) => (
-          <div key={id} className="row" style={{ gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+          <div
+            key={id}
+            className="row"
+            style={{ gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}
+          >
             <code style={{ fontSize: '0.85rem' }}>{id}</code>
             <input
               placeholder="Message"
@@ -184,7 +218,9 @@ export function TriggersSection() {
               onChange={(e) => updateWebhook(id, e.target.value)}
               style={{ flex: 1, minWidth: 160 }}
             />
-            <button type="button" className="btn btn-ghost" onClick={() => removeWebhook(id)}>✕</button>
+            <button type="button" className="btn btn-ghost" onClick={() => removeWebhook(id)}>
+              ✕
+            </button>
           </div>
         ))}
       </div>

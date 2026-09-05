@@ -16,7 +16,9 @@ export function parseCalculationIntent(message: string): CalcIntent | null {
   const trimmed = message.trim().toLowerCase();
 
   // "Calculate 25% on 100", "25% of 100", "add 25% to 100"
-  const percentOn = trimmed.match(/(?:calculate|add|apply)\s+(\d+(?:\.\d+)?)\s*%\s*(?:on|of|to)\s+(\d+(?:\.\d+)?)/i);
+  const percentOn = trimmed.match(
+    /(?:calculate|add|apply)\s+(\d+(?:\.\d+)?)\s*%\s*(?:on|of|to)\s+(\d+(?:\.\d+)?)/i
+  );
   if (percentOn) {
     const pct = parseFloat(percentOn[1]) / 100;
     const base = parseFloat(percentOn[2]);
@@ -31,7 +33,9 @@ export function parseCalculationIntent(message: string): CalcIntent | null {
   }
 
   // "What is 10 * 20", "Compute 100 + 200"
-  const mathPrefix = trimmed.match(/(?:what(?:'s| is)?|compute|calculate|eval)\s+([\d\s+*/().\-]+)/i);
+  const mathPrefix = trimmed.match(
+    /(?:what(?:'s| is)?|compute|calculate|eval)\s+([\d\s+*/().\-]+)/i
+  );
   if (mathPrefix) {
     const expr = mathPrefix[1].replace(/\s+/g, '');
     if (expr.length >= 2 && /^[\d+*/().\-]+$/.test(expr)) {
@@ -56,8 +60,9 @@ export function parseCalculationIntent(message: string): CalcIntent | null {
       const [k, v] = m.split(/\s*=\s*/);
       if (k && v) inputs[k.trim()] = parseFloat(v);
     }
-    const exprMatch = trimmed.match(/(?:calculate|eval|compute)\s+([a-zA-Z0-9_+\-*/().\s]+?)(?:\s+where|\s*$)/i)
-      || trimmed.match(/^([a-zA-Z0-9_+\-*/().\s]+?)(?:\s+where|$)/);
+    const exprMatch =
+      trimmed.match(/(?:calculate|eval|compute)\s+([a-zA-Z0-9_+\-*/().\s]+?)(?:\s+where|\s*$)/i) ||
+      trimmed.match(/^([a-zA-Z0-9_+\-*/().\s]+?)(?:\s+where|$)/);
     if (exprMatch && Object.keys(inputs).length > 0) {
       const expression = exprMatch[1].replace(/\s+/g, '');
       if (expression.length >= 1) return { expression, inputs };

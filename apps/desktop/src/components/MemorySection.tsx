@@ -9,7 +9,9 @@ function ResultBox({ children, error }: { children: React.ReactNode; error?: boo
 }
 
 export function MemorySection({ connectionOk }: { connectionOk: boolean }) {
-  const [entries, setEntries] = useState<Array<{ key: string; value: unknown; createdAt: string }>>([]);
+  const [entries, setEntries] = useState<Array<{ key: string; value: unknown; createdAt: string }>>(
+    []
+  );
   const [error, setError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState('');
   const [newValue, setNewValue] = useState('{}');
@@ -77,7 +79,9 @@ export function MemorySection({ connectionOk }: { connectionOk: boolean }) {
         <button type="button" className="btn" onClick={load} disabled={!connectionOk}>
           Refresh
         </button>
-        {message && <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{message}</span>}
+        {message && (
+          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{message}</span>
+        )}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         <label style={{ fontSize: '0.9rem' }}>
@@ -121,7 +125,14 @@ export function MemorySection({ connectionOk }: { connectionOk: boolean }) {
               >
                 Delete
               </button>
-              <pre style={{ margin: '0.25rem 0 0 0', fontSize: '0.8rem', maxHeight: 60, overflow: 'auto' }}>
+              <pre
+                style={{
+                  margin: '0.25rem 0 0 0',
+                  fontSize: '0.8rem',
+                  maxHeight: 60,
+                  overflow: 'auto',
+                }}
+              >
                 {typeof e.value === 'string' ? e.value : JSON.stringify(e.value)}
               </pre>
             </li>

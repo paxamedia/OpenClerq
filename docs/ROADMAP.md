@@ -11,10 +11,10 @@ documents and scratch specifications.
 
 Two independent reviews of this repository were merged:
 
-| Source | Contributed |
-|---|---|
-| **Claude (Opus 5)** — product/orchestration review | Positioning against Cursor's automations, the provider/driver split, repo + git workspaces, sandbox isolation, verification gates, automations-as-code, distribution model, phase sizing |
-| **GPT-5.6 Luna (OpenAI)** — OpenClaw comparison, `2026-09-04` | Agent runtime loop, durable sessions, tool policy engine, event bus, sub-agents, SSRF hardening, context management, approval risk tiers, skill permission manifests, CI gates |
+| Source                                                        | Contributed                                                                                                                                                                              |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude (Opus 5)** — product/orchestration review            | Positioning against Cursor's automations, the provider/driver split, repo + git workspaces, sandbox isolation, verification gates, automations-as-code, distribution model, phase sizing |
+| **GPT-5.6 Luna (OpenAI)** — OpenClaw comparison, `2026-09-04` | Agent runtime loop, durable sessions, tool policy engine, event bus, sub-agents, SSRF hardening, context management, approval risk tiers, skill permission manifests, CI gates           |
 
 Every finding below was re-verified against the source tree before inclusion. Where the two
 reviews disagreed, §3 records the disagreement and the resolution rather than silently
@@ -26,7 +26,7 @@ picking one.
 
 ### 1.1 Product thesis
 
-Cursor's automations run *Cursor's* agent, on *Cursor's* machines, against repos Cursor can
+Cursor's automations run _Cursor's_ agent, on _Cursor's_ machines, against repos Cursor can
 reach. That is a closed loop, and the opening it leaves is the obvious one:
 
 > **OpenClerq is the conductor, not another agent.** It schedules and supervises whichever
@@ -37,7 +37,7 @@ We are not trying to write a better agent than Anthropic or OpenAI; we would los
 compete on **scheduling, isolation, routing, verification, cost control, and auditability** —
 the layer every vendor treats as an afterthought because it does not sell tokens.
 
-Because drivers run under the user's *own* subscriptions, OpenClerq needs no billing
+Because drivers run under the user's _own_ subscriptions, OpenClerq needs no billing
 relationship with any model vendor and takes no inference margin. That is the structural
 reason it can be free and open source while a hosted equivalent cannot.
 
@@ -60,9 +60,9 @@ message
   → durable transcript, usage, and audit record
 ```
 
-These two theses are complementary, not competing. The runtime is *how* a run executes; the
-orchestration layer is *what* causes runs to happen, *where* they execute, and *whether their
-output is allowed to ship*.
+These two theses are complementary, not competing. The runtime is _how_ a run executes; the
+orchestration layer is _what_ causes runs to happen, _where_ they execute, and _whether their
+output is allowed to ship_.
 
 ### 1.3 The two domains
 
@@ -81,45 +81,45 @@ shell execution and a server install story, each S1 becomes remote code executio
 
 ### S1 — Blockers
 
-| # | Finding | Location |
-|---|---|---|
-| 1 | **Gateway binds every interface.** `app.listen(port, cb)` takes no host argument, so it binds `0.0.0.0` — while the log line it prints claims `http://127.0.0.1`. Reachable from any shared network. | `packages/gateway/src/gateway.ts:532` |
-| 2 | **There is no authentication.** The license middleware waves through every request when `CLERQ_DEV=1`, which is the setup the README instructs everyone to use. No identity, no token, no session. With #1, an open gateway. | `packages/gateway/src/middleware/license.ts` |
-| 3 | **Path containment is a string prefix test.** `resolved.startsWith(root)` lets `/srv/repo-secrets` pass a check scoped to `/srv/repo`. No `realpath`, so symlinks escape too. | `packages/gateway/src/tools.ts:44` |
-| 4 | **Licensing is being used as authentication.** These answer different questions — *is this install entitled to feature X* versus *is this caller allowed to control this gateway*. Conflating them means the entitlement check is the only thing standing between the network and the tool registry. | `packages/gateway/src/middleware/license.ts` |
+| #   | Finding                                                                                                                                                                                                                                                                                              | Location                                     |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| 1   | **Gateway binds every interface.** `app.listen(port, cb)` takes no host argument, so it binds `0.0.0.0` — while the log line it prints claims `http://127.0.0.1`. Reachable from any shared network.                                                                                                 | `packages/gateway/src/gateway.ts:532`        |
+| 2   | **There is no authentication.** The license middleware waves through every request when `CLERQ_DEV=1`, which is the setup the README instructs everyone to use. No identity, no token, no session. With #1, an open gateway.                                                                         | `packages/gateway/src/middleware/license.ts` |
+| 3   | **Path containment is a string prefix test.** `resolved.startsWith(root)` lets `/srv/repo-secrets` pass a check scoped to `/srv/repo`. No `realpath`, so symlinks escape too.                                                                                                                        | `packages/gateway/src/tools.ts:44`           |
+| 4   | **Licensing is being used as authentication.** These answer different questions — _is this install entitled to feature X_ versus _is this caller allowed to control this gateway_. Conflating them means the entitlement check is the only thing standing between the network and the tool registry. | `packages/gateway/src/middleware/license.ts` |
 
 ### S2 — Must fix before 1.0
 
-| # | Finding | Location |
-|---|---|---|
-| 5 | **Vault master key lives in an environment variable.** `CLERQ_VAULT_KEY` is readable by any process that can see the env, lands in shell history and CI logs, has no KDF and no rotation path. The AES-256-GCM construction is sound; the key protection is not. | `packages/gateway/src/secrets-vault.ts:32` |
-| 6 | **Nothing that runs is remembered.** A trigger fires, `runTriggeredTask` logs 50 characters, the result is discarded. No run record, no output, no failure history. The largest functional gap in the repo. | `packages/gateway/src/triggers.ts:65` |
-| 7 | **`http.request` has no SSRF defences.** Hostname allowlist only. Redirects are followed unvalidated, loopback and link-local ranges are reachable, cloud metadata endpoints (`169.254.169.254`) are not blocked, and there is no timeout, no response size cap, and no method restriction. | `packages/gateway/src/tools.ts:56` |
-| 8 | **No context management.** Tool output flows into the prompt unbounded. An `fs.read` of a large file or an HTTP response of arbitrary size can blow the context window or the bill. | `packages/gateway/src/agent/explain.ts` |
-| 9 | **Config is JSON files with last-write-wins.** `memory.json`, `triggers.json`, `capabilities.json` are read-modify-write with no locking. Concurrent runs silently clobber each other. | `memory-layer.ts`, `triggers.ts`, `capabilities.ts` |
-| 10 | **CORS is `*` in dev mode** — so any web page the user visits can drive their local gateway. | `packages/gateway/src/gateway.ts:37-51` |
-| 11 | **Tauri CSP is `null`** — content security policy is disabled outright in the desktop shell. | `apps/desktop/src-tauri/tauri.conf.json` |
-| 12 | **Updater ships a placeholder public key.** `pubkey` is the literal string `PLACEHOLDER_REPLACE_WITH_TAURI_SIGNER_PUBKEY` while `endpoints` points at a live GitHub Releases URL. Tauri verifies signatures against this key, so it fails closed — the feature is simply broken rather than exploitable — but it is a release blocker and the failure mode is silent to users. | `apps/desktop/src-tauri/tauri.conf.json` |
-| 13 | **CI runs no tests.** `build.yml` builds installers on macOS and Windows. It does not typecheck, lint, run the Vitest suites, run `cargo test`, audit dependencies, or scan for secrets — despite all of those existing as package scripts. | `.github/workflows/build.yml` |
+| #   | Finding                                                                                                                                                                                                                                                                                                                                                                        | Location                                            |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
+| 5   | **Vault master key lives in an environment variable.** `CLERQ_VAULT_KEY` is readable by any process that can see the env, lands in shell history and CI logs, has no KDF and no rotation path. The AES-256-GCM construction is sound; the key protection is not.                                                                                                               | `packages/gateway/src/secrets-vault.ts:32`          |
+| 6   | **Nothing that runs is remembered.** A trigger fires, `runTriggeredTask` logs 50 characters, the result is discarded. No run record, no output, no failure history. The largest functional gap in the repo.                                                                                                                                                                    | `packages/gateway/src/triggers.ts:65`               |
+| 7   | **`http.request` has no SSRF defences.** Hostname allowlist only. Redirects are followed unvalidated, loopback and link-local ranges are reachable, cloud metadata endpoints (`169.254.169.254`) are not blocked, and there is no timeout, no response size cap, and no method restriction.                                                                                    | `packages/gateway/src/tools.ts:56`                  |
+| 8   | **No context management.** Tool output flows into the prompt unbounded. An `fs.read` of a large file or an HTTP response of arbitrary size can blow the context window or the bill.                                                                                                                                                                                            | `packages/gateway/src/agent/explain.ts`             |
+| 9   | **Config is JSON files with last-write-wins.** `memory.json`, `triggers.json`, `capabilities.json` are read-modify-write with no locking. Concurrent runs silently clobber each other.                                                                                                                                                                                         | `memory-layer.ts`, `triggers.ts`, `capabilities.ts` |
+| 10  | **CORS is `*` in dev mode** — so any web page the user visits can drive their local gateway.                                                                                                                                                                                                                                                                                   | `packages/gateway/src/gateway.ts:37-51`             |
+| 11  | **Tauri CSP is `null`** — content security policy is disabled outright in the desktop shell.                                                                                                                                                                                                                                                                                   | `apps/desktop/src-tauri/tauri.conf.json`            |
+| 12  | **Updater ships a placeholder public key.** `pubkey` is the literal string `PLACEHOLDER_REPLACE_WITH_TAURI_SIGNER_PUBKEY` while `endpoints` points at a live GitHub Releases URL. Tauri verifies signatures against this key, so it fails closed — the feature is simply broken rather than exploitable — but it is a release blocker and the failure mode is silent to users. | `apps/desktop/src-tauri/tauri.conf.json`            |
+| 13  | **CI runs no tests.** `build.yml` builds installers on macOS and Windows. It does not typecheck, lint, run the Vitest suites, run `cargo test`, audit dependencies, or scan for secrets — despite all of those existing as package scripts.                                                                                                                                    | `.github/workflows/build.yml`                       |
 
 ### S3 — Cleanups
 
-| # | Finding | Location |
-|---|---|---|
-| 14 | **`fsAllowWrite` is a dead flag.** Declared, parsed, validated, stored, passed into `ToolConfig` — and read by no tool. The UI implies a write capability that does not exist. | `capabilities.ts:14` → `tools.ts:21` |
-| 15 | **Model list is hardcoded and stale.** `getAvailableModels()` returns Claude 3.x IDs from 2024. Should be a registry file refreshed independently of releases. | `agent/llm-provider.ts:118` |
-| 16 | **Version drift across four places.** Root `package.json`, gateway, desktop and `tauri.conf.json` all say `0.1.0`; `/health` hardcodes `0.1.0` in two spots; git tags are at `v0.3`. `sync-version.js` does not cover the health endpoint. | repo-wide |
-| 17 | **`App.tsx` is 1,151 lines with no router.** Every panel is a sibling in one component. A run list, run detail and diff viewer will not fit this shape. | `apps/desktop/src/App.tsx` |
-| 18 | **No Linux target in the release matrix** — though `capabilities/desktop.json` already lists Linux, and servers are the deployment target this roadmap needs. | `.github/workflows/release.yml` |
+| #   | Finding                                                                                                                                                                                                                                    | Location                             |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
+| 14  | **`fsAllowWrite` is a dead flag.** Declared, parsed, validated, stored, passed into `ToolConfig` — and read by no tool. The UI implies a write capability that does not exist.                                                             | `capabilities.ts:14` → `tools.ts:21` |
+| 15  | **Model list is hardcoded and stale.** `getAvailableModels()` returns Claude 3.x IDs from 2024. Should be a registry file refreshed independently of releases.                                                                             | `agent/llm-provider.ts:118`          |
+| 16  | **Version drift across four places.** Root `package.json`, gateway, desktop and `tauri.conf.json` all say `0.1.0`; `/health` hardcodes `0.1.0` in two spots; git tags are at `v0.3`. `sync-version.js` does not cover the health endpoint. | repo-wide                            |
+| 17  | **`App.tsx` is 1,151 lines with no router.** Every panel is a sibling in one component. A run list, run detail and diff viewer will not fit this shape.                                                                                    | `apps/desktop/src/App.tsx`           |
+| 18  | **No Linux target in the release matrix** — though `capabilities/desktop.json` already lists Linux, and servers are the deployment target this roadmap needs.                                                                              | `.github/workflows/release.yml`      |
 
 ### Documentation accuracy
 
 Three docs currently describe guarantees the code does not provide, which is worse than no
 documentation:
 
-- `TOOLS.md` claims *"Any attempt to escape the root (e.g. `../../..`) is rejected"* — finding #3 contradicts this.
+- `TOOLS.md` claims _"Any attempt to escape the root (e.g. `../../..`) is rejected"_ — finding #3 contradicts this.
 - `SAFETY_CHECKLIST.md` presents the license check as a security control — finding #4.
-- `ARCHITECTURE.md` describes the gateway as running an *"agent loop"* — it runs a single LLM call.
+- `ARCHITECTURE.md` describes the gateway as running an _"agent loop"_ — it runs a single LLM call.
 
 All three are corrected as part of this roadmap (§7).
 
@@ -138,7 +138,7 @@ an `exec` capability in the `coding` and `dangerous` profiles with no containmen
 whatsoever.
 
 **Policy and sandbox are different layers and you need both.** Policy governs what the agent
-is *allowed to ask for*. The sandbox governs what the spawned process can *physically do*.
+is _allowed to ask for_. The sandbox governs what the spawned process can _physically do_.
 An allowlist that permits `exec` and then hands the command to `child_process.spawn` on the
 host has authorised arbitrary code execution with the gateway's full privileges — the
 allowlist is a comment at that point.
@@ -186,7 +186,7 @@ Kimi, Codex, MiniMax, Cursor, GLM and DeepSeek. Two corrections:
 
 ### 3.6 Scope: channels and browser
 
-Telegram/Discord/WhatsApp/Signal (spec §20) and browser automation (§18) are *OpenClaw's*
+Telegram/Discord/WhatsApp/Signal (spec §20) and browser automation (§18) are _OpenClaw's_
 identity, not ours. Multi-channel is deferred indefinitely; browser automation stays an
 optional module, relevant to the clerical domain and not to the repository one. Cloning a
 competitor's feature list is not a strategy.
@@ -255,7 +255,7 @@ One session has many runs. One run has many steps.
 
 ### 4.3 Run state machine
 
-Every transition is written to SQLite *before* it takes effect, which is what makes runs
+Every transition is written to SQLite _before_ it takes effect, which is what makes runs
 resumable after a crash and auditable after the fact.
 
 ```
@@ -272,21 +272,21 @@ mid-`executing` is reaped by lease expiry — no zombie holding a worktree forev
 
 ### 4.4 Schema
 
-| Table | Holds |
-|---|---|
-| `sessions` | id, agent_id, title, status, model, created_at, updated_at, metadata |
-| `messages` | session_id, role, content, tool_name, tool_call_id, token_estimate |
-| `repos` | id, name, kind (`local`/`github`/`gitlab`), url, default_branch, local_path, credential_ref, setup_commands |
-| `automations` | id, name, spec (YAML), schedule, enabled, driver, model_policy, sandbox_profile, budget, next_run_at |
-| `automation_targets` | automation_id × repo_id — the join that makes fleet runs possible |
-| `runs` | id, session_id, automation_id, repo_id, status, trigger, lease_until, branch, pr_url, cost_usd, tokens_in/out, exit_reason |
-| `run_steps` | run_id, seq, kind (`llm`/`shell`/`fs`/`git`/`gate`), input, output, duration_ms, tokens, cost |
-| `tool_calls` | run_id, name, input, output, status, duration_ms, approval_state |
-| `artifacts` | run_id, kind (`diff`/`log`/`file`/`report`), path or blob, sha256 |
-| `approvals` | run_id, step_id, requested_at, decided_by, decision, reason |
-| `memory` | id, type, key, value, source_session, confidence, created_at, expires_at (+ FTS index) |
-| `users`, `sessions_auth`, `tokens` | GitHub identity, session cookies, scoped API tokens |
-| `audit_log` | append-only: who changed what, who approved what, when |
+| Table                              | Holds                                                                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `sessions`                         | id, agent_id, title, status, model, created_at, updated_at, metadata                                                       |
+| `messages`                         | session_id, role, content, tool_name, tool_call_id, token_estimate                                                         |
+| `repos`                            | id, name, kind (`local`/`github`/`gitlab`), url, default_branch, local_path, credential_ref, setup_commands                |
+| `automations`                      | id, name, spec (YAML), schedule, enabled, driver, model_policy, sandbox_profile, budget, next_run_at                       |
+| `automation_targets`               | automation_id × repo_id — the join that makes fleet runs possible                                                          |
+| `runs`                             | id, session_id, automation_id, repo_id, status, trigger, lease_until, branch, pr_url, cost_usd, tokens_in/out, exit_reason |
+| `run_steps`                        | run_id, seq, kind (`llm`/`shell`/`fs`/`git`/`gate`), input, output, duration_ms, tokens, cost                              |
+| `tool_calls`                       | run_id, name, input, output, status, duration_ms, approval_state                                                           |
+| `artifacts`                        | run_id, kind (`diff`/`log`/`file`/`report`), path or blob, sha256                                                          |
+| `approvals`                        | run_id, step_id, requested_at, decided_by, decision, reason                                                                |
+| `memory`                           | id, type, key, value, source_session, confidence, created_at, expires_at (+ FTS index)                                     |
+| `users`, `sessions_auth`, `tokens` | GitHub identity, session cookies, scoped API tokens                                                                        |
+| `audit_log`                        | append-only: who changed what, who approved what, when                                                                     |
 
 SQLite with WAL covers a single-node install well past any realistic load here and keeps the
 download-and-run story intact. Keep queries portable in case a hosted multi-tenant version
@@ -319,7 +319,7 @@ what makes autonomous behaviour debuggable.
 Existing tags are at `v0.3`, so numbering continues from there. Sizing assumes one focused
 engineer.
 
-### 0.4 — Foundation *(~2.5 weeks)* — **in progress**
+### 0.4 — Foundation _(~2.5 weeks)_ — **in progress**
 
 Nothing else merges before this lands. Closes every S1 finding and lays the storage layer
 everything downstream writes into.
@@ -329,16 +329,16 @@ everything downstream writes into.
 - [x] Remove the production `CLERQ_DEV` bypass; generate a token on first run and hand it to the desktop app
 - [x] Canonical path validation — `realpath` + `path.relative`, explicit symlink policy, size caps
 - [x] SSRF hardening on `http.request` — scheme allowlist, manual redirect validation, block loopback/link-local/private ranges and metadata endpoints, timeouts, response size cap, method allowlist
-- [ ] `packages/store` — SQLite + WAL, migration runner, schema from §4.4 *(moved to 0.5)*
-- [ ] Migrate `memory.json` / `triggers.json` / `capabilities.json` into SQLite with a one-time importer *(moved to 0.5)*
+- [ ] `packages/store` — SQLite + WAL, migration runner, schema from §4.4 _(moved to 0.5)_
+- [ ] Migrate `memory.json` / `triggers.json` / `capabilities.json` into SQLite with a one-time importer _(moved to 0.5)_
 - [x] Lock CORS to the desktop origin; drop the `*` dev path
-- [ ] Secrets master key → OS keychain (Keychain / DPAPI), age-encrypted file for headless *(moved to 0.5)*
-- [ ] Typed event bus + append-only audit log *(moved to 0.5)*
+- [ ] Secrets master key → OS keychain (Keychain / DPAPI), age-encrypted file for headless _(moved to 0.5)_
+- [ ] Typed event bus + append-only audit log _(moved to 0.5)_
 - [x] Remove the dead `fsAllowWrite` flag or implement it
 - [x] Fix version drift; extend `sync-version.js` to cover `/health`
 - [x] CI gates: typecheck, lint, Vitest, `cargo test`, `pnpm audit`, `cargo audit`, secret scan — all required before build
 
-### 0.5 — Execution *(~3 weeks)*
+### 0.5 — Execution _(~3 weeks)_
 
 The phase that decides whether this is safe to leave running overnight.
 
@@ -355,7 +355,7 @@ The phase that decides whether this is safe to leave running overnight.
 - [ ] **Chat console — raw mode.** Per-provider conversations, streaming, full request/response inspection. Needs only 0.4 auth plus the provider registry
 - [ ] **Chat console — comparison mode.** One message fanned out to N models, side by side with latency, tokens and cost
 
-### 0.6 — Agents and automations *(~3 weeks)*
+### 0.6 — Agents and automations _(~3 weeks)_
 
 - [ ] Driver interface + process supervision (stream parsing, cancellation, orphan reaping)
 - [ ] `claude-code`, `codex`, `cursor-agent` drivers; each detects its CLI and says so plainly if absent
@@ -375,7 +375,7 @@ The phase that decides whether this is safe to leave running overnight.
 - [ ] **Conversational automation authoring.** Draft → preview → dry run → save disabled, with `approvals.push` forced to manual on first run
 - [ ] Console registered through the existing module slot contract rather than extending `App.tsx`
 
-### 1.0 — Platform *(~3 weeks + hardening)*
+### 1.0 — Platform _(~3 weeks + hardening)_
 
 - [ ] GitHub sign-in via **GitHub App** (not OAuth App) — short-lived installation tokens, per-repo scope, revocable; device flow for CLI and headless
 - [ ] `apps/server` — headless daemon, systemd unit, Docker image, reverse-proxy guidance
@@ -409,8 +409,8 @@ name: nightly-dependency-triage
 description: Audit deps, patch safe bumps, open a draft PR
 
 on:
-  schedule: "0 3 * * 1-5"        # weekday 03:00, host timezone
-  catch_up: true                 # run once on wake if the slot was missed
+  schedule: '0 3 * * 1-5' # weekday 03:00, host timezone
+  catch_up: true # run once on wake if the slot was missed
   events: [pr_opened, issue_labeled:security]
 
 targets:
@@ -418,11 +418,11 @@ targets:
   max_parallel: 4
 
 agent:
-  driver: claude-code            # builtin | claude-code | codex | cursor-agent
+  driver: claude-code # builtin | claude-code | codex | cursor-agent
   model:
     primary: claude-opus-5
     fallback: [deepseek-reasoner, glm-4.6]
-    strategy: cost_aware         # quality_first | cost_aware | race | consensus
+    strategy: cost_aware # quality_first | cost_aware | race | consensus
 
 prompt: |
   Review dependency updates available in this repo.
@@ -430,19 +430,19 @@ prompt: |
   Update the lockfile. Do not touch source files.
 
 sandbox:
-  profile: container             # native | seatbelt | container
+  profile: container # native | seatbelt | container
   network: [registry.npmjs.org, api.github.com]
   filesystem: repo_only
   timeout: 20m
 
-gates:                           # all must pass or the run does not publish
+gates: # all must pass or the run does not publish
   - run: pnpm install --frozen-lockfile
   - run: pnpm test
   - assert: diff.files_changed <= 5
   - assert: diff.touches_none_of [src/**, .github/**]
 
 publish:
-  branch: "auto/{{automation}}/{{date}}"
+  branch: 'auto/{{automation}}/{{date}}'
   pull_request: draft
   on_no_changes: skip
   notify: [desktop]
@@ -468,16 +468,16 @@ manage it.
 
 ### Layer 1 — Providers (raw model APIs)
 
-| Provider | Adapter | Notes |
-|---|---|---|
-| Anthropic (Claude) | `native` | Already wired via `@anthropic-ai/sdk`; refresh model IDs |
-| OpenAI (incl. Codex models) | `openai-compat` | Existing generic adapter once a base URL is set |
-| DeepSeek | `openai-compat` | Registry row; chat + reasoner variants |
-| Moonshot (Kimi) | `openai-compat` | Registry row; separate CN and international hosts |
-| Z.ai / Zhipu (GLM) | `openai-compat` | Registry row; also exposes an Anthropic-shaped endpoint |
-| MiniMax | `openai-compat` | Registry row; also ships an Anthropic-shaped endpoint |
-| Local (Ollama, LM Studio, vLLM) | `openai-compat` | Already working |
-| **Cursor** | — | **No public model API.** Layer 2 only |
+| Provider                        | Adapter         | Notes                                                    |
+| ------------------------------- | --------------- | -------------------------------------------------------- |
+| Anthropic (Claude)              | `native`        | Already wired via `@anthropic-ai/sdk`; refresh model IDs |
+| OpenAI (incl. Codex models)     | `openai-compat` | Existing generic adapter once a base URL is set          |
+| DeepSeek                        | `openai-compat` | Registry row; chat + reasoner variants                   |
+| Moonshot (Kimi)                 | `openai-compat` | Registry row; separate CN and international hosts        |
+| Z.ai / Zhipu (GLM)              | `openai-compat` | Registry row; also exposes an Anthropic-shaped endpoint  |
+| MiniMax                         | `openai-compat` | Registry row; also ships an Anthropic-shaped endpoint    |
+| Local (Ollama, LM Studio, vLLM) | `openai-compat` | Already working                                          |
+| **Cursor**                      | —               | **No public model API.** Layer 2 only                    |
 
 > Base URLs, model IDs, context limits and prices change every few weeks. Ship them as
 > `providers.yaml` that users can edit and that updates independently of releases. Verify
@@ -486,13 +486,13 @@ manage it.
 
 ### Layer 2 — Drivers (agent runtimes that edit files and run commands)
 
-| Driver | Invocation | Model source | Effort |
-|---|---|---|---|
-| `claude-code` | `claude -p`, streaming JSON | User's Claude subscription or key | Low |
-| `codex` | `codex exec` non-interactive | User's OpenAI account | Low |
-| `cursor-agent` | `cursor-agent -p` headless | User's Cursor subscription | Low |
-| `builtin` | In-process tool loop | Any layer-1 provider | High |
-| `aider`, `opencode`, `goose` | CLI | Any | Community |
+| Driver                       | Invocation                   | Model source                      | Effort    |
+| ---------------------------- | ---------------------------- | --------------------------------- | --------- |
+| `claude-code`                | `claude -p`, streaming JSON  | User's Claude subscription or key | Low       |
+| `codex`                      | `codex exec` non-interactive | User's OpenAI account             | Low       |
+| `cursor-agent`               | `cursor-agent -p` headless   | User's Cursor subscription        | Low       |
+| `builtin`                    | In-process tool loop         | Any layer-1 provider              | High      |
+| `aider`, `opencode`, `goose` | CLI                          | Any                               | Community |
 
 A driver is a small interface — `prepare(workspace)`, `run(prompt, signal) → AsyncIterable<Step>`,
 `collect() → Diff`. All drivers normalise to the same `Step` stream so the run detail view is
@@ -521,7 +521,7 @@ promoted into the transcript as the canonical turn; the others are retained as a
 that message.
 
 This is the interactive form of the `race` and `consensus` routing strategies from §5 — the
-same machinery, a different surface. Which makes the console the place where you *develop* a
+same machinery, a different surface. Which makes the console the place where you _develop_ a
 routing policy before committing it: try the cheap model against the expensive one on real
 prompts, see where it actually falls down, then write the result into
 `agent.model.strategy` in an automation spec.
@@ -530,10 +530,10 @@ prompts, see where it actually falls down, then write the result into
 
 Two pipeline modes, switchable per conversation and per message.
 
-| Mode | What OpenClerq adds |
-|---|---|
-| **Raw** | Nothing. Your message goes to the provider as-is. No system prompt, no skill selection, no memory injection, no tool offer. The request body and the complete response — reasoning blocks, token counts, finish reason, raw JSON — are all inspectable. |
-| **Managed** | The full pipeline: system prompt, skill routing, memory retrieval, policy-filtered tool set, approvals, secret redaction, output truncation, durable transcript. |
+| Mode        | What OpenClerq adds                                                                                                                                                                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Raw**     | Nothing. Your message goes to the provider as-is. No system prompt, no skill selection, no memory injection, no tool offer. The request body and the complete response — reasoning blocks, token counts, finish reason, raw JSON — are all inspectable. |
+| **Managed** | The full pipeline: system prompt, skill routing, memory retrieval, policy-filtered tool set, approvals, secret redaction, output truncation, durable transcript.                                                                                        |
 
 To be unambiguous about what "raw" means: it removes **OpenClerq's** additions, not the model
 vendor's. Both modes are the same HTTPS call to the same endpoint under the user's own key, so
@@ -588,7 +588,7 @@ The desktop already has the seam. `apps/desktop/src/moduleSlots.ts` defines
 What that buys:
 
 - **Removable.** Disable the module and the gateway, scheduler and automations keep running unchanged — no code edits, no rebuild.
-- **Replaceable.** The three panels — raw, managed, compare — are panel *types* over one transport, declared in the manifest. Anyone who wants a different chat UI ships their own module against the same API and drops ours.
+- **Replaceable.** The three panels — raw, managed, compare — are panel _types_ over one transport, declared in the manifest. Anyone who wants a different chat UI ships their own module against the same API and drops ours.
 - **Headless-safe.** A server install can omit it entirely; the automation engine has no dependency on it.
 - **Reusable transport.** `POST /sessions/:id/send` with a streaming response is the same endpoint `clerq chat` uses from the CLI. The UI is one client of that endpoint, not the definition of it.
 
@@ -599,20 +599,20 @@ What that buys:
 The full plan is roughly three months. Do not build it in order and hope. Cut one vertical
 slice, use it daily for a week, and let what annoys you set the order of everything after.
 
-| In | Deliberately out |
-|---|---|
-| Release 0.4 in full — non-negotiable | Remote repo cloning |
-| Local repos, registered by path | Every driver except one |
-| One driver: `claude-code` | Containers and seatbelt |
-| Cron schedule + manual "run now" | GitHub sign-in, server mode, CLI |
-| `native` sandbox with an explicit warning | Routing, budgets, approvals, sub-agents |
-| Git worktree → branch → commit → push → PR | `diff.*` assertions |
-| Shell gates (`run:`) only | Fleet runs |
-| Runs persisted, streamed, viewable | The `builtin` driver |
-| | The chat console — both modes |
+| In                                         | Deliberately out                        |
+| ------------------------------------------ | --------------------------------------- |
+| Release 0.4 in full — non-negotiable       | Remote repo cloning                     |
+| Local repos, registered by path            | Every driver except one                 |
+| One driver: `claude-code`                  | Containers and seatbelt                 |
+| Cron schedule + manual "run now"           | GitHub sign-in, server mode, CLI        |
+| `native` sandbox with an explicit warning  | Routing, budgets, approvals, sub-agents |
+| Git worktree → branch → commit → push → PR | `diff.*` assertions                     |
+| Shell gates (`run:`) only                  | Fleet runs                              |
+| Runs persisted, streamed, viewable         | The `builtin` driver                    |
+|                                            | The chat console — both modes           |
 
-This answers the only question that matters early: *is a scheduled agent that opens gated PRs
-actually useful, or does it just make noise?* The console is out despite being cheap, because it
+This answers the only question that matters early: _is a scheduled agent that opens gated PRs
+actually useful, or does it just make noise?_ The console is out despite being cheap, because it
 answers a different question and would absorb the fortnight if allowed to. Everything in 0.5 and beyond is amplification —
 and if the slice is not useful, amplifying it is the wrong move.
 
@@ -656,11 +656,11 @@ The nine binding rules and the threat model live in [SECURITY.md](SECURITY.md).
 These change what gets built and should be settled before release 0.4 starts.
 
 1. **Does the clerical identity survive?** The repo promises local administrative automation; this roadmap adds repository automation. Coherent — same engine, two domains — but the README, product name and positioning need a deliberate rewrite. If the clerical framing is being retired instead, say so now: it changes the Rust engine's fate and about a third of the docs.
-2. **Is the server multi-user, or single-user with remote access?** The biggest scope fork here. Single-user is roughly a week. Multi-user adds RBAC, per-user credentials, repo permissions and tenancy through every table. *Recommendation: single-user now, schema designed so `user_id` can be threaded through later.*
+2. **Is the server multi-user, or single-user with remote access?** The biggest scope fork here. Single-user is roughly a week. Multi-user adds RBAC, per-user credentials, repo permissions and tenancy through every table. _Recommendation: single-user now, schema designed so `user_id` can be threaded through later._
 3. **Hosted runners eventually?** If yes, the sandbox interface needs a remote implementation designed in from the start — cheap now, expensive to retrofit. This also decides whether there is a commercial layer above the open core.
 4. **Licensing posture.** Currently MIT. If a hosted version is ever the business, MIT lets any cloud vendor host this verbatim. Decide before contributors arrive — relicensing afterwards requires their consent and is usually impossible in practice.
-5. **Are raw-mode transcripts persisted?** Managed conversations must be — they carry tool calls, approvals and spend, and rule 9 requires an audit trail. Raw mode is arguably a scratchpad, and users may reasonably expect it not to be recorded. *Recommendation: persist by default with a visible per-conversation "ephemeral" toggle, and never persist the raw request body of a conversation marked ephemeral.* Decide before the console ships in 0.5 — retrofitting deletion semantics onto an append-only store is painful.
-6. **What happens to `packages/calculation-core`?** *Recommendation: keep it, and generalise its pattern rather than its content.* Deterministic local execution with a signed proof object, applied to diffs and gate results instead of arithmetic, turns "an AI wrote this" into "an AI wrote this and here is the evidence it is safe" — which is the objection that actually blocks team adoption.
+5. **Are raw-mode transcripts persisted?** Managed conversations must be — they carry tool calls, approvals and spend, and rule 9 requires an audit trail. Raw mode is arguably a scratchpad, and users may reasonably expect it not to be recorded. _Recommendation: persist by default with a visible per-conversation "ephemeral" toggle, and never persist the raw request body of a conversation marked ephemeral._ Decide before the console ships in 0.5 — retrofitting deletion semantics onto an append-only store is painful.
+6. **What happens to `packages/calculation-core`?** _Recommendation: keep it, and generalise its pattern rather than its content._ Deterministic local execution with a signed proof object, applied to diffs and gate results instead of arithmetic, turns "an AI wrote this" into "an AI wrote this and here is the evidence it is safe" — which is the objection that actually blocks team adoption.
 
 ---
 

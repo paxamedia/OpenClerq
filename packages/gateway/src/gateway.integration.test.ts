@@ -20,7 +20,11 @@ const authed = (url: string, init: RequestInit = {}) =>
 
 describe('gateway integration', () => {
   let baseUrl: string;
-  let server: { close: (cb?: () => void) => void; once: (e: string, cb: () => void) => void; address: () => { port: number } | null };
+  let server: {
+    close: (cb?: () => void) => void;
+    once: (e: string, cb: () => void) => void;
+    address: () => { port: number } | null;
+  };
 
   beforeAll(async () => {
     process.env.CLERQ_DEV = '1';
@@ -56,7 +60,9 @@ describe('gateway integration', () => {
     const body = (await res.json()) as { skills?: unknown[] };
     expect(Array.isArray(body.skills)).toBe(true);
     expect(body.skills!.length).toBeGreaterThanOrEqual(1);
-    const fixture = (body.skills as Array<{ slug?: string }>).find((s) => s.slug === 'fixture-skill');
+    const fixture = (body.skills as Array<{ slug?: string }>).find(
+      (s) => s.slug === 'fixture-skill'
+    );
     expect(fixture).toBeDefined();
   });
 

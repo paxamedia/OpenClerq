@@ -130,11 +130,7 @@ export function getSecret(name: string): string | null {
   const entry = vault.entries[name];
   if (!entry) return null;
   try {
-    const decipher = crypto.createDecipheriv(
-      ALG,
-      key,
-      Buffer.from(entry.iv, 'base64')
-    );
+    const decipher = crypto.createDecipheriv(ALG, key, Buffer.from(entry.iv, 'base64'));
     decipher.setAuthTag(Buffer.from(entry.tag, 'base64'));
     return decipher.update(entry.encrypted, 'base64', 'utf8') + decipher.final('utf8');
   } catch {

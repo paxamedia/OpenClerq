@@ -29,7 +29,9 @@ export function CalculatorPanel() {
   const [specFormulas, setSpecFormulas] = useState(SPEC_PLACEHOLDER);
   const [specOutputs, setSpecOutputs] = useState('net, tax');
   const [inputs, setInputs] = useState(INPUTS_PLACEHOLDER);
-  const [result, setResult] = useState<{ values: EvalCalcResponse['values']; proof: EvalCalcResponse['proof'] } | string | null>(null);
+  const [result, setResult] = useState<
+    { values: EvalCalcResponse['values']; proof: EvalCalcResponse['proof'] } | string | null
+  >(null);
   const [loading, setLoading] = useState(false);
 
   const runCalculate = useCallback(async () => {
@@ -93,11 +95,7 @@ export function CalculatorPanel() {
           Expression
         </label>
         <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
-          <input
-            type="radio"
-            checked={mode === 'spec'}
-            onChange={() => setMode('spec')}
-          />
+          <input type="radio" checked={mode === 'spec'} onChange={() => setMode('spec')} />
           Spec (multi-formula)
         </label>
       </div>
@@ -114,7 +112,14 @@ export function CalculatorPanel() {
           />
         </label>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '0.75rem' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.5rem',
+            marginBottom: '0.75rem',
+          }}
+        >
           <label style={{ fontSize: '0.9rem' }}>
             Formulas (JSON: name → expression)
             <textarea
@@ -150,12 +155,7 @@ export function CalculatorPanel() {
       </label>
 
       <div className="row" style={{ gap: '0.5rem', marginBottom: '0.75rem' }}>
-        <button
-          type="button"
-          className="btn"
-          onClick={runCalculate}
-          disabled={loading}
-        >
+        <button type="button" className="btn" onClick={runCalculate} disabled={loading}>
           {loading ? 'Calculating…' : 'Calculate'}
         </button>
       </div>
@@ -170,13 +170,17 @@ export function CalculatorPanel() {
                 {Object.entries(result.values).map(([k, v]) => (
                   <div key={k} className="calculator-value-row">
                     <strong>{k}</strong>
-                    <span>{typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(4)) : String(v)}</span>
+                    <span>
+                      {typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(4)) : String(v)}
+                    </span>
                   </div>
                 ))}
               </div>
               {result.proof && (
                 <details className="calculator-proof" style={{ marginTop: '0.5rem' }}>
-                  <summary style={{ fontSize: '0.85rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                  <summary
+                    style={{ fontSize: '0.85rem', color: 'var(--text-muted)', cursor: 'pointer' }}
+                  >
                     Audit proof
                   </summary>
                   <pre className="result-box" style={{ marginTop: 4, fontSize: '0.8rem' }}>

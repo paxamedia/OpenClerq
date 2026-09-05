@@ -37,7 +37,9 @@ function ensureDir(): void {
 }
 
 function positiveInt(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
 }
 
 function stringArray(value: unknown): string[] | undefined {

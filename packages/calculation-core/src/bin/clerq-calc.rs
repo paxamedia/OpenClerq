@@ -61,7 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 values.insert("result".to_string(), result);
                 let inputs_json = serde_json::to_string(&inputs).unwrap_or_default();
                 let output_json = serde_json::to_string(&values).unwrap_or_default();
-                let proof = CalculationProof::new(&spec_id, "ARITHMETIC", &inputs_json, &output_json);
+                let proof =
+                    CalculationProof::new(&spec_id, "ARITHMETIC", &inputs_json, &output_json);
                 serde_json::to_value(EvalResponse { values, proof })?
             } else if let Some(spec) = input.spec {
                 let outputs = if spec.output_names.is_empty() {
@@ -69,8 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     spec.output_names
                 };
-                let (values, proof) =
-                    evaluate_spec(&spec_id, &spec.formulas, &inputs, &outputs)?;
+                let (values, proof) = evaluate_spec(&spec_id, &spec.formulas, &inputs, &outputs)?;
                 serde_json::to_value(EvalResponse { values, proof })?
             } else {
                 return Err("eval requires 'expression' or 'spec'".into());

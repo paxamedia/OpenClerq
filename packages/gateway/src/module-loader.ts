@@ -68,7 +68,10 @@ function loadManifest(moduleDir: string): ModuleManifestStub | null {
  * Try to load route handlers from a module.
  * Looks for dist/routes.js or build/routes.js (compiled output).
  */
-async function loadRouteHandlers(moduleDir: string, manifest: ModuleManifestStub): Promise<ModuleRouteHandler[]> {
+async function loadRouteHandlers(
+  moduleDir: string,
+  manifest: ModuleManifestStub
+): Promise<ModuleRouteHandler[]> {
   const candidates = [
     path.join(moduleDir, 'dist', 'routes.js'),
     path.join(moduleDir, 'dist', 'routes.cjs'),

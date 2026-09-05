@@ -113,7 +113,9 @@ function extractToken(req: Request): string | null {
  * Require a valid bearer token on every request except PUBLIC_PATHS.
  * CORS preflight is allowed through so the browser can read the real response.
  */
-export function requireAuth(expectedToken: string): (req: Request, res: Response, next: NextFunction) => void {
+export function requireAuth(
+  expectedToken: string
+): (req: Request, res: Response, next: NextFunction) => void {
   return (req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'OPTIONS') return next();
     if (PUBLIC_PATHS.has(req.path)) return next();
@@ -123,7 +125,8 @@ export function requireAuth(expectedToken: string): (req: Request, res: Response
       res.setHeader('WWW-Authenticate', 'Bearer realm="clerq-gateway"');
       return res.status(401).json({
         error: 'unauthorized',
-        message: 'Missing bearer token. Send "Authorization: Bearer <token>" from ~/.clerq/gateway-token.',
+        message:
+          'Missing bearer token. Send "Authorization: Bearer <token>" from ~/.clerq/gateway-token.',
       });
     }
 

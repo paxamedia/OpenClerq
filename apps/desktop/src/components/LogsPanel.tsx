@@ -81,11 +81,7 @@ export function LogsPanel({ connected }: { connected: boolean }) {
       <div className="logs-panel__header">
         <h2>Logs</h2>
         <div className="row" style={{ gap: '0.5rem' }}>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => setPaused((p) => !p)}
-          >
+          <button type="button" className="btn btn-ghost" onClick={() => setPaused((p) => !p)}>
             {paused ? 'Resume' : 'Pause'}
           </button>
           <button
@@ -102,18 +98,13 @@ export function LogsPanel({ connected }: { connected: boolean }) {
       </div>
       <p className="section-desc">Real-time gateway execution logs. Audit trail for debugging.</p>
       {!connected && (
-        <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Connect to gateway to stream logs.</p>
+        <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+          Connect to gateway to stream logs.
+        </p>
       )}
-      {connected && error && (
-        <p style={{ fontSize: '0.9rem', color: 'var(--error)' }}>{error}</p>
-      )}
+      {connected && error && <p style={{ fontSize: '0.9rem', color: 'var(--error)' }}>{error}</p>}
       {connected && (
-        <div
-          ref={scrollRef}
-          className="logs-panel__output"
-          role="log"
-          aria-live="polite"
-        >
+        <div ref={scrollRef} className="logs-panel__output" role="log" aria-live="polite">
           {logs.length === 0 && !error && (
             <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Waiting for logs…</p>
           )}

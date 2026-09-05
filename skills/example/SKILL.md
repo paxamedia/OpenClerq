@@ -1,9 +1,9 @@
 ---
-name: "Example"
-slug: "example"
-version: "2026.1"
-triggers: ["example", "help"]
-description: "Minimal skill template. Copy this folder to create your own skill."
+name: 'Example'
+slug: 'example'
+version: '2026.1'
+triggers: ['example', 'help']
+description: 'Minimal skill template. Copy this folder to create your own skill.'
 ---
 
 # Example skill

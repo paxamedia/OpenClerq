@@ -53,7 +53,8 @@ const DEFAULTS = {
 
 function ipv4Blocked(ip: string): boolean {
   const parts = ip.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
+    return true;
   const [a, b] = parts;
 
   if (a === 0) return true; // 0.0.0.0/8 this network
@@ -138,7 +139,9 @@ export async function assertUrlAllowed(rawUrl: string, policy: NetworkPolicy): P
   if (literal) {
     const ip = url.hostname.replace(/^\[|\]$/g, '');
     if (isBlockedAddress(ip)) {
-      throw new NetworkPolicyError(`Address ${ip} is in a blocked range (loopback, private, link-local or reserved).`);
+      throw new NetworkPolicyError(
+        `Address ${ip} is in a blocked range (loopback, private, link-local or reserved).`
+      );
     }
     return url;
   }
@@ -177,7 +180,10 @@ export interface SafeFetchResult {
 }
 
 /** Read a response body up to `maxBytes`, without buffering more than that. */
-async function readCapped(res: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+async function readCapped(
+  res: Response,
+  maxBytes: number
+): Promise<{ text: string; truncated: boolean }> {
   if (!res.body) return { text: '', truncated: false };
 
   const reader = res.body.getReader();
@@ -212,13 +218,17 @@ export async function safeFetch(
   policy: NetworkPolicy
 ): Promise<SafeFetchResult> {
   if (!Array.isArray(policy.allowlist) || policy.allowlist.length === 0) {
-    throw new NetworkPolicyError('Outbound HTTP is disabled. Configure capabilities.httpAllowlist to enable it.');
+    throw new NetworkPolicyError(
+      'Outbound HTTP is disabled. Configure capabilities.httpAllowlist to enable it.'
+    );
   }
 
   const methods = policy.allowedMethods ?? DEFAULTS.allowedMethods;
   const method = (init.method || 'GET').toUpperCase();
   if (!methods.includes(method)) {
-    throw new NetworkPolicyError(`Method ${method} is not permitted. Allowed: ${methods.join(', ')}.`);
+    throw new NetworkPolicyError(
+      `Method ${method} is not permitted. Allowed: ${methods.join(', ')}.`
+    );
   }
 
   const maxRedirects = policy.maxRedirects ?? DEFAULTS.maxRedirects;
@@ -263,7 +273,10 @@ export async function safeFetch(
       // Resolve the next hop against the current URL and revalidate on the next pass.
       currentUrl = new URL(res.headers.get('location') as string, url).toString();
       // 303, and 301/302 in practice, downgrade to GET and drop the body.
-      if (res.status === 303 || ((res.status === 301 || res.status === 302) && currentMethod === 'POST')) {
+      if (
+        res.status === 303 ||
+        ((res.status === 301 || res.status === 302) && currentMethod === 'POST')
+      ) {
         currentMethod = 'GET';
         currentBody = undefined;
       }

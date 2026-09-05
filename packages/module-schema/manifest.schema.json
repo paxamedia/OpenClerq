@@ -4,12 +4,7 @@
   "title": "Clerq Module Manifest",
   "description": "Manifest for a pluggable Clerq module (removable, integratable)",
   "type": "object",
-  "required": [
-    "id",
-    "slug",
-    "name",
-    "version"
-  ],
+  "required": ["id", "slug", "name", "version"],
   "properties": {
     "id": {
       "type": "string",

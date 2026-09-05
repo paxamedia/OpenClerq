@@ -186,4 +186,3 @@ curl -X POST http://127.0.0.1:18790/memory \
 ```
 
 These endpoints are meant as **examples**; you can add your own tools, skills, and calculation operations on top.
-

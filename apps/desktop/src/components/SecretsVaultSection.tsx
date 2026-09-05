@@ -87,10 +87,16 @@ export function SecretsVaultSection() {
             style={{ display: 'block', width: 200, marginTop: 4 }}
           />
         </label>
-        <button type="button" className="btn" onClick={handleAdd}>Add</button>
+        <button type="button" className="btn" onClick={handleAdd}>
+          Add
+        </button>
       </div>
       {error && <ResultBox error>{error}</ResultBox>}
-      {message && <ResultBox error={message.startsWith('Failed') || message.includes('only')}>{message}</ResultBox>}
+      {message && (
+        <ResultBox error={message.startsWith('Failed') || message.includes('only')}>
+          {message}
+        </ResultBox>
+      )}
       {names.length > 0 && (
         <div>
           <span style={{ fontSize: '0.9rem' }}>Stored:</span>
@@ -98,7 +104,14 @@ export function SecretsVaultSection() {
             {names.map((n) => (
               <li key={n} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <code>{n}</code>
-                <button type="button" className="btn btn-ghost" style={{ fontSize: '0.8rem' }} onClick={() => handleDelete(n)}>Remove</button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ fontSize: '0.8rem' }}
+                  onClick={() => handleDelete(n)}
+                >
+                  Remove
+                </button>
               </li>
             ))}
           </ul>

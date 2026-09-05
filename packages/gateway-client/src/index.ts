@@ -190,7 +190,11 @@ export const gateway = {
     return fetchJson('/capabilities');
   },
 
-  saveCapabilities(config: { fsRoot?: string; fsAllowWrite?: boolean; httpAllowlist?: string[] }): Promise<{ ok: boolean }> {
+  saveCapabilities(config: {
+    fsRoot?: string;
+    fsAllowWrite?: boolean;
+    httpAllowlist?: string[];
+  }): Promise<{ ok: boolean }> {
     return fetchJson<{ ok: boolean }>('/capabilities', {
       method: 'POST',
       body: JSON.stringify(config),
@@ -231,7 +235,11 @@ export const gateway = {
 
   updateSkill(
     slug: string,
-    patch: { inputSchema?: Record<string, unknown> | null; outputSchema?: Record<string, unknown> | null; dependsOn?: string[] | null }
+    patch: {
+      inputSchema?: Record<string, unknown> | null;
+      outputSchema?: Record<string, unknown> | null;
+      dependsOn?: string[] | null;
+    }
   ): Promise<{ ok: boolean }> {
     return fetchJson<{ ok: boolean }>(`/skills/${encodeURIComponent(slug)}`, {
       method: 'PUT',
@@ -250,17 +258,23 @@ export const gateway = {
     });
   },
 
-  filingPrep(body: {
-    form_type?: string;
-    data?: Record<string, unknown>;
-  }): Promise<{ form_type: string; draft: Record<string, unknown>; status: string; note?: string }> {
+  filingPrep(body: { form_type?: string; data?: Record<string, unknown> }): Promise<{
+    form_type: string;
+    draft: Record<string, unknown>;
+    status: string;
+    note?: string;
+  }> {
     return fetchJson('/filing/prep', {
       method: 'POST',
       body: JSON.stringify(body),
     });
   },
 
-  explain(question: string, context?: Record<string, unknown>, model?: string): Promise<ExplainResponse> {
+  explain(
+    question: string,
+    context?: Record<string, unknown>,
+    model?: string
+  ): Promise<ExplainResponse> {
     return fetchJson<ExplainResponse>('/explain', {
       method: 'POST',
       body: JSON.stringify({ question, context, model }),
@@ -273,10 +287,13 @@ export const gateway = {
     skillSlug?: string;
     skillName?: string;
   }): Promise<{ systemPrompt: string; userContent: string; estimatedInputTokens?: number }> {
-    return fetchJson<{ systemPrompt: string; userContent: string; estimatedInputTokens?: number }>('/context/preview', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
+    return fetchJson<{ systemPrompt: string; userContent: string; estimatedInputTokens?: number }>(
+      '/context/preview',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    );
   },
 
   task(message: string, model?: string, dryRun?: boolean): Promise<TaskResponse> {

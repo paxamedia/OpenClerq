@@ -48,30 +48,30 @@ Or with spec (multiple outputs):
 
 ## Supported Operators
 
-| Operator | Description |
-|----------|-------------|
+| Operator        | Description      |
+| --------------- | ---------------- |
 | `+` `-` `*` `/` | Basic arithmetic |
-| `%` | Modulo |
-| `^` | Power |
+| `%`             | Modulo           |
+| `^`             | Power            |
 
 ## Supported Functions
 
-| Function | Example | Description |
-|----------|---------|-------------|
-| `min(a, b)` | `min(3, 7)` → 3 | Minimum of two values |
-| `max(a, b)` | `max(3, 7)` → 7 | Maximum of two values |
-| `floor(x)` | `floor(99.9)` → 99 | Round down |
-| `round(x)` | `round(99.7)` → 100 | Round to nearest |
-| `ceil(x)` | `ceil(99.1)` → 100 | Round up |
-| `math::sqrt(x)` | `math::sqrt(144)` → 12 | Square root |
-| `math::abs(x)` | `math::abs(-42)` → 42 | Absolute value |
-| `math::ln(x)` | `math::ln(2.718)` | Natural log |
-| `math::log(x, base)` | `math::log(100, 10)` → 2 | Log with base |
-| `math::log2(x)` | — | Base-2 log |
-| `math::log10(x)` | — | Base-10 log |
-| `math::exp(x)` | — | e^x |
-| `math::exp2(x)` | — | 2^x |
-| `math::pow(base, exp)` | `math::pow(2, 10)` → 1024 | Power |
+| Function               | Example                   | Description           |
+| ---------------------- | ------------------------- | --------------------- |
+| `min(a, b)`            | `min(3, 7)` → 3           | Minimum of two values |
+| `max(a, b)`            | `max(3, 7)` → 7           | Maximum of two values |
+| `floor(x)`             | `floor(99.9)` → 99        | Round down            |
+| `round(x)`             | `round(99.7)` → 100       | Round to nearest      |
+| `ceil(x)`              | `ceil(99.1)` → 100        | Round up              |
+| `math::sqrt(x)`        | `math::sqrt(144)` → 12    | Square root           |
+| `math::abs(x)`         | `math::abs(-42)` → 42     | Absolute value        |
+| `math::ln(x)`          | `math::ln(2.718)`         | Natural log           |
+| `math::log(x, base)`   | `math::log(100, 10)` → 2  | Log with base         |
+| `math::log2(x)`        | —                         | Base-2 log            |
+| `math::log10(x)`       | —                         | Base-10 log           |
+| `math::exp(x)`         | —                         | e^x                   |
+| `math::exp2(x)`        | —                         | 2^x                   |
+| `math::pow(base, exp)` | `math::pow(2, 10)` → 1024 | Power                 |
 
 ## Examples
 
@@ -109,11 +109,11 @@ curl -X POST http://127.0.0.1:18790/calculate/eval \
 
 ## Error Codes
 
-| Code | HTTP | Description |
-|------|------|-------------|
-| `expression or spec.formulas required` | 400 | Must provide expression or spec.formulas |
-| `calculation_engine_unavailable` | 503 | Run `pnpm build:core` |
-| `calculation_failed` | 500 | Invalid expression or runtime error |
+| Code                                   | HTTP | Description                              |
+| -------------------------------------- | ---- | ---------------------------------------- |
+| `expression or spec.formulas required` | 400  | Must provide expression or spec.formulas |
+| `calculation_engine_unavailable`       | 503  | Run `pnpm build:core`                    |
+| `calculation_failed`                   | 500  | Invalid expression or runtime error      |
 
 ## See Also
 

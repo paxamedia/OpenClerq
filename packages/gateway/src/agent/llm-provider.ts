@@ -43,7 +43,9 @@ async function callAnthropic(
 ): Promise<LLMCallResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY is not set. Set it for Anthropic, or use CLERQ_LLM_PROVIDER=ollama for local models.');
+    throw new Error(
+      'ANTHROPIC_API_KEY is not set. Set it for Anthropic, or use CLERQ_LLM_PROVIDER=ollama for local models.'
+    );
   }
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const client = new Anthropic({ apiKey });
@@ -58,9 +60,17 @@ async function callAnthropic(
   const message = await client.messages.create(params);
   const elapsed = Date.now() - start;
   const content = 'content' in message ? message.content : [];
-  const textBlock = Array.isArray(content) ? content.find((b: { type: string }) => b.type === 'text') : null;
-  const text = textBlock && typeof textBlock === 'object' && 'text' in textBlock ? (textBlock as { text: string }).text : 'No response.';
-  const usage = 'usage' in message ? (message as { usage?: { input_tokens?: number; output_tokens?: number } }).usage : undefined;
+  const textBlock = Array.isArray(content)
+    ? content.find((b: { type: string }) => b.type === 'text')
+    : null;
+  const text =
+    textBlock && typeof textBlock === 'object' && 'text' in textBlock
+      ? (textBlock as { text: string }).text
+      : 'No response.';
+  const usage =
+    'usage' in message
+      ? (message as { usage?: { input_tokens?: number; output_tokens?: number } }).usage
+      : undefined;
   recordLLMSuccess(elapsed, usage?.input_tokens, usage?.output_tokens);
   return { text, model };
 }
@@ -146,7 +156,11 @@ export async function getAvailableModels(): Promise<string[]> {
  * Call the configured LLM with system prompt and user content.
  * @param modelOverride Optional model to use instead of configured default.
  */
-export async function callLLM(system: string, userContent: string, modelOverride?: string): Promise<LLMCallResult> {
+export async function callLLM(
+  system: string,
+  userContent: string,
+  modelOverride?: string
+): Promise<LLMCallResult> {
   const { provider, model } = getConfig();
   const useModel = modelOverride ?? model;
   const reasoning = loadReasoning();
@@ -165,17 +179,21 @@ export async function callLLM(system: string, userContent: string, modelOverride
         return await callOpenAICompatible(baseUrl, 'ollama', useModel, system, userContent, opts);
       }
 
-    case 'openai': {
-      const baseUrl = process.env.CLERQ_LLM_BASE_URL;
-      if (!baseUrl) {
-        throw new Error('CLERQ_LLM_BASE_URL is required for openai provider (e.g. http://localhost:1234/v1 for LM Studio).');
-      }
-      const apiKey = process.env.OPENAI_API_KEY ?? process.env.CLERQ_OPENAI_API_KEY;
+      case 'openai': {
+        const baseUrl = process.env.CLERQ_LLM_BASE_URL;
+        if (!baseUrl) {
+          throw new Error(
+            'CLERQ_LLM_BASE_URL is required for openai provider (e.g. http://localhost:1234/v1 for LM Studio).'
+          );
+        }
+        const apiKey = process.env.OPENAI_API_KEY ?? process.env.CLERQ_OPENAI_API_KEY;
         return await callOpenAICompatible(baseUrl, apiKey, useModel, system, userContent, opts);
       }
 
       default:
-        throw new Error(`Unknown CLERQ_LLM_PROVIDER: ${provider}. Use anthropic, ollama, or openai.`);
+        throw new Error(
+          `Unknown CLERQ_LLM_PROVIDER: ${provider}. Use anthropic, ollama, or openai.`
+        );
     }
   } catch (e) {
     recordLLMFailure();
@@ -219,7 +237,9 @@ export function getLLMProviderStatus(): {
         provider: 'openai',
         model,
         available: Boolean(process.env.CLERQ_LLM_BASE_URL),
-        hint: process.env.CLERQ_LLM_BASE_URL ? undefined : 'Set CLERQ_LLM_BASE_URL (e.g. http://localhost:1234/v1 for LM Studio)',
+        hint: process.env.CLERQ_LLM_BASE_URL
+          ? undefined
+          : 'Set CLERQ_LLM_BASE_URL (e.g. http://localhost:1234/v1 for LM Studio)',
       };
     default:
       return { provider: 'anthropic', model, available: false, hint: 'Invalid provider' };

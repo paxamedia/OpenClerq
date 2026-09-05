@@ -71,7 +71,11 @@ async function runTriggeredTask(message: string, source: string, id?: string): P
   try {
     await taskRunner(message);
   } catch (e) {
-    logger.error('Trigger task failed', { source, id, err: e instanceof Error ? e.message : String(e) });
+    logger.error('Trigger task failed', {
+      source,
+      id,
+      err: e instanceof Error ? e.message : String(e),
+    });
   }
 }
 

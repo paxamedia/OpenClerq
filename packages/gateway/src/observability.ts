@@ -10,7 +10,11 @@ let llmInputTokens = 0;
 let llmOutputTokens = 0;
 const MAX_SAMPLES = 100;
 
-export function recordLLMSuccess(latencyMs: number, inputTokens?: number, outputTokens?: number): void {
+export function recordLLMSuccess(
+  latencyMs: number,
+  inputTokens?: number,
+  outputTokens?: number
+): void {
   llmCallsTotal += 1;
   llmLatencyMs.push(latencyMs);
   if (llmLatencyMs.length > MAX_SAMPLES) llmLatencyMs.shift();

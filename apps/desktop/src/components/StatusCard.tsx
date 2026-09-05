@@ -16,9 +16,14 @@ export function StatusCard({
   uptime?: number;
   onRetry?: () => void;
 }) {
-  const statusLabel = status === 'connected' ? 'Connected' : status === 'unreachable' ? 'Unreachable' : '—';
+  const statusLabel =
+    status === 'connected' ? 'Connected' : status === 'unreachable' ? 'Unreachable' : '—';
   const statusColor =
-    status === 'connected' ? 'var(--success)' : status === 'unreachable' ? 'var(--error)' : 'var(--text-muted)';
+    status === 'connected'
+      ? 'var(--success)'
+      : status === 'unreachable'
+        ? 'var(--error)'
+        : 'var(--text-muted)';
 
   const formatUptime = (s: number) => {
     if (s < 60) return `${s}s`;

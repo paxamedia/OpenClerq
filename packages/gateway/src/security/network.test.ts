@@ -64,35 +64,46 @@ describe('assertUrlAllowed', () => {
   const base = { allowlist: ['example.com'], allowPrivateAddresses: true };
 
   it('rejects a host outside the allowlist', async () => {
-    await expect(assertUrlAllowed('https://evil.example/', base)).rejects.toThrow(/not in the configured httpAllowlist/);
+    await expect(assertUrlAllowed('https://evil.example/', base)).rejects.toThrow(
+      /not in the configured httpAllowlist/
+    );
   });
 
   it('rejects a disallowed scheme', async () => {
-    await expect(assertUrlAllowed('http://example.com/', base)).rejects.toThrow(/Scheme "http:" is not permitted/);
+    await expect(assertUrlAllowed('http://example.com/', base)).rejects.toThrow(
+      /Scheme "http:" is not permitted/
+    );
     await expect(assertUrlAllowed('file:///etc/passwd', base)).rejects.toThrow(NetworkPolicyError);
   });
 
   it('permits http when explicitly configured', async () => {
-    const url = await assertUrlAllowed('http://example.com/x', { ...base, allowedSchemes: ['http:', 'https:'] });
+    const url = await assertUrlAllowed('http://example.com/x', {
+      ...base,
+      allowedSchemes: ['http:', 'https:'],
+    });
     expect(url.hostname).toBe('example.com');
   });
 
   it('rejects credentials embedded in the URL', async () => {
-    await expect(
-      assertUrlAllowed('https://user:pass@example.com/', base)
-    ).rejects.toThrow(/credentials/);
+    await expect(assertUrlAllowed('https://user:pass@example.com/', base)).rejects.toThrow(
+      /credentials/
+    );
   });
 
   it('rejects a literal private IP even when allow-listed', async () => {
     await expect(
-      assertUrlAllowed('https://169.254.169.254/latest/meta-data/', { allowlist: ['169.254.169.254'] })
+      assertUrlAllowed('https://169.254.169.254/latest/meta-data/', {
+        allowlist: ['169.254.169.254'],
+      })
     ).rejects.toThrow(/blocked range/);
   });
 
   it('matches wildcard subdomains but not the bare apex', async () => {
     const policy = { allowlist: ['*.example.com'], allowPrivateAddresses: true };
     await expect(assertUrlAllowed('https://api.example.com/', policy)).resolves.toBeDefined();
-    await expect(assertUrlAllowed('https://example.com/', policy)).rejects.toThrow(NetworkPolicyError);
+    await expect(assertUrlAllowed('https://example.com/', policy)).rejects.toThrow(
+      NetworkPolicyError
+    );
   });
 
   it('is not fooled by a trailing dot on the hostname', async () => {
@@ -176,7 +187,11 @@ describe('safeFetch', () => {
   it('blocks loopback by default, even when the host is allow-listed', async () => {
     // No allowPrivateAddresses: this is what a user gets out of the box.
     await expect(
-      safeFetch(`http://127.0.0.1:${port}/ok`, {}, { allowlist: ['127.0.0.1'], allowedSchemes: ['http:'] })
+      safeFetch(
+        `http://127.0.0.1:${port}/ok`,
+        {},
+        { allowlist: ['127.0.0.1'], allowedSchemes: ['http:'] }
+      )
     ).rejects.toThrow(/blocked range/);
   });
 

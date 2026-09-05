@@ -84,7 +84,9 @@ export function ReasoningSection() {
         />
       </label>
 
-      <button type="button" className="btn" onClick={save}>Save reasoning</button>
+      <button type="button" className="btn" onClick={save}>
+        Save reasoning
+      </button>
       {message && <ResultBox error={message.startsWith('Failed')}>{message}</ResultBox>}
     </div>
   );

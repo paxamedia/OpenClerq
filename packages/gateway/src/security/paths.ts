@@ -65,7 +65,9 @@ export function resolveWithinRoot(root: string, relativePath: string): string {
     throw new PathContainmentError('Path contains a NUL byte.');
   }
   if (path.isAbsolute(relativePath)) {
-    throw new PathContainmentError('Absolute paths are not allowed; give a path relative to the configured root.');
+    throw new PathContainmentError(
+      'Absolute paths are not allowed; give a path relative to the configured root.'
+    );
   }
   // Windows drive-relative ("C:foo") and UNC-ish inputs.
   if (/^[a-zA-Z]:/.test(relativePath) || relativePath.startsWith('\\\\')) {
@@ -83,7 +85,9 @@ export function resolveWithinRoot(root: string, relativePath: string): string {
   // Second check after resolving symlinks — this is the one that catches links.
   const realCandidate = realpathNearest(candidate);
   if (!isInside(realRoot, realCandidate)) {
-    throw new PathContainmentError('Path resolves outside the configured root via a symbolic link.');
+    throw new PathContainmentError(
+      'Path resolves outside the configured root via a symbolic link.'
+    );
   }
 
   return realCandidate;

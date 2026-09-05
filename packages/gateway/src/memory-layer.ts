@@ -21,7 +21,10 @@ function loadRaw(): Record<string, { value: unknown; createdAt: string }> {
   const p = getPath();
   if (!fs.existsSync(p)) return {};
   try {
-    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, { value?: unknown; createdAt?: string }>;
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<
+      string,
+      { value?: unknown; createdAt?: string }
+    >;
     const out: Record<string, { value: unknown; createdAt: string }> = {};
     for (const [k, v] of Object.entries(raw)) {
       if (v && typeof v === 'object' && typeof v.createdAt === 'string') {

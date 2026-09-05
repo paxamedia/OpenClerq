@@ -59,7 +59,6 @@ OpenClerq itself stays **generic**: it does not ship country‑specific or profe
    - May include role‑ or country‑specific modules, billing, and a control plane.
    - Not part of this codebase or its license.
 
-
 ---
 
 ## 5. Related Documents in This Repo
@@ -70,4 +69,3 @@ OpenClerq itself stays **generic**: it does not ship country‑specific or profe
 - `docs/MODULE_SYSTEM.md` — how modules and skills are structured.
 - `docs/TOOLS.md` — generic gateway tools (filesystem, HTTP) and how to extend them.
 - `docs/SECURITY.md` — threat model, binding rules, and the pre-release checklist.
-

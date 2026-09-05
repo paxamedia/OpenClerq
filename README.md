@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-> *Open-source local MCS for agentic automation. Small desktop worker that runs on your machine, with knowledge, tools, and context kept locally.*
+> _Open-source local MCS for agentic automation. Small desktop worker that runs on your machine, with knowledge, tools, and context kept locally._
 
 **Clerq** is a small, generic desktop automation platform: programmable by developers on their local machine (as is, use at your own risk, no responsibility), and also offered as a hosted service with accounts, subscriptions, and modules that bundle built-in skills.
 
@@ -16,14 +16,14 @@
 
 ## Two Ways to Use Clerq
 
-| | **Open-source (developers)** | **Hosted (our clients)** |
-|---|------------------------------|---------------------------|
-| **Runs on** | Your local machine | Our servers |
-| **API keys** | Your own | Ours |
-| **Responsibility** | None from us — use at your own risk | Per our service terms |
-| **Modules** | Build and load any module you want | Subscribe to modules with built-in skills |
+|                    | **Open-source (developers)**        | **Hosted (our clients)**                  |
+| ------------------ | ----------------------------------- | ----------------------------------------- |
+| **Runs on**        | Your local machine                  | Our servers                               |
+| **API keys**       | Your own                            | Ours                                      |
+| **Responsibility** | None from us — use at your own risk | Per our service terms                     |
+| **Modules**        | Build and load any module you want  | Subscribe to modules with built-in skills |
 
-**Skills are available by module. You can build and load your own modules (for different roles and countries) on top of the core engine. See [About Clerq](docs/ABOUT_CLERQ.md).
+\*\*Skills are available by module. You can build and load your own modules (for different roles and countries) on top of the core engine. See [About Clerq](docs/ABOUT_CLERQ.md).
 
 > **Security.** As of 0.4 the gateway is authenticated and binds loopback only. Every endpoint
 > except `/health` needs a bearer token, generated on first run at `~/.clerq/gateway-token`:
@@ -160,7 +160,7 @@ pnpm build:core
 └─────────────────────────────────────────────────────────┘
 ```
 
-*Desktop UI (Control Tower):* Gateway health, skills (with schema/dependency editing), tools, calculator, file-backed memory, Ask (explain/task) with context preview and dry-run, observability metrics. Builder mode for configuration; Operator mode for day-to-day use.
+_Desktop UI (Control Tower):_ Gateway health, skills (with schema/dependency editing), tools, calculator, file-backed memory, Ask (explain/task) with context preview and dry-run, observability metrics. Builder mode for configuration; Operator mode for day-to-day use.
 
 ## Quick Start
 
@@ -179,20 +179,20 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 
 ### API (gateway on :18790)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /health | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider` |
-| GET | /skills | List skills (from disk or fallback) |
-| GET | /skills/:slug | Get skill detail (meta, body). PUT to update schemas/dependencies. |
-| GET | /metrics | Observability: uptime, LLM calls, latency, token usage |
-| POST | /context/preview | Preview what would be sent to the LLM (no API call). Body: `question`, optional `context`, `skillSlug` |
-| GET | /memory | List file-backed memory entries. POST to add; DELETE /memory/:key to remove |
-| GET | /capabilities | Filesystem/network restrictions. POST to save. |
-| GET/POST | /reasoning | Temperature, max tokens. POST to save. |
-| GET/POST | /system-prompt | System prompt editor. POST to save. |
-| POST | /calculate/eval | Arithmetic engine (body: expression or spec+inputs). Deterministic, auditable. |
-| POST | /explain | AI explanation (body: question, optional context). Uses configured LLM. |
-| POST | /task | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`. |
+| Method   | Path             | Description                                                                                             |
+| -------- | ---------------- | ------------------------------------------------------------------------------------------------------- |
+| GET      | /health          | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider`                               |
+| GET      | /skills          | List skills (from disk or fallback)                                                                     |
+| GET      | /skills/:slug    | Get skill detail (meta, body). PUT to update schemas/dependencies.                                      |
+| GET      | /metrics         | Observability: uptime, LLM calls, latency, token usage                                                  |
+| POST     | /context/preview | Preview what would be sent to the LLM (no API call). Body: `question`, optional `context`, `skillSlug`  |
+| GET      | /memory          | List file-backed memory entries. POST to add; DELETE /memory/:key to remove                             |
+| GET      | /capabilities    | Filesystem/network restrictions. POST to save.                                                          |
+| GET/POST | /reasoning       | Temperature, max tokens. POST to save.                                                                  |
+| GET/POST | /system-prompt   | System prompt editor. POST to save.                                                                     |
+| POST     | /calculate/eval  | Arithmetic engine (body: expression or spec+inputs). Deterministic, auditable.                          |
+| POST     | /explain         | AI explanation (body: question, optional context). Uses configured LLM.                                 |
+| POST     | /task            | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`. |
 
 ## Project Structure
 
@@ -209,28 +209,27 @@ clerq/
 
 ## Pricing (SaaS)
 
-| Tier | Price | Entities | Users |
-|------|-------|----------|-------|
-| Starter | $49/mo | 1 | 1 |
-| Professional | $79/mo | 3 | 2 |
-| Business | $199/mo | 10+ | 5 |
-| Enterprise | Custom | Unlimited | Unlimited |
-
+| Tier         | Price   | Entities  | Users     |
+| ------------ | ------- | --------- | --------- |
+| Starter      | $49/mo  | 1         | 1         |
+| Professional | $79/mo  | 3         | 2         |
+| Business     | $199/mo | 10+       | 5         |
+| Enterprise   | Custom  | Unlimited | Unlimited |
 
 ## Documentation
 
-| Doc | Purpose |
-|-----|---------|
-| [**ROADMAP**](docs/ROADMAP.md) | Where this is going: audit, target architecture, release trains |
-| [**ABOUT_CLERQ**](docs/ABOUT_CLERQ.md) | What OpenClerq is; attribution; OSS vs hosted scope |
-| [**DEVELOPER_SETUP**](docs/DEVELOPER_SETUP.md) | Install, run, and verify OpenClerq locally (macOS + Windows) |
-| [ARCHITECTURE](docs/ARCHITECTURE.md) | Components and local data flow |
-| [ARITHMETIC_API](docs/ARITHMETIC_API.md) | Calculation engine: operators, functions, examples |
-| [MODULE_SYSTEM](docs/MODULE_SYSTEM.md) | How skills and modules are structured (schemas, dependencies) |
-| [TOOLS](docs/TOOLS.md) | Built‑in tools (filesystem, HTTP) and how to extend them |
-| [SECURITY](docs/SECURITY.md) | Threat model, binding rules, release checklist |
-| [DISTRIBUTION](docs/DISTRIBUTION.md) | Code signing, notarization, and the updater |
-| [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution |
+| Doc                                                  | Purpose                                                         |
+| ---------------------------------------------------- | --------------------------------------------------------------- |
+| [**ROADMAP**](docs/ROADMAP.md)                       | Where this is going: audit, target architecture, release trains |
+| [**ABOUT_CLERQ**](docs/ABOUT_CLERQ.md)               | What OpenClerq is; attribution; OSS vs hosted scope             |
+| [**DEVELOPER_SETUP**](docs/DEVELOPER_SETUP.md)       | Install, run, and verify OpenClerq locally (macOS + Windows)    |
+| [ARCHITECTURE](docs/ARCHITECTURE.md)                 | Components and local data flow                                  |
+| [ARITHMETIC_API](docs/ARITHMETIC_API.md)             | Calculation engine: operators, functions, examples              |
+| [MODULE_SYSTEM](docs/MODULE_SYSTEM.md)               | How skills and modules are structured (schemas, dependencies)   |
+| [TOOLS](docs/TOOLS.md)                               | Built‑in tools (filesystem, HTTP) and how to extend them        |
+| [SECURITY](docs/SECURITY.md)                         | Threat model, binding rules, release checklist                  |
+| [DISTRIBUTION](docs/DISTRIBUTION.md)                 | Code signing, notarization, and the updater                     |
+| [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution      |
 
 ## License
 

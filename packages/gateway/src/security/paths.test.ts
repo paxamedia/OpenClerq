@@ -30,7 +30,9 @@ afterAll(() => {
 
 describe('resolveWithinRoot', () => {
   it('resolves a file inside the root', () => {
-    expect(resolveWithinRoot(root, 'ok.txt')).toBe(fs.realpathSync.native(path.join(root, 'ok.txt')));
+    expect(resolveWithinRoot(root, 'ok.txt')).toBe(
+      fs.realpathSync.native(path.join(root, 'ok.txt'))
+    );
   });
 
   it('resolves a nested file', () => {
@@ -40,12 +42,16 @@ describe('resolveWithinRoot', () => {
   it('rejects the prefix-sibling escape that startsWith() allowed', () => {
     // path.resolve(root, '../repo-secrets/secret.txt') === "<tmp>/repo-secrets/secret.txt",
     // which startsWith("<tmp>/repo") — the original bug. It must be refused.
-    expect(() => resolveWithinRoot(root, '../repo-secrets/secret.txt')).toThrow(PathContainmentError);
+    expect(() => resolveWithinRoot(root, '../repo-secrets/secret.txt')).toThrow(
+      PathContainmentError
+    );
   });
 
   it('rejects plain traversal', () => {
     expect(() => resolveWithinRoot(root, '../../etc/passwd')).toThrow(PathContainmentError);
-    expect(() => resolveWithinRoot(root, 'nested/../../../etc/passwd')).toThrow(PathContainmentError);
+    expect(() => resolveWithinRoot(root, 'nested/../../../etc/passwd')).toThrow(
+      PathContainmentError
+    );
   });
 
   it('rejects absolute paths', () => {
@@ -82,7 +88,9 @@ describe('resolveWithinRoot', () => {
   });
 
   it('rejects a not-yet-existing path outside the root', () => {
-    expect(() => resolveWithinRoot(root, '../repo-secrets/new-file.txt')).toThrow(PathContainmentError);
+    expect(() => resolveWithinRoot(root, '../repo-secrets/new-file.txt')).toThrow(
+      PathContainmentError
+    );
   });
 });
 
@@ -94,7 +102,9 @@ describe('readTextFileWithin', () => {
   });
 
   it('refuses a file over the byte limit without reading it', async () => {
-    await expect(readTextFileWithin(root, 'big.txt', 1000)).rejects.toThrow(/over the 1000-byte limit/);
+    await expect(readTextFileWithin(root, 'big.txt', 1000)).rejects.toThrow(
+      /over the 1000-byte limit/
+    );
   });
 
   it('refuses a directory', async () => {
@@ -104,6 +114,8 @@ describe('readTextFileWithin', () => {
   it('refuses to read through an escaping symlink', async () => {
     const link = path.join(root, 'escape-link');
     if (!fs.existsSync(link)) fs.symlinkSync(sibling, link, 'dir');
-    await expect(readTextFileWithin(root, 'escape-link/secret.txt', 1024)).rejects.toThrow(PathContainmentError);
+    await expect(readTextFileWithin(root, 'escape-link/secret.txt', 1024)).rejects.toThrow(
+      PathContainmentError
+    );
   });
 });

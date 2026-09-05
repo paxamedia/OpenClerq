@@ -28,7 +28,9 @@ export interface ContextPreview {
 /**
  * Build the context that would be sent to the LLM, without making a call.
  */
-export function buildContextPreview(req: Pick<ExplainRequest, 'question' | 'context' | 'skillSlug' | 'skillName'>): ContextPreview {
+export function buildContextPreview(
+  req: Pick<ExplainRequest, 'question' | 'context' | 'skillSlug' | 'skillName'>
+): ContextPreview {
   let userContent = req.question;
   if (req.context && Object.keys(req.context).length > 0) {
     userContent += `\n\nContext:\n${JSON.stringify(req.context, null, 2)}`;

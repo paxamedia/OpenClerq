@@ -53,11 +53,15 @@ function createFsReadTool(
   };
 }
 
-function createHttpRequestTool(
-  config: ToolConfig
-): ToolSpec<
+function createHttpRequestTool(config: ToolConfig): ToolSpec<
   { method?: string; url: string; headers?: Record<string, string>; body?: string },
-  { status: number; headers: Record<string, string>; bodyText: string; truncated: boolean; chain: string[] }
+  {
+    status: number;
+    headers: Record<string, string>;
+    bodyText: string;
+    truncated: boolean;
+    chain: string[];
+  }
 > | null {
   const allowlist = config.httpAllowlist ?? [];
   if (!Array.isArray(allowlist) || allowlist.length === 0) {

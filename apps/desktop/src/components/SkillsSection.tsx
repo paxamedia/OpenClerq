@@ -25,23 +25,22 @@ export function SkillsSection({
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const openEditor = useCallback(
-    async (slug: string) => {
-      setEditingSlug(slug);
-      setDetail(null);
-      setLoadError(null);
-      try {
-        const d = await gateway.skill(slug);
-        setDetail(d);
-        setEditInputSchema(d.meta.inputSchema ? JSON.stringify(d.meta.inputSchema, null, 2) : '{}');
-        setEditOutputSchema(d.meta.outputSchema ? JSON.stringify(d.meta.outputSchema, null, 2) : '{}');
-        setEditDependsOn(Array.isArray(d.meta.dependsOn) ? d.meta.dependsOn.join(', ') : '');
-      } catch (e) {
-        setLoadError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    []
-  );
+  const openEditor = useCallback(async (slug: string) => {
+    setEditingSlug(slug);
+    setDetail(null);
+    setLoadError(null);
+    try {
+      const d = await gateway.skill(slug);
+      setDetail(d);
+      setEditInputSchema(d.meta.inputSchema ? JSON.stringify(d.meta.inputSchema, null, 2) : '{}');
+      setEditOutputSchema(
+        d.meta.outputSchema ? JSON.stringify(d.meta.outputSchema, null, 2) : '{}'
+      );
+      setEditDependsOn(Array.isArray(d.meta.dependsOn) ? d.meta.dependsOn.join(', ') : '');
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
 
   const closeEditor = () => {
     setEditingSlug(null);
@@ -93,8 +92,7 @@ export function SkillsSection({
     }
   };
 
-  const skillsList =
-    skills && typeof skills !== 'string' ? skills.skills : [];
+  const skillsList = skills && typeof skills !== 'string' ? skills.skills : [];
   const allSlugs = new Set(skillsList.map((s: SkillMeta) => s.slug));
 
   return (
@@ -108,11 +106,15 @@ export function SkillsSection({
         </button>
       </div>
       {skills === null ? (
-        <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Click Load skills to fetch from the gateway.</p>
+        <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+          Click Load skills to fetch from the gateway.
+        </p>
       ) : typeof skills === 'string' ? (
         <ResultBox error>{skills}</ResultBox>
       ) : skills.skills.length === 0 ? (
-        <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>No skills found in {skills.source}</p>
+        <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+          No skills found in {skills.source}
+        </p>
       ) : (
         <>
           <p className="skills-source">Loaded from: {skills.source}</p>
@@ -128,7 +130,9 @@ export function SkillsSection({
                 {s.version && <span className="skill-chip__version">v{s.version}</span>}
                 {s.description && <span className="skill-desc"> — {s.description}</span>}
                 {(s.inputSchema || s.outputSchema || (s.dependsOn && s.dependsOn.length > 0)) && (
-                  <span style={{ marginLeft: 4, fontSize: '0.75rem', color: 'var(--text-muted)' }}>⚙</span>
+                  <span style={{ marginLeft: 4, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    ⚙
+                  </span>
                 )}
               </button>
             ))}
@@ -145,15 +149,22 @@ export function SkillsSection({
                 border: '1px solid var(--card-border)',
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                <h3 style={{ margin: 0, fontSize: '1rem' }}>Edit {detail?.meta?.name ?? editingSlug}</h3>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '0.75rem',
+                }}
+              >
+                <h3 style={{ margin: 0, fontSize: '1rem' }}>
+                  Edit {detail?.meta?.name ?? editingSlug}
+                </h3>
                 <button type="button" className="btn btn-ghost" onClick={closeEditor}>
                   Close
                 </button>
               </div>
-              {loadError && (
-                <ResultBox error>{loadError}</ResultBox>
-              )}
+              {loadError && <ResultBox error>{loadError}</ResultBox>}
               {detail && !loadError && (
                 <>
                   <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
@@ -209,11 +220,22 @@ export function SkillsSection({
                         .join(' → ')}
                     </p>
                   )}
-                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.75rem' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: '0.5rem',
+                      alignItems: 'center',
+                      marginTop: '0.75rem',
+                    }}
+                  >
                     <button type="button" className="btn" onClick={save}>
                       Save
                     </button>
-                    {saveMessage && <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{saveMessage}</span>}
+                    {saveMessage && (
+                      <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                        {saveMessage}
+                      </span>
+                    )}
                   </div>
                 </>
               )}

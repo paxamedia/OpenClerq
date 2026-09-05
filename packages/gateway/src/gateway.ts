@@ -6,20 +6,36 @@ import { licenseCheck } from './middleware/license.js';
 import { requireAuth, resolveGatewayToken } from './security/auth.js';
 import { logger } from './logger.js';
 import { getCalcBinaryPath, runEvalCalc } from './calc.js';
-import { getSkillsDir, loadSkillsFromDir, loadSkillContent, saveSkillFrontmatter } from './skills-loader.js';
+import {
+  getSkillsDir,
+  loadSkillsFromDir,
+  loadSkillContent,
+  saveSkillFrontmatter,
+} from './skills-loader.js';
 import { getExplanation, buildContextPreview } from './agent/explain.js';
 import { getLLMProviderStatus, getAvailableModels } from './agent/llm-provider.js';
 import { runTask } from './agent/task.js';
 import { selectSkill } from './agent/skill-selector.js';
 import { loadModulesFromDir, mountModuleRoutes, getModuleSkillsDirs } from './module-loader.js';
 import { createToolRegistry } from './tools.js';
-import { loadCapabilities, saveCapabilities, capabilitiesToToolConfig, type CapabilitiesConfig } from './capabilities.js';
+import {
+  loadCapabilities,
+  saveCapabilities,
+  capabilitiesToToolConfig,
+  type CapabilitiesConfig,
+} from './capabilities.js';
 import { loadReasoning, saveReasoning, type ReasoningConfig } from './reasoning-config.js';
 import { loadSystemPrompt, saveSystemPrompt, DEFAULT_PROMPT } from './system-prompt.js';
 import { getObservability } from './observability.js';
 import { getLogBuffer, subscribe, type LogEntry } from './log-stream.js';
 import { listSecrets, setSecret, deleteSecret } from './secrets-vault.js';
-import { startTriggers, getTriggers, saveTriggers, getWebhookMessage, type TriggersConfig } from './triggers.js';
+import {
+  startTriggers,
+  getTriggers,
+  saveTriggers,
+  getWebhookMessage,
+  type TriggersConfig,
+} from './triggers.js';
 import { listMemory, getMemory, setMemory, deleteMemory } from './memory-layer.js';
 
 const DEFAULT_PORT = 18790;
@@ -38,14 +54,20 @@ const DEFAULT_CORS_ORIGINS = [
 /** Single source of truth for the version reported over the API. */
 export const GATEWAY_VERSION = '0.4.0';
 
-export function createGateway(config: GatewayConfig = {}): { app: express.Express; server: Server } {
+export function createGateway(config: GatewayConfig = {}): {
+  app: express.Express;
+  server: Server;
+} {
   const port = config.port ?? DEFAULT_PORT;
   // Loopback unless an operator deliberately opts out. Binding a wider interface
   // exposes tool execution to the network and is gated on explicit configuration.
   const host = config.host ?? process.env.CLERQ_HOST ?? '127.0.0.1';
-  const devMode = config.devMode ?? (process.env.CLERQ_DEV === '1' || process.env.CLERQ_DEV === 'true');
+  const devMode =
+    config.devMode ?? (process.env.CLERQ_DEV === '1' || process.env.CLERQ_DEV === 'true');
   // Authentication is not optional and has no dev bypass. Licensing is separate.
-  const auth = config.authToken ? { token: config.authToken, source: 'config' as const } : resolveGatewayToken();
+  const auth = config.authToken
+    ? { token: config.authToken, source: 'config' as const }
+    : resolveGatewayToken();
   const skillsDir = config.skillsDir ?? getSkillsDir();
   const calcPath = config.calculationEnginePath ?? getCalcBinaryPath();
   const initialToolsConfig = config.toolsConfig ?? capabilitiesToToolConfig(loadCapabilities());
@@ -97,7 +119,10 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
   const startTime = Date.now();
   app.get('/models', async (_req, res) => {
     try {
-      const [models, status] = await Promise.all([getAvailableModels(), Promise.resolve(getLLMProviderStatus())]);
+      const [models, status] = await Promise.all([
+        getAvailableModels(),
+        Promise.resolve(getLLMProviderStatus()),
+      ]);
       res.json({ models, current: status.model });
     } catch (e) {
       logger.error('models list error', { err: e instanceof Error ? e.message : String(e) });
@@ -161,10 +186,16 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
       const current = loadReasoning();
       const c: ReasoningConfig = { ...current };
       if (body.temperature !== undefined) {
-        c.temperature = typeof body.temperature === 'number' && body.temperature >= 0 && body.temperature <= 2 ? body.temperature : undefined;
+        c.temperature =
+          typeof body.temperature === 'number' && body.temperature >= 0 && body.temperature <= 2
+            ? body.temperature
+            : undefined;
       }
       if (body.maxTokens !== undefined) {
-        c.maxTokens = typeof body.maxTokens === 'number' && body.maxTokens >= 1 && body.maxTokens <= 128000 ? body.maxTokens : undefined;
+        c.maxTokens =
+          typeof body.maxTokens === 'number' && body.maxTokens >= 1 && body.maxTokens <= 128000
+            ? body.maxTokens
+            : undefined;
       }
       saveReasoning(c);
       res.json({ ok: true });
@@ -193,7 +224,9 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
         httpMaxBytes: positive(body.httpMaxBytes),
         httpTimeoutMs: positive(body.httpTimeoutMs),
         httpAllowPrivateAddresses:
-          typeof body.httpAllowPrivateAddresses === 'boolean' ? body.httpAllowPrivateAddresses : undefined,
+          typeof body.httpAllowPrivateAddresses === 'boolean'
+            ? body.httpAllowPrivateAddresses
+            : undefined,
       };
       saveCapabilities(c);
       toolRegistry = createToolRegistry(capabilitiesToToolConfig(loadCapabilities()));
@@ -281,7 +314,12 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
       if (skills.length === 0) {
         return res.json({
           skills: [
-            { slug: 'example', name: 'Example', description: 'Add skills in your skills directory. See skills/example for a template.' },
+            {
+              slug: 'example',
+              name: 'Example',
+              description:
+                'Add skills in your skills directory. See skills/example for a template.',
+            },
           ],
           source: 'fallback',
         });
@@ -309,7 +347,11 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
   app.put('/skills/:slug', async (req: Request, res: Response) => {
     const slug = typeof req.params?.slug === 'string' ? req.params.slug : '';
     if (!slug) return res.status(400).json({ error: 'slug required' });
-    const body = req.body as { inputSchema?: Record<string, unknown> | null; outputSchema?: Record<string, unknown> | null; dependsOn?: string[] | null };
+    const body = req.body as {
+      inputSchema?: Record<string, unknown> | null;
+      outputSchema?: Record<string, unknown> | null;
+      dependsOn?: string[] | null;
+    };
     try {
       const ok = await saveSkillFrontmatter(skillsDir, slug, {
         inputSchema: body.inputSchema,
@@ -381,7 +423,11 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
         path: calcPath,
       });
     }
-    const body = req.body as { expression?: string; inputs?: Record<string, number>; spec?: { id?: string; formulas?: Record<string, string>; output_names?: string[] } };
+    const body = req.body as {
+      expression?: string;
+      inputs?: Record<string, number>;
+      spec?: { id?: string; formulas?: Record<string, string>; output_names?: string[] };
+    };
     if (!body.expression && !body.spec?.formulas) {
       return res.status(400).json({ error: 'expression or spec.formulas required' });
     }
@@ -406,7 +452,11 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
   });
 
   app.post('/explain', async (req: Request, res: Response) => {
-    const body = req.body as { question?: string; context?: Record<string, unknown>; model?: string };
+    const body = req.body as {
+      question?: string;
+      context?: Record<string, unknown>;
+      model?: string;
+    };
     const question = typeof body?.question === 'string' ? body.question.trim() : '';
     if (!question) {
       return res.status(400).json({ error: 'question is required' });
@@ -420,7 +470,12 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
       res.json(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes('ANTHROPIC_API_KEY') || msg.includes('CLERQ_LLM_BASE_URL') || msg.includes('CLERQ_LLM_PROVIDER') || msg.includes('LLM request failed')) {
+      if (
+        msg.includes('ANTHROPIC_API_KEY') ||
+        msg.includes('CLERQ_LLM_BASE_URL') ||
+        msg.includes('CLERQ_LLM_PROVIDER') ||
+        msg.includes('LLM request failed')
+      ) {
         return res.status(503).json({
           error: 'ai_unavailable',
           message: msg.slice(0, 200),
@@ -435,7 +490,12 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
   });
 
   app.post('/context/preview', (req: Request, res: Response) => {
-    const body = req.body as { question?: string; context?: Record<string, unknown>; skillSlug?: string; skillName?: string };
+    const body = req.body as {
+      question?: string;
+      context?: Record<string, unknown>;
+      skillSlug?: string;
+      skillName?: string;
+    };
     const question = typeof body?.question === 'string' ? body.question.trim() : '';
     try {
       const preview = buildContextPreview({
@@ -517,9 +577,8 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
       // continue
     }
     const selection = selectSkill(message.trim(), skills);
-    const runCalc =
-      fssync.existsSync(calcPath) ?
-        async (expression: string, inputs?: Record<string, number>) => {
+    const runCalc = fssync.existsSync(calcPath)
+      ? async (expression: string, inputs?: Record<string, number>) => {
           const r = await runEvalCalc({ expression, inputs: inputs ?? {} }, calcPath);
           return { values: r.values };
         }
@@ -550,7 +609,12 @@ export function createGateway(config: GatewayConfig = {}): { app: express.Expres
       res.json(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes('ANTHROPIC_API_KEY') || msg.includes('CLERQ_LLM_BASE_URL') || msg.includes('CLERQ_LLM_PROVIDER') || msg.includes('LLM request failed')) {
+      if (
+        msg.includes('ANTHROPIC_API_KEY') ||
+        msg.includes('CLERQ_LLM_BASE_URL') ||
+        msg.includes('CLERQ_LLM_PROVIDER') ||
+        msg.includes('LLM request failed')
+      ) {
         return res.status(503).json({
           error: 'ai_unavailable',
           message: msg.slice(0, 200),

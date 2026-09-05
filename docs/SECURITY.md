@@ -18,18 +18,18 @@ That is a legitimate thing to build. It is not a thing to build casually.
 
 ### Assets
 
-| Asset | Why an attacker wants it |
-|---|---|
-| Provider API keys | Direct financial cost; access to the user's model accounts |
-| Git credentials / GitHub tokens | Write access to source repositories |
-| Source code and repo contents | Exfiltration target |
-| The gateway's execution authority | Arbitrary code execution on the host |
-| The secrets vault | Everything above, at once |
+| Asset                             | Why an attacker wants it                                   |
+| --------------------------------- | ---------------------------------------------------------- |
+| Provider API keys                 | Direct financial cost; access to the user's model accounts |
+| Git credentials / GitHub tokens   | Write access to source repositories                        |
+| Source code and repo contents     | Exfiltration target                                        |
+| The gateway's execution authority | Arbitrary code execution on the host                       |
+| The secrets vault                 | Everything above, at once                                  |
 
 ### Adversaries
 
 1. **A malicious or compromised dependency** in a repo OpenClerq operates on.
-2. **Prompt injection via repo content** — a README, issue body, changelog or dependency description crafted to redirect the agent. This is the defining threat for this category: repo content is *untrusted input*, and the agent reads it by design.
+2. **Prompt injection via repo content** — a README, issue body, changelog or dependency description crafted to redirect the agent. This is the defining threat for this category: repo content is _untrusted input_, and the agent reads it by design.
 3. **Prompt injection via pasted content** — the same threat through the chat console. Any text a user pastes to be summarised or explained is untrusted, and the console can create scheduled jobs. This is why a model-drafted automation always saves disabled and pushes manually on its first run.
 4. **A network-local attacker** reaching an exposed gateway port.
 5. **A malicious skill, module or plugin** installed by the user.
@@ -64,16 +64,16 @@ That is a legitimate thing to build. It is not a thing to build casually.
 These are live gaps, tracked as findings in [ROADMAP.md §2](ROADMAP.md#2-consolidated-audit).
 They are listed here because a security document that omits them is worse than none.
 
-| Gap | Detail | Roadmap |
-|---|---|---|
-| **Vault master key sits in an environment variable** | `CLERQ_VAULT_KEY` is readable by any process that can see the environment and lands in shell history and CI logs. The cipher is sound; the key protection is not. | 0.5 |
-| **No run history** | Triggers fire and their results are discarded. No durable record of what executed. | 0.5 |
-| **Config files are last-write-wins** | `memory.json`, `triggers.json`, `capabilities.json` are read-modify-write with no locking. | 0.5 |
-| **No context management** | Tool output is capped per call, but nothing bounds total prompt assembly yet. | 0.6 |
-| **No sandbox** | There is still no `exec` tool, so nothing to sandbox. One must exist before the first one ships. | 0.5 |
-| **DNS rebinding** | `http.request` resolves and checks addresses, but the connection re-resolves, leaving a TOCTOU window. Closing it needs a pinned-address dispatcher. | 0.5 |
-| **Desktop CSP is disabled** | `tauri.conf.json` sets `security.csp: null`. | 1.0 |
-| **Updater public key is a placeholder** | Signature verification cannot succeed, so updates fail closed — broken rather than exploitable, but it must be fixed before any release advertises in-app updates. | 1.0 |
+| Gap                                                  | Detail                                                                                                                                                             | Roadmap |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| **Vault master key sits in an environment variable** | `CLERQ_VAULT_KEY` is readable by any process that can see the environment and lands in shell history and CI logs. The cipher is sound; the key protection is not.  | 0.5     |
+| **No run history**                                   | Triggers fire and their results are discarded. No durable record of what executed.                                                                                 | 0.5     |
+| **Config files are last-write-wins**                 | `memory.json`, `triggers.json`, `capabilities.json` are read-modify-write with no locking.                                                                         | 0.5     |
+| **No context management**                            | Tool output is capped per call, but nothing bounds total prompt assembly yet.                                                                                      | 0.6     |
+| **No sandbox**                                       | There is still no `exec` tool, so nothing to sandbox. One must exist before the first one ships.                                                                   | 0.5     |
+| **DNS rebinding**                                    | `http.request` resolves and checks addresses, but the connection re-resolves, leaving a TOCTOU window. Closing it needs a pinned-address dispatcher.               | 0.5     |
+| **Desktop CSP is disabled**                          | `tauri.conf.json` sets `security.csp: null`.                                                                                                                       | 1.0     |
+| **Updater public key is a placeholder**              | Signature verification cannot succeed, so updates fail closed — broken rather than exploitable, but it must be fixed before any release advertises in-app updates. | 1.0     |
 
 Release 0.4 closed the four S1 blockers (unauthenticated gateway, all-interface bind,
 prefix-based path containment, licensing standing in for authentication) plus the SSRF and
@@ -88,9 +88,9 @@ feature and needs TLS and a reverse proxy in front of it.
 
 These are not aspirations. A change that violates one of them does not merge.
 
-1. **Localhost by default.** Network binding requires an explicit flag *and* configured authentication. Never both defaults.
+1. **Localhost by default.** Network binding requires an explicit flag _and_ configured authentication. Never both defaults.
 2. **No unauthenticated path, ever** — including in development. Generate a token on first run and hand it to the desktop app. `/health` is the only public endpoint, and it reveals no configuration.
-3. **Authentication and licensing are separate concepts.** Licensing answers *is this install entitled to feature X*. Authentication answers *is this caller allowed to control this gateway*. Neither may substitute for the other.
+3. **Authentication and licensing are separate concepts.** Licensing answers _is this install entitled to feature X_. Authentication answers _is this caller allowed to control this gateway_. Neither may substitute for the other.
 4. **Sandbox by default wherever code executes.** A `native` profile is a developer convenience that must be chosen deliberately and shown as a warning in the UI. Application-layer allowlists are not a sandbox.
 5. **Deny egress by default.** An automation reaches only the hosts its spec names, enforced at the sandbox boundary rather than in application code. This is the primary defence against a prompt-injected agent exfiltrating a repository.
 6. **Repo content is untrusted input.** A README, issue or changelog can carry instructions aimed at the agent. Repo content may never widen a capability grant, and must be labelled as data in every prompt that carries it.
@@ -120,15 +120,15 @@ and on hot reload:
 }
 ```
 
-| Key | Meaning | Default |
-|---|---|---|
-| `fsRoot` | Root directory for `fs.read` | the gateway's working directory |
-| `fsMaxReadBytes` | Largest file `fs.read` returns | 1048576 |
-| `httpAllowlist` | Hostnames `http.request` may reach. `*.example.com` matches subdomains but not the apex. Empty means the tool is not registered at all | *(empty)* |
-| `httpAllowedSchemes` | Permitted URL schemes | `["https:"]` |
-| `httpMaxBytes` | Response body retained before truncation | 262144 |
-| `httpTimeoutMs` | Whole-request timeout | 10000 |
-| `httpAllowPrivateAddresses` | Permit loopback, private and link-local destinations | `false` |
+| Key                         | Meaning                                                                                                                                | Default                         |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `fsRoot`                    | Root directory for `fs.read`                                                                                                           | the gateway's working directory |
+| `fsMaxReadBytes`            | Largest file `fs.read` returns                                                                                                         | 1048576                         |
+| `httpAllowlist`             | Hostnames `http.request` may reach. `*.example.com` matches subdomains but not the apex. Empty means the tool is not registered at all | _(empty)_                       |
+| `httpAllowedSchemes`        | Permitted URL schemes                                                                                                                  | `["https:"]`                    |
+| `httpMaxBytes`              | Response body retained before truncation                                                                                               | 262144                          |
+| `httpTimeoutMs`             | Whole-request timeout                                                                                                                  | 10000                           |
+| `httpAllowPrivateAddresses` | Permit loopback, private and link-local destinations                                                                                   | `false`                         |
 
 Set the narrowest values that let your skills work. Do not point `fsRoot` at your home
 directory, and turn on `httpAllowPrivateAddresses` only when you are deliberately targeting a
@@ -145,12 +145,14 @@ your router or a cloud metadata endpoint.
 Run before tagging any release.
 
 ### Secrets and keys
+
 - [ ] No API keys in the frontend bundle, in logs, or in `config.json`
 - [ ] Vault master key sourced from the OS keychain, not from the environment
 - [ ] `GET /secrets` returns names only, never values
 - [ ] Secret scan passes over the working tree and git history
 
 ### Gateway
+
 - [ ] Binds `127.0.0.1` unless remote mode is explicitly configured
 - [ ] All endpoints except `/health` require a bearer token
 - [ ] No `CLERQ_DEV` code path disables authentication
@@ -158,17 +160,20 @@ Run before tagging any release.
 - [ ] Rate limits and body size limits on webhook endpoints
 
 ### Tools and execution
+
 - [ ] Path validation uses `realpath` + `path.relative`, with tests for traversal, symlink and prefix-sibling cases
 - [ ] `http.request` validates every redirect hop and blocks private, loopback, link-local and metadata addresses
 - [ ] Every executing tool runs inside a sandbox profile; `native` emits a visible warning
 - [ ] Tool output is truncated before entering model context
 
 ### Desktop and updates
+
 - [ ] Restrictive CSP set; `null` is not shipped
 - [ ] Real updater public key configured; artifacts signed; a test update verifies end to end
 - [ ] Installer disclaimer and About screen state actual permissions — see [INSTALLER_DISCLAIMER.md](INSTALLER_DISCLAIMER.md)
 
 ### CI
+
 - [ ] Typecheck, lint, Vitest, `cargo test` all pass and are required
 - [ ] `pnpm audit` and `cargo audit` clean or triaged with written justification
 - [ ] Build succeeds on every target platform

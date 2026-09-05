@@ -77,13 +77,20 @@ export function CapabilitiesSection() {
           placeholder="Leave empty for working directory"
           style={{ display: 'block', width: '100%', maxWidth: 400, marginTop: 4 }}
         />
-        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>fs.read resolves paths under this directory.</span>
+        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+          fs.read resolves paths under this directory.
+        </span>
       </label>
 
       <div>
-        <div className="row" style={{ alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        <div
+          className="row"
+          style={{ alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}
+        >
           <strong>HTTP allowlist</strong>
-          <button type="button" className="btn btn-ghost" onClick={addHost}>+ Add host</button>
+          <button type="button" className="btn btn-ghost" onClick={addHost}>
+            + Add host
+          </button>
         </div>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
           Hostnames http.request can call. Empty = http.request disabled.
@@ -96,12 +103,16 @@ export function CapabilitiesSection() {
               onChange={(e) => updateHost(i, e.target.value)}
               style={{ width: 200 }}
             />
-            <button type="button" className="btn btn-ghost" onClick={() => removeHost(i)}>✕</button>
+            <button type="button" className="btn btn-ghost" onClick={() => removeHost(i)}>
+              ✕
+            </button>
           </div>
         ))}
       </div>
 
-      <button type="button" className="btn" onClick={save}>Save capabilities</button>
+      <button type="button" className="btn" onClick={save}>
+        Save capabilities
+      </button>
       {message && <ResultBox error={message.startsWith('Failed')}>{message}</ResultBox>}
     </div>
   );

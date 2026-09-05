@@ -29,9 +29,7 @@ export interface ModuleManifest {
   dependencies?: Record<string, string>;
 }
 
-export type ModuleSource =
-  | { type: 'path'; path: string }
-  | { type: 'url'; url: string };
+export type ModuleSource = { type: 'path'; path: string } | { type: 'url'; url: string };
 
 export interface ModuleConfigEntry {
   id: string;

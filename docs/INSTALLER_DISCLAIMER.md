@@ -11,9 +11,9 @@ By installing OpenClerq you agree to the following.
 To provide local clerical and administrative assistance, OpenClerq needs and will use the following access:
 
 1. **Config and secrets (local only)**  
-   Read and write files under `~/.clerq` (or `%USERPROFILE%\.clerq` on Windows):  
-   - `config.json` — your settings (gateway URL, module paths, etc.)  
-   - `.env` — optional API key for an LLM provider, if you choose to use one  
+   Read and write files under `~/.clerq` (or `%USERPROFILE%\.clerq` on Windows):
+   - `config.json` — your settings (gateway URL, module paths, etc.)
+   - `.env` — optional API key for an LLM provider, if you choose to use one
 
 2. **Module paths**  
    Read directories you configure as “skills” or “modules” and their manifest files. Only paths you explicitly set are accessed.
@@ -26,8 +26,8 @@ To provide local clerical and administrative assistance, OpenClerq needs and wil
 
 ## Summary
 
-- All **calculations** run on your machine (local Rust engine).  
-- **Config and API keys** stay in `~/.clerq` and are not shipped or logged by the app.  
+- All **calculations** run on your machine (local Rust engine).
+- **Config and API keys** stay in `~/.clerq` and are not shipped or logged by the app.
 - **Network** is only used if you configure a cloud LLM; you can use a fully local model (e.g. Ollama) with no API key.
 
 If you do not agree, do not install or use OpenClerq.

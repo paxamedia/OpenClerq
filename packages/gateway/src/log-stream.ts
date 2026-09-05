@@ -21,7 +21,11 @@ function nextId(): string {
   return `log-${idSeq}`;
 }
 
-export function appendLog(level: LogEntry['level'], msg: string, data?: Record<string, unknown>): void {
+export function appendLog(
+  level: LogEntry['level'],
+  msg: string,
+  data?: Record<string, unknown>
+): void {
   const entry: LogEntry = {
     id: nextId(),
     ts: new Date().toISOString(),

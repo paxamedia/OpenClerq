@@ -156,4 +156,3 @@ Always:
 - Restrict what the tool can access (paths, hosts, commands).
 - Keep the interface small and auditable.
 - Treat tools as **powerful local capabilities**: they are what makes OpenClerq an effective local MCS.
-

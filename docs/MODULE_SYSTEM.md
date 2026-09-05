@@ -94,4 +94,3 @@ Modules and skills must respect the **safety guarantees** of the OSS core:
 - Skills should describe any constraints, required approvals, and audit notes.
 
 See `docs/SECURITY.md` for the binding rules and the checklist to run before you ship or share a module.
-

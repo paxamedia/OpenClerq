@@ -14,7 +14,10 @@ export interface TaskRequest {
   /** Optional: skill display name for explain context */
   skillName?: string;
   /** Optional: run calculation when intent detected (e.g. "Calculate 25% on 100") */
-  runCalc?: (expression: string, inputs?: Record<string, number>) => Promise<{ values: Record<string, number> }>;
+  runCalc?: (
+    expression: string,
+    inputs?: Record<string, number>
+  ) => Promise<{ values: Record<string, number> }>;
   /** Optional: model override (use when user has multiple models) */
   model?: string;
   /** When true: parse intent, show trace, but do not call LLM or run calc. */

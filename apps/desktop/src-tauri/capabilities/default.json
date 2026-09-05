@@ -2,9 +2,7 @@
   "$schema": "https://schemas.tauri.app/2/capability",
   "identifier": "default",
   "description": "Default capabilities for Clerq desktop",
-  "windows": [
-    "main"
-  ],
+  "windows": ["main"],
   "permissions": [
     "process:allow-restart",
     "core:default",

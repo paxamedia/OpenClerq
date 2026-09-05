@@ -40,25 +40,27 @@ export function getCalcBinaryPath(): string {
   return path.join(repoRoot, 'packages', 'calculation-core', 'target', 'release', 'clerq-calc');
 }
 
-export function runEvalCalc(
-  req: EvalCalcRequest,
-  binaryPath: string
-): Promise<EvalCalcResponse> {
+export function runEvalCalc(req: EvalCalcRequest, binaryPath: string): Promise<EvalCalcResponse> {
   return new Promise((resolve, reject) => {
-    const input = JSON.stringify({
-      operation: 'eval',
-      expression: req.expression,
-      inputs: req.inputs ?? {},
-      spec: req.spec,
-    }) + '\n';
+    const input =
+      JSON.stringify({
+        operation: 'eval',
+        expression: req.expression,
+        inputs: req.inputs ?? {},
+        spec: req.spec,
+      }) + '\n';
 
     const child = spawn(binaryPath, [], { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
 
     child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk) => { console.warn('[Clerq] clerq-calc stderr:', chunk.trim()); });
+    child.stderr.on('data', (chunk) => {
+      console.warn('[Clerq] clerq-calc stderr:', chunk.trim());
+    });
 
     child.on('error', reject);
     child.on('close', (code) => {

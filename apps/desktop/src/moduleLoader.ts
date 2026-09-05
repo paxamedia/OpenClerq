@@ -16,9 +16,7 @@ export interface LoadModulesResult {
  * Load modules from config.modulePaths.
  * Each entry with a path is loaded; manifest is read via Tauri.
  */
-export async function loadModules(
-  modulePaths: ModuleConfigEntry[]
-): Promise<LoadModulesResult> {
+export async function loadModules(modulePaths: ModuleConfigEntry[]): Promise<LoadModulesResult> {
   const loaded: ModuleManifest[] = [];
   const errors: { id: string; path: string; error: string }[] = [];
 

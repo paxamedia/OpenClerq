@@ -18,7 +18,11 @@ function formatMessage(level: string, message: string, data?: Record<string, unk
   return `[${timestamp}] [${level}] ${message}${extra}`;
 }
 
-function emitStream(level: 'INFO' | 'WARN' | 'ERROR', message: string, data?: Record<string, unknown>): void {
+function emitStream(
+  level: 'INFO' | 'WARN' | 'ERROR',
+  message: string,
+  data?: Record<string, unknown>
+): void {
   if (streamEnabled) appendLog(level, message, data);
 }
 

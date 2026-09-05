@@ -36,7 +36,9 @@ export type RequestWithLicense = Request & { license?: LicenseInfo };
  * @param _devMode retained for signature compatibility; licensing no longer
  *                 varies by development mode, because it no longer gates access.
  */
-export function licenseCheck(_devMode?: boolean): (req: Request, res: Response, next: NextFunction) => void {
+export function licenseCheck(
+  _devMode?: boolean
+): (req: Request, res: Response, next: NextFunction) => void {
   const license = resolveLicense();
   return (req: Request, _res: Response, next: NextFunction) => {
     (req as RequestWithLicense).license = license;

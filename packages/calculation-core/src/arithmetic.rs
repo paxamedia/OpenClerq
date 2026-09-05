@@ -3,7 +3,9 @@
 //! +, -, *, /, %, ^, sqrt, round, floor, ceil, abs, min, max, log, ln, exp, pow, etc.
 
 use crate::audit::CalculationProof;
-use evalexpr::{build_operator_tree, ContextWithMutableVariables, HashMapContext, EvalexprResult, Value};
+use evalexpr::{
+    build_operator_tree, ContextWithMutableVariables, EvalexprResult, HashMapContext, Value,
+};
 use std::collections::BTreeMap;
 
 /// Evaluate a single expression with optional variables.
@@ -15,7 +17,9 @@ pub fn evaluate(expression: &str, variables: &BTreeMap<String, f64>) -> Evalexpr
     for (k, v) in variables {
         context
             .set_value(k.clone(), Value::Float(*v))
-            .map_err(|e: evalexpr::EvalexprError| evalexpr::EvalexprError::CustomMessage(e.to_string()))?;
+            .map_err(|e: evalexpr::EvalexprError| {
+                evalexpr::EvalexprError::CustomMessage(e.to_string())
+            })?;
     }
     let node = build_operator_tree(expression)?;
     let result = node.eval_number_with_context(&context)?;
@@ -46,7 +50,9 @@ pub fn evaluate_spec(
             .get(out_name)
             .ok_or_else(|| format!("missing formula for output: {}", out_name))?;
         let node = build_operator_tree(formula).map_err(|e| e.to_string())?;
-        let result = node.eval_number_with_context(&context).map_err(|e| e.to_string())?;
+        let result = node
+            .eval_number_with_context(&context)
+            .map_err(|e| e.to_string())?;
         values.insert(out_name.clone(), result);
         context
             .set_value(out_name.clone(), Value::Float(result))

@@ -64,8 +64,12 @@ export function SystemPromptSection() {
       </label>
 
       <div className="row" style={{ gap: '0.5rem' }}>
-        <button type="button" className="btn" onClick={save}>Save</button>
-        <button type="button" className="btn btn-ghost" onClick={reset}>Reset to default</button>
+        <button type="button" className="btn" onClick={save}>
+          Save
+        </button>
+        <button type="button" className="btn btn-ghost" onClick={reset}>
+          Reset to default
+        </button>
       </div>
       {message && <ResultBox error={message.startsWith('Failed')}>{message}</ResultBox>}
     </div>
