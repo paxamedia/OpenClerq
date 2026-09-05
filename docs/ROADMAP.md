@@ -329,8 +329,8 @@ everything downstream writes into.
 - [x] Remove the production `CLERQ_DEV` bypass; generate a token on first run and hand it to the desktop app
 - [x] Canonical path validation — `realpath` + `path.relative`, explicit symlink policy, size caps
 - [x] SSRF hardening on `http.request` — scheme allowlist, manual redirect validation, block loopback/link-local/private ranges and metadata endpoints, timeouts, response size cap, method allowlist
-- [ ] `packages/store` — SQLite + WAL, migration runner, schema from §4.4 _(moved to 0.5)_
-- [ ] Migrate `memory.json` / `triggers.json` / `capabilities.json` into SQLite with a one-time importer _(moved to 0.5)_
+- [x] `packages/store` — SQLite + WAL, migration runner, schema from §4.4 _(landed)_
+- [x] Migrate `memory.json` / `triggers.json` / `capabilities.json` into SQLite with a one-time importer _(landed)_
 - [x] Lock CORS to the desktop origin; drop the `*` dev path
 - [ ] Secrets master key → OS keychain (Keychain / DPAPI), age-encrypted file for headless _(moved to 0.5)_
 - [ ] Typed event bus + append-only audit log _(moved to 0.5)_

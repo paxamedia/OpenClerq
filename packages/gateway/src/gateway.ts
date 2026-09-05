@@ -36,7 +36,9 @@ import {
   getWebhookMessage,
   type TriggersConfig,
 } from './triggers.js';
-import { listMemory, getMemory, setMemory, deleteMemory } from './memory-layer.js';
+import { listMemory, getMemory, setMemory, deleteMemory, searchMemory } from './memory-layer.js';
+import { initStore } from './store.js';
+import { recordRun, listRuns, getRun } from './runs.js';
 
 const DEFAULT_PORT = 18790;
 
@@ -415,6 +417,29 @@ export function createGateway(config: GatewayConfig = {}): {
     }
   });
 
+  app.get('/runs', (req: Request, res: Response) => {
+    const limit = Math.min(Number(req.query?.limit ?? 50) || 50, 500);
+    try {
+      res.json({ runs: listRuns(limit) });
+    } catch (e) {
+      logger.error('runs list error', { err: e instanceof Error ? e.message : String(e) });
+      res.status(500).json({ error: 'runs_list_failed' });
+    }
+  });
+
+  app.get('/runs/:id', (req: Request, res: Response) => {
+    const id = typeof req.params?.id === 'string' ? req.params.id : '';
+    if (!id) return res.status(400).json({ error: 'id required' });
+    try {
+      const run = getRun(id);
+      if (!run) return res.status(404).json({ error: 'run_not_found', id });
+      res.json(run);
+    } catch (e) {
+      logger.error('run get error', { id, err: e instanceof Error ? e.message : String(e) });
+      res.status(500).json({ error: 'run_get_failed' });
+    }
+  });
+
   app.post('/calculate/eval', async (req: Request, res: Response) => {
     if (!fssync.existsSync(calcPath)) {
       return res.status(503).json({
@@ -551,7 +576,9 @@ export function createGateway(config: GatewayConfig = {}): {
     }
     try {
       saveTriggers(body);
-      startTriggers(runTaskFromContext);
+      startTriggers((message: string) =>
+        recordRun({ trigger: 'schedule', message }, () => runTaskFromContext(message))
+      );
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: e instanceof Error ? e.message : 'Failed' });
@@ -600,11 +627,17 @@ export function createGateway(config: GatewayConfig = {}): {
       return res.status(400).json({ error: 'message is required' });
     }
     try {
-      const result = await runTaskFromContext(
-        message.trim(),
-        typeof body.model === 'string' ? body.model : undefined,
+      // A dry run performs no work, so it does not warrant a run record.
+      const exec = () =>
+        runTaskFromContext(
+          message.trim(),
+          typeof body.model === 'string' ? body.model : undefined,
+          body.dryRun === true
+        );
+      const result =
         body.dryRun === true
-      );
+          ? await exec()
+          : await recordRun({ trigger: 'manual', message: message.trim() }, exec);
       logger.info('task', { skill: result.skillSlug ?? 'none' });
       res.json(result);
     } catch (e) {
@@ -630,6 +663,13 @@ export function createGateway(config: GatewayConfig = {}): {
 
   const server = app.listen(port, host, async () => {
     logger.info('Gateway started', { host, port, url: `http://${host}:${port}` });
+    try {
+      await initStore(config.dbPath);
+    } catch (e) {
+      logger.error('Store failed to open; memory and run history are unavailable', {
+        err: e instanceof Error ? e.message : String(e),
+      });
+    }
     if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
       logger.warn(
         'Gateway is bound to a non-loopback interface and is reachable from the network. ' +
@@ -640,7 +680,9 @@ export function createGateway(config: GatewayConfig = {}): {
     if (auth.source === 'generated') {
       logger.info('Generated a new gateway token at ~/.clerq/gateway-token (mode 0600).');
     }
-    startTriggers(runTaskFromContext);
+    startTriggers((message: string) =>
+      recordRun({ trigger: 'schedule', message }, () => runTaskFromContext(message))
+    );
     try {
       const modules = await loadModulesFromDir(config.modulesDir ?? process.env.CLERQ_MODULES_DIR);
       loadedModules = modules;

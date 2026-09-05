@@ -13,6 +13,8 @@ export interface GatewayConfig {
   /** Development conveniences. Does NOT affect authentication. */
   devMode?: boolean;
   model?: string;
+  /** Store location. Defaults to ~/.clerq/clerq.db; tests pass ':memory:'. */
+  dbPath?: string;
   /** Optional configuration for built-in generic tools (fs, http, etc.). */
   toolsConfig?: import('./tools.js').ToolConfig;
 }

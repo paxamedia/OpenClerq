@@ -15,6 +15,7 @@ import { MIGRATIONS } from './migrations.js';
 export type { Database, Statement, Row, Param } from './driver.js';
 export { openDatabase } from './driver.js';
 export { MIGRATIONS } from './migrations.js';
+export { importLegacyJson, type ImportResult } from './import-legacy.js';
 
 export function getDefaultDbPath(): string {
   const home = process.env.HOME || process.env.USERPROFILE || '';

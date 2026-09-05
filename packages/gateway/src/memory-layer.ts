@@ -1,82 +1,90 @@
 /**
- * File-backed memory layer — simple key-value store for agent context.
- * Stored in ~/.clerq/memory.json. Inspect and prune via API.
+ * Agent memory, backed by the durable store.
+ *
+ * Replaces ~/.clerq/memory.json, which was read-modify-write with no locking:
+ * two concurrent writers each read the whole file, mutated their copy and wrote
+ * it back, so one silently lost the other's entries. Existing entries are
+ * imported into SQLite on first start (see @clerq/store importLegacyJson).
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
+import { getStore } from './store.js';
 
 export interface MemoryEntry {
   key: string;
   value: unknown;
   createdAt: string;
+  updatedAt?: string;
 }
 
-function getPath(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  return path.join(home, '.clerq', 'memory.json');
-}
-
-function loadRaw(): Record<string, { value: unknown; createdAt: string }> {
-  const p = getPath();
-  if (!fs.existsSync(p)) return {};
+function parseValue(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
   try {
-    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<
-      string,
-      { value?: unknown; createdAt?: string }
-    >;
-    const out: Record<string, { value: unknown; createdAt: string }> = {};
-    for (const [k, v] of Object.entries(raw)) {
-      if (v && typeof v === 'object' && typeof v.createdAt === 'string') {
-        out[k] = { value: v.value, createdAt: v.createdAt };
-      }
-    }
-    return out;
+    return JSON.parse(raw);
   } catch {
-    return {};
+    // Tolerate a value written before it was consistently serialised.
+    return raw;
   }
 }
 
-function saveRaw(data: Record<string, { value: unknown; createdAt: string }>): void {
-  const dir = path.dirname(getPath());
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(getPath(), JSON.stringify(data, null, 2), 'utf8');
-}
-
 export function listMemory(): MemoryEntry[] {
-  const raw = loadRaw();
-  return Object.entries(raw).map(([key, { value, createdAt }]) => ({
-    key,
-    value,
-    createdAt,
+  const rows = getStore()
+    .prepare('SELECT key, value, created_at, updated_at FROM memory ORDER BY updated_at DESC')
+    .all();
+  return rows.map((r) => ({
+    key: String(r.key),
+    value: parseValue(r.value),
+    createdAt: String(r.created_at),
+    updatedAt: r.updated_at ? String(r.updated_at) : undefined,
   }));
 }
 
 export function getMemory(key: string): MemoryEntry | null {
-  const raw = loadRaw();
-  const entry = raw[key];
-  if (!entry) return null;
-  return { key, value: entry.value, createdAt: entry.createdAt };
+  const row = getStore()
+    .prepare('SELECT key, value, created_at, updated_at FROM memory WHERE key = ?')
+    .get(key);
+  if (!row) return null;
+  return {
+    key: String(row.key),
+    value: parseValue(row.value),
+    createdAt: String(row.created_at),
+    updatedAt: row.updated_at ? String(row.updated_at) : undefined,
+  };
 }
 
+/** Insert or update in one statement — no read-modify-write window. */
 export function setMemory(key: string, value: unknown): void {
-  const raw = loadRaw();
-  raw[key] = { value, createdAt: new Date().toISOString() };
-  saveRaw(raw);
+  const now = new Date().toISOString();
+  getStore()
+    .prepare(
+      `INSERT INTO memory (key, value, type, created_at, updated_at)
+       VALUES (?, ?, 'fact', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    )
+    .run(key, JSON.stringify(value ?? null), now, now);
 }
 
 export function deleteMemory(key: string): boolean {
-  const raw = loadRaw();
-  if (!(key in raw)) return false;
-  delete raw[key];
-  saveRaw(raw);
-  return true;
+  return getStore().prepare('DELETE FROM memory WHERE key = ?').run(key).changes > 0;
 }
 
 export function clearMemory(): number {
-  const raw = loadRaw();
-  const count = Object.keys(raw).length;
-  if (count === 0) return 0;
-  saveRaw({});
-  return count;
+  return getStore().prepare('DELETE FROM memory').run().changes;
+}
+
+/** Substring search across keys and serialised values. */
+export function searchMemory(query: string, limit = 50): MemoryEntry[] {
+  const like = `%${query}%`;
+  const rows = getStore()
+    .prepare(
+      `SELECT key, value, created_at, updated_at FROM memory
+       WHERE key LIKE ? OR value LIKE ?
+       ORDER BY updated_at DESC LIMIT ?`
+    )
+    .all(like, like, limit);
+  return rows.map((r) => ({
+    key: String(r.key),
+    value: parseValue(r.value),
+    createdAt: String(r.created_at),
+    updatedAt: r.updated_at ? String(r.updated_at) : undefined,
+  }));
 }

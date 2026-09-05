@@ -75,19 +75,20 @@ which is active.
 
 The gateway is the control plane. Endpoints:
 
-| Group       | Endpoints                                                                |
-| ----------- | ------------------------------------------------------------------------ | ------------------------------------ | ---------------------- | -------------------- |
-| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                  |
-| Models      | `GET /models`                                                            |
-| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                   |
-| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                  |
-| Tools       | `GET /tools`, `POST /tools/run`                                          |
-| Calculation | `POST /calculate/eval`, `POST /filing/prep`                              |
-| Memory      | `GET /memory`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key` |
-| Config      | `GET                                                                     | POST /capabilities`, `GET            | POST /reasoning`, `GET | POST /system-prompt` |
-| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                 |
-| Automation  | `GET                                                                     | POST /triggers`, `POST /webhook/:id` |
-| Modules     | mounted at `/api/modules/:moduleId/*`                                    |
+| Group       | Endpoints                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------- | ------------------------------------ | ---------------------- | -------------------- |
+| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                           |
+| Models      | `GET /models`                                                                                     |
+| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                            |
+| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                           |
+| Tools       | `GET /tools`, `POST /tools/run`                                                                   |
+| Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                       |
+| Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key` |
+| Runs        | `GET /runs`, `GET /runs/:id`                                                                      |
+| Config      | `GET                                                                                              | POST /capabilities`, `GET            | POST /reasoning`, `GET | POST /system-prompt` |
+| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                          |
+| Automation  | `GET                                                                                              | POST /triggers`, `POST /webhook/:id` |
+| Modules     | mounted at `/api/modules/:moduleId/*`                                                             |
 
 Responsibilities: loading skills from disk and normalising metadata (`inputSchema`,
 `outputSchema`, `dependsOn`); hosting tools under capability restrictions; file-backed memory;

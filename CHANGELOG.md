@@ -13,8 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Runtime-adaptive SQLite driver.** The gateway runs under Node (development) and Bun (the compiled desktop sidecar), so the driver selects `node:sqlite` or `bun:sqlite` at runtime through a computed import specifier. No native addon is involved — `better-sqlite3` cannot be embedded by `bun build --compile` and would break the desktop installer build.
 - **Legacy JSON importer.** `memory.json` and `triggers.json` are imported into SQLite on start, idempotently, and archived as `*.migrated` rather than deleted. A corrupt file is skipped and left in place instead of blocking startup.
 
+- **Run history.** Every task and every trigger firing now writes a durable run record with a step trace, replacing the fire-and-forget path where results were logged and discarded. New endpoints `GET /runs` and `GET /runs/:id`.
+- **`GET /memory/search?q=`** — substring search across memory keys and values.
+
 ### Changed
 
+- **Memory is store-backed.** `~/.clerq/memory.json` was read-modify-write with no locking, so concurrent writers silently clobbered each other. Writes are now a single upsert.
 - **Node 24 is now the development requirement** (was 22). `node:sqlite` needs `--experimental-sqlite` on Node 22. End users are unaffected: the desktop app ships the Bun-compiled sidecar and needs no Node at all.
 - `build:gateway` builds the gateway's workspace dependencies first, so a pristine checkout can resolve `@clerq/store` types.
 - CI builds all packages topologically and runs every package's tests, not just the gateway's.
