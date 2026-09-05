@@ -31,9 +31,10 @@ const isMac = process.platform === 'darwin';
 
 describe('redact', () => {
   it('removes secret values wherever they appear', () => {
-    const out = redact('token=abcdef123456 and again abcdef123456', { T: 'abcdef123456' });
-    expect(out).not.toContain('abcdef123456');
-    expect(out).toBe('token=«redacted» and again «redacted»');
+    const fake = 'NOT-A-REAL-SECRET-0000';
+    const out = redact(`value=${fake} and again ${fake}`, { T: fake });
+    expect(out).not.toContain(fake);
+    expect(out).toBe('value=«redacted» and again «redacted»');
   });
 
   it('leaves text alone when there are no secrets', () => {

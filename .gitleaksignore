@@ -1,0 +1,6 @@
+# Fingerprints of reviewed false positives.
+#
+# A sample string in the sandbox redaction test matched the generic-api-key
+# rule. It is not a credential; the literal has since been renamed, but the
+# original blob remains in history.
+f4157cf490fa2e338c1bef861f6bcdb60adc0098:packages/sandbox/src/sandbox.test.ts:generic-api-key:34
