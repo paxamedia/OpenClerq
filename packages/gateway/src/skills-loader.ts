@@ -38,13 +38,22 @@ function parseFrontmatter(md: string): Record<string, unknown> | null {
     const key = line.slice(0, colon).trim();
     let val: unknown = line.slice(colon + 1).trim();
     if (typeof val === 'string') {
-      if ((val.startsWith('[') && val.endsWith(']')) || (val.startsWith('{') && val.endsWith('}'))) {
+      if (
+        (val.startsWith('[') && val.endsWith(']')) ||
+        (val.startsWith('{') && val.endsWith('}'))
+      ) {
         try {
           val = JSON.parse(val.replace(/'/g, '"'));
         } catch {
           // keep as string
         }
-      } else if (val.startsWith('"') && val.endsWith('"')) {
+      } else if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        // YAML accepts either quote style; only double quotes were handled
+        // before, so 'single-quoted' values kept their quotes and broke slug
+        // lookups silently.
         val = val.slice(1, -1);
       }
     }
@@ -57,9 +66,9 @@ export async function loadSkillsFromDir(skillsDir: string): Promise<SkillMeta[]>
   const skills: SkillMeta[] = [];
   let dirs: string[] = [];
   try {
-    dirs = await fs.readdir(skillsDir, { withFileTypes: true }).then((entries) =>
-      entries.filter((e) => e.isDirectory()).map((e) => e.name)
-    );
+    dirs = await fs
+      .readdir(skillsDir, { withFileTypes: true })
+      .then((entries) => entries.filter((e) => e.isDirectory()).map((e) => e.name));
   } catch {
     return skills;
   }
@@ -109,9 +118,9 @@ export interface SkillFrontmatterPatch {
 export async function findSkillDir(skillsDir: string, slug: string): Promise<string | null> {
   let dirs: string[] = [];
   try {
-    dirs = await fs.readdir(skillsDir, { withFileTypes: true }).then((entries) =>
-      entries.filter((e) => e.isDirectory()).map((e) => e.name)
-    );
+    dirs = await fs
+      .readdir(skillsDir, { withFileTypes: true })
+      .then((entries) => entries.filter((e) => e.isDirectory()).map((e) => e.name));
   } catch {
     return null;
   }
@@ -133,7 +142,10 @@ export async function findSkillDir(skillsDir: string, slug: string): Promise<str
 /**
  * Load full SKILL.md content and parsed meta for a skill.
  */
-export async function loadSkillContent(skillsDir: string, slug: string): Promise<{ meta: SkillMeta; body: string } | null> {
+export async function loadSkillContent(
+  skillsDir: string,
+  slug: string
+): Promise<{ meta: SkillMeta; body: string } | null> {
   const dirName = await findSkillDir(skillsDir, slug);
   if (!dirName) return null;
   const skillPath = path.join(skillsDir, dirName, 'SKILL.md');
@@ -141,7 +153,7 @@ export async function loadSkillContent(skillsDir: string, slug: string): Promise
     const md = await fs.readFile(skillPath, 'utf8');
     const match = md.match(FRONTMATTER_REGEX);
     if (!match) return null;
-    const body = md.slice((match[0]?.length ?? 0)).trim();
+    const body = md.slice(match[0]?.length ?? 0).trim();
     const fm = parseFrontmatter(md);
     if (!fm) return null;
     const meta: SkillMeta = {

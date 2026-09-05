@@ -27,12 +27,17 @@ API now requires authentication.
 - `gateway_token` Tauri command; the desktop loads the token before its first API call
 - `setGatewayToken()` / `hasGatewayToken()` in `@clerq/gateway-client`
 - `.github/workflows/ci.yml` — typecheck, tests, Rust fmt/clippy/test, `pnpm audit`, `cargo audit`, secret scan. CI previously ran no tests at all.
+- `.prettierrc.json` and `.prettierignore` pinning the repo's existing style (single quotes, 100 columns); the codebase had no Prettier config, so `format:check` had never passed
 - 49 new tests covering the auth boundary, path containment and network policy (29 → 78)
 
 ### Changed
 
 - Version unified at 0.4.0 across root, gateway, client, schema, desktop, `tauri.conf.json`, `Cargo.toml` and the `/health` and `/metrics` payloads; `sync-version.js` now covers all of them
 - `scripts/verify-local.sh` and the documented `curl` examples send the bearer token
+
+### Fixed
+
+- **Single-quoted YAML frontmatter in `SKILL.md` is now parsed.** The parser stripped double quotes only, so `slug: 'my-skill'` kept its quotes and silently failed every lookup — valid YAML that produced a skill the router could never select.
 
 ### Removed
 
@@ -69,7 +74,7 @@ API now requires authentication.
 - macOS code signing and notarization support (see docs/DISTRIBUTION.md)
 - Tauri updater plugin (requires signing keys, see scripts/setup-updater-keys.sh)
 - CI: macOS and Windows build verification
-- Release workflow: tag v* triggers GitHub Release with installers
+- Release workflow: tag v\* triggers GitHub Release with installers
 - Version sync script: `node scripts/sync-version.js [version]`
 
 ### Changed

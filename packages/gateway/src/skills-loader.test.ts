@@ -16,6 +16,14 @@ describe('skills-loader', () => {
     expect(fixture?.triggers).toEqual(['test', 'fixture']);
   });
 
+  it('parses single-quoted frontmatter as well as double-quoted', async () => {
+    const skills = await loadSkillsFromDir(fixturesDir);
+    const quoted = skills.find((s) => s.slug === 'quoted-skill');
+    expect(quoted).toBeDefined();
+    expect(quoted?.name).toBe('Single Quoted Skill');
+    expect(quoted?.triggers).toEqual(['quoted', 'yaml']);
+  });
+
   it('loadSkillsFromDir returns empty array for non-existent dir', async () => {
     const skills = await loadSkillsFromDir(path.join(__dirname, 'nonexistent-dir-xyz'));
     expect(skills).toEqual([]);
