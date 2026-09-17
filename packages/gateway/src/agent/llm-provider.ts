@@ -16,12 +16,15 @@
 import fs from 'node:fs';
 import {
   call,
+  callStream,
   defaultModelFor,
   findProvider,
   loadRegistry,
   overrideProvider,
   userRegistryPath,
   ProviderError,
+  type CallResult,
+  type ChatMessage,
   type ProviderSpec,
   type Registry,
 } from '@clerq/providers';
@@ -138,33 +141,50 @@ export function resolveTarget(modelOverride?: string): Target {
   };
 }
 
+export interface ChatCallOptions {
+  /** The conversation to send. */
+  messages: ChatMessage[];
+  /** Omitted in the console's raw mode: nothing is added to the conversation. */
+  system?: string;
+  /** A bare model for the configured provider, or "provider/model". */
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  /** Called with each delta when the answer should stream. */
+  onDelta?: (text: string) => void;
+  signal?: AbortSignal;
+}
+
 /**
- * Call the configured model.
- * @param modelOverride A bare model for the configured provider, or "provider/model".
+ * Send a conversation to a model, accounting for the call either way.
+ *
+ * One path for every caller — the task pipeline, the chat console, a
+ * comparison — so tokens and cost are recorded in exactly one place.
  */
-export async function callLLM(
-  system: string,
-  userContent: string,
-  modelOverride?: string
-): Promise<LLMCallResult> {
+export async function chat(opts: ChatCallOptions): Promise<CallResult> {
   const started = Date.now();
+  const promptForRecord = opts.messages.at(-1)?.content ?? '';
   let target: Target | undefined;
   try {
-    target = resolveTarget(modelOverride);
-    const reasoning = loadReasoning();
-    const res = await call(target.registry, `${target.provider.id}/${target.model}`, {
-      system,
-      prompt: userContent,
-      temperature: reasoning.temperature,
-      maxTokens: reasoning.maxTokens,
+    target = resolveTarget(opts.model);
+    const ref = `${target.provider.id}/${target.model}`;
+    const callOptions = {
+      system: opts.system,
+      messages: opts.messages,
+      temperature: opts.temperature,
+      maxTokens: opts.maxTokens,
       keyOptional: target.keyOptional,
-    });
+      signal: opts.signal,
+    };
+    const res = opts.onDelta
+      ? await callStream(target.registry, ref, callOptions, opts.onDelta)
+      : await call(target.registry, ref, callOptions);
 
     recordLLMSuccess(res.latencyMs, res.usage.inputTokens, res.usage.outputTokens, res.costUsd);
     recordModelCall({
       provider: res.provider,
       model: res.model,
-      prompt: userContent,
+      prompt: promptForRecord,
       status: 'ok',
       text: res.text,
       tokensIn: res.usage.inputTokens,
@@ -172,24 +192,44 @@ export async function callLLM(
       costUsd: res.costUsd,
       latencyMs: res.latencyMs,
     });
-    return {
-      text: res.text || 'No response.',
-      model: res.model,
-      provider: res.provider,
-      costUsd: res.costUsd,
-    };
+    return res;
   } catch (e) {
     recordLLMFailure();
     recordModelCall({
       provider: target?.provider.id ?? 'unresolved',
-      model: target?.model ?? modelOverride ?? 'unresolved',
-      prompt: userContent,
+      model: target?.model ?? opts.model ?? 'unresolved',
+      prompt: promptForRecord,
       status: 'error',
       error: e instanceof Error ? e.message : String(e),
       latencyMs: Date.now() - started,
     });
     throw e;
   }
+}
+
+/**
+ * Call the configured model with one user turn and the agent's system prompt.
+ * @param modelOverride A bare model for the configured provider, or "provider/model".
+ */
+export async function callLLM(
+  system: string,
+  userContent: string,
+  modelOverride?: string
+): Promise<LLMCallResult> {
+  const reasoning = loadReasoning();
+  const res = await chat({
+    system,
+    messages: [{ role: 'user', content: userContent }],
+    model: modelOverride,
+    temperature: reasoning.temperature,
+    maxTokens: reasoning.maxTokens,
+  });
+  return {
+    text: res.text || 'No response.',
+    model: res.model,
+    provider: res.provider,
+    costUsd: res.costUsd,
+  };
 }
 
 function isLoopback(url: string): boolean {

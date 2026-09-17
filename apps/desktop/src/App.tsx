@@ -23,7 +23,15 @@ import { loadModules } from './moduleLoader';
 import { moduleRegistry } from './moduleRegistry';
 import { ModuleHost } from './ModuleHost';
 
-const bundledComponents: Record<string, import('./moduleSlots').ModuleUIComponent> = {};
+import { CHAT_CONSOLE_ID, chatConsoleComponent, chatConsoleManifest } from './modules/chat-console';
+
+/**
+ * Modules shipped with the app. They register here rather than being wired into
+ * the shell, so removing one is deleting a line — not editing the app.
+ */
+const bundledComponents: Record<string, import('./moduleSlots').ModuleUIComponent> = {
+  [CHAT_CONSOLE_ID]: chatConsoleComponent,
+};
 
 const GITHUB_URL = 'https://github.com/paxamedia/OpenClerq';
 const OPENCLAW_URL = 'https://github.com/openclaw/openclaw';
@@ -217,6 +225,12 @@ import type { AppConfig, ModuleEntry, ModulePathEntry } from './configTypes';
 export type { AppConfig, ModuleEntry, ModulePathEntry };
 
 const DEFAULT_MODULES: ModuleEntry[] = [
+  {
+    id: CHAT_CONSOLE_ID,
+    name: chatConsoleManifest.name,
+    description: chatConsoleManifest.description ?? '',
+    enabled: true,
+  },
   { id: 'local', name: 'Local', description: 'Add your own — configure below', enabled: true },
 ];
 

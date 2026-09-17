@@ -89,6 +89,31 @@ file when it changes. `CLERQ_LLM_BASE_URL` moves only the `openai` provider and
 this machine, `api` when calls leave it. `GET /providers` lists every provider with its readiness
 and qualified model references, but never its endpoint URL, which may carry credentials.
 
+### Chat console
+
+A chat message is a run with `trigger: 'manual'` in a session that has no schedule — the same
+providers, runs, steps and cost accounting the automation runner uses, not a parallel path.
+Sessions and their transcripts live in the store.
+
+| Mode        | What the gateway adds                                                                                                  |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Raw**     | Nothing. No system prompt, no skill selection, no memory, no tools. The exact request body is kept and is inspectable. |
+| **Managed** | The full `/task` pipeline: system prompt, skill routing, calculation engine, durable transcript.                       |
+
+Raw removes **OpenClerq's** additions, not the vendor's: both modes are the same call to the
+same endpoint under the user's own key. What it buys is pipeline transparency — when a managed
+answer or an overnight automation misbehaves, raw mode is how you tell whether the model was
+wrong or our prompt assembly was.
+
+`POST /sessions/:id/send` streams by default, as SSE; pass `stream: false` for one JSON
+response. `POST /sessions/:id/compare` sends one message to several models at once and returns
+a column per model with its latency, tokens and cost; a model that fails becomes a column with
+an error rather than failing the comparison. The first answer stands as the turn until
+`/promote` chooses another, and the alternatives stay on the message.
+
+The console ships as a first-party desktop module over the same slot contract third-party
+modules use, so it can be removed without touching the gateway or the scheduler.
+
 ### Cost accounting
 
 Every model call made inside a run is recorded as an `llm` step with its provider, model,
@@ -104,23 +129,24 @@ as a lower bound. Keyless local providers cost nothing. `GET /metrics` reports
 
 The gateway is the control plane. Endpoints:
 
-| Group       | Endpoints                                                                                         |
-| ----------- | ------------------------------------------------------------------------------------------------- |
-| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                           |
-| Models      | `GET /models`, `GET /providers`                                                                   |
-| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                            |
-| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                           |
-| Tools       | `GET /tools`, `POST /tools/run`                                                                   |
-| Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                       |
-| Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key` |
-| Runs        | `GET /runs`, `GET /runs/:id`                                                                      |
-| Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                       |
-| Events      | `GET /events` (SSE)                                                                               |
-| Kill switch | `POST /kill`                                                                                      |
-| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`               |
-| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                          |
-| Automation  | `GET \| POST /triggers`, `POST /webhook/:id`                                                      |
-| Modules     | mounted at `/api/modules/:moduleId/*`                                                             |
+| Group       | Endpoints                                                                                                                  |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                                                    |
+| Models      | `GET /models`, `GET /providers`                                                                                            |
+| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                                                     |
+| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                                                    |
+| Tools       | `GET /tools`, `POST /tools/run`                                                                                            |
+| Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                |
+| Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                          |
+| Runs        | `GET /runs`, `GET /runs/:id`                                                                                               |
+| Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update` |
+| Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                |
+| Events      | `GET /events` (SSE)                                                                                                        |
+| Kill switch | `POST /kill`                                                                                                               |
+| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`                                        |
+| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                   |
+| Automation  | `GET \| POST /triggers`, `POST /webhook/:id`                                                                               |
+| Modules     | mounted at `/api/modules/:moduleId/*`                                                                                      |
 
 Responsibilities: loading skills from disk and normalising metadata (`inputSchema`,
 `outputSchema`, `dependsOn`); hosting tools under capability restrictions; store-backed memory,

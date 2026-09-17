@@ -209,9 +209,17 @@ export function estimateCost(model: ModelSpec, usage: Usage): number | null {
   return Math.round(cost * 1e6) / 1e6;
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface CallOptions {
   system?: string;
-  prompt: string;
+  /** A single user turn. Ignored when `messages` is given. */
+  prompt?: string;
+  /** A conversation, for multi-turn chat. Takes precedence over `prompt`. */
+  messages?: ChatMessage[];
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
@@ -227,9 +235,17 @@ export interface CallResult {
   model: string;
   provider: string;
   usage: Usage;
+  /**
+   * False when the provider reported no usage at all — a streaming endpoint
+   * that omits it, most often. Zeros then mean "not said", not "none used",
+   * and cost is null rather than a misleading $0.
+   */
+  usageReported: boolean;
   /** US dollars; null when the model's price is unknown. */
   costUsd: number | null;
   latencyMs: number;
+  /** The request body sent, kept for the chat console's raw mode. */
+  request?: unknown;
 }
 
 export type FetchLike = typeof globalThis.fetch;
@@ -253,6 +269,32 @@ export async function call(
   opts: CallOptions,
   fetchImpl: FetchLike = globalThis.fetch
 ): Promise<CallResult> {
+  return run(registry, modelRef, opts, fetchImpl);
+}
+
+/**
+ * Call a model and receive the answer as it arrives.
+ *
+ * `onText` is called with each delta; the resolved result is the same shape a
+ * buffered call returns, so a caller can record tokens and cost either way.
+ */
+export async function callStream(
+  registry: Registry,
+  modelRef: string,
+  opts: CallOptions,
+  onText: (delta: string) => void,
+  fetchImpl: FetchLike = globalThis.fetch
+): Promise<CallResult> {
+  return run(registry, modelRef, opts, fetchImpl, onText);
+}
+
+async function run(
+  registry: Registry,
+  modelRef: string,
+  opts: CallOptions,
+  fetchImpl: FetchLike,
+  onText?: (delta: string) => void
+): Promise<CallResult> {
   const { provider, model } = resolveModel(registry, modelRef);
   const apiKey = keyFor(provider, opts);
   const started = Date.now();
@@ -263,19 +305,28 @@ export async function call(
   const timer = setTimeout(() => timeout.abort(), timeoutMs);
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout.signal]) : timeout.signal;
   const ctx: CallContext = { provider, model, opts, apiKey, fetchImpl, signal };
+  const anthropic = provider.adapter === 'anthropic';
+  const prepared = anthropic
+    ? prepareAnthropic(ctx, Boolean(onText))
+    : prepareOpenAi(ctx, Boolean(onText));
 
   try {
-    const { text, usage } =
-      provider.adapter === 'anthropic' ? await callAnthropic(ctx) : await callOpenAiCompatible(ctx);
+    const outcome = onText
+      ? await readStream(ctx, prepared, onText, anthropic ? anthropicDelta : openAiDelta)
+      : parseBody(anthropic, await postJson(ctx, prepared));
 
     return {
-      text,
+      text: outcome.text,
       model: model.id,
       provider: provider.id,
-      usage,
+      usage: outcome.usage,
+      usageReported: outcome.usageReported,
       // A keyless provider is one running on hardware the user already owns.
-      costUsd: estimateCost(model, usage) ?? (provider.authEnv ? null : 0),
+      costUsd: outcome.usageReported
+        ? (estimateCost(model, outcome.usage) ?? (provider.authEnv ? null : 0))
+        : null,
       latencyMs: Date.now() - started,
+      request: prepared.body,
     };
   } catch (e) {
     if (e instanceof ProviderError) throw e;
@@ -302,84 +353,228 @@ interface CallContext {
   signal: AbortSignal;
 }
 
-async function postJson<T>(
-  ctx: CallContext,
-  endpoint: string,
-  headers: Record<string, string>,
-  body: unknown
-): Promise<T> {
-  const { provider, fetchImpl, signal } = ctx;
-  const res = await fetchImpl(`${provider.baseUrl.replace(/\/$/, '')}${endpoint}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  const text = await res.text();
-  if (!res.ok) {
-    throw new ProviderError(`${provider.label} returned ${res.status}: ${text.slice(0, 300)}`);
-  }
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new ProviderError(
-      `${provider.label} returned a response that is not JSON: ${text.slice(0, 120)}`
-    );
-  }
+interface PreparedRequest {
+  endpoint: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
 }
 
-async function callAnthropic(ctx: CallContext): Promise<{ text: string; usage: Usage }> {
+interface Outcome {
+  text: string;
+  usage: Usage;
+  usageReported: boolean;
+}
+
+/** The conversation to send: an explicit history, or the single prompt. */
+function turns(opts: CallOptions): Array<{ role: string; content: string }> {
+  if (opts.messages?.length)
+    return opts.messages.map((m) => ({ role: m.role, content: m.content }));
+  return [{ role: 'user', content: opts.prompt ?? '' }];
+}
+
+function prepareAnthropic(ctx: CallContext, stream: boolean): PreparedRequest {
   const { model, opts, apiKey } = ctx;
   const headers: Record<string, string> = { 'anthropic-version': '2023-06-01' };
   if (apiKey) headers['x-api-key'] = apiKey;
-
-  const data = await postJson<{
-    content?: Array<{ type: string; text?: string }>;
-    usage?: { input_tokens?: number; output_tokens?: number };
-  }>(ctx, '/messages', headers, {
-    model: model.id,
-    max_tokens: opts.maxTokens ?? 1024,
-    ...(opts.system ? { system: opts.system } : {}),
-    ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
-    messages: [{ role: 'user', content: opts.prompt }],
-  });
-
   return {
-    text: data.content?.find((b) => b.type === 'text')?.text ?? '',
-    usage: {
-      inputTokens: data.usage?.input_tokens ?? 0,
-      outputTokens: data.usage?.output_tokens ?? 0,
+    endpoint: '/messages',
+    headers,
+    body: {
+      model: model.id,
+      max_tokens: opts.maxTokens ?? 1024,
+      ...(opts.system ? { system: opts.system } : {}),
+      ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
+      messages: turns(opts),
+      ...(stream ? { stream: true } : {}),
     },
   };
 }
 
-async function callOpenAiCompatible(ctx: CallContext): Promise<{ text: string; usage: Usage }> {
+function prepareOpenAi(ctx: CallContext, stream: boolean): PreparedRequest {
   const { model, opts, apiKey } = ctx;
   const headers: Record<string, string> = {};
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
 
-  const messages: Array<{ role: string; content: string }> = [];
-  if (opts.system) messages.push({ role: 'system', content: opts.system });
-  messages.push({ role: 'user', content: opts.prompt });
-
-  const data = await postJson<{
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
-  }>(ctx, '/chat/completions', headers, {
-    model: model.id,
-    messages,
-    max_tokens: opts.maxTokens ?? 1024,
-    ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
-  });
+  const messages = turns(opts);
+  if (opts.system) messages.unshift({ role: 'system', content: opts.system });
 
   return {
-    text: data.choices?.[0]?.message?.content ?? '',
-    usage: {
-      inputTokens: data.usage?.prompt_tokens ?? 0,
-      outputTokens: data.usage?.completion_tokens ?? 0,
+    endpoint: '/chat/completions',
+    headers,
+    body: {
+      model: model.id,
+      messages,
+      max_tokens: opts.maxTokens ?? 1024,
+      ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
+      // Usage is not sent with a stream unless asked for, and without it every
+      // streamed call would look free.
+      ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
     },
   };
+}
+
+function parseBody(anthropic: boolean, data: unknown): Outcome {
+  if (anthropic) {
+    const d = data as {
+      content?: Array<{ type: string; text?: string }>;
+      usage?: { input_tokens?: number; output_tokens?: number };
+    };
+    return {
+      text: d.content?.find((b) => b.type === 'text')?.text ?? '',
+      usage: {
+        inputTokens: d.usage?.input_tokens ?? 0,
+        outputTokens: d.usage?.output_tokens ?? 0,
+      },
+      usageReported: d.usage !== undefined,
+    };
+  }
+  const d = data as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+  };
+  return {
+    text: d.choices?.[0]?.message?.content ?? '',
+    usage: {
+      inputTokens: d.usage?.prompt_tokens ?? 0,
+      outputTokens: d.usage?.completion_tokens ?? 0,
+    },
+    usageReported: d.usage !== undefined,
+  };
+}
+
+async function postJson(ctx: CallContext, prepared: PreparedRequest): Promise<unknown> {
+  const res = await send(ctx, prepared);
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ProviderError(
+      `${ctx.provider.label} returned a response that is not JSON: ${text.slice(0, 120)}`
+    );
+  }
+}
+
+async function send(ctx: CallContext, prepared: PreparedRequest): Promise<Response> {
+  const { provider, fetchImpl, signal } = ctx;
+  const res = await fetchImpl(`${provider.baseUrl.replace(/\/$/, '')}${prepared.endpoint}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...prepared.headers },
+    body: JSON.stringify(prepared.body),
+    signal,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    // Not every OpenAI-compatible server understands stream_options. Rather
+    // than guess per vendor, drop it and retry once when that is the complaint.
+    if (res.status === 400 && 'stream_options' in prepared.body && /stream_options/i.test(body)) {
+      const { stream_options: _dropped, ...rest } = prepared.body;
+      return send(ctx, { ...prepared, body: rest });
+    }
+    throw new ProviderError(`${provider.label} returned ${res.status}: ${body.slice(0, 300)}`);
+  }
+  return res;
+}
+
+/** One SSE frame's meaning, as far as this module cares. */
+interface Delta {
+  text?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+function anthropicDelta(event: Record<string, unknown>): Delta {
+  const type = event.type;
+  if (type === 'content_block_delta') {
+    const delta = event.delta as { type?: string; text?: string } | undefined;
+    return { text: delta?.type === 'text_delta' ? (delta.text ?? '') : undefined };
+  }
+  if (type === 'message_start') {
+    const usage = (event.message as { usage?: { input_tokens?: number; output_tokens?: number } })
+      ?.usage;
+    return { inputTokens: usage?.input_tokens, outputTokens: usage?.output_tokens };
+  }
+  if (type === 'message_delta') {
+    const usage = event.usage as { output_tokens?: number } | undefined;
+    return { outputTokens: usage?.output_tokens };
+  }
+  if (type === 'error') {
+    const error = event.error as { message?: string } | undefined;
+    throw new ProviderError(`Stream failed: ${error?.message ?? 'unknown error'}`);
+  }
+  return {};
+}
+
+function openAiDelta(event: Record<string, unknown>): Delta {
+  const choices = event.choices as Array<{ delta?: { content?: string } }> | undefined;
+  const usage = event.usage as
+    | { prompt_tokens?: number; completion_tokens?: number }
+    | null
+    | undefined;
+  return {
+    text: choices?.[0]?.delta?.content,
+    inputTokens: usage?.prompt_tokens,
+    outputTokens: usage?.completion_tokens,
+  };
+}
+
+async function readStream(
+  ctx: CallContext,
+  prepared: PreparedRequest,
+  onText: (delta: string) => void,
+  toDelta: (event: Record<string, unknown>) => Delta
+): Promise<Outcome> {
+  const res = await send(ctx, prepared);
+  if (!res.body) throw new ProviderError(`${ctx.provider.label} returned an empty stream.`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+  let usageReported = false;
+
+  const handle = (payload: string): void => {
+    if (!payload || payload === '[DONE]') return;
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(payload) as Record<string, unknown>;
+    } catch {
+      return; // a keep-alive or a comment line; nothing to do
+    }
+    const delta = toDelta(event);
+    if (delta.text) {
+      text += delta.text;
+      onText(delta.text);
+    }
+    if (typeof delta.inputTokens === 'number') {
+      usage.inputTokens = delta.inputTokens;
+      usageReported = true;
+    }
+    if (typeof delta.outputTokens === 'number') {
+      usage.outputTokens = delta.outputTokens;
+      usageReported = true;
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // Frames are separated by a blank line; a frame may carry several lines.
+    let sep: number;
+    while ((sep = buffer.search(/\r?\n\r?\n/)) !== -1) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + (/\r\n\r\n/.test(buffer.slice(sep, sep + 4)) ? 4 : 2));
+      for (const line of frame.split(/\r?\n/)) {
+        if (line.startsWith('data:')) handle(line.slice(5).trim());
+      }
+    }
+  }
+  for (const line of buffer.split(/\r?\n/)) {
+    if (line.startsWith('data:')) handle(line.slice(5).trim());
+  }
+
+  return { text, usage, usageReported };
 }
 
 /** Providers that have their key configured, for a status view. */

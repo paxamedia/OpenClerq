@@ -43,6 +43,17 @@ import { initStore } from './store.js';
 import { recordRun, listRuns, getRun, currentRunId } from './runs.js';
 import { emit, subscribeEvents, recentEvents } from './events.js';
 import { listPending, decide, denyAllPending } from './approvals.js';
+import {
+  createSession,
+  listSessions,
+  getSession,
+  updateSession,
+  deleteSession,
+  listMessages,
+  SessionError,
+  type PipelineMode,
+} from './chat/sessions.js';
+import { sendMessage, compare, promote, type ManagedPipeline } from './chat/console.js';
 
 const DEFAULT_PORT = 18790;
 
@@ -502,6 +513,157 @@ export function createGateway(config: GatewayConfig = {}): {
     for (const e of recentEvents(100)) res.write(`data: ${JSON.stringify(e)}\n\n`);
     const unsub = subscribeEvents((e) => res.write(`data: ${JSON.stringify(e)}\n\n`));
     req.on('close', unsub);
+  });
+
+  // ---------------------------------------------------------------------
+  // Chat console. A message is a run; the console is one client of these
+  // endpoints, not their definition — `clerq chat` will be another.
+  // ---------------------------------------------------------------------
+
+  /** Chat problems are the caller's mistake (400) unless something else broke. */
+  function chatError(res: Response, e: unknown, code: string): Response {
+    const message = e instanceof Error ? e.message : String(e);
+    if (e instanceof SessionError)
+      return res.status(400).json({ error: 'invalid_session', message });
+    if (isProviderError(e)) {
+      return res.status(503).json({ error: 'ai_unavailable', message: message.slice(0, 200) });
+    }
+    logger.error(code, { err: message });
+    return res.status(500).json({ error: code });
+  }
+
+  app.get('/sessions', (req: Request, res: Response) => {
+    const limit = Math.min(Number(req.query?.limit ?? 50) || 50, 500);
+    try {
+      res.json({ sessions: listSessions(limit) });
+    } catch (e) {
+      return chatError(res, e, 'sessions_list_failed');
+    }
+  });
+
+  app.post('/sessions', (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { title?: string; mode?: unknown; model?: string };
+    try {
+      res.status(201).json(createSession(body));
+    } catch (e) {
+      return chatError(res, e, 'session_create_failed');
+    }
+  });
+
+  app.get('/sessions/:id', (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    try {
+      const session = getSession(id);
+      if (!session) return res.status(404).json({ error: 'session_not_found', id });
+      res.json({ ...session, messages: listMessages(id) });
+    } catch (e) {
+      return chatError(res, e, 'session_get_failed');
+    }
+  });
+
+  app.post('/sessions/:id/update', (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    try {
+      const session = updateSession(id, (req.body ?? {}) as { title?: string; mode?: unknown });
+      if (!session) return res.status(404).json({ error: 'session_not_found', id });
+      res.json(session);
+    } catch (e) {
+      return chatError(res, e, 'session_update_failed');
+    }
+  });
+
+  app.delete('/sessions/:id', (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    try {
+      if (!deleteSession(id)) return res.status(404).json({ error: 'session_not_found', id });
+      res.json({ ok: true });
+    } catch (e) {
+      return chatError(res, e, 'session_delete_failed');
+    }
+  });
+
+  /**
+   * Send a message. Streams by default: the answer arrives as it is generated,
+   * then a final event carries the stored message with its tokens and cost.
+   * Pass stream: false for a single JSON response.
+   */
+  app.post('/sessions/:id/send', async (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    const body = (req.body ?? {}) as {
+      text?: string;
+      mode?: PipelineMode;
+      model?: string;
+      stream?: boolean;
+    };
+    const streaming = body.stream !== false;
+
+    const managed: ManagedPipeline = async (message, model) => {
+      const result = await runTaskFromContext(message, model);
+      return {
+        explanation: result.explanation,
+        model: result.model,
+        skillSlug: result.skillSlug,
+      };
+    };
+
+    if (!streaming) {
+      try {
+        const result = await sendMessage({
+          sessionId: id,
+          text: body.text ?? '',
+          mode: body.mode,
+          model: body.model,
+          managed,
+        });
+        return res.json(result);
+      } catch (e) {
+        return chatError(res, e, 'session_send_failed');
+      }
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (event: Record<string, unknown>) =>
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+
+    try {
+      const result = await sendMessage({
+        sessionId: id,
+        text: body.text ?? '',
+        mode: body.mode,
+        model: body.model,
+        managed,
+        onDelta: (text) => send({ type: 'delta', text }),
+      });
+      send({ type: 'done', ...result });
+    } catch (e) {
+      // The stream has already been accepted, so the failure is an event on it
+      // rather than a status code.
+      send({ type: 'error', error: e instanceof Error ? e.message : String(e) });
+    }
+    res.end();
+  });
+
+  app.post('/sessions/:id/compare', async (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    const body = (req.body ?? {}) as { text?: string; models?: string[] };
+    try {
+      res.json(await compare({ sessionId: id, text: body.text ?? '', models: body.models ?? [] }));
+    } catch (e) {
+      return chatError(res, e, 'session_compare_failed');
+    }
+  });
+
+  app.post('/sessions/:id/promote', (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    const body = (req.body ?? {}) as { messageId?: number; index?: number };
+    try {
+      res.json(promote(id, Number(body.messageId), Number(body.index)));
+    } catch (e) {
+      return chatError(res, e, 'session_promote_failed');
+    }
   });
 
   app.get('/runs', (req: Request, res: Response) => {

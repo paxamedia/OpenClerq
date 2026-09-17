@@ -12,6 +12,7 @@ import {
   overrideProvider,
   availableProviders,
   call,
+  callStream,
   ProviderError,
   DEFAULT_REGISTRY_YAML,
   type Registry,
@@ -458,10 +459,184 @@ describe('call', () => {
     ).rejects.toThrow(/not JSON/);
   });
 
-  it('treats absent usage as zero rather than failing', async () => {
+  it('does not price a call the provider reported no usage for', async () => {
+    const res = await call(registry, 'deepseek/deepseek-chat', { prompt: 'hi' }, (async () =>
+      jsonResponse({ choices: [{ message: { content: 'x' } }] })) as unknown as typeof fetch);
+    expect(res.usageReported).toBe(false);
+    // Zero tokens here means "not said", so a $0 cost would be a fabrication.
+    expect(res.costUsd).toBeNull();
+  });
+
+  it('reports zero tokens rather than failing when usage is absent', async () => {
     const res = await call(registry, 'deepseek/deepseek-chat', { prompt: 'hi' }, (async () =>
       jsonResponse({ choices: [{ message: { content: 'x' } }] })) as unknown as typeof fetch);
     expect(res.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
-    expect(res.costUsd).toBe(0);
+  });
+
+  it('sends a conversation when one is given, instead of the single prompt', async () => {
+    let seen: { messages?: Array<{ role: string; content: string }> } = {};
+    await call(
+      registry,
+      'deepseek/deepseek-chat',
+      {
+        system: 'sys',
+        prompt: 'ignored',
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: 'answer' },
+          { role: 'user', content: 'second' },
+        ],
+      },
+      (async (_url: string, init: RequestInit) => {
+        seen = JSON.parse(init.body as string);
+        return jsonResponse({ choices: [{ message: { content: 'ok' } }] });
+      }) as unknown as typeof fetch
+    );
+    expect(seen.messages).toEqual([
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'answer' },
+      { role: 'user', content: 'second' },
+    ]);
+  });
+
+  it('keeps the request body, for the console to show', async () => {
+    const res = await call(registry, 'deepseek/deepseek-chat', { prompt: 'hi' }, (async () =>
+      jsonResponse({ choices: [{ message: { content: 'x' } }] })) as unknown as typeof fetch);
+    expect(res.request).toMatchObject({ model: 'deepseek-chat' });
+  });
+});
+
+describe('callStream', () => {
+  const saved = { ...process.env };
+  beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  /** A Response whose body streams the given chunks, split where a real one might split. */
+  const sseResponse = (chunks: string[], ok = true, status = 200) =>
+    ({
+      ok,
+      status,
+      text: async () => chunks.join(''),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          const encoder = new TextEncoder();
+          for (const c of chunks) controller.enqueue(encoder.encode(c));
+          controller.close();
+        },
+      }),
+    }) as unknown as Response;
+
+  it('streams Anthropic deltas and totals its usage', async () => {
+    const deltas: string[] = [];
+    const res = await callStream(
+      registry,
+      'anthropic/claude-haiku-4-5',
+      { prompt: 'hi' },
+      (d) => deltas.push(d),
+      (async () =>
+        sseResponse([
+          'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1000,"output_tokens":0}}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}\n\n',
+          // A frame arriving split across two network reads must still parse.
+          'event: content_block_delta\ndata: {"type":"content_block_de',
+          'lta","delta":{"type":"text_delta","text":"lo"}}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":2000}}\n\n',
+        ])) as unknown as typeof fetch
+    );
+
+    expect(deltas).toEqual(['Hel', 'lo']);
+    expect(res.text).toBe('Hello');
+    expect(res.usage).toEqual({ inputTokens: 1000, outputTokens: 2000 });
+    expect(res.usageReported).toBe(true);
+    expect(res.costUsd).toBeCloseTo(0.001 + 0.01, 6);
+  });
+
+  it('streams chat-completions deltas and stops at [DONE]', async () => {
+    const deltas: string[] = [];
+    let body: Record<string, unknown> = {};
+    const res = await callStream(
+      registry,
+      'deepseek/deepseek-chat',
+      { prompt: 'hi' },
+      (d) => deltas.push(d),
+      (async (_url: string, init: RequestInit) => {
+        body = JSON.parse(init.body as string);
+        return sseResponse([
+          'data: {"choices":[{"delta":{"content":"one "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"two"}}]}\n\n',
+          'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":20}}\n\n',
+          'data: [DONE]\n\n',
+        ]);
+      }) as unknown as typeof fetch
+    );
+
+    expect(body.stream).toBe(true);
+    // Without this, a streamed call reports no usage and looks free.
+    expect(body.stream_options).toEqual({ include_usage: true });
+    expect(deltas).toEqual(['one ', 'two']);
+    expect(res.text).toBe('one two');
+    expect(res.usage).toEqual({ inputTokens: 10, outputTokens: 20 });
+  });
+
+  it('retries without stream_options when the server rejects it', async () => {
+    // Not every OpenAI-compatible server understands the field.
+    const bodies: Array<Record<string, unknown>> = [];
+    const res = await callStream(
+      registry,
+      'deepseek/deepseek-chat',
+      { prompt: 'hi' },
+      () => {},
+      (async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(init.body as string);
+        bodies.push(body);
+        if ('stream_options' in body) {
+          return {
+            ok: false,
+            status: 400,
+            text: async () => '{"error":"unknown field stream_options"}',
+          } as unknown as Response;
+        }
+        return sseResponse(['data: {"choices":[{"delta":{"content":"fallback"}}]}\n\n']);
+      }) as unknown as typeof fetch
+    );
+
+    expect(bodies).toHaveLength(2);
+    expect('stream_options' in bodies[1]).toBe(false);
+    expect(res.text).toBe('fallback');
+    // Nothing reported usage, so the cost is unknown rather than zero.
+    expect(res.usageReported).toBe(false);
+    expect(res.costUsd).toBeNull();
+  });
+
+  it('surfaces an error frame mid-stream', async () => {
+    await expect(
+      callStream(registry, 'anthropic/claude-haiku-4-5', { prompt: 'hi' }, () => {}, (async () =>
+        sseResponse([
+          'data: {"type":"error","error":{"message":"overloaded"}}\n\n',
+        ])) as unknown as typeof fetch)
+    ).rejects.toThrow(/Stream failed: overloaded/);
+  });
+
+  it('reports an HTTP error before any streaming begins', async () => {
+    await expect(
+      callStream(
+        registry,
+        'deepseek/deepseek-chat',
+        { prompt: 'hi' },
+        () => {},
+        (async () =>
+          ({
+            ok: false,
+            status: 503,
+            text: async () => 'busy',
+          }) as unknown as Response) as unknown as typeof fetch
+      )
+    ).rejects.toThrow(/returned 503/);
   });
 });

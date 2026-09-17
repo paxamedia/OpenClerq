@@ -108,6 +108,52 @@ export interface RunSummary {
   tokensOut: number;
 }
 
+export type PipelineMode = 'raw' | 'managed';
+
+export interface ChatSession {
+  id: string;
+  title: string | null;
+  mode: PipelineMode;
+  model: string | null;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+export interface ComparisonColumn {
+  model: string;
+  provider?: string;
+  text?: string;
+  error?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  costUsd?: number | null;
+  latencyMs?: number;
+}
+
+export interface ChatMessage {
+  id: number;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  createdAt: string;
+  /** Provider, model, tokens, cost, the request body, and comparison columns. */
+  meta?: {
+    mode?: PipelineMode | 'compare';
+    provider?: string;
+    model?: string;
+    tokensIn?: number;
+    tokensOut?: number;
+    usageReported?: boolean;
+    costUsd?: number | null;
+    latencyMs?: number;
+    request?: unknown;
+    runId?: string;
+    chosen?: number | null;
+    columns?: ComparisonColumn[];
+    [key: string]: unknown;
+  };
+}
+
 export interface SkillMeta {
   slug: string;
   name: string;
@@ -184,6 +230,117 @@ export const gateway = {
     current: { provider: string; model: string };
   }> {
     return fetchJson('/providers');
+  },
+
+  // --- Chat console -----------------------------------------------------
+
+  sessions(limit = 50): Promise<{ sessions: ChatSession[] }> {
+    return fetchJson(`/sessions?limit=${encodeURIComponent(String(limit))}`);
+  },
+
+  createSession(
+    input: { title?: string; mode?: PipelineMode; model?: string } = {}
+  ): Promise<ChatSession> {
+    return fetchJson('/sessions', { method: 'POST', body: JSON.stringify(input) });
+  },
+
+  session(id: string): Promise<ChatSession & { messages: ChatMessage[] }> {
+    return fetchJson(`/sessions/${encodeURIComponent(id)}`);
+  },
+
+  updateSession(
+    id: string,
+    patch: { title?: string; mode?: PipelineMode; model?: string | null }
+  ): Promise<ChatSession> {
+    return fetchJson(`/sessions/${encodeURIComponent(id)}/update`, {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  deleteSession(id: string): Promise<{ ok: boolean }> {
+    return fetchJson(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  /**
+   * Send a message and stream the answer.
+   *
+   * EventSource cannot POST, so this reads the response body directly. `onDelta`
+   * is called with each piece; the promise resolves with the stored message.
+   */
+  async sendMessage(
+    id: string,
+    input: { text: string; mode?: PipelineMode; model?: string },
+    onDelta?: (text: string) => void,
+    signal?: AbortSignal
+  ): Promise<{ runId: string; message: ChatMessage }> {
+    const res = await fetch(getUrl(`/sessions/${encodeURIComponent(id)}/send`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ ...input, stream: Boolean(onDelta) }),
+      signal,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Gateway ${res.status}: ${body || res.statusText}`);
+    }
+    if (!onDelta) return (await res.json()) as { runId: string; message: ChatMessage };
+    if (!res.body) throw new Error('Gateway returned an empty stream.');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result: { runId: string; message: ChatMessage } | undefined;
+
+    const handle = (frame: string): void => {
+      for (const line of frame.split(/\r?\n/)) {
+        if (!line.startsWith('data:')) continue;
+        const event = JSON.parse(line.slice(5).trim()) as {
+          type: string;
+          text?: string;
+          error?: string;
+          runId?: string;
+          message?: ChatMessage;
+        };
+        if (event.type === 'delta' && event.text) onDelta(event.text);
+        else if (event.type === 'error') throw new Error(event.error ?? 'The model call failed.');
+        else if (event.type === 'done' && event.message) {
+          result = { runId: event.runId ?? '', message: event.message };
+        }
+      }
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep: number;
+      while ((sep = buffer.indexOf('\n\n')) !== -1) {
+        handle(buffer.slice(0, sep));
+        buffer = buffer.slice(sep + 2);
+      }
+    }
+    if (buffer.trim()) handle(buffer);
+
+    if (!result) throw new Error('The stream ended without an answer.');
+    return result;
+  },
+
+  compare(
+    id: string,
+    input: { text: string; models: string[] }
+  ): Promise<{ runId: string; messageId: number; columns: ComparisonColumn[] }> {
+    return fetchJson(`/sessions/${encodeURIComponent(id)}/compare`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  promote(id: string, messageId: number, index: number): Promise<ChatMessage> {
+    return fetchJson(`/sessions/${encodeURIComponent(id)}/promote`, {
+      method: 'POST',
+      body: JSON.stringify({ messageId, index }),
+    });
   },
 
   runs(limit = 50): Promise<{ runs: RunSummary[] }> {

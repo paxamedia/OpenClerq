@@ -29,6 +29,8 @@ const authed = (url: string, init: RequestInit = {}) =>
 interface SeenRequest {
   model: string;
   authorization?: string;
+  messages?: Array<{ role: string; content: string }>;
+  stream?: boolean;
 }
 
 /**
@@ -40,15 +42,41 @@ async function startFakeModelServer(seen: SeenRequest[]): Promise<http.Server> {
     let raw = '';
     req.on('data', (c) => (raw += c));
     req.on('end', () => {
-      const body = JSON.parse(raw) as { model: string; messages: Array<{ content: string }> };
-      seen.push({ model: body.model, authorization: req.headers.authorization });
+      const body = JSON.parse(raw) as {
+        model: string;
+        messages: Array<{ role: string; content: string }>;
+        stream?: boolean;
+      };
+      seen.push({
+        model: body.model,
+        authorization: req.headers.authorization,
+        messages: body.messages,
+        stream: body.stream,
+      });
       const prompt = body.messages[body.messages.length - 1].content;
-      res.setHeader('content-type', 'application/json');
       if (prompt.includes('FAIL_ME')) {
+        res.setHeader('content-type', 'application/json');
         res.statusCode = 500;
         res.end(JSON.stringify({ error: 'upstream boom' }));
         return;
       }
+
+      if (body.stream) {
+        res.setHeader('content-type', 'text/event-stream');
+        for (const word of ['echo ', 'from ', body.model]) {
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: word } }] })}\n\n`);
+        }
+        res.write(
+          `data: ${JSON.stringify({
+            choices: [{ delta: {} }],
+            usage: { prompt_tokens: 1200, completion_tokens: 300 },
+          })}\n\n`
+        );
+        res.end('data: [DONE]\n\n');
+        return;
+      }
+
+      res.setHeader('content-type', 'application/json');
       res.end(
         JSON.stringify({
           choices: [{ message: { content: `echo from ${body.model}` } }],
@@ -379,7 +407,11 @@ describe('gateway integration', () => {
     seen.length = 0;
     const { run } = await taskRun({ message: 'price me', model: 'fakecloud/unpriced' });
 
-    expect(seen).toEqual([{ model: 'unpriced', authorization: 'Bearer fakecloud-test-key' }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      model: 'unpriced',
+      authorization: 'Bearer fakecloud-test-key',
+    });
     expect(run.steps[0].input).toMatchObject({ provider: 'fakecloud', model: 'unpriced' });
     expect(run.steps[0].costUsd).toBeNull();
     expect(run.tokensIn).toBe(1200);
@@ -483,6 +515,223 @@ describe('gateway integration', () => {
     expect(ok.headers.get('content-type')).toContain('text/event-stream');
     await ok.body?.cancel();
     expect((await fetch(`${baseUrl}/events`)).status).toBe(401);
+  });
+
+  describe('chat console', () => {
+    const json = (url: string, body?: unknown, method = 'POST') =>
+      authed(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+
+    /** Read an SSE response to completion and return its events. */
+    async function readEvents(res: Response): Promise<Array<Record<string, unknown>>> {
+      const text = await res.text();
+      return text
+        .split('\n\n')
+        .filter((frame) => frame.startsWith('data:'))
+        .map((frame) => JSON.parse(frame.slice(5).trim()) as Record<string, unknown>);
+    }
+
+    it('streams a raw answer and records it as a run', async () => {
+      const created = await json(`${baseUrl}/sessions`, { title: 'Raw chat' });
+      expect(created.status).toBe(201);
+      const session = (await created.json()) as { id: string; mode: string };
+      expect(session.mode).toBe('raw');
+
+      seen.length = 0;
+      const res = await json(`${baseUrl}/sessions/${session.id}/send`, { text: 'hello there' });
+      expect(res.headers.get('content-type')).toContain('text/event-stream');
+      const events = await readEvents(res);
+
+      // The answer arrives in pieces, then one final event with the stored message.
+      expect(events.filter((e) => e.type === 'delta').map((e) => e.text)).toEqual([
+        'echo ',
+        'from ',
+        'priced',
+      ]);
+      const done = events.at(-1) as {
+        type: string;
+        runId: string;
+        message: { content: string; meta: Record<string, unknown> };
+      };
+      expect(done.type).toBe('done');
+      expect(done.message.content).toBe('echo from priced');
+      expect(done.message.meta).toMatchObject({ mode: 'raw', provider: 'fake', tokensIn: 1200 });
+      expect(seen[0].stream).toBe(true);
+
+      const run = (await (await authed(`${baseUrl}/runs/${done.runId}`)).json()) as {
+        trigger: string;
+        costUsd: number;
+      };
+      expect(run.trigger).toBe('manual');
+      expect(run.costUsd).toBeCloseTo(0.0054, 9);
+    });
+
+    it('sends the conversation, and nothing of its own, in raw mode', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      await json(`${baseUrl}/sessions/${session.id}/send`, { text: 'first', stream: false });
+      seen.length = 0;
+      await json(`${baseUrl}/sessions/${session.id}/send`, { text: 'second', stream: false });
+
+      // History is carried; no system prompt is added — that is what raw means.
+      expect(seen[0].messages).toEqual([
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'echo from priced' },
+        { role: 'user', content: 'second' },
+      ]);
+      expect(seen[0].messages?.some((m) => m.role === 'system')).toBe(false);
+    });
+
+    it('keeps the exact request body for inspection', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      const sent = (await (
+        await json(`${baseUrl}/sessions/${session.id}/send`, { text: 'inspect me', stream: false })
+      ).json()) as { message: { meta: { request: { model: string } } } };
+      expect(sent.message.meta.request.model).toBe('priced');
+    });
+
+    it('runs the full pipeline in managed mode', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`, { mode: 'managed' })).json()) as {
+        id: string;
+      };
+      seen.length = 0;
+      const sent = (await (
+        await json(`${baseUrl}/sessions/${session.id}/send`, {
+          text: 'managed please',
+          stream: false,
+        })
+      ).json()) as { message: { content: string; meta: Record<string, unknown> } };
+
+      expect(sent.message.meta).toMatchObject({ mode: 'managed' });
+      // The managed pipeline adds the system prompt the raw one omits.
+      expect(seen[0].messages?.[0].role).toBe('system');
+    });
+
+    it('titles an untitled conversation after its opening line', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      await json(`${baseUrl}/sessions/${session.id}/send`, { text: 'Summarise Q3', stream: false });
+      const fetched = (await (await authed(`${baseUrl}/sessions/${session.id}`)).json()) as {
+        title: string;
+        messages: unknown[];
+      };
+      expect(fetched.title).toBe('Summarise Q3');
+      expect(fetched.messages).toHaveLength(2);
+    });
+
+    it('refuses an empty message and an unknown session', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      const empty = await json(`${baseUrl}/sessions/${session.id}/send`, {
+        text: '   ',
+        stream: false,
+      });
+      expect(empty.status).toBe(400);
+      const missing = await json(`${baseUrl}/sessions/ses_nope/send`, {
+        text: 'hi',
+        stream: false,
+      });
+      expect(missing.status).toBe(400);
+      expect(((await missing.json()) as { error: string }).error).toBe('invalid_session');
+    });
+
+    it('reports a provider failure as an event on an accepted stream', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      const events = await readEvents(
+        await json(`${baseUrl}/sessions/${session.id}/send`, { text: 'FAIL_ME now' })
+      );
+      expect(events.at(-1)).toMatchObject({ type: 'error' });
+      expect(String(events.at(-1)?.error)).toMatch(/returned 500/);
+    });
+
+    it('compares models side by side and promotes the chosen column', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      const res = await json(`${baseUrl}/sessions/${session.id}/compare`, {
+        text: 'which is better',
+        models: ['fake/priced', 'fakecloud/unpriced', 'fake/does-not-matter'],
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        runId: string;
+        messageId: number;
+        columns: Array<{ model: string; text?: string; costUsd: number | null; latencyMs: number }>;
+      };
+
+      expect(body.columns.map((c) => c.model)).toEqual([
+        'fake/priced',
+        'fakecloud/unpriced',
+        'fake/does-not-matter',
+      ]);
+      expect(body.columns[0].costUsd).toBeCloseTo(0.0054, 9);
+      // An unpriced model reports unknown, not free.
+      expect(body.columns[1].costUsd).toBeNull();
+      expect(body.columns[0].latencyMs).toBeGreaterThanOrEqual(0);
+
+      // Every column is charged to the one run.
+      const run = (await (await authed(`${baseUrl}/runs/${body.runId}`)).json()) as {
+        tokensIn: number;
+        costKnown: boolean;
+        steps: unknown[];
+      };
+      expect(run.steps).toHaveLength(3);
+      expect(run.tokensIn).toBe(3600);
+      expect(run.costKnown).toBe(false);
+
+      // The first answer stands until a human picks another.
+      const before = (await (await authed(`${baseUrl}/sessions/${session.id}`)).json()) as {
+        messages: Array<{ content: string; meta?: { chosen?: number } }>;
+      };
+      expect(before.messages.at(-1)?.meta?.chosen).toBe(0);
+
+      const promoted = await json(`${baseUrl}/sessions/${session.id}/promote`, {
+        messageId: body.messageId,
+        index: 1,
+      });
+      expect(promoted.status).toBe(200);
+      const after = (await (await authed(`${baseUrl}/sessions/${session.id}`)).json()) as {
+        messages: Array<{
+          content: string;
+          meta?: { chosen?: number; columns?: Array<{ model: string }> };
+        }>;
+      };
+      const turn = after.messages.at(-1)!;
+      expect(turn.content).toBe('echo from unpriced');
+      expect(turn.meta?.chosen).toBe(1);
+      // Promoting chooses; it does not discard the alternatives.
+      expect(turn.meta?.columns).toHaveLength(3);
+    });
+
+    it('records a model that fails as a column, not as a failed comparison', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      const body = (await (
+        await json(`${baseUrl}/sessions/${session.id}/compare`, {
+          text: 'FAIL_ME everywhere',
+          models: ['fake/priced', 'fake/other'],
+        })
+      ).json()) as { columns: Array<{ error?: string; text?: string }> };
+
+      expect(body.columns.every((c) => c.error && c.text === undefined)).toBe(true);
+      expect(body.columns[0].error).toMatch(/returned 500/);
+    });
+
+    it('needs at least two models to compare', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      const res = await json(`${baseUrl}/sessions/${session.id}/compare`, {
+        text: 'one only',
+        models: ['fake/priced'],
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { message: string }).message).toMatch(/at least two models/);
+    });
+
+    it('deletes a conversation and requires a token throughout', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      expect((await json(`${baseUrl}/sessions/${session.id}`, undefined, 'DELETE')).status).toBe(
+        200
+      );
+      expect((await authed(`${baseUrl}/sessions/${session.id}`)).status).toBe(404);
+      expect((await fetch(`${baseUrl}/sessions`)).status).toBe(401);
+    });
   });
 
   it('does not send a wildcard CORS header', async () => {

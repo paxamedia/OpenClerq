@@ -352,8 +352,8 @@ The phase that decides whether this is safe to leave running overnight.
 - [x] Secret injection as sandbox env only, with output redaction on the way back
 - [x] `packages/providers` + `providers.yaml` — base URL, auth env var, model list, context window, price per million tokens
 - [x] Per-call token and cost accounting into `run_steps` — an unpriced model records unknown cost, never $0
-- [ ] **Chat console — raw mode.** Per-provider conversations, streaming, full request/response inspection. Needs only 0.4 auth plus the provider registry
-- [ ] **Chat console — comparison mode.** One message fanned out to N models, side by side with latency, tokens and cost
+- [x] **Chat console — raw mode.** Per-provider conversations, streaming, full request/response inspection
+- [x] **Chat console — comparison mode.** One message fanned out to N models, side by side with latency, tokens and cost; any column can be promoted into the transcript
 
 ### 0.6 — Agents and automations _(~3 weeks)_
 
