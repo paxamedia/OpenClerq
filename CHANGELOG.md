@@ -12,7 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`packages/store`** — SQLite-backed durable store with WAL, a migration runner, and the full roadmap §4.4 schema: sessions, messages, repos, automations, automation_targets, runs, run_steps, artifacts, approvals, memory, triggers and an append-only audit log. Runs are constrained to the documented state machine at the database level.
 - **Runtime-adaptive SQLite driver.** The gateway runs under Node (development) and Bun (the compiled desktop sidecar), so the driver selects `node:sqlite` or `bun:sqlite` at runtime through a computed import specifier. No native addon is involved — `better-sqlite3` cannot be embedded by `bun build --compile` and would break the desktop installer build.
 - **Legacy JSON importer.** `memory.json` and `triggers.json` are imported into SQLite on start, idempotently, and archived as `*.migrated` rather than deleted. A corrupt file is skipped and left in place instead of blocking startup.
-
+- **`packages/policy`** — deny-by-default capability rules over tool groups, with four profiles (`minimal`, `research`, `coding`, `trusted`), wildcard and `group:`/`risk:` matching, per-run call and runtime budgets, and a `guard()` that fails closed when a call needs approval and no approver is wired.
+- **`packages/sandbox`** — process isolation with three profiles: `native` (development only, warns), `seatbelt` (macOS `sandbox-exec`, writes confined to the run's workspace and a private temp directory), and `container` (Docker/Podman, `--cap-drop ALL --read-only --network none`). Wall-clock kill through the whole process group, output caps, and secret redaction on the way back. Policy says what an agent may ask for; the sandbox decides what a process can physically do — permitting `exec` in an allowlist and then handing the command to `child_process` is not isolation.
+- **`packages/workspaces`** — register local repositories, clone remotes into a content-addressed cache, and give each run its own `git worktree`. Publishing branches, commits with a `Generated-by: OpenClerq` trailer, pushes with `--force-with-lease`, and opens a **draft** pull request on GitHub or GitLab. Git is always invoked argv-only with `GIT_TERMINAL_PROMPT=0`, so no input can become a shell fragment or a credential prompt.
+- **`packages/providers`** — model registry carrying each vendor's base URL, auth variable, models, context windows and prices, with one adapter for Anthropic and one shared by every `/chat/completions` vendor. Cursor is absent by design: it has no public model API and enters later as an agent CLI driver.
+- **Approval system.** Risky calls raise an approval that is a row in the store, so a decision survives a restart and stays auditable. `GET /approvals`, `POST /approvals/:id/approve|deny`. **Waiting fails closed**: an approval nobody answers is refused, never granted.
+- **Kill switch.** `POST /kill` denies every pending approval at once.
+- **Typed event bus** with correlation ids (run, session, request, tool call), streamed at `GET /events` (SSE). A subscriber that throws is logged and skipped rather than taking down the emitter.
 - **Run history.** Every task and every trigger firing now writes a durable run record with a step trace, replacing the fire-and-forget path where results were logged and discarded. New endpoints `GET /runs` and `GET /runs/:id`.
 - **`GET /memory/search?q=`** — substring search across memory keys and values.
 - **Per-call token and cost accounting.** Every model call inside a run is recorded as an `llm` step with its tokens, latency and cost, and added to the run's totals in one transaction. A model with no registry price records its cost as unknown (`null`, and `costKnown: false` on the run) instead of $0. `GET /metrics` adds `llm_cost_usd_total` and `llm_unpriced_calls_total`; the desktop shows spend.
@@ -66,35 +72,6 @@ API now requires authentication.
 - `.github/workflows/ci.yml` — typecheck, tests, Rust fmt/clippy/test, `pnpm audit`, `cargo audit`, secret scan. CI previously ran no tests at all.
 - `.prettierrc.json` and `.prettierignore` pinning the repo's existing style (single quotes, 100 columns); the codebase had no Prettier config, so `format:check` had never passed
 - 49 new tests covering the auth boundary, path containment and network policy (29 → 78)
-
-### Changed
-
-- Version unified at 0.4.0 across root, gateway, client, schema, desktop, `tauri.conf.json`, `Cargo.toml` and the `/health` and `/metrics` payloads; `sync-version.js` now covers all of them
-- `scripts/verify-local.sh` and the documented `curl` examples send the bearer token
-
-### Fixed
-
-- **Dependency vulnerabilities: 14 high + 1 critical → 0.** Removed `ws` and `zod` from the gateway (both declared since 0.1, imported nowhere) plus `@types/ws`; pinned `path-to-regexp >= 8.4.0` via a pnpm override, since `express@5 > router@2` still resolves the vulnerable 8.3.0; upgraded `vitest` 2 → 5, `vite` 6 → 8 and `@vitejs/plugin-react` 4 → 6, clearing the remaining dev-tree advisories.
-- **Vitest collected stale compiled tests.** With no config, vitest's default include matched `dist/**` as well as `src/**`, so a prior `pnpm build:gateway` left duplicate compiled tests that ran against outdated fixtures. Added `vitest.config.ts` scoping collection to `src/`.
-- **Single-quoted YAML frontmatter in `SKILL.md` is now parsed.** The parser stripped double quotes only, so `slug: 'my-skill'` kept its quotes and silently failed every lookup — valid YAML that produced a skill the router could never select.
-
-### Removed
-
-- `fsAllowWrite` capability flag — declared and stored since 0.1, read by no tool, implying a write capability that never existed
-
-## [Unreleased]
-
-### Documentation
-
-- **ROADMAP.md** — consolidated roadmap merging two independent architecture reviews: 18-finding audit, target architecture, release trains 0.4 → 1.0, automations-as-code spec, provider/driver model
-- **ROADMAP.md §8 — Chat console.** Raw and managed pipeline modes, multi-model comparison, conversational automation authoring (draft → preview → dry run → save disabled), shipped as a removable first-party module over the existing module slot contract
-- **SECURITY.md** — threat model, nine binding rules, honest inventory of unprotected surfaces, release checklist (supersedes `SAFETY_CHECKLIST.md`)
-- **ARCHITECTURE.md** — corrected: the `/task` path is a prompt router, not an agent loop; error response shape absorbed from `ERROR_RESPONSE_SHAPE.md`; endpoint table and local-state table added
-- **TOOLS.md** — documented the actual limits of `fs.read` path containment and `http.request` allowlisting, replacing an overstated safety claim
-- Removed `SAFETY_CHECKLIST.md` and `ERROR_RESPONSE_SHAPE.md` (content absorbed above)
-
-### Added
-
 - **Control Tower UI** — Builder/Operator mode; Control Tower for agent configuration and monitoring
 - **Skills schema editing** — Input/output JSON schemas and dependency mapping; GET/PUT `/skills/:slug`
 - **Context window preview** — Inspect what would be sent to the LLM before calling (POST `/context/preview`)
@@ -118,9 +95,30 @@ API now requires authentication.
 
 ### Changed
 
+- Version unified at 0.4.0 across root, gateway, client, schema, desktop, `tauri.conf.json`, `Cargo.toml` and the `/health` and `/metrics` payloads; `sync-version.js` now covers all of them
+- `scripts/verify-local.sh` and the documented `curl` examples send the bearer token
 - Settings moved from modal to dedicated window
 - About modal styling aligned with champagne theme
 - Desktop: skills panel shows schema/dependency editor; Ask adds Preview context, Dry run, Help
+
+### Fixed
+
+- **Dependency vulnerabilities: 14 high + 1 critical → 0.** Removed `ws` and `zod` from the gateway (both declared since 0.1, imported nowhere) plus `@types/ws`; pinned `path-to-regexp >= 8.4.0` via a pnpm override, since `express@5 > router@2` still resolves the vulnerable 8.3.0; upgraded `vitest` 2 → 5, `vite` 6 → 8 and `@vitejs/plugin-react` 4 → 6, clearing the remaining dev-tree advisories.
+- **Vitest collected stale compiled tests.** With no config, vitest's default include matched `dist/**` as well as `src/**`, so a prior `pnpm build:gateway` left duplicate compiled tests that ran against outdated fixtures. Added `vitest.config.ts` scoping collection to `src/`.
+- **Single-quoted YAML frontmatter in `SKILL.md` is now parsed.** The parser stripped double quotes only, so `slug: 'my-skill'` kept its quotes and silently failed every lookup — valid YAML that produced a skill the router could never select.
+
+### Removed
+
+- `fsAllowWrite` capability flag — declared and stored since 0.1, read by no tool, implying a write capability that never existed
+
+### Documentation
+
+- **ROADMAP.md** — consolidated roadmap merging two independent architecture reviews: 18-finding audit, target architecture, release trains 0.4 → 1.0, automations-as-code spec, provider/driver model
+- **ROADMAP.md §8 — Chat console.** Raw and managed pipeline modes, multi-model comparison, conversational automation authoring (draft → preview → dry run → save disabled), shipped as a removable first-party module over the existing module slot contract
+- **SECURITY.md** — threat model, nine binding rules, honest inventory of unprotected surfaces, release checklist (supersedes `SAFETY_CHECKLIST.md`)
+- **ARCHITECTURE.md** — corrected: the `/task` path is a prompt router, not an agent loop; error response shape absorbed from `ERROR_RESPONSE_SHAPE.md`; endpoint table and local-state table added
+- **TOOLS.md** — documented the actual limits of `fs.read` path containment and `http.request` allowlisting, replacing an overstated safety claim
+- Removed `SAFETY_CHECKLIST.md` and `ERROR_RESPONSE_SHAPE.md` (content absorbed above)
 
 ## [0.1.0] - Initial release
 
