@@ -38,10 +38,11 @@ cp .env.example .env
 Edit `.env` and set:
 
 - your LLM provider (see `.env.example`). No token setup is needed — the gateway generates one on first run.
-- **LLM provider** (pick one; GET /health reports which mode is active):
-  - **API (cloud):** `ANTHROPIC_API_KEY=sk-ant-...` — uses Anthropic API (Claude).
+- **LLM provider** (pick one; `GET /health` reports which is active, `GET /providers` lists them all):
+  - **Cloud:** `CLERQ_LLM_PROVIDER` set to `anthropic` (the default), `openai`, `deepseek`, `moonshot`, `zai` or `minimax`, plus that vendor's key, e.g. `DEEPSEEK_API_KEY`.
   - **Local (Ollama):** `CLERQ_LLM_PROVIDER=ollama`, `CLERQ_MODEL=llama3.2` — runs on your machine, no API key. Run `ollama run llama3.2` first.
-  - **Local (LM Studio):** `CLERQ_LLM_PROVIDER=openai`, `CLERQ_LLM_BASE_URL=http://localhost:1234/v1`, `CLERQ_MODEL=<model>` — runs on your machine.
+  - **Local (LM Studio):** `CLERQ_LLM_PROVIDER=lmstudio`, `CLERQ_MODEL=<loaded model>` — runs on your machine.
+  - **Any other OpenAI-compatible server:** `CLERQ_LLM_PROVIDER=openai`, `CLERQ_LLM_BASE_URL=http://localhost:8000/v1`.
 
 You can also override:
 

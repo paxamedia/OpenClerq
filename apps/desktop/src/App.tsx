@@ -434,6 +434,8 @@ function DeveloperView({
     llm_avg_latency_ms?: number | null;
     llm_input_tokens_total?: number;
     llm_output_tokens_total?: number;
+    llm_cost_usd_total?: number;
+    llm_unpriced_calls_total?: number;
   } | null>(null);
   const [availableModels, setAvailableModels] = useState<{
     models: string[];
@@ -1285,6 +1287,20 @@ function DeveloperView({
                       <span>
                         <strong>Tokens</strong> in: {metrics.llm_input_tokens_total ?? 0} out:{' '}
                         {metrics.llm_output_tokens_total ?? 0}
+                      </span>
+                    )}
+                    {((metrics.llm_cost_usd_total ?? 0) > 0 ||
+                      (metrics.llm_unpriced_calls_total ?? 0) > 0) && (
+                      <span
+                        title={
+                          (metrics.llm_unpriced_calls_total ?? 0) > 0
+                            ? `${metrics.llm_unpriced_calls_total} call(s) used a model with no price in the registry, so actual spend is higher.`
+                            : 'Estimated from registry prices.'
+                        }
+                      >
+                        <strong>Spend</strong>{' '}
+                        {(metrics.llm_unpriced_calls_total ?? 0) > 0 ? '≥ ' : ''}$
+                        {(metrics.llm_cost_usd_total ?? 0).toFixed(4)}
                       </span>
                     )}
                     {(metrics.llm_failure_rate ?? 0) > 0 && (

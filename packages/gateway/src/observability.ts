@@ -1,5 +1,5 @@
 /**
- * LLM observability: latency, token usage, failure rates.
+ * LLM observability: latency, token usage, cost, failure rates.
  * Audit-ready metrics for /metrics endpoint.
  */
 
@@ -8,18 +8,23 @@ let llmCallsFailed = 0;
 let llmLatencyMs: number[] = [];
 let llmInputTokens = 0;
 let llmOutputTokens = 0;
+let llmCostUsd = 0;
+let llmUnpricedCalls = 0;
 const MAX_SAMPLES = 100;
 
 export function recordLLMSuccess(
   latencyMs: number,
   inputTokens?: number,
-  outputTokens?: number
+  outputTokens?: number,
+  costUsd?: number | null
 ): void {
   llmCallsTotal += 1;
   llmLatencyMs.push(latencyMs);
   if (llmLatencyMs.length > MAX_SAMPLES) llmLatencyMs.shift();
   if (typeof inputTokens === 'number') llmInputTokens += inputTokens;
   if (typeof outputTokens === 'number') llmOutputTokens += outputTokens;
+  if (typeof costUsd === 'number') llmCostUsd += costUsd;
+  else if (costUsd === null) llmUnpricedCalls += 1;
 }
 
 export function recordLLMFailure(): void {
@@ -40,5 +45,8 @@ export function getObservability() {
     llm_avg_latency_ms: avgLatency,
     llm_input_tokens_total: llmInputTokens,
     llm_output_tokens_total: llmOutputTokens,
+    llm_cost_usd_total: Math.round(llmCostUsd * 1e6) / 1e6,
+    /** Calls whose model has no registry price; when non-zero the cost total is a lower bound. */
+    llm_unpriced_calls_total: llmUnpricedCalls,
   };
 }

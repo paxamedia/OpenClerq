@@ -58,6 +58,56 @@ export interface HealthResponse {
   };
 }
 
+export interface ProviderInfo {
+  id: string;
+  label: string;
+  /** True when the provider runs on this machine and needs no key. */
+  local: boolean;
+  ready: boolean;
+  /** Why the provider is not ready, e.g. "Set DEEPSEEK_API_KEY". */
+  reason?: string;
+  defaultModel: string | null;
+  models: Array<{
+    id: string;
+    /** Qualified reference to pass as `model`, e.g. "deepseek/deepseek-chat". */
+    ref: string;
+    context?: number;
+    inputPerM?: number;
+    outputPerM?: number;
+  }>;
+}
+
+export interface RunStep {
+  seq: number;
+  kind: 'llm' | 'shell' | 'fs' | 'git' | 'gate' | 'tool';
+  input?: unknown;
+  output?: unknown;
+  status?: string;
+  durationMs?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  /** US dollars; null when the model has no price in the registry. */
+  costUsd?: number | null;
+  createdAt: string;
+}
+
+export interface RunSummary {
+  id: string;
+  status: string;
+  trigger: 'schedule' | 'event' | 'manual' | 'webhook';
+  automationId?: string;
+  input?: string;
+  exitReason?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt: string;
+  /** Sum of priced model calls — a lower bound when `costKnown` is false. */
+  costUsd: number;
+  costKnown: boolean;
+  tokensIn: number;
+  tokensOut: number;
+}
+
 export interface SkillMeta {
   slug: string;
   name: string;
@@ -105,7 +155,13 @@ export const gateway = {
     return fetchJson<HealthResponse>('/health');
   },
 
-  metrics(): Promise<{ version: string; uptime_seconds: number; service: string }> {
+  metrics(): Promise<{
+    version: string;
+    uptime_seconds: number;
+    service: string;
+    llm_cost_usd_total?: number;
+    llm_unpriced_calls_total?: number;
+  }> {
     return fetchJson('/metrics');
   },
 
@@ -120,6 +176,22 @@ export const gateway = {
 
   models(): Promise<{ models: string[]; current: string }> {
     return fetchJson<{ models: string[]; current: string }>('/models');
+  },
+
+  /** Every provider in the registry, with readiness and qualified model references. */
+  providers(): Promise<{
+    providers: ProviderInfo[];
+    current: { provider: string; model: string };
+  }> {
+    return fetchJson('/providers');
+  },
+
+  runs(limit = 50): Promise<{ runs: RunSummary[] }> {
+    return fetchJson(`/runs?limit=${encodeURIComponent(String(limit))}`);
+  },
+
+  run(id: string): Promise<RunSummary & { steps: RunStep[] }> {
+    return fetchJson(`/runs/${encodeURIComponent(id)}`);
   },
 
   secrets(): Promise<{ secrets: string[] } | { error: string }> {

@@ -14,7 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.78.0",
+    "@clerq/providers": "workspace:^",
     "@clerq/store": "workspace:^",
     "chokidar": "^5.0.0",
     "dotenv": "^16.4.0",

@@ -9,7 +9,10 @@
  */
 
 import crypto from 'node:crypto';
-import { getStore } from './store.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { getStore, isStoreOpen } from './store.js';
+import { emit } from './events.js';
+import { logger } from './logger.js';
 
 export type RunStatus =
   | 'queued'
@@ -30,14 +33,25 @@ export interface RunRecord {
   status: RunStatus;
   trigger: RunTrigger;
   automationId?: string;
+  /** What the run was asked to do. */
+  input?: string;
   exitReason?: string;
   startedAt?: string;
   finishedAt?: string;
   createdAt: string;
+  /** Sum of the priced model calls. A lower bound when `costKnown` is false. */
   costUsd: number;
+  /** False when at least one successful model call had no price in the registry. */
+  costKnown: boolean;
   tokensIn: number;
   tokensOut: number;
 }
+
+/** Selects a run with `unpriced_calls`, the input `costKnown` is derived from. */
+const RUN_COLUMNS = `runs.*, (
+  SELECT COUNT(*) FROM run_steps s
+  WHERE s.run_id = runs.id AND s.kind = 'llm' AND s.status = 'ok' AND s.cost_usd IS NULL
+) AS unpriced_calls`;
 
 function rowToRun(r: Record<string, unknown>): RunRecord {
   return {
@@ -45,25 +59,31 @@ function rowToRun(r: Record<string, unknown>): RunRecord {
     status: r.status as RunStatus,
     trigger: r.trigger as RunTrigger,
     automationId: r.automation_id ? String(r.automation_id) : undefined,
+    input: r.input ? String(r.input) : undefined,
     exitReason: r.exit_reason ? String(r.exit_reason) : undefined,
     startedAt: r.started_at ? String(r.started_at) : undefined,
     finishedAt: r.finished_at ? String(r.finished_at) : undefined,
     createdAt: String(r.created_at),
     costUsd: Number(r.cost_usd ?? 0),
+    costKnown: Number(r.unpriced_calls ?? 0) === 0,
     tokensIn: Number(r.tokens_in ?? 0),
     tokensOut: Number(r.tokens_out ?? 0),
   };
 }
 
-export function createRun(input: { trigger: RunTrigger; automationId?: string }): string {
+export function createRun(input: {
+  trigger: RunTrigger;
+  automationId?: string;
+  input?: string;
+}): string {
   const id = `run_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
   getStore()
     .prepare(
-      `INSERT INTO runs (id, automation_id, status, trigger, started_at, created_at)
-       VALUES (?, ?, 'executing', ?, ?, ?)`
+      `INSERT INTO runs (id, automation_id, input, status, trigger, started_at, created_at)
+       VALUES (?, ?, ?, 'executing', ?, ?, ?)`
     )
-    .run(id, input.automationId ?? null, input.trigger, now, now);
+    .run(id, input.automationId ?? null, input.input ?? null, input.trigger, now, now);
   return id;
 }
 
@@ -86,6 +106,9 @@ export function addRunStep(
     output?: unknown;
     status?: string;
     durationMs?: number;
+    tokensIn?: number;
+    tokensOut?: number;
+    costUsd?: number | null;
   }
 ): void {
   const db = getStore();
@@ -95,8 +118,9 @@ export function addRunStep(
         ?.m ?? 0
     ) + 1;
   db.prepare(
-    `INSERT INTO run_steps (run_id, seq, kind, input, output, status, duration_ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO run_steps
+       (run_id, seq, kind, input, output, status, duration_ms, tokens_in, tokens_out, cost_usd, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     runId,
     next,
@@ -105,24 +129,28 @@ export function addRunStep(
     step.output === undefined ? null : JSON.stringify(step.output),
     step.status ?? null,
     step.durationMs ?? null,
+    step.tokensIn ?? null,
+    step.tokensOut ?? null,
+    step.costUsd ?? null,
     new Date().toISOString()
   );
 }
 
 export function listRuns(limit = 50): RunRecord[] {
   return getStore()
-    .prepare('SELECT * FROM runs ORDER BY created_at DESC LIMIT ?')
+    .prepare(`SELECT ${RUN_COLUMNS} FROM runs ORDER BY created_at DESC LIMIT ?`)
     .all(limit)
     .map(rowToRun);
 }
 
 export function getRun(id: string): (RunRecord & { steps: unknown[] }) | null {
   const db = getStore();
-  const row = db.prepare('SELECT * FROM runs WHERE id = ?').get(id);
+  const row = db.prepare(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`).get(id);
   if (!row) return null;
   const steps = db
     .prepare(
-      'SELECT seq, kind, input, output, status, duration_ms, created_at FROM run_steps WHERE run_id = ? ORDER BY seq'
+      `SELECT seq, kind, input, output, status, duration_ms, tokens_in, tokens_out, cost_usd, created_at
+       FROM run_steps WHERE run_id = ? ORDER BY seq`
     )
     .all(id)
     .map((s) => ({
@@ -132,43 +160,111 @@ export function getRun(id: string): (RunRecord & { steps: unknown[] }) | null {
       output: s.output ? JSON.parse(String(s.output)) : undefined,
       status: s.status ? String(s.status) : undefined,
       durationMs: s.duration_ms === null ? undefined : Number(s.duration_ms),
+      tokensIn: s.tokens_in === null ? undefined : Number(s.tokens_in),
+      tokensOut: s.tokens_out === null ? undefined : Number(s.tokens_out),
+      // null, not undefined: an unknown cost must survive serialisation to JSON.
+      costUsd: s.cost_usd === null ? null : Number(s.cost_usd),
       createdAt: String(s.created_at),
     }));
   return { ...rowToRun(row), steps };
 }
 
+/** The run the current async call chain belongs to, if any. */
+const runContext = new AsyncLocalStorage<{ runId: string }>();
+
+export function currentRunId(): string | undefined {
+  return runContext.getStore()?.runId;
+}
+
+export interface ModelCallRecord {
+  provider: string;
+  model: string;
+  prompt: string;
+  status: 'ok' | 'error';
+  text?: string;
+  error?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  costUsd?: number | null;
+  latencyMs: number;
+}
+
 /**
- * Record one execution end to end: creates the run, runs `fn`, stores the
- * outcome as a step, and closes the run either way. Errors are recorded and
- * rethrown, never swallowed.
+ * Account for one model call against the run that made it: a step carrying its
+ * tokens and cost, and the run's totals incremented in the same transaction so
+ * the two can never disagree.
+ *
+ * Outside a run this does nothing. Accounting must never fail the call it
+ * describes, so store errors are logged rather than thrown.
+ */
+export function recordModelCall(call: ModelCallRecord): void {
+  const runId = currentRunId();
+  emit(
+    'model.called',
+    {
+      provider: call.provider,
+      model: call.model,
+      status: call.status,
+      tokensIn: call.tokensIn,
+      tokensOut: call.tokensOut,
+      costUsd: call.costUsd,
+      latencyMs: call.latencyMs,
+    },
+    { runId }
+  );
+  if (!runId || !isStoreOpen()) return;
+
+  try {
+    const db = getStore();
+    db.transaction(() => {
+      addRunStep(runId, {
+        kind: 'llm',
+        input: { provider: call.provider, model: call.model, prompt: call.prompt },
+        output: call.status === 'ok' ? { text: call.text } : { error: call.error },
+        status: call.status,
+        durationMs: call.latencyMs,
+        tokensIn: call.tokensIn,
+        tokensOut: call.tokensOut,
+        costUsd: call.costUsd,
+      });
+      db.prepare(
+        `UPDATE runs SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ?,
+                         cost_usd = cost_usd + ?
+         WHERE id = ?`
+      ).run(call.tokensIn ?? 0, call.tokensOut ?? 0, call.costUsd ?? 0, runId);
+    });
+  } catch (e) {
+    logger.warn('Could not record model call against run', {
+      runId,
+      err: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+/**
+ * Record one execution end to end: creates the run, runs `fn` with the run as
+ * its context so every model call inside it is accounted against it, and
+ * closes the run either way. Errors are recorded and rethrown, never swallowed.
  */
 export async function recordRun<T>(
   input: { trigger: RunTrigger; automationId?: string; message?: string },
   fn: () => Promise<T>
 ): Promise<T> {
-  const runId = createRun({ trigger: input.trigger, automationId: input.automationId });
-  const started = Date.now();
+  const runId = createRun({
+    trigger: input.trigger,
+    automationId: input.automationId,
+    input: input.message,
+  });
+  emit('run.started', { trigger: input.trigger, automationId: input.automationId }, { runId });
   try {
-    const result = await fn();
-    addRunStep(runId, {
-      kind: 'llm',
-      input: input.message,
-      output: result,
-      status: 'ok',
-      durationMs: Date.now() - started,
-    });
+    const result = await runContext.run({ runId }, fn);
     finishRun(runId, 'done');
+    emit('run.completed', {}, { runId });
     return result;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    addRunStep(runId, {
-      kind: 'llm',
-      input: input.message,
-      status: 'error',
-      output: { error: message },
-      durationMs: Date.now() - started,
-    });
     finishRun(runId, 'failed', message);
+    emit('run.failed', { error: message }, { runId });
     throw e;
   }
 }

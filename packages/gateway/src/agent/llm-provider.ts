@@ -1,247 +1,304 @@
 /**
- * LLM provider abstraction — Anthropic, Ollama, or OpenAI-compatible (LM Studio, vLLM).
- * Use CLERQ_LLM_PROVIDER to switch. Local models need no API key.
+ * The gateway's model calls, routed through the provider registry.
+ *
+ * Every vendor in @clerq/providers is reachable here: set CLERQ_LLM_PROVIDER to
+ * a registry id (anthropic, openai, deepseek, moonshot, zai, minimax, ollama,
+ * lmstudio) or name a qualified model such as `deepseek/deepseek-chat`.
+ *
+ * Each call is accounted for: metrics, a `model.called` event, and — inside a
+ * run — a step carrying its tokens and cost.
+ *
+ * The pre-0.5 variables keep working: CLERQ_LLM_PROVIDER=openai with
+ * CLERQ_LLM_BASE_URL still means "an OpenAI-compatible server at this URL", and
+ * CLERQ_OLLAMA_URL still moves Ollama.
  */
 
+import fs from 'node:fs';
+import {
+  call,
+  defaultModelFor,
+  findProvider,
+  loadRegistry,
+  overrideProvider,
+  userRegistryPath,
+  ProviderError,
+  type ProviderSpec,
+  type Registry,
+} from '@clerq/providers';
 import { loadReasoning } from '../reasoning-config.js';
 import { recordLLMSuccess, recordLLMFailure } from '../observability.js';
-
-export type LLMProvider = 'anthropic' | 'ollama' | 'openai';
+import { recordModelCall } from '../runs.js';
 
 export interface LLMCallResult {
   text: string;
   model: string;
+  provider: string;
+  /** US dollars; null when the registry has no price for the model. */
+  costUsd: number | null;
 }
 
-export interface LLMProviderConfig {
-  provider: LLMProvider;
-  model: string;
-}
+let cached: { key: string; registry: Registry } | undefined;
 
-function getConfig(): LLMProviderConfig {
-  const provider = (process.env.CLERQ_LLM_PROVIDER ?? 'anthropic').toLowerCase() as LLMProvider;
-  const model = process.env.CLERQ_MODEL ?? getDefaultModel(provider);
-  return { provider, model };
-}
-
-function getDefaultModel(provider: LLMProvider): string {
-  switch (provider) {
-    case 'ollama':
-      return 'llama3.2';
-    case 'openai':
-      return 'gpt-4o-mini'; // fallback; LM Studio uses model name from UI
-    default:
-      return 'claude-3-5-haiku-20241022';
+/**
+ * The provider registry, reloaded when the user's copy changes so an edited
+ * price or a new model applies without restarting the gateway.
+ */
+export function getRegistry(): Registry {
+  const file = userRegistryPath();
+  let key = 'built-in';
+  try {
+    key = `${file}@${fs.statSync(file).mtimeMs}`;
+  } catch {
+    // No user copy; the built-in registry applies.
   }
+  if (cached?.key !== key) cached = { key, registry: loadRegistry() };
+  return cached.registry;
 }
 
-async function callAnthropic(
-  system: string,
-  userContent: string,
-  model: string,
-  opts?: { temperature?: number; maxTokens?: number }
-): Promise<LLMCallResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      'ANTHROPIC_API_KEY is not set. Set it for Anthropic, or use CLERQ_LLM_PROVIDER=ollama for local models.'
+interface Target {
+  /** The registry with any endpoint override applied. */
+  registry: Registry;
+  provider: ProviderSpec;
+  model: string;
+  /** True when the endpoint was overridden, so a key may legitimately be absent. */
+  keyOptional: boolean;
+}
+
+/** Split "provider/model" — but only when the prefix really is a provider. */
+function splitQualified(
+  registry: Registry,
+  ref: string
+): { providerId: string; model: string } | undefined {
+  const slash = ref.indexOf('/');
+  if (slash <= 0) return undefined;
+  const providerId = ref.slice(0, slash);
+  // Model ids contain slashes of their own (`lmstudio-community/qwen3`); those
+  // belong to the configured provider rather than naming a new one.
+  if (!registry.providers.some((p) => p.id === providerId)) return undefined;
+  return { providerId, model: ref.slice(slash + 1) };
+}
+
+/**
+ * The two endpoint variables that predate the registry, each scoped to the one
+ * provider it has always meant. Applying CLERQ_LLM_BASE_URL to every provider
+ * would let a leftover value send, say, a DeepSeek key to an unrelated server.
+ * Anything else is moved by editing providers.yaml, where the change is explicit.
+ */
+function endpointOverride(providerId: string): string | undefined {
+  if (providerId === 'openai') return process.env.CLERQ_LLM_BASE_URL?.trim() || undefined;
+  const ollama = process.env.CLERQ_OLLAMA_URL?.trim();
+  if (providerId === 'ollama' && ollama) {
+    // Accept the server root or its /v1 API root; both have been documented.
+    const root = ollama.replace(/\/+$/, '');
+    return /\/v1$/.test(root) ? root : `${root}/v1`;
+  }
+  return undefined;
+}
+
+/** Work out which provider, model and endpoint a call goes to. */
+export function resolveTarget(modelOverride?: string): Target {
+  const base = getRegistry();
+
+  const envModel = process.env.CLERQ_MODEL?.trim() || undefined;
+  const configured = (envModel && splitQualified(base, envModel)) || {
+    providerId: (process.env.CLERQ_LLM_PROVIDER ?? 'anthropic').trim().toLowerCase(),
+    model: envModel,
+  };
+  if (!base.providers.some((p) => p.id === configured.providerId)) {
+    throw new ProviderError(
+      `Unknown CLERQ_LLM_PROVIDER "${configured.providerId}". ` +
+        `Known: ${base.providers.map((p) => p.id).join(', ')}.`
     );
   }
-  const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const client = new Anthropic({ apiKey });
-  const params = {
-    model,
-    max_tokens: opts?.maxTokens ?? 1024,
-    system,
-    messages: [{ role: 'user' as const, content: userContent }],
-    ...(opts?.temperature != null && { temperature: opts.temperature }),
-  };
-  const start = Date.now();
-  const message = await client.messages.create(params);
-  const elapsed = Date.now() - start;
-  const content = 'content' in message ? message.content : [];
-  const textBlock = Array.isArray(content)
-    ? content.find((b: { type: string }) => b.type === 'text')
-    : null;
-  const text =
-    textBlock && typeof textBlock === 'object' && 'text' in textBlock
-      ? (textBlock as { text: string }).text
-      : 'No response.';
-  const usage =
-    'usage' in message
-      ? (message as { usage?: { input_tokens?: number; output_tokens?: number } }).usage
+
+  const override = modelOverride?.trim() || undefined;
+  const requested = override
+    ? (splitQualified(base, override) ?? { providerId: configured.providerId, model: override })
+    : configured;
+
+  // An endpoint override belongs to the configured provider only. A request
+  // naming another provider must not be sent to that endpoint.
+  let registry = base;
+  let keyOptional = false;
+  const endpoint =
+    requested.providerId === configured.providerId
+      ? endpointOverride(configured.providerId)
       : undefined;
-  recordLLMSuccess(elapsed, usage?.input_tokens, usage?.output_tokens);
-  return { text, model };
-}
-
-async function callOpenAICompatible(
-  baseUrl: string,
-  apiKey: string | undefined,
-  model: string,
-  system: string,
-  userContent: string,
-  opts?: { temperature?: number; maxTokens?: number }
-): Promise<LLMCallResult> {
-  const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
-  const body: Record<string, unknown> = {
-    model,
-    max_tokens: opts?.maxTokens ?? 1024,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: userContent },
-    ],
-  };
-  if (opts?.temperature != null) body.temperature = opts.temperature;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-
-  const start = Date.now();
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
-  const elapsed = Date.now() - start;
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`LLM request failed (${res.status}): ${err.slice(0, 300)}`);
+  if (endpoint) {
+    registry = overrideProvider(base, configured.providerId, { baseUrl: endpoint });
+    keyOptional = true;
   }
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+
+  const provider = findProvider(registry, requested.providerId);
+  return {
+    registry,
+    provider,
+    model: requested.model ?? defaultModelFor(provider),
+    keyOptional,
   };
-  const text = data.choices?.[0]?.message?.content ?? 'No response.';
-  const usage = data.usage;
-  recordLLMSuccess(elapsed, usage?.prompt_tokens, usage?.completion_tokens);
-  return { text, model };
 }
 
 /**
- * Fetch available models from the provider. Returns empty when provider has no list API.
- */
-export async function getAvailableModels(): Promise<string[]> {
-  const provider = (process.env.CLERQ_LLM_PROVIDER ?? 'anthropic').toLowerCase() as LLMProvider;
-  const { model } = getConfig();
-
-  switch (provider) {
-    case 'ollama': {
-      try {
-        const baseUrl = process.env.CLERQ_OLLAMA_URL ?? 'http://localhost:11434';
-        const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/tags`, { method: 'GET' });
-        if (!res.ok) return [model];
-        const data = (await res.json()) as { models?: Array<{ name: string }> };
-        const names = data.models?.map((m) => m.name) ?? [];
-        return names.length > 0 ? names : [model];
-      } catch {
-        return [model];
-      }
-    }
-    case 'anthropic':
-      return [
-        'claude-3-5-haiku-20241022',
-        'claude-3-5-sonnet-20241022',
-        'claude-3-opus-20240229',
-        'claude-3-5-haiku-20240620',
-        model,
-      ].filter((m, i, arr) => arr.indexOf(m) === i);
-    case 'openai':
-      return [model];
-    default:
-      return [model];
-  }
-}
-
-/**
- * Call the configured LLM with system prompt and user content.
- * @param modelOverride Optional model to use instead of configured default.
+ * Call the configured model.
+ * @param modelOverride A bare model for the configured provider, or "provider/model".
  */
 export async function callLLM(
   system: string,
   userContent: string,
   modelOverride?: string
 ): Promise<LLMCallResult> {
-  const { provider, model } = getConfig();
-  const useModel = modelOverride ?? model;
-  const reasoning = loadReasoning();
-  const opts = {
-    temperature: reasoning.temperature,
-    maxTokens: reasoning.maxTokens,
-  };
-
+  const started = Date.now();
+  let target: Target | undefined;
   try {
-    switch (provider) {
-      case 'anthropic':
-        return await callAnthropic(system, userContent, useModel, opts);
+    target = resolveTarget(modelOverride);
+    const reasoning = loadReasoning();
+    const res = await call(target.registry, `${target.provider.id}/${target.model}`, {
+      system,
+      prompt: userContent,
+      temperature: reasoning.temperature,
+      maxTokens: reasoning.maxTokens,
+      keyOptional: target.keyOptional,
+    });
 
-      case 'ollama': {
-        const baseUrl = process.env.CLERQ_OLLAMA_URL ?? 'http://localhost:11434/v1';
-        return await callOpenAICompatible(baseUrl, 'ollama', useModel, system, userContent, opts);
-      }
-
-      case 'openai': {
-        const baseUrl = process.env.CLERQ_LLM_BASE_URL;
-        if (!baseUrl) {
-          throw new Error(
-            'CLERQ_LLM_BASE_URL is required for openai provider (e.g. http://localhost:1234/v1 for LM Studio).'
-          );
-        }
-        const apiKey = process.env.OPENAI_API_KEY ?? process.env.CLERQ_OPENAI_API_KEY;
-        return await callOpenAICompatible(baseUrl, apiKey, useModel, system, userContent, opts);
-      }
-
-      default:
-        throw new Error(
-          `Unknown CLERQ_LLM_PROVIDER: ${provider}. Use anthropic, ollama, or openai.`
-        );
-    }
+    recordLLMSuccess(res.latencyMs, res.usage.inputTokens, res.usage.outputTokens, res.costUsd);
+    recordModelCall({
+      provider: res.provider,
+      model: res.model,
+      prompt: userContent,
+      status: 'ok',
+      text: res.text,
+      tokensIn: res.usage.inputTokens,
+      tokensOut: res.usage.outputTokens,
+      costUsd: res.costUsd,
+      latencyMs: res.latencyMs,
+    });
+    return {
+      text: res.text || 'No response.',
+      model: res.model,
+      provider: res.provider,
+      costUsd: res.costUsd,
+    };
   } catch (e) {
     recordLLMFailure();
+    recordModelCall({
+      provider: target?.provider.id ?? 'unresolved',
+      model: target?.model ?? modelOverride ?? 'unresolved',
+      prompt: userContent,
+      status: 'error',
+      error: e instanceof Error ? e.message : String(e),
+      latencyMs: Date.now() - started,
+    });
     throw e;
   }
 }
 
-/**
- * Returns which provider is configured and whether it's available (key set for anthropic, etc.).
- */
-/** 'api' = cloud (Anthropic); 'local' = Ollama, LM Studio, etc. */
-export function getLLMMode(provider: LLMProvider): 'api' | 'local' {
-  return provider === 'anthropic' ? 'api' : 'local';
+function isLoopback(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '::1' || /^127\./.test(host);
+  } catch {
+    return false;
+  }
 }
 
-export function getLLMProviderStatus(): {
-  provider: LLMProvider;
+export interface LLMProviderStatus {
+  provider: string;
   model: string;
+  /** 'local' when the model runs on this machine; 'api' when calls leave it. */
+  mode: 'api' | 'local';
   available: boolean;
   hint?: string;
-} {
-  const { provider, model } = getConfig();
+}
 
-  switch (provider) {
-    case 'anthropic':
-      return {
-        provider: 'anthropic',
-        model,
-        available: Boolean(process.env.ANTHROPIC_API_KEY),
-        hint: process.env.ANTHROPIC_API_KEY ? undefined : 'Set ANTHROPIC_API_KEY',
-      };
-    case 'ollama':
-      return {
-        provider: 'ollama',
-        model,
-        available: true,
-        hint: 'Ensure Ollama is running (e.g. ollama run llama3.2)',
-      };
-    case 'openai':
-      return {
-        provider: 'openai',
-        model,
-        available: Boolean(process.env.CLERQ_LLM_BASE_URL),
-        hint: process.env.CLERQ_LLM_BASE_URL
-          ? undefined
-          : 'Set CLERQ_LLM_BASE_URL (e.g. http://localhost:1234/v1 for LM Studio)',
-      };
-    default:
-      return { provider: 'anthropic', model, available: false, hint: 'Invalid provider' };
+export function getLLMProviderStatus(): LLMProviderStatus {
+  try {
+    const t = resolveTarget();
+    const needsKey = Boolean(t.provider.authEnv) && !t.keyOptional;
+    const hasKey = !needsKey || Boolean(process.env[t.provider.authEnv as string]);
+    const mode = !t.provider.authEnv || isLoopback(t.provider.baseUrl) ? 'local' : 'api';
+    let hint: string | undefined;
+    if (!hasKey) hint = `Set ${t.provider.authEnv}`;
+    else if (t.provider.id === 'ollama') hint = `Ensure Ollama is running (ollama run ${t.model})`;
+    return { provider: t.provider.id, model: t.model, mode, available: hasKey, hint };
+  } catch (e) {
+    // A misconfiguration is a status to report, not a reason for /health to fail.
+    return {
+      provider: (process.env.CLERQ_LLM_PROVIDER ?? 'anthropic').trim().toLowerCase(),
+      model: process.env.CLERQ_MODEL ?? '',
+      mode: 'api',
+      available: false,
+      hint: e instanceof Error ? e.message : String(e),
+    };
   }
+}
+
+/** Models offered by the configured provider. Ollama is asked what it has installed. */
+export async function getAvailableModels(): Promise<string[]> {
+  let t: Target;
+  try {
+    t = resolveTarget();
+  } catch {
+    return [];
+  }
+  const listed = [...t.provider.models.map((m) => m.id), t.model];
+
+  if (t.provider.id === 'ollama') {
+    try {
+      const root = t.provider.baseUrl.replace(/\/v1\/?$/, '');
+      const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        const data = (await res.json()) as { models?: Array<{ name: string }> };
+        const installed = data.models?.map((m) => m.name) ?? [];
+        if (installed.length > 0) listed.unshift(...installed);
+      }
+    } catch {
+      // Ollama not running; fall back to the registry's list.
+    }
+  }
+  return [...new Set(listed)];
+}
+
+/** Every provider in the registry, for pickers and the chat console. */
+export function listProviders(): Array<{
+  id: string;
+  label: string;
+  local: boolean;
+  ready: boolean;
+  reason?: string;
+  defaultModel: string | null;
+  models: Array<{
+    id: string;
+    ref: string;
+    context?: number;
+    inputPerM?: number;
+    outputPerM?: number;
+  }>;
+}> {
+  const registry = getRegistry();
+  let selfHosted: string | undefined;
+  try {
+    const t = resolveTarget();
+    if (t.keyOptional) selfHosted = t.provider.id;
+  } catch {
+    // Misconfigured; every provider is judged on its key alone.
+  }
+  return registry.providers.map((p) => {
+    const ready = !p.authEnv || p.id === selfHosted || Boolean(process.env[p.authEnv]);
+    return {
+      id: p.id,
+      label: p.label,
+      local: !p.authEnv,
+      ready,
+      reason: ready ? undefined : `Set ${p.authEnv}`,
+      defaultModel: p.defaultModel ?? p.models[0]?.id ?? null,
+      // Base URLs are left out: an overridden one may carry credentials.
+      models: p.models.map((m) => ({
+        id: m.id,
+        ref: `${p.id}/${m.id}`,
+        context: m.context,
+        inputPerM: m.inputPerM,
+        outputPerM: m.outputPerM,
+      })),
+    };
+  });
 }

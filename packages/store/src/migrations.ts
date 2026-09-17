@@ -198,4 +198,11 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_audit_at ON audit_log(at DESC);
     `,
   },
+  {
+    id: 2,
+    name: 'run_input',
+    // What a run was asked to do. Steps record what it did, but a run that
+    // fails before its first step would otherwise leave no trace of its request.
+    sql: `ALTER TABLE runs ADD COLUMN input TEXT;`,
+  },
 ];

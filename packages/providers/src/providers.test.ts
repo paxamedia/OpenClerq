@@ -1,21 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   parseRegistry,
   loadRegistry,
   findProvider,
   resolveModel,
   estimateCost,
+  defaultModelFor,
+  overrideProvider,
   availableProviders,
   call,
   ProviderError,
+  DEFAULT_REGISTRY_YAML,
   type Registry,
 } from './index.js';
 
-const bundled = path.join(path.dirname(fileURLToPath(import.meta.url)), 'providers.yaml');
-const registry: Registry = parseRegistry(fs.readFileSync(bundled, 'utf8'));
+const registry: Registry = parseRegistry(DEFAULT_REGISTRY_YAML);
 
 describe('bundled registry', () => {
   it('parses and carries every vendor the roadmap names', () => {
@@ -38,6 +40,20 @@ describe('bundled registry', () => {
 
   it('does not list Cursor, which has no public model API', () => {
     expect(registry.providers.map((p) => p.id)).not.toContain('cursor');
+  });
+
+  it('names a default model that the provider actually lists', () => {
+    for (const p of registry.providers) {
+      if (!p.defaultModel) continue;
+      expect(
+        p.models.map((m) => m.id),
+        p.id
+      ).toContain(p.defaultModel);
+    }
+  });
+
+  it('defaults Anthropic to its least expensive model, not its most', () => {
+    expect(defaultModelFor(findProvider(registry, 'anthropic'))).toBe('claude-haiku-4-5');
   });
 
   it('gives every priced model both rates', () => {
@@ -72,6 +88,14 @@ describe('parseRegistry', () => {
     ).toThrow(/unknown adapter/);
   });
 
+  it('rejects a price that is not a non-negative number', () => {
+    const yaml = (price: string) =>
+      `providers:\n  - id: x\n    baseUrl: https://e.com\n    adapter: openai-compat\n    models:\n      - id: m\n        inputPerM: ${price}\n        outputPerM: 1\n`;
+    expect(() => parseRegistry(yaml('"3"'))).toThrow(/invalid inputPerM/);
+    expect(() => parseRegistry(yaml('-1'))).toThrow(/invalid inputPerM/);
+    expect(() => parseRegistry(yaml('3'))).not.toThrow();
+  });
+
   it('defaults a missing models list to empty', () => {
     const r = parseRegistry(
       'providers:\n  - id: x\n    label: X\n    baseUrl: https://e.com\n    adapter: openai-compat\n'
@@ -81,12 +105,64 @@ describe('parseRegistry', () => {
 });
 
 describe('loadRegistry', () => {
-  it('falls back to the bundled registry', () => {
-    expect(loadRegistry(bundled).providers.length).toBeGreaterThan(0);
+  const saved = process.env.CLERQ_PROVIDERS_FILE;
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-providers-'));
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CLERQ_PROVIDERS_FILE;
+    else process.env.CLERQ_PROVIDERS_FILE = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('reports clearly when nothing is found', () => {
-    expect(() => loadRegistry('/nonexistent/providers.yaml')).toThrow(/No provider registry/);
+  it('uses the built-in registry when the user has no copy', () => {
+    process.env.CLERQ_PROVIDERS_FILE = path.join(dir, 'absent.yaml');
+    expect(loadRegistry().providers.map((p) => p.id)).toContain('anthropic');
+  });
+
+  it("prefers the user's copy, replacing the built-in one entirely", () => {
+    const file = path.join(dir, 'providers.yaml');
+    fs.writeFileSync(
+      file,
+      'providers:\n  - id: mine\n    label: Mine\n    baseUrl: http://127.0.0.1:1/v1\n    adapter: openai-compat\n'
+    );
+    process.env.CLERQ_PROVIDERS_FILE = file;
+    expect(loadRegistry().providers.map((p) => p.id)).toEqual(['mine']);
+  });
+
+  it('reports clearly when an explicit path does not exist', () => {
+    expect(() => loadRegistry(path.join(dir, 'nope.yaml'))).toThrow(/No provider registry found/);
+  });
+});
+
+describe('defaultModelFor', () => {
+  it('falls back to the first listed model', () => {
+    expect(
+      defaultModelFor({
+        id: 'x',
+        label: 'X',
+        adapter: 'openai-compat',
+        baseUrl: 'https://x',
+        models: [{ id: 'first' }, { id: 'second' }],
+      })
+    ).toBe('first');
+  });
+
+  it('refuses when there is nothing to fall back to', () => {
+    expect(() => defaultModelFor(findProvider(registry, 'lmstudio'))).toThrow(/no default model/);
+  });
+});
+
+describe('overrideProvider', () => {
+  it('replaces one provider without mutating the original registry', () => {
+    const moved = overrideProvider(registry, 'ollama', { baseUrl: 'http://10.0.0.5:11434/v1' });
+    expect(findProvider(moved, 'ollama').baseUrl).toBe('http://10.0.0.5:11434/v1');
+    expect(findProvider(registry, 'ollama').baseUrl).toBe('http://localhost:11434/v1');
+  });
+
+  it('refuses an unknown provider', () => {
+    expect(() => overrideProvider(registry, 'nope', {})).toThrow(/Unknown provider/);
   });
 });
 
@@ -159,8 +235,14 @@ describe('estimateCost', () => {
     expect(cost).toBeCloseTo(0.00105, 6);
   });
 
-  it('is free when the registry carries no prices', () => {
-    expect(estimateCost({ id: 'local' }, { inputTokens: 9999, outputTokens: 9999 })).toBe(0);
+  it('reports an unpriced model as unknown, not as free', () => {
+    expect(estimateCost({ id: 'm' }, { inputTokens: 9999, outputTokens: 9999 })).toBeNull();
+  });
+
+  it('is free when the registry prices a model at zero', () => {
+    expect(
+      estimateCost({ id: 'm', inputPerM: 0, outputPerM: 0 }, { inputTokens: 9, outputTokens: 9 })
+    ).toBe(0);
   });
 });
 
@@ -284,6 +366,96 @@ describe('call', () => {
       call(registry, 'deepseek/deepseek-chat', { prompt: 'hi' }, (async () =>
         jsonResponse({ error: 'rate limited' }, false, 429)) as unknown as typeof fetch)
     ).rejects.toThrow(/returned 429/);
+  });
+
+  it('costs a keyless local model nothing even when it is unpriced', async () => {
+    const res = await call(registry, 'lmstudio/qwen3-8b', { prompt: 'hi' }, (async () =>
+      jsonResponse({
+        choices: [{ message: { content: 'x' } }],
+        usage: { prompt_tokens: 5, completion_tokens: 5 },
+      })) as unknown as typeof fetch);
+    expect(res.costUsd).toBe(0);
+  });
+
+  it('reports an unpriced cloud model as unknown cost', async () => {
+    const res = await call(
+      registry,
+      'openai/some-future-model',
+      { prompt: 'hi', apiKey: 'k' },
+      (async () =>
+        jsonResponse({
+          choices: [{ message: { content: 'x' } }],
+          usage: { prompt_tokens: 5, completion_tokens: 5 },
+        })) as unknown as typeof fetch
+    );
+    expect(res.costUsd).toBeNull();
+  });
+
+  it('proceeds without a key when told the endpoint needs none', async () => {
+    delete process.env.DEEPSEEK_API_KEY;
+    let seenHeaders: Record<string, string> = {};
+    await call(registry, 'deepseek/deepseek-chat', { prompt: 'hi', keyOptional: true }, (async (
+      _url: string,
+      init: RequestInit
+    ) => {
+      seenHeaders = init.headers as Record<string, string>;
+      return jsonResponse({ choices: [{ message: { content: 'x' } }] });
+    }) as unknown as typeof fetch);
+    expect(seenHeaders.authorization).toBeUndefined();
+  });
+
+  it('names the endpoint when it cannot be reached', async () => {
+    await expect(
+      call(registry, 'ollama/llama3.2', { prompt: 'hi' }, (async () => {
+        throw new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED') });
+      }) as unknown as typeof fetch)
+    ).rejects.toThrow(/unreachable at http:\/\/localhost:11434\/v1: connect ECONNREFUSED/);
+  });
+
+  it('times out rather than hanging, even with a caller-supplied signal', async () => {
+    const neverAborted = new AbortController();
+    await expect(
+      call(
+        registry,
+        'ollama/llama3.2',
+        { prompt: 'hi', timeoutMs: 20, signal: neverAborted.signal },
+        ((_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          })) as unknown as typeof fetch
+      )
+    ).rejects.toThrow(/did not respond within 20 ms/);
+  });
+
+  it('reports a cancelled call as cancelled', async () => {
+    const controller = new AbortController();
+    const pending = call(
+      registry,
+      'ollama/llama3.2',
+      { prompt: 'hi', signal: controller.signal },
+      ((_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        })) as unknown as typeof fetch
+    );
+    controller.abort();
+    await expect(pending).rejects.toThrow(/was cancelled/);
+  });
+
+  it('refuses a success response that is not JSON', async () => {
+    await expect(
+      call(
+        registry,
+        'ollama/llama3.2',
+        { prompt: 'hi' },
+        (async () =>
+          ({
+            ok: true,
+            status: 200,
+            text: async () => '<html>proxy login</html>',
+          }) as unknown as Response) as unknown as typeof fetch
+      )
+    ).rejects.toThrow(/not JSON/);
   });
 
   it('treats absent usage as zero rather than failing', async () => {

@@ -13,7 +13,7 @@ import {
   saveSkillFrontmatter,
 } from './skills-loader.js';
 import { getExplanation, buildContextPreview } from './agent/explain.js';
-import { getLLMProviderStatus, getAvailableModels } from './agent/llm-provider.js';
+import { getLLMProviderStatus, getAvailableModels, listProviders } from './agent/llm-provider.js';
 import { runTask } from './agent/task.js';
 import { selectSkill } from './agent/skill-selector.js';
 import { loadModulesFromDir, mountModuleRoutes, getModuleSkillsDirs } from './module-loader.js';
@@ -57,6 +57,14 @@ const DEFAULT_CORS_ORIGINS = [
 
 /** Single source of truth for the version reported over the API. */
 export const GATEWAY_VERSION = '0.4.0';
+
+/**
+ * A provider problem — no key, unreachable endpoint, vendor error — is a
+ * service being unavailable, not a gateway fault.
+ */
+function isProviderError(e: unknown): boolean {
+  return (e as { code?: unknown })?.code === 'provider_error';
+}
 
 export function createGateway(config: GatewayConfig = {}): {
   app: express.Express;
@@ -106,13 +114,12 @@ export function createGateway(config: GatewayConfig = {}): {
 
   app.get('/health', (_req, res) => {
     const llmStatus = getLLMProviderStatus();
-    const llmMode = llmStatus.provider === 'anthropic' ? 'api' : 'local';
     res.json({
       status: 'ok',
       service: 'clerq-gateway',
       version: GATEWAY_VERSION,
       llm: {
-        mode: llmMode,
+        mode: llmStatus.mode,
         provider: llmStatus.provider,
         model: llmStatus.model,
         available: llmStatus.available,
@@ -131,6 +138,21 @@ export function createGateway(config: GatewayConfig = {}): {
     } catch (e) {
       logger.error('models list error', { err: e instanceof Error ? e.message : String(e) });
       res.status(500).json({ error: 'models_list_failed' });
+    }
+  });
+
+  app.get('/providers', (_req, res) => {
+    try {
+      const status = getLLMProviderStatus();
+      res.json({
+        providers: listProviders(),
+        current: { provider: status.provider, model: status.model },
+      });
+    } catch (e) {
+      // Most likely an invalid ~/.clerq/providers.yaml; the message says which line.
+      const message = e instanceof Error ? e.message : String(e);
+      logger.error('providers list error', { err: message });
+      res.status(500).json({ error: 'providers_list_failed', message });
     }
   });
 
@@ -558,12 +580,7 @@ export function createGateway(config: GatewayConfig = {}): {
       res.json(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (
-        msg.includes('ANTHROPIC_API_KEY') ||
-        msg.includes('CLERQ_LLM_BASE_URL') ||
-        msg.includes('CLERQ_LLM_PROVIDER') ||
-        msg.includes('LLM request failed')
-      ) {
+      if (isProviderError(e)) {
         return res.status(503).json({
           error: 'ai_unavailable',
           message: msg.slice(0, 200),
@@ -705,12 +722,7 @@ export function createGateway(config: GatewayConfig = {}): {
       res.json(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (
-        msg.includes('ANTHROPIC_API_KEY') ||
-        msg.includes('CLERQ_LLM_BASE_URL') ||
-        msg.includes('CLERQ_LLM_PROVIDER') ||
-        msg.includes('LLM request failed')
-      ) {
+      if (isProviderError(e)) {
         return res.status(503).json({
           error: 'ai_unavailable',
           message: msg.slice(0, 200),

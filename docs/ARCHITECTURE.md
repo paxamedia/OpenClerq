@@ -59,15 +59,44 @@ See [ROADMAP.md §1.2](ROADMAP.md#12-runtime-thesis).
 - **Deterministic numeric work.** Arithmetic runs in Rust via the `clerq-calc` CLI and returns an audit `proof` object. The model never produces final numbers.
 - **Model as advisor.** LLMs provide structure, guidance and explanation.
 
-### LLM modes
+### Model providers
 
-| Mode            | Providers                                         | Requirement                                      |
-| --------------- | ------------------------------------------------- | ------------------------------------------------ |
-| **API (cloud)** | Anthropic                                         | `ANTHROPIC_API_KEY`                              |
-| **Local**       | Ollama, LM Studio, any OpenAI-compatible endpoint | None for Ollama; `CLERQ_LLM_BASE_URL` for others |
+Models are reached through the registry in `packages/providers`: one adapter for Anthropic, and
+one for every vendor that speaks `/chat/completions`.
 
-`GET /health` returns `llm.mode` (`api` or `local`) and `llm.provider` so clients can show
-which is active.
+| Provider id | Vendor                                                                | Key                                         |
+| ----------- | --------------------------------------------------------------------- | ------------------------------------------- |
+| `anthropic` | Anthropic (Claude)                                                    | `ANTHROPIC_API_KEY`                         |
+| `openai`    | OpenAI, or any OpenAI-compatible server named by `CLERQ_LLM_BASE_URL` | `OPENAI_API_KEY` (optional with a base URL) |
+| `deepseek`  | DeepSeek                                                              | `DEEPSEEK_API_KEY`                          |
+| `moonshot`  | Moonshot (Kimi)                                                       | `MOONSHOT_API_KEY`                          |
+| `zai`       | Z.ai (GLM)                                                            | `ZAI_API_KEY`                               |
+| `minimax`   | MiniMax                                                               | `MINIMAX_API_KEY`                           |
+| `ollama`    | Ollama, on this machine or at `CLERQ_OLLAMA_URL`                      | none                                        |
+| `lmstudio`  | LM Studio                                                             | none                                        |
+
+Choose one with `CLERQ_LLM_PROVIDER`, or name a qualified model such as
+`CLERQ_MODEL=deepseek/deepseek-chat`. The `model` field on `/task` and `/explain` takes either a
+bare model id for the configured provider or a qualified reference to any other. Cursor has no
+public model API and is not a provider; it arrives in 0.6 as an agent CLI driver.
+
+Base URLs, model ids and prices are data. To change them, copy the built-in registry to
+`~/.clerq/providers.yaml` (or point `CLERQ_PROVIDERS_FILE` at a copy). The gateway reloads that
+file when it changes. `CLERQ_LLM_BASE_URL` moves only the `openai` provider and
+`CLERQ_OLLAMA_URL` only `ollama`, so a leftover value can never redirect another vendor's key.
+
+`GET /health` reports `llm.provider`, `llm.model`, and `llm.mode`: `local` when the model runs on
+this machine, `api` when calls leave it. `GET /providers` lists every provider with its readiness
+and qualified model references, but never its endpoint URL, which may carry credentials.
+
+### Cost accounting
+
+Every model call made inside a run is recorded as an `llm` step with its provider, model,
+prompt, output, latency, tokens and cost, and is added to the run's totals in the same
+transaction. Cost comes from registry prices, and **unknown is not reported as free**: a model
+with no price records `costUsd: null` and marks the run `costKnown: false`, so its `costUsd` reads
+as a lower bound. Keyless local providers cost nothing. `GET /metrics` reports
+`llm_cost_usd_total` alongside `llm_unpriced_calls_total`.
 
 ---
 
@@ -78,7 +107,7 @@ The gateway is the control plane. Endpoints:
 | Group       | Endpoints                                                                                         |
 | ----------- | ------------------------------------------------------------------------------------------------- |
 | Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                           |
-| Models      | `GET /models`                                                                                     |
+| Models      | `GET /models`, `GET /providers`                                                                   |
 | Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                            |
 | Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                           |
 | Tools       | `GET /tools`, `POST /tools/run`                                                                   |
@@ -128,21 +157,21 @@ All errors use one shape, and carry no PII:
 }
 ```
 
-| Code                                                                                   | HTTP | Meaning                                                 |
-| -------------------------------------------------------------------------------------- | ---- | ------------------------------------------------------- |
-| `unauthorized`                                                                         | 401  | Missing or invalid bearer token                         |
-| `question is required`                                                                 | 400  | `/explain` called without a question                    |
-| `message is required`                                                                  | 400  | `/task` called without a message                        |
-| `expression or spec.formulas required`                                                 | 400  | `/calculate/eval` needs one or the other                |
-| `name is required`, `key required`, `slug required`, `tool_name_required`              | 400  | Missing required identifier                             |
-| `invalid config`                                                                       | 400  | Malformed capabilities or reasoning payload             |
-| `skill_not_found`, `memory_not_found`, `webhook not found`                             | 404  | No such resource                                        |
-| `ai_unavailable`                                                                       | 503  | No LLM configured — set an API key, or a local provider |
-| `calculation_engine_unavailable`                                                       | 503  | Rust engine not built                                   |
-| `calculation_failed`, `explain_failed`, `task_failed`, `context_preview_failed`        | 500  | Handler error                                           |
-| `skills_load_failed`, `skill_load_failed`, `skill_save_failed`                         | 500  | Skill read or write error                               |
-| `memory_list_failed`, `memory_get_failed`, `memory_set_failed`, `memory_delete_failed` | 500  | Memory store error                                      |
-| `tools_list_failed`, `tool_run_failed`, `models_list_failed`                           | 500  | Tool or model registry error                            |
+| Code                                                                                   | HTTP | Meaning                                                               |
+| -------------------------------------------------------------------------------------- | ---- | --------------------------------------------------------------------- |
+| `unauthorized`                                                                         | 401  | Missing or invalid bearer token                                       |
+| `question is required`                                                                 | 400  | `/explain` called without a question                                  |
+| `message is required`                                                                  | 400  | `/task` called without a message                                      |
+| `expression or spec.formulas required`                                                 | 400  | `/calculate/eval` needs one or the other                              |
+| `name is required`, `key required`, `slug required`, `tool_name_required`              | 400  | Missing required identifier                                           |
+| `invalid config`                                                                       | 400  | Malformed capabilities or reasoning payload                           |
+| `skill_not_found`, `memory_not_found`, `webhook not found`                             | 404  | No such resource                                                      |
+| `ai_unavailable`                                                                       | 503  | Model provider unusable: no key, unreachable, or it returned an error |
+| `calculation_engine_unavailable`                                                       | 503  | Rust engine not built                                                 |
+| `calculation_failed`, `explain_failed`, `task_failed`, `context_preview_failed`        | 500  | Handler error                                                         |
+| `skills_load_failed`, `skill_load_failed`, `skill_save_failed`                         | 500  | Skill read or write error                                             |
+| `memory_list_failed`, `memory_get_failed`, `memory_set_failed`, `memory_delete_failed` | 500  | Memory store error                                                    |
+| `tools_list_failed`, `tool_run_failed`, `models_list_failed`, `providers_list_failed`  | 500  | Tool or model registry error                                          |
 
 ---
 
@@ -167,19 +196,21 @@ manifest permits executing exactly those two binaries and nothing else.
 
 ## 6. Local state
 
-| Path                         | Contents                                   |
-| ---------------------------- | ------------------------------------------ |
-| `~/.clerq/gateway-token`     | Bearer token for the local API (mode 0600) |
-| `~/.clerq/config.json`       | Gateway URL, module paths, UI settings     |
-| `~/.clerq/.env`              | Provider API key, if configured            |
-| `~/.clerq/memory.json`       | Key-value agent memory                     |
-| `~/.clerq/triggers.json`     | Cron, file-watch and webhook definitions   |
-| `~/.clerq/capabilities.json` | Filesystem root and HTTP allowlist         |
-| `~/.clerq/secrets.vault`     | AES-256-GCM encrypted secrets              |
-| `~/.clerq/secrets.audit.log` | Append-only vault access log               |
+| Path                         | Contents                                                |
+| ---------------------------- | ------------------------------------------------------- |
+| `~/.clerq/gateway-token`     | Bearer token for the local API (mode 0600)              |
+| `~/.clerq/clerq.db`          | SQLite: runs and steps, approvals, memory, audit log    |
+| `~/.clerq/providers.yaml`    | Optional replacement for the built-in provider registry |
+| `~/.clerq/config.json`       | Gateway URL, module paths, UI settings                  |
+| `~/.clerq/.env`              | Provider API key, if configured                         |
+| `~/.clerq/triggers.json`     | Cron, file-watch and webhook definitions                |
+| `~/.clerq/capabilities.json` | Filesystem root and HTTP allowlist                      |
+| `~/.clerq/secrets.vault`     | AES-256-GCM encrypted secrets                           |
+| `~/.clerq/secrets.audit.log` | Append-only vault access log                            |
 
-The JSON files are read-modify-write with no locking, so concurrent writers can clobber each
-other. Migration to SQLite is release 0.5 work.
+A pre-0.5 `memory.json` is imported into `clerq.db` on first start and kept as
+`memory.json.migrated`. The remaining JSON files are read-modify-write with no locking, so
+concurrent writers can clobber each other; they move into the store as the rest of 0.5 lands.
 
 ---
 

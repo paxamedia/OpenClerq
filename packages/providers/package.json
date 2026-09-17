@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "tsc && cp src/providers.yaml dist/",
+    "build": "tsc",
     "test": "vitest run"
   },
   "dependencies": {

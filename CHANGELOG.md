@@ -15,13 +15,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Run history.** Every task and every trigger firing now writes a durable run record with a step trace, replacing the fire-and-forget path where results were logged and discarded. New endpoints `GET /runs` and `GET /runs/:id`.
 - **`GET /memory/search?q=`** — substring search across memory keys and values.
+- **Per-call token and cost accounting.** Every model call inside a run is recorded as an `llm` step with its tokens, latency and cost, and added to the run's totals in one transaction. A model with no registry price records its cost as unknown (`null`, and `costKnown: false` on the run) instead of $0. `GET /metrics` adds `llm_cost_usd_total` and `llm_unpriced_calls_total`; the desktop shows spend.
+- **Every registry vendor is usable from the gateway.** `CLERQ_LLM_PROVIDER` accepts any registry id — `openai`, `deepseek`, `moonshot`, `zai`, `minimax`, `lmstudio` as well as `anthropic` and `ollama` — and `model` accepts qualified references such as `deepseek/deepseek-chat`. New `GET /providers` lists providers, readiness and models, without endpoint URLs.
+- **Runs record their request** (`input`), so a run that fails before its first step still shows what it was asked to do. Store migration 2.
+- Run lifecycle and model calls are published on the event bus (`run.started`, `run.completed`, `run.failed`, `model.called`).
 
 ### Changed
 
+- **The gateway calls models through `@clerq/providers`** instead of its own client, removing the `@anthropic-ai/sdk` dependency. Provider failures of every kind — missing key, unreachable endpoint, vendor error — now answer `503 ai_unavailable` rather than some of them `500`.
+- The built-in provider registry is compiled in rather than read from a `providers.yaml` beside the build. The desktop sidecar is a single binary with nowhere to read it from, and the copy step would have failed on Windows. Override it with `~/.clerq/providers.yaml` or `CLERQ_PROVIDERS_FILE`.
+- `CLERQ_OLLAMA_URL` accepts the server root or its `/v1` root; one form previously broke model calls and the other broke model listing.
+- Anthropic's default model is now `claude-haiku-4-5`, set in the registry (was `claude-3-5-haiku-20241022`, hardcoded).
 - **Memory is store-backed.** `~/.clerq/memory.json` was read-modify-write with no locking, so concurrent writers silently clobbered each other. Writes are now a single upsert.
 - **Node 24 is now the development requirement** (was 22). `node:sqlite` needs `--experimental-sqlite` on Node 22. End users are unaffected: the desktop app ships the Bun-compiled sidecar and needs no Node at all.
 - `build:gateway` builds the gateway's workspace dependencies first, so a pristine checkout can resolve `@clerq/store` types.
 - CI builds all packages topologically and runs every package's tests, not just the gateway's.
+
+### Removed
+
+- `CLERQ_OPENAI_API_KEY`, an undocumented alias for `OPENAI_API_KEY`.
 
 ## [0.4.0] — Security foundation
 

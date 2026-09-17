@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openStore, migrate, audit, type Database } from './index.js';
+import { openStore, openDatabase, migrate, audit, MIGRATIONS, type Database } from './index.js';
 import { importLegacyJson } from './import-legacy.js';
 
 let db: Database;
@@ -99,6 +99,27 @@ describe('migrations', () => {
     const rows = db.prepare('SELECT id, name FROM schema_migrations ORDER BY id').all();
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows[0]).toMatchObject({ id: 1, name: 'core_schema' });
+  });
+
+  it('upgrades a database created by an earlier release', async () => {
+    const old = await openDatabase(':memory:');
+    old.exec(
+      'CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)'
+    );
+    old.exec(MIGRATIONS[0].sql);
+    old
+      .prepare('INSERT INTO schema_migrations (id, name, applied_at) VALUES (1, ?, ?)')
+      .run('core_schema', '2026-01-01');
+    old
+      .prepare(
+        "INSERT INTO runs (id, status, trigger, created_at) VALUES ('r1', 'done', 'manual', '2026-01-01')"
+      )
+      .run();
+
+    expect(migrate(old)).toEqual(MIGRATIONS.slice(1).map((m) => m.id));
+    // Existing rows survive and gain the new column.
+    expect(old.prepare("SELECT input FROM runs WHERE id = 'r1'").get()).toEqual({ input: null });
+    old.close();
   });
 
   it('enforces foreign keys', () => {

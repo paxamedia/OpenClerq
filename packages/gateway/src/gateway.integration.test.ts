@@ -1,12 +1,19 @@
 /**
  * Gateway integration tests.
  * Starts the gateway on a random port and hits endpoints.
- * Requires no ANTHROPIC_API_KEY for /health and /skills.
+ *
+ * Model calls go to a fake OpenAI-compatible server started here, through a
+ * test-only provider registry. No test can reach a real vendor or spend money,
+ * whatever keys the developer's environment happens to hold.
+ *
  * POST /calculate/eval returns 200 if clerq-calc is built, 503 otherwise.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { createGateway } from './gateway.js';
 
@@ -18,6 +25,51 @@ const TEST_TOKEN = 'integration-test-token-0123456789';
 const authed = (url: string, init: RequestInit = {}) =>
   fetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${TEST_TOKEN}` } });
 
+/** What the fake model server was sent, for assertions. */
+interface SeenRequest {
+  model: string;
+  authorization?: string;
+}
+
+/**
+ * A stand-in for a vendor's /chat/completions endpoint. Every call reports
+ * 1200 prompt and 300 completion tokens; a prompt containing FAIL_ME gets a 500.
+ */
+async function startFakeModelServer(seen: SeenRequest[]): Promise<http.Server> {
+  const fake = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      const body = JSON.parse(raw) as { model: string; messages: Array<{ content: string }> };
+      seen.push({ model: body.model, authorization: req.headers.authorization });
+      const prompt = body.messages[body.messages.length - 1].content;
+      res.setHeader('content-type', 'application/json');
+      if (prompt.includes('FAIL_ME')) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: 'upstream boom' }));
+        return;
+      }
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { content: `echo from ${body.model}` } }],
+          usage: { prompt_tokens: 1200, completion_tokens: 300 },
+        })
+      );
+    });
+  });
+  await new Promise<void>((resolve) => fake.listen(0, '127.0.0.1', () => resolve()));
+  return fake;
+}
+
+const LLM_VARS = [
+  'CLERQ_PROVIDERS_FILE',
+  'CLERQ_LLM_PROVIDER',
+  'CLERQ_MODEL',
+  'CLERQ_LLM_BASE_URL',
+  'CLERQ_OLLAMA_URL',
+  'FAKECLOUD_TEST_KEY',
+];
+
 describe('gateway integration', () => {
   let baseUrl: string;
   let server: {
@@ -25,8 +77,50 @@ describe('gateway integration', () => {
     once: (e: string, cb: () => void) => void;
     address: () => { port: number } | null;
   };
+  let fakeModels: http.Server;
+  const seen: SeenRequest[] = [];
+  let registryDir: string;
+  let savedEnv: Record<string, string | undefined>;
 
   beforeAll(async () => {
+    savedEnv = Object.fromEntries(LLM_VARS.map((v) => [v, process.env[v]]));
+    fakeModels = await startFakeModelServer(seen);
+    const fakeUrl = `http://127.0.0.1:${(fakeModels.address() as { port: number }).port}/v1`;
+
+    // `fake` is keyless and priced at $2 / $10 per million tokens, so one call
+    // costs 1200 * 2e-6 + 300 * 10e-6 = $0.0054. `fakecloud` needs a key and has
+    // no price, which must surface as an unknown cost rather than a free one.
+    registryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-gw-registry-'));
+    const registryFile = path.join(registryDir, 'providers.yaml');
+    fs.writeFileSync(
+      registryFile,
+      [
+        'providers:',
+        '  - id: fake',
+        '    label: Fake local',
+        '    adapter: openai-compat',
+        `    baseUrl: ${fakeUrl}`,
+        '    authEnv: null',
+        '    defaultModel: priced',
+        '    models:',
+        '      - id: priced',
+        '        inputPerM: 2',
+        '        outputPerM: 10',
+        '  - id: fakecloud',
+        '    label: Fake cloud',
+        '    adapter: openai-compat',
+        `    baseUrl: ${fakeUrl}`,
+        '    authEnv: FAKECLOUD_TEST_KEY',
+        '    models:',
+        '      - id: unpriced',
+        '',
+      ].join('\n')
+    );
+    for (const v of LLM_VARS) delete process.env[v];
+    process.env.CLERQ_PROVIDERS_FILE = registryFile;
+    process.env.CLERQ_LLM_PROVIDER = 'fake';
+    process.env.FAKECLOUD_TEST_KEY = 'fakecloud-test-key';
+
     process.env.CLERQ_DEV = '1';
     const { server: s } = createGateway({
       port: 0,
@@ -45,7 +139,13 @@ describe('gateway integration', () => {
   }, 10000);
 
   afterAll(async () => {
-    return new Promise<void>((resolve) => server.close(resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => fakeModels.close(() => resolve()));
+    fs.rmSync(registryDir, { recursive: true, force: true });
+    for (const v of LLM_VARS) {
+      if (savedEnv[v] === undefined) delete process.env[v];
+      else process.env[v] = savedEnv[v];
+    }
   });
 
   it('GET /health returns 200 with status', async () => {
@@ -84,19 +184,16 @@ describe('gateway integration', () => {
     }
   });
 
-  it('POST /task returns 200 or 503', async () => {
+  it('POST /task answers through the configured provider', async () => {
     const res = await authed(`${baseUrl}/task`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: 'What can you help with?' }),
     });
-    expect([200, 503]).toContain(res.status);
+    expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    if (res.status === 200) {
-      expect(body.explanation).toBeDefined();
-    } else {
-      expect(body.error).toBeDefined();
-    }
+    expect(body.explanation).toBe('echo from priced');
+    expect(body.model).toBe('priced');
   });
 
   it('GET /health needs no token', async () => {
@@ -154,9 +251,8 @@ describe('gateway integration', () => {
 
     const run = body.runs[0];
     expect(run.trigger).toBe('manual');
-    // The LLM is unconfigured in tests, so the run is expected to fail — the
-    // point is that the failure is recorded rather than lost.
-    expect(['done', 'failed']).toContain(run.status);
+    expect(run.status).toBe('done');
+    expect(run.input).toBe('record me');
     expect(run.finishedAt).toBeDefined();
   });
 
@@ -174,7 +270,114 @@ describe('gateway integration', () => {
     const run = (await res.json()) as { id: string; steps: Array<Record<string, unknown>> };
     expect(run.id).toBe(list.runs[0].id);
     expect(run.steps.length).toBeGreaterThanOrEqual(1);
-    expect(run.steps[0].input).toBe('trace me');
+    expect(run.steps[0].kind).toBe('llm');
+    expect((run.steps[0].input as { prompt: string }).prompt).toContain('trace me');
+  });
+
+  /** POST /task, then fetch the run it created with its steps. */
+  async function taskRun(body: Record<string, unknown>) {
+    const res = await authed(`${baseUrl}/task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const list = (await (await authed(`${baseUrl}/runs?limit=1`)).json()) as {
+      runs: Array<{ id: string }>;
+    };
+    const run = (await (await authed(`${baseUrl}/runs/${list.runs[0].id}`)).json()) as {
+      status: string;
+      input: string;
+      exitReason?: string;
+      tokensIn: number;
+      tokensOut: number;
+      costUsd: number;
+      costKnown: boolean;
+      steps: Array<{
+        kind: string;
+        status: string;
+        input: { provider: string; model: string; prompt: string };
+        output: { text?: string; error?: string };
+        tokensIn?: number;
+        tokensOut?: number;
+        costUsd: number | null;
+      }>;
+    };
+    return { res, run };
+  }
+
+  it('accounts for the tokens and cost of each model call', async () => {
+    const { run } = await taskRun({ message: 'count me' });
+
+    expect(run.status).toBe('done');
+    const llm = run.steps.filter((s) => s.kind === 'llm');
+    expect(llm).toHaveLength(1);
+    expect(llm[0]).toMatchObject({
+      status: 'ok',
+      input: { provider: 'fake', model: 'priced' },
+      output: { text: 'echo from priced' },
+      tokensIn: 1200,
+      tokensOut: 300,
+    });
+    expect(llm[0].costUsd).toBeCloseTo(0.0054, 9);
+
+    expect(run.tokensIn).toBe(1200);
+    expect(run.tokensOut).toBe(300);
+    expect(run.costUsd).toBeCloseTo(0.0054, 9);
+    expect(run.costKnown).toBe(true);
+  });
+
+  it('routes a qualified model to its provider and marks an unpriced cost unknown', async () => {
+    seen.length = 0;
+    const { run } = await taskRun({ message: 'price me', model: 'fakecloud/unpriced' });
+
+    expect(seen).toEqual([{ model: 'unpriced', authorization: 'Bearer fakecloud-test-key' }]);
+    expect(run.steps[0].input).toMatchObject({ provider: 'fakecloud', model: 'unpriced' });
+    expect(run.steps[0].costUsd).toBeNull();
+    expect(run.tokensIn).toBe(1200);
+    expect(run.costKnown).toBe(false);
+  });
+
+  it('records a failed model call on the run and answers 503', async () => {
+    const { res, run } = await taskRun({ message: 'FAIL_ME please' });
+
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { error: string }).error).toBe('ai_unavailable');
+    expect(run.status).toBe('failed');
+    expect(run.exitReason).toMatch(/returned 500/);
+    expect(run.steps[0]).toMatchObject({ kind: 'llm', status: 'error' });
+    expect(run.steps[0].output.error).toMatch(/upstream boom/);
+    expect(run.tokensIn).toBe(0);
+  });
+
+  it('lists providers with qualified models and no endpoint URLs', async () => {
+    const res = await authed(`${baseUrl}/providers`);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('127.0.0.1');
+
+    const body = JSON.parse(text) as {
+      providers: Array<{ id: string; ready: boolean; models: Array<{ ref: string }> }>;
+      current: { provider: string; model: string };
+    };
+    expect(body.current).toEqual({ provider: 'fake', model: 'priced' });
+    expect(body.providers.map((p) => p.id)).toEqual(['fake', 'fakecloud']);
+    expect(body.providers[1]).toMatchObject({
+      ready: true,
+      models: [{ ref: 'fakecloud/unpriced' }],
+    });
+  });
+
+  it('reports the configured provider in /health', async () => {
+    const body = (await (await fetch(`${baseUrl}/health`)).json()) as {
+      llm: Record<string, unknown>;
+    };
+    expect(body.llm).toEqual({ mode: 'local', provider: 'fake', model: 'priced', available: true });
+  });
+
+  it('totals model spend in /metrics, flagging unpriced calls', async () => {
+    const body = (await (await authed(`${baseUrl}/metrics`)).json()) as Record<string, number>;
+    expect(body.llm_cost_usd_total).toBeGreaterThanOrEqual(0.0054);
+    expect(body.llm_unpriced_calls_total).toBeGreaterThanOrEqual(1);
   });
 
   it('404s an unknown run', async () => {
