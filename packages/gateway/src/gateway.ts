@@ -34,11 +34,13 @@ import {
   getTriggers,
   saveTriggers,
   getWebhookMessage,
-  type TriggersConfig,
+  markTriggerFired,
+  TriggerConfigError,
+  type TriggerSource,
 } from './triggers.js';
 import { listMemory, getMemory, setMemory, deleteMemory, searchMemory } from './memory-layer.js';
 import { initStore } from './store.js';
-import { recordRun, listRuns, getRun } from './runs.js';
+import { recordRun, listRuns, getRun, currentRunId } from './runs.js';
 import { emit, subscribeEvents, recentEvents } from './events.js';
 import { listPending, decide, denyAllPending } from './approvals.js';
 
@@ -636,34 +638,54 @@ export function createGateway(config: GatewayConfig = {}): {
     }
     const body = req.body as { message?: string };
     const override = typeof body?.message === 'string' ? body.message.trim() : null;
+    const effective = override || message;
+    markTriggerFired(id);
     try {
-      await runTaskFromContext(override || message, undefined);
-      res.json({ ok: true });
+      // The caller gets the run id so it can follow the run at GET /runs/:id.
+      const runId = await recordRun({ trigger: 'webhook', message: effective }, async () => {
+        await runTaskFromContext(effective, undefined);
+        return currentRunId();
+      });
+      res.json({ ok: true, runId });
     } catch (e) {
-      logger.error('webhook task failed', { id, err: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      if (isProviderError(e)) {
+        return res.status(503).json({ error: 'ai_unavailable', message: msg.slice(0, 200) });
+      }
+      logger.error('webhook task failed', { id, err: msg });
       res.status(500).json({ error: 'task_failed' });
     }
   });
 
   app.get('/triggers', (_req, res) => {
-    res.json(getTriggers());
+    try {
+      res.json(getTriggers());
+    } catch (e) {
+      logger.error('triggers list error', { err: e instanceof Error ? e.message : String(e) });
+      res.status(500).json({ error: 'triggers_list_failed' });
+    }
   });
 
   app.post('/triggers', (req: Request, res: Response) => {
-    const body = req.body as TriggersConfig;
-    if (!body || typeof body !== 'object') {
-      return res.status(400).json({ error: 'invalid config' });
-    }
     try {
-      saveTriggers(body);
-      startTriggers((message: string) =>
-        recordRun({ trigger: 'schedule', message }, () => runTaskFromContext(message))
-      );
+      saveTriggers(req.body);
+      startTriggers(runTriggered);
       res.json({ ok: true });
     } catch (e) {
-      res.status(500).json({ error: e instanceof Error ? e.message : 'Failed' });
+      if (e instanceof TriggerConfigError) {
+        return res.status(400).json({ error: 'invalid config', message: e.message });
+      }
+      logger.error('triggers save error', { err: e instanceof Error ? e.message : String(e) });
+      res.status(500).json({ error: 'triggers_save_failed' });
     }
   });
+
+  /** A cron firing is a scheduled run; a watched file changing is an event. */
+  function runTriggered(message: string, source: TriggerSource) {
+    return recordRun({ trigger: source === 'cron' ? 'schedule' : 'event', message }, () =>
+      runTaskFromContext(message)
+    );
+  }
 
   async function runTaskFromContext(message: string, model?: string, dryRun?: boolean) {
     let skills: Awaited<ReturnType<typeof loadSkillsFromDir>> = [];
@@ -755,9 +777,7 @@ export function createGateway(config: GatewayConfig = {}): {
     if (auth.source === 'generated') {
       logger.info('Generated a new gateway token at ~/.clerq/gateway-token (mode 0600).');
     }
-    startTriggers((message: string) =>
-      recordRun({ trigger: 'schedule', message }, () => runTaskFromContext(message))
-    );
+    startTriggers(runTriggered);
     try {
       const modules = await loadModulesFromDir(config.modulesDir ?? process.env.CLERQ_MODULES_DIR);
       loadedModules = modules;

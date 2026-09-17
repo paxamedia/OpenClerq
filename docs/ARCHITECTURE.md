@@ -16,7 +16,7 @@ For where this architecture is going, see [ROADMAP.md](ROADMAP.md).
 | Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration |
 | Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration           |
 | Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                            |
-| Local state      | Files in `~/.clerq` | Settings, triggers, memory, encrypted secrets           |
+| Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets               |
 
 ```text
 Desktop (Tauri + React)
@@ -123,9 +123,9 @@ The gateway is the control plane. Endpoints:
 | Modules     | mounted at `/api/modules/:moduleId/*`                                                             |
 
 Responsibilities: loading skills from disk and normalising metadata (`inputSchema`,
-`outputSchema`, `dependsOn`); hosting tools under capability restrictions; file-backed memory;
-cron, file-watch and webhook triggers; LLM observability (call counts, latency, token usage,
-failure rates); and dynamic module loading.
+`outputSchema`, `dependsOn`); hosting tools under capability restrictions; store-backed memory,
+runs and triggers; running cron, file-watch and webhook triggers, each as a recorded run; LLM
+observability (call counts, latency, tokens, cost, failure rates); and dynamic module loading.
 
 ### Authentication
 
@@ -196,21 +196,20 @@ manifest permits executing exactly those two binaries and nothing else.
 
 ## 6. Local state
 
-| Path                         | Contents                                                |
-| ---------------------------- | ------------------------------------------------------- |
-| `~/.clerq/gateway-token`     | Bearer token for the local API (mode 0600)              |
-| `~/.clerq/clerq.db`          | SQLite: runs and steps, approvals, memory, audit log    |
-| `~/.clerq/providers.yaml`    | Optional replacement for the built-in provider registry |
-| `~/.clerq/config.json`       | Gateway URL, module paths, UI settings                  |
-| `~/.clerq/.env`              | Provider API key, if configured                         |
-| `~/.clerq/triggers.json`     | Cron, file-watch and webhook definitions                |
-| `~/.clerq/capabilities.json` | Filesystem root and HTTP allowlist                      |
-| `~/.clerq/secrets.vault`     | AES-256-GCM encrypted secrets                           |
-| `~/.clerq/secrets.audit.log` | Append-only vault access log                            |
+| Path                         | Contents                                                       |
+| ---------------------------- | -------------------------------------------------------------- |
+| `~/.clerq/gateway-token`     | Bearer token for the local API (mode 0600)                     |
+| `~/.clerq/clerq.db`          | SQLite: runs and steps, approvals, memory, triggers, audit log |
+| `~/.clerq/providers.yaml`    | Optional replacement for the built-in provider registry        |
+| `~/.clerq/config.json`       | Gateway URL, module paths, UI settings                         |
+| `~/.clerq/.env`              | Provider API key, if configured                                |
+| `~/.clerq/capabilities.json` | Filesystem root and HTTP allowlist                             |
+| `~/.clerq/secrets.vault`     | AES-256-GCM encrypted secrets                                  |
+| `~/.clerq/secrets.audit.log` | Append-only vault access log                                   |
 
-A pre-0.5 `memory.json` is imported into `clerq.db` on first start and kept as
-`memory.json.migrated`. The remaining JSON files are read-modify-write with no locking, so
-concurrent writers can clobber each other; they move into the store as the rest of 0.5 lands.
+A pre-0.5 `memory.json` or `triggers.json` is imported into `clerq.db` on first start and kept as
+`*.migrated`. The remaining JSON files are read-modify-write with no locking, so concurrent
+writers can clobber each other; they move into the store as the rest of 0.5 lands.
 
 ---
 

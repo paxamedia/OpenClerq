@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `build:gateway` builds the gateway's workspace dependencies first, so a pristine checkout can resolve `@clerq/store` types.
 - CI builds all packages topologically and runs every package's tests, not just the gateway's.
 
+### Fixed
+
+- **Triggers no longer vanish after the first restart.** The store imported `~/.clerq/triggers.json` and archived it as `triggers.json.migrated`, while `triggers.ts` went on reading that file — so every cron, file-watch and webhook trigger disappeared on the next start. Triggers are now read from and written to the store, which also recovers any already imported.
+- **Webhook firings are recorded as runs** (`trigger: 'webhook'`), and the response carries the `runId`. They previously executed with no trace at all.
+- **A file-watch firing is recorded as `trigger: 'event'`**, not `'schedule'`.
+- `POST /triggers` validates the config and answers `400` with the reason — an unparseable cron schedule was accepted and then silently never fired. Ids must be unique across all three kinds, which share one table.
+
 ### Removed
 
 - `CLERQ_OPENAI_API_KEY`, an undocumented alias for `OPENAI_API_KEY`.

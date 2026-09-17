@@ -326,6 +326,55 @@ describe('gateway integration', () => {
     expect(run.costKnown).toBe(true);
   });
 
+  it('stores triggers, refusing a config that would never fire', async () => {
+    const save = (config: unknown) =>
+      authed(`${baseUrl}/triggers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+
+    const bad = await save({ cron: [{ id: 'x', schedule: 'every tuesday', message: 'm' }] });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { message: string }).message).toMatch(/invalid schedule/);
+
+    const config = {
+      cron: [{ id: 'daily', schedule: '0 9 * * *', message: 'morning summary' }],
+      file: [],
+      webhooks: { deploy: { message: 'deploy finished' } },
+    };
+    expect((await save(config)).status).toBe(200);
+    expect(await (await authed(`${baseUrl}/triggers`)).json()).toEqual(config);
+  });
+
+  it('records a webhook firing as a run of its own', async () => {
+    // Saved by the test above, which also started the triggers.
+    const res = await authed(`${baseUrl}/webhook/deploy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(200);
+    const { runId } = (await res.json()) as { runId: string };
+
+    const run = (await (await authed(`${baseUrl}/runs/${runId}`)).json()) as {
+      trigger: string;
+      input: string;
+      status: string;
+      tokensIn: number;
+    };
+    expect(run).toMatchObject({ trigger: 'webhook', input: 'deploy finished', status: 'done' });
+    expect(run.tokensIn).toBe(1200);
+
+    expect((await authed(`${baseUrl}/webhook/nope`, { method: 'POST' })).status).toBe(404);
+    // Leave no cron job running behind the suite.
+    await authed(`${baseUrl}/triggers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+  });
+
   it('routes a qualified model to its provider and marks an unpriced cost unknown', async () => {
     seen.length = 0;
     const { run } = await taskRun({ message: 'price me', model: 'fakecloud/unpriced' });
