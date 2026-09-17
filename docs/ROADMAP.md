@@ -344,7 +344,7 @@ The phase that decides whether this is safe to leave running overnight.
 
 - [x] `packages/sandbox` — `native` (dev only, loud warning), `seatbelt` (macOS `sandbox-exec`), `container` (Docker/Podman, server default)
 - [x] Per-run limits: wall clock, CPU, memory, disk, process count; hard kill on breach
-- [ ] Egress allowlist enforced at the sandbox boundary, not in application code
+- [x] Egress allowlist enforced at the sandbox boundary, not in application code — a local proxy the sandbox forces traffic through; profiles that cannot enforce it refuse it (see [SECURITY.md](SECURITY.md) for what macOS can and cannot filter)
 - [x] `packages/policy` — tool groups (`fs`/`runtime`/`web`/`sessions`/`memory`/`automation`), profiles, allow/deny, `maxCallsPerRun`
 - [x] Approval system with risk tiers; `POST /approvals/:id/approve|deny`; allow once / allow for session / deny
 - [x] `packages/workspaces` — register local paths, clone remotes to a content-addressed cache, one `git worktree` per run

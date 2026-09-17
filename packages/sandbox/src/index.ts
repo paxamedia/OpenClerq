@@ -14,9 +14,10 @@
  *              a warning and it must be selected deliberately.
  *
  *   seatbelt   macOS sandbox-exec with a generated SBPL profile: writes limited
- *              to the workspace, network denied unless explicitly allowed.
- *              Apple has deprecated the tool but it still functions and is the
- *              only zero-dependency isolation available on macOS.
+ *              to the workspace, network denied unless explicitly allowed, and
+ *              an egress allowlist enforced by forcing traffic through a local
+ *              proxy. Apple has deprecated the tool but it still functions and
+ *              is the only zero-dependency isolation available on macOS.
  *
  *   container  Docker or Podman: separate filesystem, PID and network
  *              namespaces, with memory, CPU and process caps enforced by the
@@ -30,6 +31,17 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { startEgressProxy, type DeniedAttempt, type EgressProxy } from './egress.js';
+
+export {
+  startEgressProxy,
+  parseAllowlist,
+  isAllowed,
+  EgressError,
+  type EgressProxy,
+  type EgressRule,
+  type DeniedAttempt,
+} from './egress.js';
 
 export type SandboxProfile = 'native' | 'seatbelt' | 'container';
 
@@ -53,13 +65,19 @@ export interface SandboxSpec {
   /** Additional writable paths. Use sparingly. */
   allowWrite?: string[];
   /**
-   * Egress. 'none' denies all network access — the default, and the main
-   * defence against a prompt-injected agent exfiltrating a repository.
-   * A host list is honoured by the container profile; seatbelt can only
-   * distinguish all-or-nothing, so a non-empty list there means "network on"
-   * and is reported in the result.
+   * Egress.
+   *
+   *   'none'   No network at all. The default, and the main defence against a
+   *            prompt-injected agent exfiltrating a repository.
+   *   'all'    Unrestricted. Deliberate, and warned about in the result.
+   *   string[] Host allowlist, enforced by an egress proxy the sandbox starts.
+   *            Entries are "example.com", "example.com:443" or "*.example.com".
+   *
+   * An allowlist is refused by any profile that cannot enforce it, rather than
+   * quietly granting full network access. See `startEgressProxy` and
+   * SECURITY.md for what seatbelt can and cannot guarantee.
    */
-  network?: 'none' | string[];
+  network?: 'none' | 'all' | string[];
   limits?: SandboxLimits;
   /** Plain environment variables. */
   env?: Record<string, string>;
@@ -85,6 +103,8 @@ export interface ExecResult {
   profile: SandboxProfile;
   /** Warnings about weakened isolation, safe to surface in a UI. */
   warnings: string[];
+  /** Present when an allowlist was in force: what the run reached, and what it tried to. */
+  egress?: { allowed: number; denied: DeniedAttempt[] };
 }
 
 export class SandboxError extends Error {
@@ -140,7 +160,10 @@ function assertAbsolute(p: string, label: string): void {
  * interpreters and libraries), writing only inside the workspace, and process
  * execution. Network is denied unless explicitly requested.
  */
-export function buildSeatbeltProfile(spec: SandboxSpec): string {
+export function buildSeatbeltProfile(
+  spec: SandboxSpec,
+  opts: { egressProxyPort?: number } = {}
+): string {
   // Canonical paths only. On macOS os.tmpdir() is /var/folders/..., a symlink
   // to /private/var/folders/..., and a subpath rule built from the unresolved
   // path silently fails to match the write it was meant to permit.
@@ -150,7 +173,6 @@ export function buildSeatbeltProfile(spec: SandboxSpec): string {
   // instead creates a private temp directory per run and passes it in
   // allowWrite, with TMPDIR pointed at it.
   const writable = [spec.cwd, ...(spec.allowWrite ?? [])].map(canonical);
-  const networkAllowed = spec.network !== 'none' && spec.network !== undefined;
 
   const lines = [
     '(version 1)',
@@ -168,8 +190,17 @@ export function buildSeatbeltProfile(spec: SandboxSpec): string {
     '(allow file-write-data (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr"))',
   ];
 
-  if (networkAllowed) {
+  if (spec.network === 'all') {
     lines.push('(allow network*)');
+  } else if (opts.egressProxyPort !== undefined) {
+    // Everything stays denied except the proxy's port, so the only way out is
+    // through the allowlist. Note the limit of the tool: SBPL accepts only "*"
+    // or "localhost" as the host in a network address — a numeric address is a
+    // parse error — and the rule is in practice scoped by port, not by address.
+    // So this closes every port but one; a process that deliberately connects
+    // to an outside host on *that* port is not stopped. Per-host enforcement
+    // needs the container profile. SECURITY.md records this.
+    lines.push(`(allow network-outbound (remote ip "localhost:${opts.egressProxyPort}"))`);
   } else {
     lines.push('(deny network*)');
   }
@@ -201,7 +232,8 @@ export function buildContainerArgs(spec: SandboxSpec, command: string, args: str
     '/workspace',
   ];
 
-  if (spec.network === 'none' || spec.network === undefined) {
+  if (spec.network !== 'all') {
+    // An allowlist never reaches here: exec() refuses it for this profile.
     out.push('--network', 'none');
   }
 
@@ -275,6 +307,21 @@ export async function exec(
   let cleanup: (() => void) | undefined;
   let privateTmp: string | undefined;
 
+  // An empty allowlist allows nothing, which is what 'none' already means.
+  const allowlist =
+    Array.isArray(spec.network) && spec.network.length > 0 ? spec.network : undefined;
+  let proxy: EgressProxy | undefined;
+  let proxyEnv: Record<string, string> = {};
+
+  if (allowlist && spec.profile !== 'seatbelt') {
+    throw new SandboxError(
+      `The "${spec.profile}" profile cannot enforce an egress allowlist. ` +
+        "Use network: 'none', or network: 'all' if unrestricted access is intended. " +
+        'Per-host egress needs a container on an internal network with an egress proxy, ' +
+        'which the operator configures outside the sandbox.'
+    );
+  }
+
   if (spec.profile === 'native') {
     warnings.push(
       'Running without isolation (profile "native"). The command has this account\'s full filesystem and network reach.'
@@ -286,10 +333,35 @@ export async function exec(
     // A private temp directory, writable by this run alone, so commands that
     // need scratch space work without opening the shared temp directory.
     privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-run-'));
-    const profileText = buildSeatbeltProfile({
-      ...spec,
-      allowWrite: [...(spec.allowWrite ?? []), privateTmp],
-    });
+
+    if (allowlist) {
+      proxy = await startEgressProxy(allowlist);
+      const url = proxy.url;
+      // Set both cases: tooling is split on which it reads.
+      proxyEnv = {
+        HTTP_PROXY: url,
+        HTTPS_PROXY: url,
+        ALL_PROXY: url,
+        http_proxy: url,
+        https_proxy: url,
+        all_proxy: url,
+        NO_PROXY: '',
+        no_proxy: '',
+      };
+      warnings.push(
+        'Egress is restricted to the allowlist through a local proxy. macOS can only filter by ' +
+          'port, so a command that connects to an outside host on the proxy port is not stopped; ' +
+          'and a client that ignores the proxy variables reaches nothing at all.'
+      );
+    }
+
+    const profileText = buildSeatbeltProfile(
+      {
+        ...spec,
+        allowWrite: [...(spec.allowWrite ?? []), privateTmp],
+      },
+      { egressProxyPort: proxy?.port }
+    );
     const sbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-sb-'));
     const profilePath = path.join(sbDir, 'profile.sb');
     fs.writeFileSync(profilePath, profileText, 'utf8');
@@ -304,11 +376,6 @@ export async function exec(
     };
     file = 'sandbox-exec';
     argv = ['-f', profilePath, command, ...args];
-    if (Array.isArray(spec.network) && spec.network.length > 0) {
-      warnings.push(
-        'Seatbelt cannot filter by host: network access is all-or-nothing, so the requested host allowlist was applied as "network enabled". Use the container profile for per-host egress control.'
-      );
-    }
   } else if (spec.profile === 'container') {
     const runtime = detectContainerRuntime();
     if (!runtime) {
@@ -318,11 +385,6 @@ export async function exec(
     }
     file = runtime;
     argv = buildContainerArgs(spec, command, args);
-    if (Array.isArray(spec.network) && spec.network.length > 0) {
-      warnings.push(
-        'Per-host egress filtering requires a pre-configured container network; the container currently runs with default networking for the listed hosts.'
-      );
-    }
   } else {
     throw new SandboxError(`Unknown sandbox profile "${String(spec.profile)}".`);
   }
@@ -337,6 +399,7 @@ export async function exec(
         env: {
           ...process.env,
           ...(privateTmp ? { TMPDIR: privateTmp, TMP: privateTmp, TEMP: privateTmp } : {}),
+          ...proxyEnv,
           ...spec.env,
           ...spec.secrets,
         },
@@ -399,6 +462,9 @@ export async function exec(
       settled = true;
       clearTimeout(timer);
       cleanup?.();
+      const egress = proxy ? { allowed: proxy.allowed, denied: [...proxy.denied] } : undefined;
+      // The proxy outlives nothing: the run is over, so its only route out closes.
+      void proxy?.close();
       resolve({
         code,
         signal,
@@ -409,6 +475,7 @@ export async function exec(
         durationMs: Date.now() - started,
         profile: spec.profile,
         warnings,
+        egress,
       });
     };
 
@@ -417,6 +484,7 @@ export async function exec(
       settled = true;
       clearTimeout(timer);
       cleanup?.();
+      void proxy?.close();
       reject(new SandboxError(`Sandbox failed to run "${file}": ${e.message}`));
     });
 

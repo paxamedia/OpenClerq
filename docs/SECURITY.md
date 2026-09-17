@@ -1,6 +1,6 @@
 # Security
 
-**Status:** current as of release 0.4, 2026-09-04.
+**Status:** current as of the 0.5 development line, 2026-09-17.
 
 This document states what OpenClerq protects today, what it does **not** protect today, and
 the rules that bind future work. It supersedes the previous `SAFETY_CHECKLIST.md`.
@@ -56,6 +56,9 @@ That is a legitimate thing to build. It is not a thing to build casually.
 - **Vault access is audited.** Set and delete operations append to `~/.clerq/secrets.audit.log`.
 - **API keys are not bundled or logged.** The desktop app does not ship keys and does not send them anywhere except the local gateway.
 - **Numeric results are deterministic.** Calculations run in the Rust engine and return a `proof` object. The model never produces final numbers.
+- **Runs are durable and accountable.** Every task and trigger firing writes a run record with its request, its steps, and the tokens and cost of each model call. A model with no known price records an unknown cost rather than zero.
+- **Approvals fail closed.** An approval nobody answers within the timeout is refused, never granted. `POST /kill` refuses every pending approval at once.
+- **Sandboxed processes have no network by default,** and an egress allowlist is enforced at the boundary rather than inside the agent's own HTTP tool. See the limits below.
 
 ---
 
@@ -64,16 +67,16 @@ That is a legitimate thing to build. It is not a thing to build casually.
 These are live gaps, tracked as findings in [ROADMAP.md §2](ROADMAP.md#2-consolidated-audit).
 They are listed here because a security document that omits them is worse than none.
 
-| Gap                                                  | Detail                                                                                                                                                             | Roadmap |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
-| **Vault master key sits in an environment variable** | `CLERQ_VAULT_KEY` is readable by any process that can see the environment and lands in shell history and CI logs. The cipher is sound; the key protection is not.  | 0.5     |
-| **No run history**                                   | Triggers fire and their results are discarded. No durable record of what executed.                                                                                 | 0.5     |
-| **Config files are last-write-wins**                 | `memory.json`, `triggers.json`, `capabilities.json` are read-modify-write with no locking.                                                                         | 0.5     |
-| **No context management**                            | Tool output is capped per call, but nothing bounds total prompt assembly yet.                                                                                      | 0.6     |
-| **No sandbox**                                       | There is still no `exec` tool, so nothing to sandbox. One must exist before the first one ships.                                                                   | 0.5     |
-| **DNS rebinding**                                    | `http.request` resolves and checks addresses, but the connection re-resolves, leaving a TOCTOU window. Closing it needs a pinned-address dispatcher.               | 0.5     |
-| **Desktop CSP is disabled**                          | `tauri.conf.json` sets `security.csp: null`.                                                                                                                       | 1.0     |
-| **Updater public key is a placeholder**              | Signature verification cannot succeed, so updates fail closed — broken rather than exploitable, but it must be fixed before any release advertises in-app updates. | 1.0     |
+| Gap                                                  | Detail                                                                                                                                                                                                                                                                                                                                                                                                 | Roadmap |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| **Vault master key sits in an environment variable** | `CLERQ_VAULT_KEY` is readable by any process that can see the environment and lands in shell history and CI logs. The cipher is sound; the key protection is not.                                                                                                                                                                                                                                      | 0.5     |
+| **Config files are last-write-wins**                 | `capabilities.json` and `config.json` are still read-modify-write with no locking. Memory, runs and triggers now live in SQLite.                                                                                                                                                                                                                                                                       | 0.6     |
+| **No context management**                            | Tool output is capped per call, but nothing bounds total prompt assembly yet.                                                                                                                                                                                                                                                                                                                          | 0.6     |
+| **Egress filtering is coarse on macOS**              | A host allowlist is enforced by a local proxy the sandbox forces traffic through, but SBPL can only filter by port, so a command that connects to an outside host on the proxy's own port is not stopped — and a client ignoring the proxy variables reaches nothing. Per-host enforcement needs a container on an internal network. Any profile that cannot enforce an allowlist refuses it outright. | 0.6     |
+| **The sandbox is not wired to a tool yet**           | `packages/sandbox` exists and is tested, but no `exec` tool ships, so nothing calls it in production. The container profile's arguments are unit-tested; container execution itself is untested.                                                                                                                                                                                                       | 0.6     |
+| **DNS rebinding**                                    | `http.request` resolves and checks addresses, but the connection re-resolves, leaving a TOCTOU window. Closing it needs a pinned-address dispatcher.                                                                                                                                                                                                                                                   | 0.5     |
+| **Desktop CSP is disabled**                          | `tauri.conf.json` sets `security.csp: null`.                                                                                                                                                                                                                                                                                                                                                           | 1.0     |
+| **Updater public key is a placeholder**              | Signature verification cannot succeed, so updates fail closed — broken rather than exploitable, but it must be fixed before any release advertises in-app updates.                                                                                                                                                                                                                                     | 1.0     |
 
 Release 0.4 closed the four S1 blockers (unauthenticated gateway, all-interface bind,
 prefix-based path containment, licensing standing in for authentication) plus the SSRF and

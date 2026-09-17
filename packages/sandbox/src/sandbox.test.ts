@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
+import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -62,10 +64,19 @@ describe('profile construction', () => {
     );
   });
 
-  it('seatbelt enables network only when asked', () => {
-    const on = buildSeatbeltProfile({ profile: 'seatbelt', cwd: work, network: ['example.com'] });
+  it('seatbelt opens the network only when that is what was asked for', () => {
+    const on = buildSeatbeltProfile({ profile: 'seatbelt', cwd: work, network: 'all' });
     expect(on).toContain('(allow network*)');
     expect(on).not.toContain('(deny network*)');
+  });
+
+  it('seatbelt opens exactly one port when an egress proxy is in use', () => {
+    const p = buildSeatbeltProfile(
+      { profile: 'seatbelt', cwd: work, network: ['example.com'] },
+      { egressProxyPort: 51234 }
+    );
+    expect(p).toContain('(allow network-outbound (remote ip "localhost:51234"))');
+    expect(p).not.toContain('(allow network*)');
   });
 
   it('container args drop capabilities, go read-only and disable the network', () => {
@@ -122,6 +133,23 @@ describe('validation', () => {
     await expect(exec({ profile: 'native', cwd: 'relative' }, 'true')).rejects.toThrow(
       /absolute path/
     );
+  });
+
+  it('refuses an allowlist on a profile that cannot enforce it', async () => {
+    // Silently granting full network instead would be the worst outcome: the
+    // caller believes egress is restricted when nothing restricts it.
+    await expect(
+      exec({ profile: 'native', cwd: work, network: ['example.com'] }, 'true')
+    ).rejects.toThrow(/cannot enforce an egress allowlist/);
+    await expect(
+      exec({ profile: 'container', cwd: work, network: ['example.com'] }, 'true')
+    ).rejects.toThrow(/cannot enforce an egress allowlist/);
+  });
+
+  it('treats an empty allowlist as no network at all', async () => {
+    const r = await exec({ profile: 'native', cwd: work, network: [] }, 'true');
+    expect(r.code).toBe(0);
+    expect(r.egress).toBeUndefined();
   });
 
   it('refuses a working directory that does not exist', async () => {
@@ -246,10 +274,49 @@ describe.skipIf(!isMac)('seatbelt isolation (macOS)', () => {
     expect(r.warnings.join(' ')).not.toMatch(/without isolation/i);
   });
 
-  it('flags that host-level egress filtering is unavailable', async () => {
+  it('says plainly what the allowlist does and does not stop', async () => {
     const r = await exec({ ...spec(), network: ['example.com'] }, 'true');
-    expect(r.warnings.join(' ')).toMatch(/all-or-nothing/i);
+    expect(r.warnings.join(' ')).toMatch(/restricted to the allowlist/i);
+    expect(r.warnings.join(' ')).toMatch(/proxy port is not stopped/i);
   });
+
+  it('holds a sandboxed command to the allowlist, and records what it tried', async () => {
+    // The real thing: two local servers, one listed and one not, reached with
+    // curl inside the sandbox.
+    const allowed = http.createServer((_q, res) => res.end('allowed body'));
+    const blocked = http.createServer((_q, res) => res.end('blocked body'));
+    await new Promise<void>((r) => allowed.listen(0, '127.0.0.1', () => r()));
+    await new Promise<void>((r) => blocked.listen(0, '127.0.0.1', () => r()));
+    const allowedPort = (allowed.address() as net.AddressInfo).port;
+    const blockedPort = (blocked.address() as net.AddressInfo).port;
+
+    try {
+      const run = (url: string, args: string[] = []) =>
+        exec(
+          { ...spec(), network: [`127.0.0.1:${allowedPort}`], limits: { wallMs: 15_000 } },
+          '/usr/bin/curl',
+          ['-s', '--max-time', '5', ...args, url]
+        );
+
+      const ok = await run(`http://127.0.0.1:${allowedPort}/`);
+      expect(ok.stdout).toBe('allowed body');
+      expect(ok.egress?.allowed).toBe(1);
+
+      const denied = await run(`http://127.0.0.1:${blockedPort}/`);
+      expect(denied.stdout).not.toContain('blocked body');
+      expect(denied.egress?.denied).toMatchObject([{ host: '127.0.0.1', port: blockedPort }]);
+
+      // And the proxy cannot simply be stepped around: a direct connection to
+      // the allowed server, bypassing the proxy variables, is refused by the
+      // sandbox itself because that port is not open to it.
+      const direct = await run(`http://127.0.0.1:${allowedPort}/`, ['--noproxy', '*']);
+      expect(direct.code).not.toBe(0);
+      expect(direct.stdout).not.toContain('allowed body');
+    } finally {
+      await new Promise<void>((r) => allowed.close(() => r()));
+      await new Promise<void>((r) => blocked.close(() => r()));
+    }
+  }, 30_000);
 
   it('enforces the wall clock like every other profile', async () => {
     const r = await exec({ ...spec(), limits: { wallMs: 300 } }, 'sh', ['-c', 'sleep 30']);
