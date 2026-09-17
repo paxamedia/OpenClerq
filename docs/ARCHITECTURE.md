@@ -222,16 +222,17 @@ manifest permits executing exactly those two binaries and nothing else.
 
 ## 6. Local state
 
-| Path                         | Contents                                                       |
-| ---------------------------- | -------------------------------------------------------------- |
-| `~/.clerq/gateway-token`     | Bearer token for the local API (mode 0600)                     |
-| `~/.clerq/clerq.db`          | SQLite: runs and steps, approvals, memory, triggers, audit log |
-| `~/.clerq/providers.yaml`    | Optional replacement for the built-in provider registry        |
-| `~/.clerq/config.json`       | Gateway URL, module paths, UI settings                         |
-| `~/.clerq/.env`              | Provider API key, if configured                                |
-| `~/.clerq/capabilities.json` | Filesystem root and HTTP allowlist                             |
-| `~/.clerq/secrets.vault`     | AES-256-GCM encrypted secrets                                  |
-| `~/.clerq/secrets.audit.log` | Append-only vault access log                                   |
+| Path                         | Contents                                                        |
+| ---------------------------- | --------------------------------------------------------------- |
+| `~/.clerq/gateway-token`     | Bearer token for the local API (mode 0600)                      |
+| `~/.clerq/clerq.db`          | SQLite: runs and steps, approvals, memory, triggers, audit log  |
+| `~/.clerq/providers.yaml`    | Optional replacement for the built-in provider registry         |
+| `~/.clerq/config.json`       | Gateway URL, module paths, UI settings                          |
+| `~/.clerq/.env`              | Provider API key, if configured                                 |
+| `~/.clerq/capabilities.json` | Filesystem root and HTTP allowlist                              |
+| `~/.clerq/secrets.vault`     | AES-256-GCM encrypted secrets; the key lives in the OS keychain |
+| `~/.clerq/vault.key`         | Master key, mode 0600 — only where there is no keychain         |
+| `~/.clerq/secrets.audit.log` | Append-only vault access log                                    |
 
 A pre-0.5 `memory.json` or `triggers.json` is imported into `clerq.db` on first start and kept as
 `*.migrated`. The remaining JSON files are read-modify-write with no locking, so concurrent

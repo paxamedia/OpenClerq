@@ -332,7 +332,7 @@ everything downstream writes into.
 - [x] `packages/store` — SQLite + WAL, migration runner, schema from §4.4 _(landed)_
 - [x] Migrate `memory.json` / `triggers.json` / `capabilities.json` into SQLite with a one-time importer _(landed)_
 - [x] Lock CORS to the desktop origin; drop the `*` dev path
-- [ ] Secrets master key → OS keychain (Keychain / DPAPI), age-encrypted file for headless _(moved to 0.5)_
+- [x] Secrets master key → OS keychain (Keychain / libsecret / DPAPI), generated on first use; mode-0600 key file for headless hosts _(an age-encrypted file was the original plan; on a headless host the age identity sits on the same disk as the key it protects, so it buys nothing over file permissions)_
 - [x] Typed event bus + append-only audit log
 - [x] Remove the dead `fsAllowWrite` flag or implement it
 - [x] Fix version drift; extend `sync-version.js` to cover `/health`

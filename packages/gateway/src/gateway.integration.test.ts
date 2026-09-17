@@ -96,6 +96,10 @@ const LLM_VARS = [
   'CLERQ_LLM_BASE_URL',
   'CLERQ_OLLAMA_URL',
   'FAKECLOUD_TEST_KEY',
+  // Off for the same reason the store is in memory: a test must never write to
+  // the developer's real keychain, which is what an unguarded /secrets call
+  // would do.
+  'CLERQ_KEYCHAIN',
 ];
 
 describe('gateway integration', () => {
@@ -148,6 +152,7 @@ describe('gateway integration', () => {
     process.env.CLERQ_PROVIDERS_FILE = registryFile;
     process.env.CLERQ_LLM_PROVIDER = 'fake';
     process.env.FAKECLOUD_TEST_KEY = 'fakecloud-test-key';
+    process.env.CLERQ_KEYCHAIN = 'off';
 
     process.env.CLERQ_DEV = '1';
     const { server: s } = createGateway({

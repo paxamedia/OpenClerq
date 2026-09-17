@@ -28,7 +28,7 @@ import { loadReasoning, saveReasoning, type ReasoningConfig } from './reasoning-
 import { loadSystemPrompt, saveSystemPrompt, DEFAULT_PROMPT } from './system-prompt.js';
 import { getObservability } from './observability.js';
 import { getLogBuffer, subscribe, type LogEntry } from './log-stream.js';
-import { listSecrets, setSecret, deleteSecret } from './secrets-vault.js';
+import { listSecrets, setSecret, deleteSecret, vaultKeyStatus } from './secrets-vault.js';
 import {
   startTriggers,
   getTriggers,
@@ -172,7 +172,11 @@ export function createGateway(config: GatewayConfig = {}): {
   app.get('/secrets', (_req, res) => {
     const result = listSecrets();
     if (Array.isArray(result)) {
-      res.json({ secrets: result });
+      // Names only — values never leave the vault through this endpoint. The
+      // key's location is reported so an operator can see it is not in an
+      // environment variable.
+      const { source, backend } = vaultKeyStatus();
+      res.json({ secrets: result, keySource: source, keychain: backend });
     } else {
       res.status(503).json(result);
     }

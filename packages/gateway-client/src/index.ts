@@ -351,8 +351,11 @@ export const gateway = {
     return fetchJson(`/runs/${encodeURIComponent(id)}`);
   },
 
-  secrets(): Promise<{ secrets: string[] } | { error: string }> {
-    return fetchJson<{ secrets: string[] } | { error: string }>('/secrets');
+  secrets(): Promise<
+    | { secrets: string[]; keySource: 'env' | 'keychain' | 'file' | 'none'; keychain: string }
+    | { error: string }
+  > {
+    return fetchJson('/secrets');
   },
 
   setSecret(name: string, value: string): Promise<{ ok: boolean }> {
