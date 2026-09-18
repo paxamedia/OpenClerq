@@ -1,6 +1,17 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { initStore, closeStore, getStore } from './store.js';
-import { recordRun, recordModelCall, getRun, listRuns, currentRunId } from './runs.js';
+import {
+  recordRun,
+  recordModelCall,
+  getRun,
+  listRuns,
+  currentRunId,
+  currentRunSignal,
+  cancelRun,
+  cancelAllRuns,
+  activeRunIds,
+  RunCancelled,
+} from './runs.js';
 import { recentEvents, resetEvents } from './events.js';
 
 beforeAll(async () => {
@@ -146,5 +157,82 @@ describe('run accounting', () => {
     ).rejects.toThrow('exploded');
 
     expect(getRun(id)).toMatchObject({ status: 'failed', exitReason: 'exploded', input: 'boom' });
+  });
+
+  it('records a cancelled run as cancelled, not failed', async () => {
+    let id = '';
+    const pending = recordRun({ trigger: 'manual', message: 'stop me' }, async () => {
+      id = currentRunId() as string;
+      // Stand-in for a model call listening to the run's signal. Captured here:
+      // the abort listener runs outside the run's async context.
+      const signal = currentRunSignal()!;
+      await new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason));
+      });
+    });
+    await tick();
+    expect(cancelRun(id, 'Operator stopped it')).toBe(true);
+
+    await expect(pending).rejects.toBeInstanceOf(RunCancelled);
+    expect(getRun(id)).toMatchObject({ status: 'cancelled', exitReason: 'Operator stopped it' });
+  });
+
+  it('cancels a run when the signal it was tied to aborts', async () => {
+    const client = new AbortController();
+    let id = '';
+    const pending = recordRun(
+      { trigger: 'manual', message: 'client leaves', signal: client.signal },
+      async () => {
+        id = currentRunId() as string;
+        const signal = currentRunSignal()!;
+        await new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      }
+    );
+    await tick();
+    client.abort();
+
+    await expect(pending).rejects.toThrow();
+    expect(getRun(id)).toMatchObject({
+      status: 'cancelled',
+      exitReason: 'The client disconnected.',
+    });
+  });
+
+  it('still records a cancellation the work swallowed', async () => {
+    let id = '';
+    const pending = recordRun({ trigger: 'manual', message: 'swallow' }, async () => {
+      id = currentRunId() as string;
+      await tick();
+      await tick();
+      return 'finished anyway';
+    });
+    await tick();
+    cancelRun(id);
+    await expect(pending).rejects.toBeInstanceOf(RunCancelled);
+    expect(getRun(id)?.status).toBe('cancelled');
+  });
+
+  it('cancels every run in flight at once, and forgets finished ones', async () => {
+    const hold = () =>
+      recordRun(
+        { trigger: 'schedule', message: 'held' },
+        () =>
+          new Promise((_resolve, reject) => {
+            currentRunSignal()!.addEventListener('abort', () => reject(new Error('aborted')));
+          })
+      ).catch(() => undefined);
+
+    const runs = [hold(), hold(), hold()];
+    await tick();
+    expect(activeRunIds()).toHaveLength(3);
+    expect(cancelAllRuns('Kill switch')).toBe(3);
+    await Promise.all(runs);
+    expect(activeRunIds()).toHaveLength(0);
+  });
+
+  it('reports that there was nothing to cancel', () => {
+    expect(cancelRun('run_not-running')).toBe(false);
   });
 });

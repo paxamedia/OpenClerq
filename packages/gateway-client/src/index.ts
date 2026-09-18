@@ -270,7 +270,13 @@ export const gateway = {
    */
   async sendMessage(
     id: string,
-    input: { text: string; mode?: PipelineMode; model?: string },
+    input: {
+      text: string;
+      mode?: PipelineMode;
+      model?: string;
+      /** Finish and record the run even if this client disconnects. */
+      continueOnDisconnect?: boolean;
+    },
     onDelta?: (text: string) => void,
     signal?: AbortSignal
   ): Promise<{ runId: string; message: ChatMessage }> {
@@ -328,7 +334,7 @@ export const gateway = {
 
   compare(
     id: string,
-    input: { text: string; models: string[] }
+    input: { text: string; models: string[]; continueOnDisconnect?: boolean }
   ): Promise<{ runId: string; messageId: number; columns: ComparisonColumn[] }> {
     return fetchJson(`/sessions/${encodeURIComponent(id)}/compare`, {
       method: 'POST',
@@ -341,6 +347,30 @@ export const gateway = {
       method: 'POST',
       body: JSON.stringify({ messageId, index }),
     });
+  },
+
+  // --- Kill switch ------------------------------------------------------
+
+  /**
+   * Stop things now. By default: refuse pending approvals, cancel every run in
+   * flight, and pause triggers. Pass false to leave any part out.
+   */
+  kill(opts: { approvals?: boolean; runs?: boolean; triggers?: boolean } = {}): Promise<{
+    ok: boolean;
+    deniedApprovals: number;
+    cancelledRuns: number;
+    triggersPaused: boolean;
+  }> {
+    return fetchJson('/kill', { method: 'POST', body: JSON.stringify(opts) });
+  },
+
+  killStatus(): Promise<{ triggersPaused: boolean; since: string | null; activeRuns: number }> {
+    return fetchJson('/kill');
+  },
+
+  /** Restart triggers paused by the kill switch. */
+  resume(): Promise<{ ok: boolean; triggersResumed: boolean; wasPaused: boolean }> {
+    return fetchJson('/resume', { method: 'POST', body: '{}' });
   },
 
   runs(limit = 50): Promise<{ runs: RunSummary[] }> {

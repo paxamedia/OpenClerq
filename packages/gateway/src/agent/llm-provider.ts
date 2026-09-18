@@ -30,7 +30,7 @@ import {
 } from '@clerq/providers';
 import { loadReasoning } from '../reasoning-config.js';
 import { recordLLMSuccess, recordLLMFailure } from '../observability.js';
-import { recordModelCall } from '../runs.js';
+import { recordModelCall, currentRunSignal } from '../runs.js';
 
 export interface LLMCallResult {
   text: string;
@@ -168,13 +168,18 @@ export async function chat(opts: ChatCallOptions): Promise<CallResult> {
   try {
     target = resolveTarget(opts.model);
     const ref = `${target.provider.id}/${target.model}`;
+    // A call inside a run stops when the run is cancelled — by the kill switch,
+    // or because the client that asked for it went away.
+    const signals = [opts.signal, currentRunSignal()].filter(
+      (s): s is AbortSignal => s !== undefined
+    );
     const callOptions = {
       system: opts.system,
       messages: opts.messages,
       temperature: opts.temperature,
       maxTokens: opts.maxTokens,
       keyOptional: target.keyOptional,
-      signal: opts.signal,
+      signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
     };
     const res = opts.onDelta
       ? await callStream(target.registry, ref, callOptions, opts.onDelta)
@@ -214,7 +219,8 @@ export async function chat(opts: ChatCallOptions): Promise<CallResult> {
 export async function callLLM(
   system: string,
   userContent: string,
-  modelOverride?: string
+  modelOverride?: string,
+  signal?: AbortSignal
 ): Promise<LLMCallResult> {
   const reasoning = loadReasoning();
   const res = await chat({
@@ -223,6 +229,7 @@ export async function callLLM(
     model: modelOverride,
     temperature: reasoning.temperature,
     maxTokens: reasoning.maxTokens,
+    signal,
   });
   return {
     text: res.text || 'No response.',

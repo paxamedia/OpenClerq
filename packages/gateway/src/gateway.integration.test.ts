@@ -33,9 +33,13 @@ interface SeenRequest {
   stream?: boolean;
 }
 
+/** Calls to the fake that were slow on purpose, and how many the gateway walked away from. */
+const slowCalls = { started: 0, abandoned: 0 };
+
 /**
  * A stand-in for a vendor's /chat/completions endpoint. Every call reports
- * 1200 prompt and 300 completion tokens; a prompt containing FAIL_ME gets a 500.
+ * 1200 prompt and 300 completion tokens; a prompt containing FAIL_ME gets a 500,
+ * and one containing SLOW takes seconds to answer.
  */
 async function startFakeModelServer(seen: SeenRequest[]): Promise<http.Server> {
   const fake = http.createServer((req, res) => {
@@ -58,6 +62,47 @@ async function startFakeModelServer(seen: SeenRequest[]): Promise<http.Server> {
         res.setHeader('content-type', 'application/json');
         res.statusCode = 500;
         res.end(JSON.stringify({ error: 'upstream boom' }));
+        return;
+      }
+
+      // SLOW keeps a call in flight for seconds, so there is something to cancel.
+      if (prompt.includes('SLOW')) {
+        slowCalls.started += 1;
+        const timers: NodeJS.Timeout[] = [];
+        res.on('close', () => {
+          if (!res.writableFinished) slowCalls.abandoned += 1;
+          timers.forEach(clearTimeout);
+        });
+        if (body.stream) {
+          res.setHeader('content-type', 'text/event-stream');
+          for (let i = 0; i < 20; i++) {
+            timers.push(
+              setTimeout(
+                () => {
+                  res.write(
+                    `data: ${JSON.stringify({ choices: [{ delta: { content: '.' } }] })}\n\n`
+                  );
+                  if (i === 19) res.end('data: [DONE]\n\n');
+                },
+                150 * (i + 1)
+              )
+            );
+          }
+        } else {
+          res.setHeader('content-type', 'application/json');
+          timers.push(
+            setTimeout(
+              () =>
+                res.end(
+                  JSON.stringify({
+                    choices: [{ message: { content: 'slow answer' } }],
+                    usage: { prompt_tokens: 1200, completion_tokens: 300 },
+                  })
+                ),
+              1200
+            )
+          );
+        }
         return;
       }
 
@@ -503,15 +548,117 @@ describe('gateway integration', () => {
     expect(((await res.json()) as { error?: string }).error).toBe('approval_not_pending');
   });
 
-  it('offers a kill switch', async () => {
-    const res = await authed(`${baseUrl}/kill`, { method: 'POST' });
-    expect(res.status).toBe(200);
-    expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: true });
+  const post = (url: string, body?: unknown, signal?: AbortSignal) =>
+    authed(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+      signal,
+    });
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** The newest run, once it has left the executing state. */
+  async function settledLatestRun(): Promise<{ id: string; status: string; exitReason?: string }> {
+    // Generous: under a loaded CI runner a slow call can take seconds to settle.
+    for (let i = 0; i < 200; i++) {
+      const { runs } = (await (await authed(`${baseUrl}/runs?limit=1`)).json()) as {
+        runs: Array<{ id: string; status: string; exitReason?: string }>;
+      };
+      if (runs[0] && runs[0].status !== 'executing') return runs[0];
+      await sleep(50);
+    }
+    throw new Error('run never settled');
+  }
+
+  it('stops a run in flight, pauses triggers, and resumes them', async () => {
+    // Before, /kill only refused approvals: runs, spend and schedules carried on.
+    const task = post(`${baseUrl}/task`, { message: 'SLOW kill me' });
+    await sleep(300);
+
+    const killed = await post(`${baseUrl}/kill`);
+    expect(killed.status).toBe(200);
+    const body = (await killed.json()) as {
+      cancelledRuns: number;
+      triggersPaused: boolean;
+    };
+    expect(body.cancelledRuns).toBeGreaterThanOrEqual(1);
+    expect(body.triggersPaused).toBe(true);
+
+    // The task answers that it was cancelled — not that the provider failed.
+    const taskRes = await task;
+    expect(taskRes.status).toBe(409);
+    expect(((await taskRes.json()) as { error: string }).error).toBe('run_cancelled');
+    expect(await settledLatestRun()).toMatchObject({
+      status: 'cancelled',
+      exitReason: 'Kill switch engaged',
+    });
+
+    // While paused, a saved trigger does not start and a webhook is refused.
+    const saved = await post(`${baseUrl}/triggers`, { webhooks: { ping: { message: 'pong' } } });
+    expect(await saved.json()).toMatchObject({ ok: true, paused: true });
+    expect((await post(`${baseUrl}/webhook/ping`)).status).toBe(503);
+    expect(await (await authed(`${baseUrl}/kill`)).json()).toMatchObject({ triggersPaused: true });
+
+    const resumed = await post(`${baseUrl}/resume`);
+    expect(await resumed.json()).toMatchObject({ ok: true, wasPaused: true });
+    expect((await post(`${baseUrl}/webhook/ping`)).status).toBe(200);
+
+    await post(`${baseUrl}/triggers`, {});
   });
+
+  it('can stop runs without pausing the schedule', async () => {
+    const body = (await (await post(`${baseUrl}/kill`, { triggers: false })).json()) as {
+      triggersPaused: boolean;
+    };
+    expect(body.triggersPaused).toBe(false);
+    expect(await (await authed(`${baseUrl}/kill`)).json()).toMatchObject({ triggersPaused: false });
+  });
+
+  it('stops a streamed call when the client hangs up', async () => {
+    const session = (await (await post(`${baseUrl}/sessions`)).json()) as { id: string };
+    const before = slowCalls.abandoned;
+    const client = new AbortController();
+    const pending = post(
+      `${baseUrl}/sessions/${session.id}/send`,
+      { text: 'SLOW stream' },
+      client.signal
+    )
+      .then((r) => r.text())
+      .catch(() => undefined);
+    await sleep(300);
+    client.abort();
+    await pending;
+
+    // Recorded as cancelled, and the gateway walked away from the provider
+    // rather than keep paying for an answer nobody would read.
+    expect(await settledLatestRun()).toMatchObject({
+      status: 'cancelled',
+      exitReason: 'The client disconnected.',
+    });
+    await sleep(100);
+    expect(slowCalls.abandoned).toBeGreaterThan(before);
+  });
+
+  it('finishes the call anyway when the client asks it to', async () => {
+    const client = new AbortController();
+    const pending = post(
+      `${baseUrl}/task`,
+      { message: 'SLOW but keep going', continueOnDisconnect: true },
+      client.signal
+    ).catch(() => undefined);
+    await sleep(300);
+    client.abort();
+    await pending;
+
+    const run = await settledLatestRun();
+    expect(run.status).toBe('done');
+  }, 10_000);
 
   it('requires a token for approvals and the kill switch', async () => {
     expect((await fetch(`${baseUrl}/approvals`)).status).toBe(401);
     expect((await fetch(`${baseUrl}/kill`, { method: 'POST' })).status).toBe(401);
+    expect((await fetch(`${baseUrl}/resume`, { method: 'POST' })).status).toBe(401);
   });
 
   it('streams events, accepting the token as a query parameter', async () => {
@@ -717,6 +864,42 @@ describe('gateway integration', () => {
 
       expect(body.columns.every((c) => c.error && c.text === undefined)).toBe(true);
       expect(body.columns[0].error).toMatch(/returned 500/);
+    });
+
+    it('refuses an unknown mode with a status code, before any stream opens', async () => {
+      // Before, "garbage" was quietly treated as raw and answered 200.
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      const res = await json(`${baseUrl}/sessions/${session.id}/send`, {
+        text: 'hi',
+        mode: 'garbage',
+      });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('content-type')).toContain('application/json');
+      expect(((await res.json()) as { message: string }).message).toMatch(/raw" or "managed/);
+    });
+
+    it('refuses non-string models without leaking internals', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      const res = await json(`${baseUrl}/sessions/${session.id}/compare`, {
+        text: 'hi',
+        models: [123, { a: 1 }],
+      });
+      expect(res.status).toBe(400);
+      const text = await res.text();
+      expect(text).toMatch(/Model 1 must be a non-empty model reference/);
+      expect(text).not.toMatch(/trim is not a function/);
+    });
+
+    it('lets a model be compared with itself, to see its variance', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
+      const body = (await (
+        await json(`${baseUrl}/sessions/${session.id}/compare`, {
+          text: 'twice',
+          models: ['fake/priced', 'fake/priced'],
+        })
+      ).json()) as { columns: Array<{ text?: string }> };
+      expect(body.columns).toHaveLength(2);
+      expect(body.columns.every((c) => c.text)).toBe(true);
     });
 
     it('needs at least two models to compare', async () => {

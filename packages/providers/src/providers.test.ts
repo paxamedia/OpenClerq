@@ -640,3 +640,108 @@ describe('callStream', () => {
     ).rejects.toThrow(/returned 503/);
   });
 });
+
+describe('response limits and cancellation', () => {
+  const saved = { ...process.env };
+  beforeEach(() => {
+    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  const streamOf = (chunks: string[]) =>
+    ({
+      ok: true,
+      status: 200,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          const encoder = new TextEncoder();
+          for (const c of chunks) controller.enqueue(encoder.encode(c));
+          controller.close();
+        },
+      }),
+      text: async () => chunks.join(''),
+    }) as unknown as Response;
+
+  const frame = (content: string) =>
+    `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+
+  it('cuts a streamed answer off at the limit, keeping what arrived', async () => {
+    const res = await callStream(
+      registry,
+      'deepseek/deepseek-chat',
+      { prompt: 'hi', maxResponseBytes: 120 },
+      () => {},
+      (async () =>
+        streamOf([frame('first '), frame('second '), frame('third')])) as unknown as typeof fetch
+    );
+    expect(res.truncated).toBe(true);
+    expect(res.text.length).toBeGreaterThan(0);
+    expect(res.text).not.toContain('third');
+  });
+
+  it('does not mark an answer inside the limit as truncated', async () => {
+    const res = await callStream(
+      registry,
+      'deepseek/deepseek-chat',
+      { prompt: 'hi' },
+      () => {},
+      (async () => streamOf([frame('short')])) as unknown as typeof fetch
+    );
+    expect(res.truncated).toBeUndefined();
+  });
+
+  it('refuses a buffered response over the limit rather than parse half of it', async () => {
+    const big = JSON.stringify({ choices: [{ message: { content: 'x'.repeat(5000) } }] });
+    await expect(
+      call(
+        registry,
+        'deepseek/deepseek-chat',
+        { prompt: 'hi', maxResponseBytes: 1000 },
+        (async () => streamOf([big])) as unknown as typeof fetch
+      )
+    ).rejects.toThrow(/larger than 1000 bytes/);
+  });
+
+  it('reads the limit from the environment when the caller sets none', async () => {
+    process.env.CLERQ_MAX_RESPONSE_BYTES = '1000';
+    const big = JSON.stringify({ choices: [{ message: { content: 'x'.repeat(5000) } }] });
+    await expect(
+      call(registry, 'deepseek/deepseek-chat', { prompt: 'hi' }, (async () =>
+        streamOf([big])) as unknown as typeof fetch)
+    ).rejects.toThrow(/larger than 1000 bytes/);
+  });
+
+  it('marks a cancelled call as cancelled, distinct from a failure', async () => {
+    const controller = new AbortController();
+    const pending = call(
+      registry,
+      'deepseek/deepseek-chat',
+      { prompt: 'hi', signal: controller.signal },
+      ((_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        })) as unknown as typeof fetch
+    );
+    controller.abort();
+    const error = await pending.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).cancelled).toBe(true);
+  });
+
+  it('does not mark an ordinary failure as cancelled', async () => {
+    const error = await call(
+      registry,
+      'deepseek/deepseek-chat',
+      { prompt: 'hi' },
+      (async () =>
+        ({
+          ok: false,
+          status: 500,
+          text: async () => 'boom',
+        }) as unknown as Response) as unknown as typeof fetch
+    ).catch((e: unknown) => e);
+    expect((error as ProviderError).cancelled).toBe(false);
+  });
+});

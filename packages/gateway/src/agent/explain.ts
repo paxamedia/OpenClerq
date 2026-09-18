@@ -16,6 +16,8 @@ export interface ExplainRequest {
   skillName?: string;
   /** Optional: model override (use when user has multiple models) */
   model?: string;
+  /** Stops the model call, e.g. when the client that asked has gone. */
+  signal?: AbortSignal;
 }
 
 export interface ContextPreview {
@@ -59,7 +61,7 @@ export async function getExplanation(req: ExplainRequest): Promise<ExplainRespon
   }
 
   const systemPrompt = loadSystemPrompt();
-  const { text, model } = await callLLM(systemPrompt, userContent, req.model);
+  const { text, model } = await callLLM(systemPrompt, userContent, req.model, req.signal);
 
   return {
     explanation: text,

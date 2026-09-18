@@ -46,7 +46,8 @@ export class SessionError extends Error {
   }
 }
 
-function parseMode(value: unknown, fallback: PipelineMode = 'raw'): PipelineMode {
+/** Validate a pipeline mode, falling back when none is given. */
+export function parseMode(value: unknown, fallback: PipelineMode = 'raw'): PipelineMode {
   if (value === undefined || value === null || value === '') return fallback;
   if (value !== 'raw' && value !== 'managed') {
     throw new SessionError(`mode must be "raw" or "managed" (got ${JSON.stringify(value)}).`);
@@ -147,16 +148,20 @@ export function addMessage(
 ): Message {
   const db = getStore();
   const now = new Date().toISOString();
-  const content = message.meta
-    ? JSON.stringify({ text: message.content, meta: message.meta })
-    : message.content;
 
   const res = db
     .prepare(
-      `INSERT INTO messages (session_id, role, content, token_estimate, created_at)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO messages (session_id, role, content, meta, token_estimate, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
     )
-    .run(sessionId, message.role, content, estimateTokens(message.content), now);
+    .run(
+      sessionId,
+      message.role,
+      message.content,
+      message.meta ? JSON.stringify(message.meta) : null,
+      estimateTokens(message.content),
+      now
+    );
   db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(now, sessionId);
 
   return {
@@ -168,25 +173,48 @@ export function addMessage(
   };
 }
 
+function parseMeta(raw: unknown): Record<string, unknown> | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(String(raw)) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * An assistant turn written before migration 3 kept its metadata inside the
+ * text. Only those rows are decoded: a user's words are never reinterpreted.
+ */
+function decodeLegacy(content: string): { content: string; meta?: Record<string, unknown> } {
+  if (!content.startsWith('{"text":')) return { content };
+  try {
+    const parsed = JSON.parse(content) as { text?: unknown; meta?: unknown };
+    if (typeof parsed.text !== 'string') return { content };
+    return {
+      content: parsed.text,
+      meta:
+        parsed.meta && typeof parsed.meta === 'object'
+          ? (parsed.meta as Record<string, unknown>)
+          : undefined,
+    };
+  } catch {
+    return { content };
+  }
+}
+
 export function listMessages(sessionId: string): Message[] {
   return getStore()
-    .prepare('SELECT id, role, content, created_at FROM messages WHERE session_id = ? ORDER BY id')
+    .prepare(
+      'SELECT id, role, content, meta, created_at FROM messages WHERE session_id = ? ORDER BY id'
+    )
     .all(sessionId)
     .map((r) => {
-      const raw = String(r.content);
-      let content = raw;
-      let meta: Record<string, unknown> | undefined;
-      // Assistant turns carry their metadata alongside the text.
-      if (raw.startsWith('{')) {
-        try {
-          const parsed = JSON.parse(raw) as { text?: string; meta?: Record<string, unknown> };
-          if (typeof parsed.text === 'string') {
-            content = parsed.text;
-            meta = parsed.meta;
-          }
-        } catch {
-          /* a message that merely begins with a brace */
-        }
+      let content = String(r.content);
+      let meta = parseMeta(r.meta);
+      if (meta === undefined && r.role === 'assistant') {
+        ({ content, meta } = decodeLegacy(content));
       }
       return {
         id: Number(r.id),

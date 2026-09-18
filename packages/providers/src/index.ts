@@ -53,9 +53,12 @@ export interface Registry {
 
 export class ProviderError extends Error {
   readonly code = 'provider_error';
-  constructor(message: string) {
+  /** True when the caller cancelled the call, as opposed to it failing. */
+  readonly cancelled: boolean;
+  constructor(message: string, opts: { cancelled?: boolean } = {}) {
     super(message);
     this.name = 'ProviderError';
+    this.cancelled = opts.cancelled ?? false;
   }
 }
 
@@ -228,6 +231,12 @@ export interface CallOptions {
   /** Proceed without a key when authEnv is unset — for self-hosted endpoints. */
   keyOptional?: boolean;
   signal?: AbortSignal;
+  /**
+   * Largest response accepted, in bytes. A streamed answer is cut off at the
+   * limit and marked truncated; a buffered one over the limit is refused.
+   * Defaults to CLERQ_MAX_RESPONSE_BYTES, or 8 MiB.
+   */
+  maxResponseBytes?: number;
 }
 
 export interface CallResult {
@@ -246,6 +255,8 @@ export interface CallResult {
   latencyMs: number;
   /** The request body sent, kept for the chat console's raw mode. */
   request?: unknown;
+  /** True when a streamed answer hit maxResponseBytes and was cut off. */
+  truncated?: boolean;
 }
 
 export type FetchLike = typeof globalThis.fetch;
@@ -327,6 +338,7 @@ async function run(
         : null,
       latencyMs: Date.now() - started,
       request: prepared.body,
+      ...(outcome.truncated ? { truncated: true } : {}),
     };
   } catch (e) {
     if (e instanceof ProviderError) throw e;
@@ -334,7 +346,7 @@ async function run(
       throw new ProviderError(`${provider.label} did not respond within ${timeoutMs} ms.`);
     }
     if (opts.signal?.aborted) {
-      throw new ProviderError(`Call to ${provider.label} was cancelled.`);
+      throw new ProviderError(`Call to ${provider.label} was cancelled.`, { cancelled: true });
     }
     // fetch rejects with a bare "fetch failed"; name the endpoint so the cause is findable.
     const cause = e instanceof Error ? (e.cause instanceof Error ? e.cause.message : e.message) : e;
@@ -363,6 +375,19 @@ interface Outcome {
   text: string;
   usage: Usage;
   usageReported: boolean;
+  truncated?: boolean;
+}
+
+const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Nothing else bounded a response: a misbehaving endpoint could stream until
+ * the gateway ran out of memory, and the store would then try to keep it all.
+ */
+function responseLimit(opts: CallOptions): number {
+  if (opts.maxResponseBytes && opts.maxResponseBytes > 0) return opts.maxResponseBytes;
+  const fromEnv = Number(process.env.CLERQ_MAX_RESPONSE_BYTES);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_MAX_RESPONSE_BYTES;
 }
 
 /** The conversation to send: an explicit history, or the single prompt. */
@@ -444,7 +469,7 @@ function parseBody(anthropic: boolean, data: unknown): Outcome {
 
 async function postJson(ctx: CallContext, prepared: PreparedRequest): Promise<unknown> {
   const res = await send(ctx, prepared);
-  const text = await res.text();
+  const text = await readCapped(res, responseLimit(ctx.opts), ctx.provider.label);
   try {
     return JSON.parse(text);
   } catch {
@@ -528,6 +553,9 @@ async function readStream(
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
+  const limit = responseLimit(ctx.opts);
+  let received = 0;
+  let truncated = false;
   let buffer = '';
   let text = '';
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -559,6 +587,13 @@ async function readStream(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    received += value.byteLength;
+    if (received > limit) {
+      // Keep what arrived; stop the provider sending more.
+      truncated = true;
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
     // Frames are separated by a blank line; a frame may carry several lines.
     let sep: number;
@@ -574,7 +609,26 @@ async function readStream(
     if (line.startsWith('data:')) handle(line.slice(5).trim());
   }
 
-  return { text, usage, usageReported };
+  return { text, usage, usageReported, truncated };
+}
+
+/** Read a buffered body, refusing one larger than `limit`. */
+async function readCapped(res: Response, limit: number, label: string): Promise<string> {
+  if (!res.body) return res.text();
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > limit) {
+      await reader.cancel().catch(() => undefined);
+      throw new ProviderError(`${label} sent a response larger than ${limit} bytes; refused.`);
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 /** Providers that have their key configured, for a status view. */

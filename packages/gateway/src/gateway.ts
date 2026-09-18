@@ -31,6 +31,7 @@ import { getLogBuffer, subscribe, type LogEntry } from './log-stream.js';
 import { listSecrets, setSecret, deleteSecret, vaultKeyStatus } from './secrets-vault.js';
 import {
   startTriggers,
+  stopTriggers,
   getTriggers,
   saveTriggers,
   getWebhookMessage,
@@ -40,7 +41,7 @@ import {
 } from './triggers.js';
 import { listMemory, getMemory, setMemory, deleteMemory, searchMemory } from './memory-layer.js';
 import { initStore } from './store.js';
-import { recordRun, listRuns, getRun, currentRunId } from './runs.js';
+import { recordRun, listRuns, getRun, currentRunId, cancelAllRuns, activeRunIds } from './runs.js';
 import { emit, subscribeEvents, recentEvents } from './events.js';
 import { listPending, decide, denyAllPending } from './approvals.js';
 import {
@@ -51,9 +52,14 @@ import {
   deleteSession,
   listMessages,
   SessionError,
-  type PipelineMode,
 } from './chat/sessions.js';
-import { sendMessage, compare, promote, type ManagedPipeline } from './chat/console.js';
+import {
+  sendMessage,
+  validateSend,
+  compare,
+  promote,
+  type ManagedPipeline,
+} from './chat/console.js';
 
 const DEFAULT_PORT = 18790;
 
@@ -77,6 +83,38 @@ export const GATEWAY_VERSION = '0.4.0';
  */
 function isProviderError(e: unknown): boolean {
   return (e as { code?: unknown })?.code === 'provider_error';
+}
+
+/**
+ * A run that was stopped on purpose — kill switch, or the client hanging up —
+ * answers 409 rather than a 503 that would blame the provider.
+ */
+function isCancelled(e: unknown): boolean {
+  return (e as { cancelled?: unknown })?.cancelled === true;
+}
+
+function cancelledResponse(res: Response, e: unknown): Response {
+  return res.status(409).json({
+    error: 'run_cancelled',
+    message: e instanceof Error ? e.message : 'The run was cancelled.',
+  });
+}
+
+/**
+ * A signal that aborts when the client goes away before its response is
+ * complete, so a model call nobody is waiting for stops — and stops costing.
+ *
+ * A caller that wants the work finished regardless sends
+ * `continueOnDisconnect: true` and reads the outcome from GET /runs/:id later.
+ */
+function disconnectSignal(res: Response, continueOnDisconnect: unknown): AbortSignal | undefined {
+  if (continueOnDisconnect === true) return undefined;
+  const controller = new AbortController();
+  res.on('close', () => {
+    // 'close' also fires after a normal finish; only an early close is a hang-up.
+    if (!res.writableFinished) controller.abort();
+  });
+  return controller.signal;
 }
 
 export function createGateway(config: GatewayConfig = {}): {
@@ -497,15 +535,57 @@ export function createGateway(config: GatewayConfig = {}): {
    * Kill switch: stop everything and refuse every pending approval.
    * Required by SECURITY.md, and reachable from any client.
    */
-  app.post('/kill', (_req: Request, res: Response) => {
+  /**
+   * The kill switch. By default it does all three: refuses every pending
+   * approval, cancels every run in flight (their model calls stop mid-stream
+   * and the runs are recorded as cancelled), and pauses triggers so nothing new
+   * starts on its own. Any part can be left out — `{ "triggers": false }` stops
+   * what is running without pausing the schedule.
+   *
+   * Triggers stay paused until POST /resume, or a restart. A person can still
+   * run tasks by hand while they are paused.
+   */
+  let triggersPausedAt: string | null = null;
+
+  app.get('/kill', (_req: Request, res: Response) => {
+    res.json({
+      triggersPaused: triggersPausedAt !== null,
+      since: triggersPausedAt,
+      activeRuns: activeRunIds().length,
+    });
+  });
+
+  app.post('/kill', (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { approvals?: boolean; runs?: boolean; triggers?: boolean };
     try {
-      const denied = denyAllPending('Kill switch engaged');
-      emit('gateway.stopped', { reason: 'kill switch', deniedApprovals: denied });
-      logger.warn('Kill switch engaged', { deniedApprovals: denied });
-      res.json({ ok: true, deniedApprovals: denied });
+      const deniedApprovals = body.approvals === false ? 0 : denyAllPending('Kill switch engaged');
+      const cancelledRuns = body.runs === false ? 0 : cancelAllRuns('Kill switch engaged');
+      let triggersPaused = triggersPausedAt !== null;
+      if (body.triggers !== false) {
+        stopTriggers();
+        triggersPausedAt ??= new Date().toISOString();
+        triggersPaused = true;
+      }
+      emit('kill.engaged', { deniedApprovals, cancelledRuns, triggersPaused });
+      logger.warn('Kill switch engaged', { deniedApprovals, cancelledRuns, triggersPaused });
+      res.json({ ok: true, deniedApprovals, cancelledRuns, triggersPaused });
     } catch (e) {
       logger.error('kill switch error', { err: e instanceof Error ? e.message : String(e) });
       res.status(500).json({ error: 'kill_failed' });
+    }
+  });
+
+  app.post('/resume', (_req: Request, res: Response) => {
+    try {
+      const wasPaused = triggersPausedAt !== null;
+      triggersPausedAt = null;
+      startTriggers(runTriggered);
+      emit('kill.released', { wasPaused });
+      logger.info('Triggers resumed', { wasPaused });
+      res.json({ ok: true, triggersResumed: true, wasPaused });
+    } catch (e) {
+      logger.error('resume error', { err: e instanceof Error ? e.message : String(e) });
+      res.status(500).json({ error: 'resume_failed' });
     }
   });
 
@@ -529,6 +609,7 @@ export function createGateway(config: GatewayConfig = {}): {
     const message = e instanceof Error ? e.message : String(e);
     if (e instanceof SessionError)
       return res.status(400).json({ error: 'invalid_session', message });
+    if (isCancelled(e)) return cancelledResponse(res, e);
     if (isProviderError(e)) {
       return res.status(503).json({ error: 'ai_unavailable', message: message.slice(0, 200) });
     }
@@ -595,11 +676,22 @@ export function createGateway(config: GatewayConfig = {}): {
     const id = String(req.params?.id ?? '');
     const body = (req.body ?? {}) as {
       text?: string;
-      mode?: PipelineMode;
+      mode?: unknown;
       model?: string;
       stream?: boolean;
+      continueOnDisconnect?: boolean;
     };
     const streaming = body.stream !== false;
+    const input = { sessionId: id, text: body.text ?? '', mode: body.mode, model: body.model };
+
+    // Refuse a bad request with a status code before any stream is opened or
+    // anything is spent.
+    try {
+      validateSend(input);
+    } catch (e) {
+      return chatError(res, e, 'session_send_failed');
+    }
+    const signal = disconnectSignal(res, body.continueOnDisconnect);
 
     const managed: ManagedPipeline = async (message, model) => {
       const result = await runTaskFromContext(message, model);
@@ -612,13 +704,7 @@ export function createGateway(config: GatewayConfig = {}): {
 
     if (!streaming) {
       try {
-        const result = await sendMessage({
-          sessionId: id,
-          text: body.text ?? '',
-          mode: body.mode,
-          model: body.model,
-          managed,
-        });
+        const result = await sendMessage({ ...input, managed, signal });
         return res.json(result);
       } catch (e) {
         return chatError(res, e, 'session_send_failed');
@@ -629,16 +715,16 @@ export function createGateway(config: GatewayConfig = {}): {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
-    const send = (event: Record<string, unknown>) =>
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    const send = (event: Record<string, unknown>) => {
+      // After a hang-up there is nobody to write to.
+      if (!res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
 
     try {
       const result = await sendMessage({
-        sessionId: id,
-        text: body.text ?? '',
-        mode: body.mode,
-        model: body.model,
+        ...input,
         managed,
+        signal,
         onDelta: (text) => send({ type: 'delta', text }),
       });
       send({ type: 'done', ...result });
@@ -647,14 +733,25 @@ export function createGateway(config: GatewayConfig = {}): {
       // rather than a status code.
       send({ type: 'error', error: e instanceof Error ? e.message : String(e) });
     }
-    res.end();
+    if (!res.writableEnded) res.end();
   });
 
   app.post('/sessions/:id/compare', async (req: Request, res: Response) => {
     const id = String(req.params?.id ?? '');
-    const body = (req.body ?? {}) as { text?: string; models?: string[] };
+    const body = (req.body ?? {}) as {
+      text?: string;
+      models?: unknown;
+      continueOnDisconnect?: boolean;
+    };
     try {
-      res.json(await compare({ sessionId: id, text: body.text ?? '', models: body.models ?? [] }));
+      res.json(
+        await compare({
+          sessionId: id,
+          text: body.text ?? '',
+          models: body.models,
+          signal: disconnectSignal(res, body.continueOnDisconnect),
+        })
+      );
     } catch (e) {
       return chatError(res, e, 'session_compare_failed');
     }
@@ -734,6 +831,7 @@ export function createGateway(config: GatewayConfig = {}): {
       question?: string;
       context?: Record<string, unknown>;
       model?: string;
+      continueOnDisconnect?: boolean;
     };
     const question = typeof body?.question === 'string' ? body.question.trim() : '';
     if (!question) {
@@ -744,10 +842,12 @@ export function createGateway(config: GatewayConfig = {}): {
         question,
         context: body.context,
         model: typeof body.model === 'string' ? body.model : undefined,
+        signal: disconnectSignal(res, body.continueOnDisconnect),
       });
       res.json(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (isCancelled(e)) return cancelledResponse(res, e);
       if (isProviderError(e)) {
         return res.status(503).json({
           error: 'ai_unavailable',
@@ -798,6 +898,12 @@ export function createGateway(config: GatewayConfig = {}): {
 
   app.post('/webhook/:id', async (req: Request, res: Response) => {
     const id = (typeof req.params?.id === 'string' ? req.params.id : '') || '';
+    if (triggersPausedAt !== null) {
+      return res.status(503).json({
+        error: 'triggers_paused',
+        message: 'Triggers are paused by the kill switch. POST /resume to resume them.',
+      });
+    }
     const message = getWebhookMessage(id);
     if (!message) {
       return res.status(404).json({ error: 'webhook not found' });
@@ -815,6 +921,7 @@ export function createGateway(config: GatewayConfig = {}): {
       res.json({ ok: true, runId });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (isCancelled(e)) return cancelledResponse(res, e);
       if (isProviderError(e)) {
         return res.status(503).json({ error: 'ai_unavailable', message: msg.slice(0, 200) });
       }
@@ -835,8 +942,10 @@ export function createGateway(config: GatewayConfig = {}): {
   app.post('/triggers', (req: Request, res: Response) => {
     try {
       saveTriggers(req.body);
-      startTriggers(runTriggered);
-      res.json({ ok: true });
+      // Saving while the kill switch holds them paused stores the change
+      // without starting anything; POST /resume starts them.
+      if (triggersPausedAt === null) startTriggers(runTriggered);
+      res.json({ ok: true, paused: triggersPausedAt !== null });
     } catch (e) {
       if (e instanceof TriggerConfigError) {
         return res.status(400).json({ error: 'invalid config', message: e.message });
@@ -889,7 +998,12 @@ export function createGateway(config: GatewayConfig = {}): {
   }
 
   app.post('/task', async (req: Request, res: Response) => {
-    const body = req.body as { message?: string; model?: string; dryRun?: boolean };
+    const body = req.body as {
+      message?: string;
+      model?: string;
+      dryRun?: boolean;
+      continueOnDisconnect?: boolean;
+    };
     const message = typeof body?.message === 'string' ? body.message : '';
     if (!message.trim()) {
       return res.status(400).json({ error: 'message is required' });
@@ -905,11 +1019,19 @@ export function createGateway(config: GatewayConfig = {}): {
       const result =
         body.dryRun === true
           ? await exec()
-          : await recordRun({ trigger: 'manual', message: message.trim() }, exec);
+          : await recordRun(
+              {
+                trigger: 'manual',
+                message: message.trim(),
+                signal: disconnectSignal(res, body.continueOnDisconnect),
+              },
+              exec
+            );
       logger.info('task', { skill: result.skillSlug ?? 'none' });
       res.json(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (isCancelled(e)) return cancelledResponse(res, e);
       if (isProviderError(e)) {
         return res.status(503).json({
           error: 'ai_unavailable',

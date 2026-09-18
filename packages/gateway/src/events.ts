@@ -37,7 +37,9 @@ export type EventName =
   | 'budget.exceeded'
   | 'memory.updated'
   | 'approval.requested'
-  | 'approval.decided';
+  | 'approval.decided'
+  | 'kill.engaged'
+  | 'kill.released';
 
 /** Correlation ids, so autonomous behaviour can be traced after the fact. */
 export interface EventContext {

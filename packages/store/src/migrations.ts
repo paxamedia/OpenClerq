@@ -205,4 +205,12 @@ export const MIGRATIONS: Migration[] = [
     // fails before its first step would otherwise leave no trace of its request.
     sql: `ALTER TABLE runs ADD COLUMN input TEXT;`,
   },
+  {
+    id: 3,
+    name: 'message_meta',
+    // Metadata used to be stored inside the message text as JSON and guessed
+    // back out on read, which could rewrite a user message that happened to
+    // look like that JSON. It gets a column of its own.
+    sql: `ALTER TABLE messages ADD COLUMN meta TEXT;`,
+  },
 ];

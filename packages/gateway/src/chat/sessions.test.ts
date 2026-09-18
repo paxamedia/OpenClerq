@@ -96,6 +96,37 @@ describe('messages', () => {
     expect(listMessages(s.id)[0].content).toBe(json);
   });
 
+  it('never rewrites a user message shaped exactly like stored metadata', () => {
+    // The bug: this text used to come back as "hi", its original lost.
+    const s = createSession();
+    const pasted = '{"text":"hi","meta":{"provider":"x"}}';
+    addMessage(s.id, { role: 'user', content: pasted });
+    const [message] = listMessages(s.id);
+    expect(message.content).toBe(pasted);
+    expect(message.meta).toBeUndefined();
+  });
+
+  it('keeps an assistant answer that looks like JSON exactly as the model wrote it', () => {
+    const s = createSession();
+    const answer = '{"text":"a model that answers in JSON"}';
+    addMessage(s.id, { role: 'assistant', content: answer, meta: { provider: 'fake' } });
+    expect(listMessages(s.id)[0]).toMatchObject({ content: answer, meta: { provider: 'fake' } });
+  });
+
+  it('still reads assistant turns stored before metadata had a column', () => {
+    const s = createSession();
+    const insert = getStore().prepare(
+      "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, '2026-09-17')"
+    );
+    insert.run(s.id, 'assistant', JSON.stringify({ text: 'old answer', meta: { costUsd: 0.1 } }));
+    insert.run(s.id, 'user', JSON.stringify({ text: 'old question', meta: {} }));
+
+    const [assistant, user] = listMessages(s.id);
+    expect(assistant).toMatchObject({ content: 'old answer', meta: { costUsd: 0.1 } });
+    // A legacy user row is left exactly as written.
+    expect(user.content).toBe(JSON.stringify({ text: 'old question', meta: {} }));
+  });
+
   it('gives the provider the conversation in order', () => {
     const s = createSession();
     addMessage(s.id, { role: 'user', content: 'one' });

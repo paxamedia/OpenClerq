@@ -114,6 +114,21 @@ an error rather than failing the comparison. The first answer stands as the turn
 The console ships as a first-party desktop module over the same slot contract third-party
 modules use, so it can be removed without touching the gateway or the scheduler.
 
+### Cancellation and the kill switch
+
+Every run carries an abort signal, and a model call inside a run listens to it. When the
+client that asked for a run hangs up before the answer is complete, the run is cancelled and
+the provider call stopped — nobody is left to read the answer, so nothing more is spent on it.
+A caller that wants the work finished regardless sends `continueOnDisconnect: true` and reads
+the outcome from `GET /runs/:id` later. A cancelled run is recorded as `cancelled`, and the
+request answers `409 run_cancelled` rather than blaming the provider.
+
+`POST /kill` refuses every pending approval, cancels every run in flight, and pauses triggers so
+nothing new starts on its own. Each part can be left out: `{ "triggers": false }` stops what is
+running without touching the schedule. Triggers stay paused until `POST /resume` or a restart;
+saving triggers while paused stores them without starting them, and webhooks answer
+`503 triggers_paused`. A person can still run tasks by hand. `GET /kill` reports the state.
+
 ### Cost accounting
 
 Every model call made inside a run is recorded as an `llm` step with its provider, model,
@@ -142,7 +157,7 @@ The gateway is the control plane. Endpoints:
 | Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update` |
 | Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                |
 | Events      | `GET /events` (SSE)                                                                                                        |
-| Kill switch | `POST /kill`                                                                                                               |
+| Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                        |
 | Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`                                        |
 | Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                   |
 | Automation  | `GET \| POST /triggers`, `POST /webhook/:id`                                                                               |
@@ -183,21 +198,24 @@ All errors use one shape, and carry no PII:
 }
 ```
 
-| Code                                                                                   | HTTP | Meaning                                                               |
-| -------------------------------------------------------------------------------------- | ---- | --------------------------------------------------------------------- |
-| `unauthorized`                                                                         | 401  | Missing or invalid bearer token                                       |
-| `question is required`                                                                 | 400  | `/explain` called without a question                                  |
-| `message is required`                                                                  | 400  | `/task` called without a message                                      |
-| `expression or spec.formulas required`                                                 | 400  | `/calculate/eval` needs one or the other                              |
-| `name is required`, `key required`, `slug required`, `tool_name_required`              | 400  | Missing required identifier                                           |
-| `invalid config`                                                                       | 400  | Malformed capabilities or reasoning payload                           |
-| `skill_not_found`, `memory_not_found`, `webhook not found`                             | 404  | No such resource                                                      |
-| `ai_unavailable`                                                                       | 503  | Model provider unusable: no key, unreachable, or it returned an error |
-| `calculation_engine_unavailable`                                                       | 503  | Rust engine not built                                                 |
-| `calculation_failed`, `explain_failed`, `task_failed`, `context_preview_failed`        | 500  | Handler error                                                         |
-| `skills_load_failed`, `skill_load_failed`, `skill_save_failed`                         | 500  | Skill read or write error                                             |
-| `memory_list_failed`, `memory_get_failed`, `memory_set_failed`, `memory_delete_failed` | 500  | Memory store error                                                    |
-| `tools_list_failed`, `tool_run_failed`, `models_list_failed`, `providers_list_failed`  | 500  | Tool or model registry error                                          |
+| Code                                                                                   | HTTP | Meaning                                                                     |
+| -------------------------------------------------------------------------------------- | ---- | --------------------------------------------------------------------------- |
+| `unauthorized`                                                                         | 401  | Missing or invalid bearer token                                             |
+| `question is required`                                                                 | 400  | `/explain` called without a question                                        |
+| `message is required`                                                                  | 400  | `/task` called without a message                                            |
+| `expression or spec.formulas required`                                                 | 400  | `/calculate/eval` needs one or the other                                    |
+| `name is required`, `key required`, `slug required`, `tool_name_required`              | 400  | Missing required identifier                                                 |
+| `invalid config`                                                                       | 400  | Malformed capabilities or reasoning payload                                 |
+| `skill_not_found`, `memory_not_found`, `webhook not found`                             | 404  | No such resource                                                            |
+| `ai_unavailable`                                                                       | 503  | Model provider unusable: no key, unreachable, or it returned an error       |
+| `run_cancelled`                                                                        | 409  | The run was stopped by the kill switch or the client hanging up             |
+| `triggers_paused`                                                                      | 503  | A webhook fired while the kill switch holds triggers paused                 |
+| `invalid_session`                                                                      | 400  | Bad chat request: unknown session, empty text, unknown mode, bad model list |
+| `calculation_engine_unavailable`                                                       | 503  | Rust engine not built                                                       |
+| `calculation_failed`, `explain_failed`, `task_failed`, `context_preview_failed`        | 500  | Handler error                                                               |
+| `skills_load_failed`, `skill_load_failed`, `skill_save_failed`                         | 500  | Skill read or write error                                                   |
+| `memory_list_failed`, `memory_get_failed`, `memory_set_failed`, `memory_delete_failed` | 500  | Memory store error                                                          |
+| `tools_list_failed`, `tool_run_failed`, `models_list_failed`, `providers_list_failed`  | 500  | Tool or model registry error                                                |
 
 ---
 

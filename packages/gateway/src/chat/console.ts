@@ -15,11 +15,14 @@ import {
   getSession,
   listMessages,
   updateSession,
+  parseMode,
   SessionError,
   type Message,
   type PipelineMode,
+  type Session,
 } from './sessions.js';
 import { getStore } from '../store.js';
+import { logger } from '../logger.js';
 
 /** The managed pipeline, injected so this module stays free of the agent wiring. */
 export type ManagedPipeline = (
@@ -30,11 +33,13 @@ export type ManagedPipeline = (
 export interface SendInput {
   sessionId: string;
   text: string;
-  /** Overrides the session's mode for this message alone. */
-  mode?: PipelineMode;
+  /** Overrides the session's mode for this message alone: "raw" or "managed". */
+  mode?: unknown;
   model?: string;
   onDelta?: (text: string) => void;
   managed?: ManagedPipeline;
+  /** Cancels the run when it aborts — typically the client disconnecting. */
+  signal?: AbortSignal;
 }
 
 export interface SendResult {
@@ -55,54 +60,76 @@ function titleFrom(text: string): string {
   return line.length > 60 ? `${line.slice(0, 57)}…` : line;
 }
 
-export async function sendMessage(input: SendInput): Promise<SendResult> {
+/**
+ * Check a send before anything is spent or streamed, so a bad request can be
+ * answered with a status code rather than an error event on an open stream.
+ */
+export function validateSend(input: Pick<SendInput, 'sessionId' | 'text' | 'mode' | 'model'>): {
+  session: Session;
+  text: string;
+  mode: PipelineMode;
+  model?: string;
+} {
   const session = getSession(input.sessionId);
   if (!session) throw new SessionError(`No session ${input.sessionId}.`);
   const text = requireText(input.text);
-  const mode: PipelineMode = input.mode ?? session.mode;
-  const model = input.model ?? session.model ?? undefined;
+  // An unknown mode is refused rather than quietly treated as raw.
+  const mode = input.mode === undefined ? session.mode : parseMode(input.mode, session.mode);
+  if (input.model !== undefined && typeof input.model !== 'string') {
+    throw new SessionError('model must be a model reference string.');
+  }
+  const model = input.model?.trim() || session.model || undefined;
+  return { session, text, mode, model };
+}
+
+export async function sendMessage(input: SendInput): Promise<SendResult> {
+  const { session, text, mode, model } = validateSend(input);
 
   addMessage(session.id, { role: 'user', content: text });
   if (!session.title) updateSession(session.id, { title: titleFrom(text) });
 
   let runId = '';
-  const message = await recordRun({ trigger: 'manual', message: text }, async () => {
-    runId = currentRunId() as string;
+  const message = await recordRun(
+    { trigger: 'manual', message: text, signal: input.signal },
+    async () => {
+      runId = currentRunId() as string;
 
-    if (mode === 'managed') {
-      if (!input.managed) throw new SessionError('The managed pipeline is not available here.');
-      const result = await input.managed(text, model);
+      if (mode === 'managed') {
+        if (!input.managed) throw new SessionError('The managed pipeline is not available here.');
+        const result = await input.managed(text, model);
+        return addMessage(session.id, {
+          role: 'assistant',
+          content: result.explanation,
+          meta: { mode, model: result.model, skillSlug: result.skillSlug, runId },
+        });
+      }
+
+      // Raw: the conversation as it stands, and nothing else. No system prompt.
+      const res = await chat({
+        messages: conversation(session.id),
+        model,
+        onDelta: input.onDelta,
+      });
       return addMessage(session.id, {
         role: 'assistant',
-        content: result.explanation,
-        meta: { mode, model: result.model, skillSlug: result.skillSlug, runId },
+        content: res.text,
+        meta: {
+          mode,
+          provider: res.provider,
+          model: res.model,
+          tokensIn: res.usage.inputTokens,
+          tokensOut: res.usage.outputTokens,
+          usageReported: res.usageReported,
+          costUsd: res.costUsd,
+          latencyMs: res.latencyMs,
+          // Raw mode exists to answer "what exactly was sent?".
+          request: res.request,
+          ...(res.truncated ? { truncated: true } : {}),
+          runId,
+        },
       });
     }
-
-    // Raw: the conversation as it stands, and nothing else. No system prompt.
-    const res = await chat({
-      messages: conversation(session.id),
-      model,
-      onDelta: input.onDelta,
-    });
-    return addMessage(session.id, {
-      role: 'assistant',
-      content: res.text,
-      meta: {
-        mode,
-        provider: res.provider,
-        model: res.model,
-        tokensIn: res.usage.inputTokens,
-        tokensOut: res.usage.outputTokens,
-        usageReported: res.usageReported,
-        costUsd: res.costUsd,
-        latencyMs: res.latencyMs,
-        // Raw mode exists to answer "what exactly was sent?".
-        request: res.request,
-        runId,
-      },
-    });
-  });
+  );
 
   return { runId, message };
 }
@@ -133,18 +160,14 @@ export interface CompareResult {
 export async function compare(input: {
   sessionId: string;
   text: string;
-  models: string[];
-  managed?: never;
+  models: unknown;
+  /** Cancels every column when it aborts. */
+  signal?: AbortSignal;
 }): Promise<CompareResult> {
   const session = getSession(input.sessionId);
   if (!session) throw new SessionError(`No session ${input.sessionId}.`);
   const text = requireText(input.text);
-  if (!Array.isArray(input.models) || input.models.length < 2) {
-    throw new SessionError('Comparison needs at least two models.');
-  }
-  if (input.models.length > 8) {
-    throw new SessionError('Comparison is limited to eight models at a time.');
-  }
+  const models = validateModels(input.models);
 
   const history = conversation(session.id);
   addMessage(session.id, { role: 'user', content: text });
@@ -152,27 +175,30 @@ export async function compare(input: {
   const messages = [...history, { role: 'user' as const, content: text }];
 
   let runId = '';
-  const columns = await recordRun({ trigger: 'manual', message: text }, async () => {
-    runId = currentRunId() as string;
-    return Promise.all(
-      input.models.map(async (model): Promise<ComparisonColumn> => {
-        try {
-          const res = await chat({ messages, model });
-          return {
-            model: `${res.provider}/${res.model}`,
-            provider: res.provider,
-            text: res.text,
-            tokensIn: res.usage.inputTokens,
-            tokensOut: res.usage.outputTokens,
-            costUsd: res.costUsd,
-            latencyMs: res.latencyMs,
-          };
-        } catch (e) {
-          return { model, error: e instanceof Error ? e.message : String(e) };
-        }
-      })
-    );
-  });
+  const columns = await recordRun(
+    { trigger: 'manual', message: text, signal: input.signal },
+    async () => {
+      runId = currentRunId() as string;
+      return Promise.all(
+        models.map(async (model): Promise<ComparisonColumn> => {
+          try {
+            const res = await chat({ messages, model });
+            return {
+              model: `${res.provider}/${res.model}`,
+              provider: res.provider,
+              text: res.text,
+              tokensIn: res.usage.inputTokens,
+              tokensOut: res.usage.outputTokens,
+              costUsd: res.costUsd,
+              latencyMs: res.latencyMs,
+            };
+          } catch (e) {
+            return { model, error: columnError(e) };
+          }
+        })
+      );
+    }
+  );
 
   // The first answer stands as the turn until a human promotes another, so the
   // conversation can continue either way.
@@ -184,6 +210,40 @@ export async function compare(input: {
   });
 
   return { runId, messageId: message.id, columns };
+}
+
+/** The most models one comparison may fan out to — each is a paid call. */
+export const MAX_COMPARE_MODELS = 8;
+
+/**
+ * Model references for a comparison: two to eight non-empty strings. The same
+ * model may appear twice — comparing a model with itself shows its variance.
+ */
+function validateModels(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length < 2) {
+    throw new SessionError('Comparison needs at least two models.');
+  }
+  if (value.length > MAX_COMPARE_MODELS) {
+    throw new SessionError(`Comparison is limited to ${MAX_COMPARE_MODELS} models at a time.`);
+  }
+  return value.map((m, i) => {
+    if (typeof m !== 'string' || !m.trim()) {
+      throw new SessionError(`Model ${i + 1} must be a non-empty model reference string.`);
+    }
+    return m.trim();
+  });
+}
+
+/**
+ * What a failed column says. A provider's own message is useful and safe to
+ * show; anything else is an internal fault, logged here and summarised there.
+ */
+function columnError(e: unknown): string {
+  if ((e as { code?: unknown })?.code === 'provider_error') {
+    return e instanceof Error ? e.message : String(e);
+  }
+  logger.error('Comparison column failed', { err: e instanceof Error ? e.message : String(e) });
+  return 'Internal error; see the gateway log.';
 }
 
 /** Make another column of a comparison the canonical turn. */
@@ -199,11 +259,7 @@ export function promote(sessionId: string, messageId: number, index: number): Me
 
   // The alternatives stay on the message; promoting chooses, it does not discard.
   getStore()
-    .prepare('UPDATE messages SET content = ? WHERE id = ? AND session_id = ?')
-    .run(
-      JSON.stringify({ text: column.text, meta: { ...message.meta, chosen: index } }),
-      messageId,
-      sessionId
-    );
+    .prepare('UPDATE messages SET content = ?, meta = ? WHERE id = ? AND session_id = ?')
+    .run(column.text, JSON.stringify({ ...message.meta, chosen: index }), messageId, sessionId);
   return { ...message, content: column.text, meta: { ...message.meta, chosen: index } };
 }

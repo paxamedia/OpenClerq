@@ -170,10 +170,53 @@ export function getRun(id: string): (RunRecord & { steps: unknown[] }) | null {
 }
 
 /** The run the current async call chain belongs to, if any. */
-const runContext = new AsyncLocalStorage<{ runId: string }>();
+const runContext = new AsyncLocalStorage<{ runId: string; controller: AbortController }>();
+
+/** Runs still executing, so the kill switch can reach every one of them. */
+const activeRuns = new Map<string, AbortController>();
 
 export function currentRunId(): string | undefined {
   return runContext.getStore()?.runId;
+}
+
+/**
+ * The current run's cancellation signal. A model call inside a run listens to
+ * it, so cancelling the run stops the call — and the spend — mid-flight.
+ */
+export function currentRunSignal(): AbortSignal | undefined {
+  return runContext.getStore()?.controller.signal;
+}
+
+export function activeRunIds(): string[] {
+  return [...activeRuns.keys()];
+}
+
+/** Cancel one run. Returns false when it was not running. */
+export function cancelRun(runId: string, reason = 'Cancelled'): boolean {
+  const controller = activeRuns.get(runId);
+  if (!controller) return false;
+  controller.abort(new RunCancelled(reason));
+  return true;
+}
+
+/** Cancel every run in flight. Returns how many were stopped. */
+export function cancelAllRuns(reason = 'Cancelled'): number {
+  const ids = activeRunIds();
+  for (const id of ids) cancelRun(id, reason);
+  return ids.length;
+}
+
+/** Thrown into a run that was cancelled, so it ends as cancelled rather than failed. */
+export class RunCancelled extends Error {
+  readonly cancelled = true;
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'RunCancelled';
+  }
+}
+
+function isCancellation(e: unknown, signal: AbortSignal): boolean {
+  return signal.aborted || (e as { cancelled?: unknown })?.cancelled === true;
 }
 
 export interface ModelCallRecord {
@@ -245,9 +288,13 @@ export function recordModelCall(call: ModelCallRecord): void {
  * Record one execution end to end: creates the run, runs `fn` with the run as
  * its context so every model call inside it is accounted against it, and
  * closes the run either way. Errors are recorded and rethrown, never swallowed.
+ *
+ * `signal` ties the run to something outside it — a client connection, say —
+ * so the run is cancelled when that goes away. A cancelled run is recorded as
+ * cancelled, not failed.
  */
 export async function recordRun<T>(
-  input: { trigger: RunTrigger; automationId?: string; message?: string },
+  input: { trigger: RunTrigger; automationId?: string; message?: string; signal?: AbortSignal },
   fn: () => Promise<T>
 ): Promise<T> {
   const runId = createRun({
@@ -255,16 +302,44 @@ export async function recordRun<T>(
     automationId: input.automationId,
     input: input.message,
   });
+  const controller = new AbortController();
+  const detach = link(input.signal, controller);
+  activeRuns.set(runId, controller);
   emit('run.started', { trigger: input.trigger, automationId: input.automationId }, { runId });
   try {
-    const result = await runContext.run({ runId }, fn);
+    const result = await runContext.run({ runId, controller }, fn);
+    // A run whose work swallowed the cancellation still did not finish.
+    if (controller.signal.aborted) throw reasonOf(controller.signal);
     finishRun(runId, 'done');
     emit('run.completed', {}, { runId });
     return result;
   } catch (e) {
+    if (isCancellation(e, controller.signal)) {
+      const reason = reasonOf(controller.signal).message;
+      finishRun(runId, 'cancelled', reason);
+      emit('run.cancelled', { reason }, { runId });
+      throw e;
+    }
     const message = e instanceof Error ? e.message : String(e);
     finishRun(runId, 'failed', message);
     emit('run.failed', { error: message }, { runId });
     throw e;
+  } finally {
+    activeRuns.delete(runId);
+    detach();
   }
+}
+
+/** Abort `controller` when `signal` aborts. Returns a function that unlinks them. */
+function link(signal: AbortSignal | undefined, controller: AbortController): () => void {
+  if (!signal) return () => undefined;
+  const onAbort = () => controller.abort(new RunCancelled('The client disconnected.'));
+  if (signal.aborted) onAbort();
+  else signal.addEventListener('abort', onAbort, { once: true });
+  return () => signal.removeEventListener('abort', onAbort);
+}
+
+function reasonOf(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error ? reason : new RunCancelled('Cancelled');
 }

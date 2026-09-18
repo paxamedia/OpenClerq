@@ -58,7 +58,9 @@ That is a legitimate thing to build. It is not a thing to build casually.
 - **API keys are not bundled or logged.** The desktop app does not ship keys and does not send them anywhere except the local gateway.
 - **Numeric results are deterministic.** Calculations run in the Rust engine and return a `proof` object. The model never produces final numbers.
 - **Runs are durable and accountable.** Every task and trigger firing writes a run record with its request, its steps, and the tokens and cost of each model call. A model with no known price records an unknown cost rather than zero.
-- **Approvals fail closed.** An approval nobody answers within the timeout is refused, never granted. `POST /kill` refuses every pending approval at once.
+- **Approvals fail closed.** An approval nobody answers within the timeout is refused, never granted.
+- **The kill switch stops everything in flight.** `POST /kill` refuses pending approvals, cancels every running run mid-call, and pauses triggers until `POST /resume`. A run whose client hangs up is cancelled too, so nothing is spent on an answer nobody will read.
+- **Responses are bounded.** A model response is capped (8 MiB by default, `CLERQ_MAX_RESPONSE_BYTES`): a streamed answer is cut off and marked truncated, a buffered one is refused.
 - **The vault master key lives in the OS keychain.** Generated on first use and stored through the platform's own tool — `security` on macOS, libsecret on Linux, DPAPI on Windows — never in an environment variable. `CLERQ_VAULT_KEY` still works for containers that inject it, and warns that it is the weakest option. A host with no keychain falls back to `~/.clerq/vault.key` at mode 0600, and says so.
 - **Sandboxed processes have no network by default,** and an egress allowlist is enforced at the boundary rather than inside the agent's own HTTP tool. See the limits below.
 
