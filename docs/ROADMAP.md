@@ -342,14 +342,18 @@ everything downstream writes into.
 
 The phase that decides whether this is safe to leave running overnight.
 
-- [x] `packages/sandbox` — `native` (dev only, loud warning), `seatbelt` (macOS `sandbox-exec`), `container` (Docker/Podman, server default)
-- [x] Per-run limits: wall clock, CPU, memory, disk, process count; hard kill on breach
-- [x] Egress allowlist enforced at the sandbox boundary, not in application code — a local proxy the sandbox forces traffic through; profiles that cannot enforce it refuse it (see [SECURITY.md](SECURITY.md) for what macOS can and cannot filter)
-- [x] `packages/policy` — tool groups (`fs`/`runtime`/`web`/`sessions`/`memory`/`automation`), profiles, allow/deny, `maxCallsPerRun`
-- [x] Approval system with risk tiers; `POST /approvals/:id/approve|deny`; allow once / allow for session / deny
-- [x] `packages/workspaces` — register local paths, clone remotes to a content-addressed cache, one `git worktree` per run
-- [x] Git publish path: branch, commit with a machine-identifiable trailer, push, PR via GitHub/GitLab API
-- [x] Secret injection as sandbox env only, with output redaction on the way back
+Items marked _library_ are built and tested, but nothing in the gateway calls them yet — no
+tool runs commands or touches a repository today. The 0.6 agent runtime is their first
+consumer, and they are not done in the sense that matters until it is.
+
+- [x] _library_ — `packages/sandbox` — `native` (dev only, loud warning), `seatbelt` (macOS `sandbox-exec`), `container` (Docker/Podman, server default)
+- [x] _library_ — Per-run limits: wall clock, CPU, memory, disk, process count; hard kill on breach
+- [x] _library_ — Egress allowlist enforced at the sandbox boundary, not in application code — a local proxy the sandbox forces traffic through; profiles that cannot enforce it refuse it (see [SECURITY.md](SECURITY.md) for what macOS can and cannot filter)
+- [x] _library_ — `packages/policy` — tool groups (`fs`/`runtime`/`web`/`sessions`/`memory`/`automation`), profiles, allow/deny, `maxCallsPerRun`
+- [x] Approval system with risk tiers; `POST /approvals/:id/approve|deny`; allow once / allow for session / deny — _the inbox and endpoints are live, but nothing raises an approval until a tool needs one (0.6)_
+- [x] _library_ — `packages/workspaces` — register local paths, clone remotes to a content-addressed cache, one `git worktree` per run
+- [x] _library_ — Git publish path: branch, commit with a machine-identifiable trailer, push, PR via GitHub/GitLab API
+- [x] _library_ — Secret injection as sandbox env only, with output redaction on the way back
 - [x] `packages/providers` + `providers.yaml` — base URL, auth env var, model list, context window, price per million tokens
 - [x] Per-call token and cost accounting into `run_steps` — an unpriced model records unknown cost, never $0
 - [x] **Chat console — raw mode.** Per-provider conversations, streaming, full request/response inspection

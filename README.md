@@ -143,7 +143,7 @@ pnpm build:core
 │  └──────────────────────┬──────────────────────────┘   │
 │                          │                                │
 │  ┌──────────────────────▼──────────────────────────┐   │
-│  │  Gateway — Agent loop, Skills, Capabilities      │   │
+│  │  Gateway — routing, providers, runs, chat        │   │
 │  └──────────────────────┬──────────────────────────┘   │
 │                          │                                │
 │  ┌──────────────────────▼──────────────────────────┐   │
@@ -155,23 +155,23 @@ pnpm build:core
 │  └──────────────────────┬──────────────────────────┘   │
 │                          │                                │
 │  ┌──────────────────────▼──────────────────────────┐   │
-│  │  File-backed memory (~/.clerq/memory.json)      │   │
+│  │  Local store (~/.clerq/clerq.db), private       │   │
 │  └─────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```
 
-_Desktop UI (Control Tower):_ Gateway health, skills (with schema/dependency editing), tools, calculator, file-backed memory, Ask (explain/task) with context preview and dry-run, observability metrics. Builder mode for configuration; Operator mode for day-to-day use.
+_Desktop UI (Control Tower):_ Gateway health, skills (with schema/dependency editing), tools, calculator, memory, Ask (explain/task) with context preview and dry-run, observability metrics including model spend. Builder mode for configuration; Operator mode for day-to-day use. The **Chat console** module talks to any configured model, raw or through the full pipeline, and compares models side by side.
 
 ## Quick Start
 
 After [Installing](#installing) (macOS or Windows), from the repo root:
 
-1. **Copy env:** `cp .env.example .env` (macOS/Linux) or `copy .env.example .env` (Windows). Set your LLM: **API (cloud)** via `ANTHROPIC_API_KEY`, or **local** via `CLERQ_LLM_PROVIDER=ollama`.
+1. **Copy env:** `cp .env.example .env` (macOS/Linux) or `copy .env.example .env` (Windows). Set your LLM: a cloud provider (`CLERQ_LLM_PROVIDER` = `anthropic`, `openai`, `deepseek`, `moonshot`, `zai` or `minimax`, plus its key), or **local** via `CLERQ_LLM_PROVIDER=ollama`.
 2. **Build:** `pnpm build:gateway` and (for rate calc) `pnpm build:core`.
 3. **Start gateway:** `pnpm gateway` (leave running). It prints where to find the bearer token.
 4. **Start desktop:** `pnpm desktop` in a second terminal.
 
-The desktop **Control Tower** lets you check gateway health, load and edit skills (schemas, dependencies), run tools, manage file-backed memory, and **Ask** (explain or task). Task mode supports dry-run (no LLM call) and context preview. Builder/Operator modes toggle between full configuration and streamlined use. Full steps: **[Developer setup](docs/DEVELOPER_SETUP.md)**.
+The desktop **Control Tower** lets you check gateway health, load and edit skills (schemas, dependencies), run tools, manage memory, and **Ask** (explain or task). Task mode supports dry-run (no LLM call) and context preview. Builder/Operator modes toggle between full configuration and streamlined use. Full steps: **[Developer setup](docs/DEVELOPER_SETUP.md)**.
 
 **Settings:** In the app you can save your API key to `~/.clerq/.env` (optional); the gateway loads it when it starts.
 
