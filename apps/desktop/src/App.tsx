@@ -486,25 +486,10 @@ function DeveloperView({
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'connected' | 'unreachable'>(
     'unknown'
   );
-  const [runMode, setRunMode] = useState<'manual' | 'auto'>(config?.settings?.runMode ?? 'manual');
-  const [runFrequencyCount, setRunFrequencyCount] = useState(
-    String(config?.settings?.runFrequencyCount ?? 1)
-  );
-  const [runFrequencyPeriod, setRunFrequencyPeriod] = useState<'hour' | 'day' | 'week' | 'month'>(
-    config?.settings?.runFrequencyPeriod ?? 'day'
-  );
-  const [runTaskMessage, setRunTaskMessage] = useState(config?.settings?.runTaskMessage ?? '');
-  const [_lastRunAt, setLastRunAt] = useState<number | null>(null);
 
   useEffect(() => {
     setGatewayUrl(config?.settings?.gatewayUrl ?? '');
     setSkillsDir(config?.settings?.skillsDir ?? '');
-    setRunMode((config?.settings?.runMode as 'manual' | 'auto') ?? 'manual');
-    setRunFrequencyCount(String(config?.settings?.runFrequencyCount ?? 1));
-    setRunFrequencyPeriod(
-      (config?.settings?.runFrequencyPeriod as 'hour' | 'day' | 'week' | 'month') ?? 'day'
-    );
-    setRunTaskMessage(config?.settings?.runTaskMessage ?? '');
   }, [config]);
 
   const [authReady, setAuthReady] = useState(false);
@@ -569,30 +554,6 @@ function DeveloperView({
   useEffect(() => {
     fetchModels();
   }, [fetchModels]);
-
-  const runScheduledTask = useCallback(async () => {
-    const msg = runTaskMessage.trim() || 'Check for pending tasks';
-    try {
-      await gateway.task(msg);
-      setLastRunAt(Date.now());
-    } catch (_) {
-      /* ignore */
-    }
-  }, [runTaskMessage]);
-
-  useEffect(() => {
-    if (runMode !== 'auto' || !runTaskMessage.trim()) return;
-    const count = Math.max(1, parseInt(runFrequencyCount, 10) || 1);
-    const periodMs: Record<string, number> = {
-      hour: 3600000,
-      day: 86400000,
-      week: 604800000,
-      month: 2592000000,
-    };
-    const ms = (periodMs[runFrequencyPeriod] ?? 86400000) / count;
-    const id = setInterval(runScheduledTask, ms);
-    return () => clearInterval(id);
-  }, [runMode, runTaskMessage, runFrequencyCount, runFrequencyPeriod, runScheduledTask]);
 
   const checkHealth = async () => {
     setGatewayStatus(null);

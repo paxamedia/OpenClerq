@@ -119,7 +119,7 @@ export function TriggersSection() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
       <p className="section-desc" style={{ marginBottom: 0 }}>
-        Cron, file watchers, webhooks. Stored in ~/.clerq/triggers.json. Gateway must be running.
+        Cron, file watchers, webhooks. Stored by the gateway, which must be running.
       </p>
 
       <div>

@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Node 24 is now the development requirement** (was 22). `node:sqlite` needs `--experimental-sqlite` on Node 22. End users are unaffected: the desktop app ships the Bun-compiled sidecar and needs no Node at all.
 - `build:gateway` builds the gateway's workspace dependencies first, so a pristine checkout can resolve `@clerq/store` types.
 - CI builds all packages topologically and runs every package's tests, not just the gateway's.
+- The desktop app has unit tests (`vitest`), so `pnpm -r test` covers it too.
 
 ### Fixed
 
@@ -52,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Webhook firings are recorded as runs** (`trigger: 'webhook'`), and the response carries the `runId`. They previously executed with no trace at all.
 - **A file-watch firing is recorded as `trigger: 'event'`**, not `'schedule'`.
 - `POST /triggers` validates the config and answers `400` with the reason — an unparseable cron schedule was accepted and then silently never fired. Ids must be unique across all three kinds, which share one table.
+- **Automatic persistent runs are scheduled by the gateway.** The desktop's Persistent run setting (N runs per hour, day, week or month) was only written to `~/.clerq/config.json`. The one thing that acted on it was a timer in the main window's developer view: it ran only while that view was open, started counting again every time the view loaded, and at one run per month fired continuously, because the interval overflowed `setInterval`'s 32-bit delay. Saving now stores a gateway cron trigger, `desktop-persistent-run`, and leaves every other trigger as it was; switching to Manual removes it. Runs are spread evenly (hourly from minute 0, daily and longer from 09:00), and the form shows the cron schedule before you save. Settings saved as Automatic by an earlier version are not scheduled until they are saved again: Settings says so whenever the gateway's schedule does not match the saved one, which also catches a save the gateway missed and an edit made under Triggers.
+- **The Settings window authenticates to the gateway.** It runs in its own webview and never loaded the gateway token, so its Triggers, Secrets vault, System prompt, Reasoning and Capabilities sections, and Run now, were all refused with `401`. The Run now button reports how the run ended and is disabled while one is in progress; it used to fail silently.
 
 ### Removed
 

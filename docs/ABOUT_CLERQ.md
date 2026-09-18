@@ -40,7 +40,7 @@ OpenClerq is designed to make routine clerical work **faster**, **more accurate*
   Instead of copying formulas between spreadsheets, you define them once in the arithmetic engine (for example `net = gross / 1.25`, `tax = gross - net`). Every run uses the same formulas and returns an audit‑ready proof object, so repeated jobs (reports, reimbursements, simple payroll-style adjustments) stay consistent.
 
 - **Automation (example: scheduled checks with explanations):**  
-  With the desktop’s persistent run and the gateway’s `/task` endpoint, you can have OpenClerq regularly run the same instruction (for example “Check for mismatched totals in yesterday’s imports and explain any issues”). The engine does the numeric work; the agent summarizes what changed and what a clerk should review.
+  With the desktop’s persistent run, which the gateway schedules as a cron trigger, you can have OpenClerq regularly run the same instruction (for example “Check for mismatched totals in yesterday’s imports and explain any issues”). The engine does the numeric work; the agent summarizes what changed and what a clerk should review.
 
 OpenClerq itself stays **generic**: it does not ship country‑specific or profession‑specific rules. Those live in your own skills and modules on top of this core.
 

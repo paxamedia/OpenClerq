@@ -3,8 +3,19 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { setGatewayBaseUrl, gateway } from './gateway';
+import { setGatewayBaseUrl, gateway, initGatewayAuth } from './gateway';
 import type { AppConfig, ModuleEntry, ModulePathEntry } from './configTypes';
+import {
+  cronForRuns,
+  isRunPeriod,
+  persistentRunTrigger,
+  syncPersistentRun,
+  withPersistentRun,
+  DEFAULT_RUN_MESSAGE,
+  MAX_RUNS,
+  type CronTrigger,
+  type RunPeriod,
+} from './persistentRun';
 import { SecretsVaultSection } from './components/SecretsVaultSection';
 import { TriggersSection } from './components/TriggersSection';
 import { CapabilitiesSection } from './components/CapabilitiesSection';
@@ -19,6 +30,55 @@ function ResultBox({ children, error }: { children: React.ReactNode; error?: boo
   return <pre className={`result-box ${error ? 'error' : ''}`}>{children}</pre>;
 }
 
+interface Notice {
+  text: string;
+  error: boolean;
+}
+
+/** An empty count means one run, as it always has. */
+function parseRunCount(text: string): number {
+  return text.trim() ? Number(text) : 1;
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** The trigger saved settings ask for, or undefined when they cannot be scheduled as saved. */
+function savedTrigger(settings: AppConfig['settings']): CronTrigger | null | undefined {
+  try {
+    return persistentRunTrigger({
+      mode: settings?.runMode === 'auto' ? 'auto' : 'manual',
+      count: settings?.runFrequencyCount ?? 1,
+      period: settings?.runFrequencyPeriod ?? 'day',
+      message: settings?.runTaskMessage ?? '',
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Saved Automatic settings promise runs only if the gateway holds their
+ * trigger. It may not: settings saved by a version that never scheduled them,
+ * a save the gateway missed, or an edit under Triggers. Say so, rather than
+ * show a schedule that is not running.
+ */
+async function scheduleNotice(settings: AppConfig['settings']): Promise<Notice | null> {
+  const wanted = savedTrigger(settings);
+  // Settings that cannot be scheduled are explained beside the form fields.
+  if (wanted === undefined) return null;
+  try {
+    if (withPersistentRun(await gateway.triggers(), wanted) === null) return null;
+  } catch {
+    // An unreachable gateway is reported by the sections that call it.
+    return null;
+  }
+  return wanted
+    ? { text: 'The gateway is not running this schedule. Save to apply it.', error: true }
+    : { text: 'The gateway still runs an automatic schedule. Save to stop it.', error: true };
+}
+
 export function SettingsWindow() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [gatewayUrl, setGatewayUrl] = useState('');
@@ -28,34 +88,62 @@ export function SettingsWindow() {
   const [apiKeyMessage, setApiKeyMessage] = useState<string | null>(null);
   const [runMode, setRunMode] = useState<'manual' | 'auto'>('manual');
   const [runFrequencyCount, setRunFrequencyCount] = useState('1');
-  const [runFrequencyPeriod, setRunFrequencyPeriod] = useState<'hour' | 'day' | 'week' | 'month'>(
-    'day'
-  );
+  const [runFrequencyPeriod, setRunFrequencyPeriod] = useState<RunPeriod>('day');
   const [runTaskMessage, setRunTaskMessage] = useState('');
-  const [configMessage, setConfigMessage] = useState<string | null>(null);
+  const [runMessage, setRunMessage] = useState<Notice | null>(null);
+  const [configMessage, setConfigMessage] = useState<Notice | null>(null);
   const [modules, setModules] = useState<ModuleEntry[]>(DEFAULT_MODULES);
   const [modulePaths, setModulePaths] = useState<ModulePathEntry[]>([]);
+  const [runningNow, setRunningNow] = useState(false);
+  // Set once the gateway URL from config.json is applied and the token loaded.
+  // The sections below call the gateway on mount, so they wait for it.
+  const [gatewayReady, setGatewayReady] = useState(false);
+  // Bumped when this window changes the triggers, so the Triggers section
+  // reloads rather than later saving its stale copy over the change.
+  const [triggersVersion, setTriggersVersion] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
+    // This window has its own JS context, so it loads the gateway token itself.
+    const authed = initGatewayAuth().catch(() => false);
     invoke<string>('read_config')
       .then((raw) => {
         const c: AppConfig = raw ? JSON.parse(raw) : {};
+        if (cancelled) return c;
         setConfig(c);
         const gw = c?.settings?.gatewayUrl ?? '';
         setGatewayUrl(gw);
         if (gw) setGatewayBaseUrl(gw);
         setDefaultModule(c?.settings?.defaultModule ?? '');
         setSkillsDir(c?.settings?.skillsDir ?? '');
-        setRunMode((c?.settings?.runMode as 'manual' | 'auto') ?? 'manual');
-        setRunFrequencyCount(String(c?.settings?.runFrequencyCount ?? 1));
+        // config.json is also edited by hand, so fall back rather than trust it.
+        const saved = c?.settings;
+        setRunMode(saved?.runMode === 'auto' ? 'auto' : 'manual');
+        setRunFrequencyCount(String(saved?.runFrequencyCount ?? 1));
         setRunFrequencyPeriod(
-          (c?.settings?.runFrequencyPeriod as 'hour' | 'day' | 'week' | 'month') ?? 'day'
+          isRunPeriod(saved?.runFrequencyPeriod) ? saved.runFrequencyPeriod : 'day'
         );
-        setRunTaskMessage(c?.settings?.runTaskMessage ?? '');
+        setRunTaskMessage(typeof saved?.runTaskMessage === 'string' ? saved.runTaskMessage : '');
         setModules(c?.modules?.length ? c.modules : [...DEFAULT_MODULES]);
         setModulePaths(c?.modulePaths ?? []);
+        return c;
       })
-      .catch(() => setConfig({}));
+      .catch(() => {
+        const c: AppConfig = {};
+        if (!cancelled) setConfig(c);
+        return c;
+      })
+      .then(async (c) => {
+        await authed;
+        if (cancelled) return;
+        setGatewayReady(true);
+        const notice = await scheduleNotice(c?.settings);
+        // A save made meanwhile has the newer word.
+        if (!cancelled && notice) setRunMessage((m) => m ?? notice);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const updateModule = (i: number, patch: Partial<ModuleEntry>) => {
@@ -72,21 +160,30 @@ export function SettingsWindow() {
 
   const saveSettingsAndModules = useCallback(async () => {
     setConfigMessage(null);
+    setRunMessage(null);
     const gwUrl = gatewayUrl.trim();
     if (gwUrl) {
       try {
         new URL(gwUrl);
       } catch {
-        setConfigMessage('Invalid Gateway URL. Use e.g. http://127.0.0.1:18790');
+        setConfigMessage({
+          text: 'Invalid Gateway URL. Use e.g. http://127.0.0.1:18790',
+          error: true,
+        });
         return;
       }
     }
-    const freq = Math.max(1, parseInt(runFrequencyCount, 10) || 1);
-    if (
-      runFrequencyCount.trim() &&
-      (parseInt(runFrequencyCount, 10) < 1 || Number.isNaN(parseInt(runFrequencyCount, 10)))
-    ) {
-      setConfigMessage('Runs per period must be at least 1.');
+    const count = parseRunCount(runFrequencyCount);
+    let trigger: CronTrigger | null;
+    try {
+      trigger = persistentRunTrigger({
+        mode: runMode,
+        count,
+        period: runFrequencyPeriod,
+        message: runTaskMessage,
+      });
+    } catch (e) {
+      setConfigMessage({ text: `Not saved. Persistent run: ${errorText(e)}`, error: true });
       return;
     }
     try {
@@ -97,7 +194,7 @@ export function SettingsWindow() {
           defaultModule: defaultModule.trim() || undefined,
           skillsDir: skillsDir.trim() || undefined,
           runMode,
-          runFrequencyCount: freq,
+          runFrequencyCount: Number.isInteger(count) && count >= 1 ? count : 1,
           runFrequencyPeriod,
           runTaskMessage: runTaskMessage.trim() || undefined,
         },
@@ -107,9 +204,29 @@ export function SettingsWindow() {
       await invoke('write_config', { json: JSON.stringify(next, null, 2) });
       setConfig(next);
       if (next.settings?.gatewayUrl) setGatewayBaseUrl(next.settings.gatewayUrl);
-      setConfigMessage('Settings saved to ~/.clerq/config.json');
     } catch (e) {
-      setConfigMessage(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setConfigMessage({ text: `Error: ${errorText(e)}`, error: true });
+      return;
+    }
+    // After the config write, so a changed gateway URL is already in use.
+    try {
+      const changed = await syncPersistentRun(gateway, trigger);
+      if (changed) setTriggersVersion((v) => v + 1);
+      setRunMessage(
+        trigger
+          ? { text: `The gateway runs this on schedule ${trigger.schedule}.`, error: false }
+          : changed
+            ? { text: 'Automatic runs stopped.', error: false }
+            : null
+      );
+      setConfigMessage({ text: 'Settings saved to ~/.clerq/config.json', error: false });
+    } catch (e) {
+      const reason = errorText(e);
+      setRunMessage({ text: `The schedule was not updated: ${reason}`, error: true });
+      setConfigMessage({
+        text: `Settings saved to ~/.clerq/config.json, but automatic runs were not updated on the gateway: ${reason}`,
+        error: true,
+      });
     }
   }, [
     config,
@@ -135,12 +252,26 @@ export function SettingsWindow() {
   }, [apiKey]);
 
   const runScheduledTask = useCallback(async () => {
+    setRunMessage(null);
+    setRunningNow(true);
     try {
-      await gateway.task(runTaskMessage.trim() || 'Check for pending tasks');
-    } catch (_) {
-      /* ignore */
+      await gateway.task(runTaskMessage.trim() || DEFAULT_RUN_MESSAGE);
+      setRunMessage({ text: 'Run finished.', error: false });
+    } catch (e) {
+      setRunMessage({ text: `Run failed: ${errorText(e)}`, error: true });
+    } finally {
+      setRunningNow(false);
     }
   }, [runTaskMessage]);
+
+  const schedulePreview = (() => {
+    if (runMode !== 'auto') return null;
+    try {
+      return { schedule: cronForRuns(parseRunCount(runFrequencyCount), runFrequencyPeriod) };
+    } catch (e) {
+      return { error: errorText(e) };
+    }
+  })();
 
   return (
     <div className="app app--settings-window">
@@ -201,7 +332,7 @@ export function SettingsWindow() {
             </div>
           </div>
           {configMessage !== null && (
-            <ResultBox error={!configMessage.includes('saved')}>{configMessage}</ResultBox>
+            <ResultBox error={configMessage.error}>{configMessage.text}</ResultBox>
           )}
         </section>
 
@@ -315,7 +446,7 @@ export function SettingsWindow() {
             Encrypted storage for API keys and tokens. Set CLERQ_VAULT_KEY (32-byte hex) in gateway
             environment to enable. Values are never exposed.
           </p>
-          <SecretsVaultSection />
+          {gatewayReady && <SecretsVaultSection />}
         </section>
 
         <section className="section dev-section">
@@ -342,7 +473,10 @@ export function SettingsWindow() {
 
         <section className="section dev-section">
           <h2>Persistent run</h2>
-          <p className="section-desc">Manual or automatic runs.</p>
+          <p className="section-desc">
+            Run the task now, or let the gateway run it on a schedule. Automatic runs are saved as a
+            cron trigger (listed under Triggers) and recorded as scheduled runs.
+          </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             <label style={{ fontSize: '0.9rem' }}>
               Mode
@@ -356,67 +490,85 @@ export function SettingsWindow() {
               </select>
             </label>
             {runMode === 'auto' && (
-              <>
-                <label style={{ fontSize: '0.9rem' }}>
-                  Runs per period
-                  <input
-                    type="number"
-                    min={1}
-                    value={runFrequencyCount}
-                    onChange={(e) => setRunFrequencyCount(e.target.value)}
-                    style={{ width: 60, marginLeft: 8 }}
-                  />
-                  <select
-                    value={runFrequencyPeriod}
-                    onChange={(e) =>
-                      setRunFrequencyPeriod(e.target.value as 'hour' | 'day' | 'week' | 'month')
-                    }
-                    style={{ marginLeft: 8 }}
+              <label style={{ fontSize: '0.9rem' }}>
+                Runs per period
+                <input
+                  type="number"
+                  min={1}
+                  max={MAX_RUNS[runFrequencyPeriod]}
+                  value={runFrequencyCount}
+                  onChange={(e) => setRunFrequencyCount(e.target.value)}
+                  style={{ width: 60, marginLeft: 8 }}
+                />
+                <select
+                  value={runFrequencyPeriod}
+                  onChange={(e) => setRunFrequencyPeriod(e.target.value as RunPeriod)}
+                  style={{ marginLeft: 8 }}
+                >
+                  <option value="hour">hour</option>
+                  <option value="day">day</option>
+                  <option value="week">week</option>
+                  <option value="month">month</option>
+                </select>
+                {schedulePreview && (
+                  <span
+                    style={{
+                      display: 'block',
+                      marginTop: 4,
+                      fontSize: '0.8rem',
+                      color: schedulePreview.error ? 'var(--error)' : 'var(--text-muted)',
+                    }}
                   >
-                    <option value="hour">hour</option>
-                    <option value="day">day</option>
-                    <option value="week">week</option>
-                    <option value="month">month</option>
-                  </select>
-                </label>
-                <label style={{ fontSize: '0.9rem' }}>
-                  Task message
-                  <input
-                    type="text"
-                    value={runTaskMessage}
-                    onChange={(e) => setRunTaskMessage(e.target.value)}
-                    placeholder="e.g. Check for pending tasks"
-                    style={{ display: 'block', width: '100%', maxWidth: 400, marginTop: 4 }}
-                  />
-                </label>
-              </>
+                    {schedulePreview.error ?? `Cron schedule: ${schedulePreview.schedule}`}
+                  </span>
+                )}
+              </label>
             )}
+            <label style={{ fontSize: '0.9rem' }}>
+              Task message
+              <input
+                type="text"
+                value={runTaskMessage}
+                onChange={(e) => setRunTaskMessage(e.target.value)}
+                placeholder={`e.g. ${DEFAULT_RUN_MESSAGE}`}
+                style={{ display: 'block', width: '100%', maxWidth: 400, marginTop: 4 }}
+              />
+            </label>
             <div className="row">
-              <button type="button" className="btn" onClick={runScheduledTask}>
-                Run now
+              <button type="button" className="btn" onClick={saveSettingsAndModules}>
+                Save
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={runScheduledTask}
+                disabled={runningNow}
+              >
+                {runningNow ? 'Running…' : 'Run now'}
               </button>
             </div>
           </div>
+          {runMessage !== null && <ResultBox error={runMessage.error}>{runMessage.text}</ResultBox>}
         </section>
 
         <section className="section dev-section">
           <h2>System prompt</h2>
-          <SystemPromptSection />
+          {gatewayReady && <SystemPromptSection />}
         </section>
 
         <section className="section dev-section">
           <h2>Reasoning</h2>
-          <ReasoningSection />
+          {gatewayReady && <ReasoningSection />}
         </section>
 
         <section className="section dev-section">
           <h2>Capabilities</h2>
-          <CapabilitiesSection />
+          {gatewayReady && <CapabilitiesSection />}
         </section>
 
         <section className="section dev-section">
           <h2>Triggers</h2>
-          <TriggersSection />
+          {gatewayReady && <TriggersSection key={triggersVersion} />}
         </section>
       </div>
     </div>
