@@ -1,11 +1,9 @@
 /**
  * Triggers: cron schedules, file watchers and webhooks.
  *
- * Stored in the `triggers` table. Before 0.5 they lived in
- * ~/.clerq/triggers.json, which the store imports on first start and archives
- * as triggers.json.migrated — so this module must never read that file again.
- * Reading it after the import is how an earlier 0.5 build lost every trigger on
- * its first restart.
+ * Stored in the `triggers` table. A pre-0.5 ~/.clerq/triggers.json is imported
+ * by the store on first start and archived as triggers.json.migrated, so this
+ * module reads only the table — never the file.
  */
 
 import path from 'node:path';

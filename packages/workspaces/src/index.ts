@@ -116,8 +116,8 @@ export class Workspace {
   /**
    * Stage everything and commit.
    *
-   * A trailer identifies the commit as machine-generated, so the history stays
-   * honest and the commits are greppable later. Returns null when there was
+   * A trailer marks the commit as machine-generated, so such commits can be
+   * found in the history later. Returns null when there was
    * nothing to commit — a no-op run should not produce an empty commit.
    */
   async commitAll(

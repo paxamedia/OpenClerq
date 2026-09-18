@@ -2,16 +2,11 @@
  * Private local state.
  *
  * Everything OpenClerq keeps under ~/.clerq — conversations, run prompts,
- * memory, the encrypted vault, API keys — is for this account alone. Before
- * this module, five code paths each created the directory their own way, and
- * whichever ran first decided its mode: three of them made it world-traversable,
- * which left files written at the default 0644 readable by every other account
- * on the machine. On a laptop that is harmless; on the shared server install
- * the roadmap targets, it is not.
- *
- * So there is one way to create the directory and one way to write a file in
- * it. Both are no-ops for permissions on Windows, where POSIX modes do not
- * apply and the profile directory is already private to its owner.
+ * memory, the encrypted vault, API keys — is for this account alone. Every
+ * writer creates the directory (0700) and its files (0600) through here, so
+ * which one runs first cannot decide the mode. Permissions are left alone on
+ * Windows, where POSIX modes do not apply and the profile directory is
+ * already private to its owner.
  *
  * CLERQ_KEEP_PERMISSIONS=1 stops the gateway tightening paths that already
  * exist, for an operator who has deliberately shared them. Files the gateway

@@ -1,11 +1,9 @@
 /**
  * Run records.
  *
- * Before 0.5 a trigger fired, logged 50 characters of its message, and threw
- * the result away: no record that it ran, no output, no failure history. Every
- * execution now gets a durable row moving through the documented state machine,
- * with each transition written before it takes effect so a run that dies
- * mid-flight is visible afterwards rather than vanishing.
+ * Every execution — a task, a trigger firing, a chat message — gets a durable
+ * row moving through the documented state machine. Each transition is written
+ * before it takes effect, so a run that dies mid-flight is still visible.
  */
 
 import crypto from 'node:crypto';

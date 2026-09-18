@@ -2,9 +2,7 @@
  * Typed internal event bus.
  *
  * One bus feeds the UI stream, the log writer, the metrics collector and the
- * audit log, rather than each growing its own ad-hoc mechanism — which is how
- * the pre-0.5 gateway ended up with a log stream, a metrics counter and a
- * secrets audit file that knew nothing about each other.
+ * audit log, so they all see the same events with the same correlation ids.
  *
  * Emitting must never break the emitter: a throwing subscriber is logged and
  * skipped, and a slow subscriber cannot block the caller.

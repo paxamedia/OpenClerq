@@ -11,8 +11,7 @@
  * driver instead.
  *
  * Base URLs, model ids and prices are data rather than code because they change
- * every few weeks. Hardcoding them is how the pre-0.4 model list ended up
- * two years stale.
+ * every few weeks.
  */
 
 import fs from 'node:fs';

@@ -1,12 +1,12 @@
 /**
  * The chat console as a module registration.
  *
- * It ships bundled, but through the same contract a third-party module uses —
- * an id, a manifest and a UI component. Dogfooding the plugin API is the only
- * reliable way to find out whether it is good enough for anyone else.
+ * It ships bundled, through the same contract a third-party module uses: an id,
+ * a manifest and a UI component.
  *
- * To remove it: drop the entry from `bundledModules` in App.tsx, or disable the
- * module in ~/.clerq/config.json. Nothing else depends on it.
+ * To remove it: drop its entries from `bundledComponents` and `DEFAULT_MODULES`
+ * in App.tsx, or disable the module in ~/.clerq/config.json. Nothing else
+ * depends on it.
  */
 
 import type { ModuleManifest } from '@clerq/module-schema';

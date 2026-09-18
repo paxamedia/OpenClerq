@@ -91,8 +91,8 @@ and qualified model references, but never its endpoint URL, which may carry cred
 
 ### Chat console
 
-A chat message is a run with `trigger: 'manual'` in a session that has no schedule — the same
-providers, runs, steps and cost accounting the automation runner uses, not a parallel path.
+A chat message is a run with `trigger: 'manual'` in a session that has no schedule, using the
+same providers, runs, steps and cost accounting as the automation runner.
 Sessions and their transcripts live in the store.
 
 | Mode        | What the gateway adds                                                                                                  |
@@ -100,10 +100,9 @@ Sessions and their transcripts live in the store.
 | **Raw**     | Nothing. No system prompt, no skill selection, no memory, no tools. The exact request body is kept and is inspectable. |
 | **Managed** | The full `/task` pipeline: system prompt, skill routing, calculation engine, durable transcript.                       |
 
-Raw removes **OpenClerq's** additions, not the vendor's: both modes are the same call to the
-same endpoint under the user's own key. What it buys is pipeline transparency — when a managed
-answer or an overnight automation misbehaves, raw mode is how you tell whether the model was
-wrong or our prompt assembly was.
+Raw removes OpenClerq's additions, not the vendor's: both modes call the same endpoint under
+the user's own key. Use it to tell whether an unexpected answer comes from the model or from
+the pipeline's prompt assembly.
 
 `POST /sessions/:id/send` streams by default, as SSE; pass `stream: false` for one JSON
 response. `POST /sessions/:id/compare` sends one message to several models at once and returns
@@ -118,10 +117,10 @@ modules use, so it can be removed without touching the gateway or the scheduler.
 
 Every run carries an abort signal, and a model call inside a run listens to it. When the
 client that asked for a run hangs up before the answer is complete, the run is cancelled and
-the provider call stopped — nobody is left to read the answer, so nothing more is spent on it.
+the provider call stopped.
 A caller that wants the work finished regardless sends `continueOnDisconnect: true` and reads
 the outcome from `GET /runs/:id` later. A cancelled run is recorded as `cancelled`, and the
-request answers `409 run_cancelled` rather than blaming the provider.
+request answers `409 run_cancelled`.
 
 Hang-up detection works when the gateway runs under Node — the server and CLI installs. Under
 Bun, which the desktop sidecar is compiled with, nothing signals a hang-up once the request body

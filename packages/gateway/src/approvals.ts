@@ -6,8 +6,8 @@
  * gateway restart and the record of who decided what is auditable afterwards.
  *
  * Waiting fails closed: if nobody decides within the timeout, the call is
- * refused rather than allowed. An unattended run that silently proceeds because
- * no operator was watching is the exact failure this exists to prevent.
+ * refused rather than allowed, so an unattended run cannot proceed just because
+ * no operator was watching.
  */
 
 import { audit } from '@clerq/store';
@@ -144,7 +144,7 @@ export function listPending(): ApprovalRequest[] {
 /**
  * Block until the approval is decided, or the timeout expires.
  *
- * Resolves false on timeout — never true. Failing closed is the whole point.
+ * Resolves false on timeout, never true.
  */
 export function waitForDecision(id: number, timeoutMs = 300_000): Promise<boolean> {
   return new Promise((resolve) => {

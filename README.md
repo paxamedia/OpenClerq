@@ -218,18 +218,18 @@ clerq/
 
 ## Documentation
 
-| Doc                                                  | Purpose                                                         |
-| ---------------------------------------------------- | --------------------------------------------------------------- |
-| [**ROADMAP**](docs/ROADMAP.md)                       | Where this is going: audit, target architecture, release trains |
-| [**ABOUT_CLERQ**](docs/ABOUT_CLERQ.md)               | What OpenClerq is; attribution; OSS vs hosted scope             |
-| [**DEVELOPER_SETUP**](docs/DEVELOPER_SETUP.md)       | Install, run, and verify OpenClerq locally (macOS + Windows)    |
-| [ARCHITECTURE](docs/ARCHITECTURE.md)                 | Components and local data flow                                  |
-| [ARITHMETIC_API](docs/ARITHMETIC_API.md)             | Calculation engine: operators, functions, examples              |
-| [MODULE_SYSTEM](docs/MODULE_SYSTEM.md)               | How skills and modules are structured (schemas, dependencies)   |
-| [TOOLS](docs/TOOLS.md)                               | Built‑in tools (filesystem, HTTP) and how to extend them        |
-| [SECURITY](docs/SECURITY.md)                         | Threat model, binding rules, release checklist                  |
-| [DISTRIBUTION](docs/DISTRIBUTION.md)                 | Code signing, notarization, and the updater                     |
-| [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution      |
+| Doc                                                  | Purpose                                                       |
+| ---------------------------------------------------- | ------------------------------------------------------------- |
+| [**ROADMAP**](docs/ROADMAP.md)                       | Where this is going: target architecture, release trains      |
+| [**ABOUT_CLERQ**](docs/ABOUT_CLERQ.md)               | What OpenClerq is; attribution; OSS vs hosted scope           |
+| [**DEVELOPER_SETUP**](docs/DEVELOPER_SETUP.md)       | Install, run, and verify OpenClerq locally (macOS + Windows)  |
+| [ARCHITECTURE](docs/ARCHITECTURE.md)                 | Components and local data flow                                |
+| [ARITHMETIC_API](docs/ARITHMETIC_API.md)             | Calculation engine: operators, functions, examples            |
+| [MODULE_SYSTEM](docs/MODULE_SYSTEM.md)               | How skills and modules are structured (schemas, dependencies) |
+| [TOOLS](docs/TOOLS.md)                               | Built‑in tools (filesystem, HTTP) and how to extend them      |
+| [SECURITY](docs/SECURITY.md)                         | Threat model, binding rules, release checklist                |
+| [DISTRIBUTION](docs/DISTRIBUTION.md)                 | Code signing, notarization, and the updater                   |
+| [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution    |
 
 ## License
 

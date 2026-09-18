@@ -6,8 +6,8 @@
  *   node scripts/sync-version.js         re-sync every file to package.json's version
  *   node scripts/sync-version.js --check report drift and exit 1, writing nothing (CI)
  *
- * Every package under packages/ and apps/ is found by looking, not listed by
- * hand: a hand-kept list is how five packages added in 0.5 were left behind.
+ * Every package under packages/ and apps/ is found by looking rather than
+ * listed by hand, so a new package cannot be left behind.
  *
  * Versions are edited in place as text. Re-serialising JSON would reformat
  * whole files — expanding arrays prettier keeps on one line, rewriting

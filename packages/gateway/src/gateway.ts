@@ -95,7 +95,7 @@ function isProviderError(e: unknown): boolean {
 
 /**
  * A run that was stopped on purpose — kill switch, or the client hanging up —
- * answers 409 rather than a 503 that would blame the provider.
+ * answers 409, distinct from the 503 a provider failure gets.
  */
 function isCancelled(e: unknown): boolean {
   return (e as { cancelled?: unknown })?.cancelled === true;

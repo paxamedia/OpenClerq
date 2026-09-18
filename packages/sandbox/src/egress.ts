@@ -5,10 +5,10 @@
  * can open a socket itself, or run curl. The control has to sit somewhere the
  * process cannot route around.
  *
- * So the allowlist lives in a proxy on loopback, and the sandbox denies every
- * other outbound connection. A sandboxed command can reach exactly the hosts on
- * the list, through this proxy, and nothing else — including the hosts it
- * resolves itself, because it never gets to resolve anything.
+ * So the allowlist lives in a proxy on loopback, and the sandbox denies other
+ * outbound connections. On macOS that denial is by port, not host: a command
+ * can still reach an outside host on the proxy's own port. SECURITY.md records
+ * the gap; per-host enforcement needs a container on an internal network.
  *
  * The proxy speaks the two forms a client needs: CONNECT for TLS, and
  * absolute-form requests for plain HTTP. Anything else is refused with 403 and
@@ -191,7 +191,7 @@ export async function startEgressProxy(
       clientSocket.destroy();
     };
     upstream.on('error', () => {
-      // The client is mid-handshake; closing is the only honest answer.
+      // The client is mid-handshake, so the tunnel can only be closed.
       clientSocket.end('HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n', drop);
     });
     clientSocket.on('error', drop);
