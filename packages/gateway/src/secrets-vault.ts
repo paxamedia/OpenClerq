@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { clerqHome, writePrivateFile, appendPrivateFile } from '@clerq/store';
 import { logger } from './logger.js';
 import { getPassword, setPassword, detectBackend, describeBackend } from './security/keychain.js';
 
@@ -25,8 +26,7 @@ const TAG_LEN = 16;
 const KEY_LEN = 32;
 
 function getVaultDir(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  return path.join(home, '.clerq');
+  return clerqHome();
 }
 
 function getVaultPath(): string {
@@ -129,9 +129,8 @@ function resolveKey(): Buffer | null {
     return fromFile;
   }
   try {
-    ensureDir();
     const generated = crypto.randomBytes(KEY_LEN);
-    fs.writeFileSync(file, generated.toString('hex'), { mode: 0o600 });
+    writePrivateFile(file, generated.toString('hex'));
     keySource = 'file';
     warnOnce(
       'Generated a vault master key at ~/.clerq/vault.key (mode 0600). No keychain is available here.'
@@ -154,16 +153,10 @@ export function vaultKeyStatus(): { source: KeySource; backend: string } {
 
 function audit(action: string, name: string): void {
   try {
-    const dir = getVaultDir();
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const line = `${new Date().toISOString()}\t${action}\t${name}\n`;
-    fs.appendFileSync(getAuditPath(), line);
-  } catch (_) {}
-}
-
-function ensureDir(): void {
-  const dir = getVaultDir();
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    appendPrivateFile(getAuditPath(), `${new Date().toISOString()}\t${action}\t${name}\n`);
+  } catch {
+    /* an audit failure must not fail the write it describes */
+  }
 }
 
 interface VaultEntry {
@@ -189,8 +182,7 @@ function loadVault(): VaultFile {
 }
 
 function saveVault(vault: VaultFile): void {
-  ensureDir();
-  fs.writeFileSync(getVaultPath(), JSON.stringify(vault), 'utf8');
+  writePrivateFile(getVaultPath(), JSON.stringify(vault));
 }
 
 export function listSecrets(): string[] | { error: string } {

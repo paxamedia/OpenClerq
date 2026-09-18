@@ -14,6 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { writePrivateFile } from '@clerq/store';
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 
@@ -46,16 +47,8 @@ function readTokenFile(): string | null {
 }
 
 function writeTokenFile(token: string): void {
-  const p = getTokenPath();
-  const dir = path.dirname(p);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // Written 0600: readable only by the owning user.
-  fs.writeFileSync(p, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
-  try {
-    fs.chmodSync(p, 0o600);
-  } catch {
-    /* best effort on filesystems without POSIX modes */
-  }
+  // Readable only by the owning user, in a directory only they can enter.
+  writePrivateFile(getTokenPath(), `${token}\n`);
 }
 
 export function generateToken(): string {

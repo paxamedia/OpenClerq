@@ -5,6 +5,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { clerqHome, writePrivateFile } from '@clerq/store';
 
 const DEFAULT_PROMPT = `You are Clerq, an AI assistant for local administrative work. You provide guidance and explanations only.
 - You never output final numeric results as your own calculation; any numbers come from the user's context.
@@ -13,13 +14,7 @@ const DEFAULT_PROMPT = `You are Clerq, an AI assistant for local administrative 
 - If the user shares calculation or business data, explain what it means. Do not recalculate.`;
 
 function getPath(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  return path.join(home, '.clerq', 'system-prompt.txt');
-}
-
-function ensureDir(): void {
-  const dir = path.dirname(getPath());
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(clerqHome(), 'system-prompt.txt');
 }
 
 export function loadSystemPrompt(): string {
@@ -34,8 +29,7 @@ export function loadSystemPrompt(): string {
 }
 
 export function saveSystemPrompt(content: string): void {
-  ensureDir();
-  fs.writeFileSync(getPath(), content, 'utf8');
+  writePrivateFile(getPath(), content);
 }
 
 export { DEFAULT_PROMPT };

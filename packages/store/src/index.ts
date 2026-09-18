@@ -11,15 +11,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { openDatabase, type Database } from './driver.js';
 import { MIGRATIONS } from './migrations.js';
+import { clerqHome, ensurePrivateDir, restrictFile } from './local-files.js';
 
 export type { Database, Statement, Row, Param } from './driver.js';
 export { openDatabase } from './driver.js';
 export { MIGRATIONS } from './migrations.js';
 export { importLegacyJson, type ImportResult } from './import-legacy.js';
+export {
+  clerqHome,
+  ensurePrivateDir,
+  restrictFile,
+  writePrivateFile,
+  appendPrivateFile,
+  secureClerqHome,
+} from './local-files.js';
 
 export function getDefaultDbPath(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  return path.join(home, '.clerq', 'clerq.db');
+  return path.join(clerqHome(), 'clerq.db');
 }
 
 /**
@@ -65,12 +73,24 @@ export function migrate(db: Database): number[] {
  */
 export async function openStore(dbPath?: string): Promise<Database> {
   const target = dbPath ?? getDefaultDbPath();
-  if (target !== ':memory:') {
-    const dir = path.dirname(target);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (target === ':memory:') {
+    const db = await openDatabase(target);
+    migrate(db);
+    return db;
   }
+
+  // The database holds conversations, prompts and memory: this account only.
+  // A custom location's directory is created private but, if it already
+  // exists, left as the operator made it; the default one is always tightened.
+  const dir = path.dirname(target);
+  if (target === getDefaultDbPath() || !fs.existsSync(dir)) ensurePrivateDir(dir);
+  const created = !fs.existsSync(target);
+
   const db = await openDatabase(target);
   migrate(db);
+  // Migrating writes, so the WAL and shared-memory files exist by now too. A
+  // database this call created is ours to tighten regardless of the opt-out.
+  for (const file of [target, `${target}-wal`, `${target}-shm`]) restrictFile(file, created);
   return db;
 }
 

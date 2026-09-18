@@ -2,7 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use tauri_plugin_shell::ShellExt;
 
 const GATEWAY_PORT: u16 = 18790;
@@ -22,19 +23,81 @@ fn greet(name: &str) -> String {
     )
 }
 
-/// Writes API key to ~/.clerq/.env so the gateway (and sidecar) can load it. Creates ~/.clerq if needed.
+/// Creates ~/.clerq readable only by this account, tightening it if an earlier
+/// build left it wider. It holds API keys and conversations.
+fn ensure_private_dir(dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {}", dir.display(), e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Could not restrict {}: {}", dir.display(), e))?;
+    }
+    Ok(())
+}
+
+/// Writes a file readable only by this account. The mode is set on the open
+/// file too, so a file that already existed with a wider mode is tightened.
+fn write_private(path: &Path, content: &str) -> Result<(), String> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("Could not write {}: {}", path.display(), e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Could not restrict {}: {}", path.display(), e))?;
+    }
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Could not write {}: {}", path.display(), e))
+}
+
+/// Sets `key` in .env text, keeping every other line as it was.
+fn upsert_env_line(existing: &str, key: &str, value: &str) -> String {
+    let prefix = format!("{}=", key);
+    let mut replaced = false;
+    let mut lines: Vec<String> = existing
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with(&prefix) {
+                replaced = true;
+                format!("{}{}", prefix, value)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    if !replaced {
+        if lines.is_empty() {
+            lines.push("# Clerq — written by the desktop app".to_string());
+        }
+        lines.push(format!("{}{}", prefix, value));
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Stores the API key in ~/.clerq/.env for the gateway to load. Only that one
+/// line changes: other keys and settings in the file are kept.
 #[tauri::command]
 fn write_api_key(api_key: String) -> Result<(), String> {
     let dir = clerq_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {}", dir.display(), e))?;
+    ensure_private_dir(&dir)?;
     let env_path = dir.join(".env");
-    let content = format!(
-        "# Clerq — written by desktop app\nANTHROPIC_API_KEY={}\nCLERQ_DEV=1\n",
-        api_key.trim().replace('\n', " ")
-    );
-    fs::write(&env_path, content)
-        .map_err(|e| format!("Could not write {}: {}", env_path.display(), e))?;
-    Ok(())
+    let existing = fs::read_to_string(&env_path).unwrap_or_default();
+    let value = api_key.trim().replace(['\n', '\r'], "");
+    write_private(
+        &env_path,
+        &upsert_env_line(&existing, "ANTHROPIC_API_KEY", &value),
+    )
 }
 
 /// Reads app config from ~/.clerq/config.json. Returns empty object JSON if file missing.
@@ -53,10 +116,8 @@ fn read_config() -> Result<String, String> {
 #[tauri::command]
 fn write_config(json: String) -> Result<(), String> {
     let dir = clerq_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {}", dir.display(), e))?;
-    let path = dir.join("config.json");
-    fs::write(&path, json).map_err(|e| format!("Could not write config: {}", e))?;
-    Ok(())
+    ensure_private_dir(&dir)?;
+    write_private(&dir.join("config.json"), &json)
 }
 
 /// Reads module manifest from a directory. Path can be absolute or relative to current dir.
@@ -168,4 +229,41 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clerq desktop application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upsert_env_line;
+
+    #[test]
+    fn replaces_the_key_and_keeps_every_other_line() {
+        let before =
+            "# mine\nDEEPSEEK_API_KEY=ds\nANTHROPIC_API_KEY=old\nCLERQ_LLM_PROVIDER=deepseek\n";
+        let after = upsert_env_line(before, "ANTHROPIC_API_KEY", "new");
+        assert_eq!(
+            after,
+            "# mine\nDEEPSEEK_API_KEY=ds\nANTHROPIC_API_KEY=new\nCLERQ_LLM_PROVIDER=deepseek\n"
+        );
+    }
+
+    #[test]
+    fn appends_the_key_when_absent() {
+        let after = upsert_env_line("OPENAI_API_KEY=o\n", "ANTHROPIC_API_KEY", "k");
+        assert_eq!(after, "OPENAI_API_KEY=o\nANTHROPIC_API_KEY=k\n");
+    }
+
+    #[test]
+    fn starts_a_new_file_with_a_header() {
+        let after = upsert_env_line("", "ANTHROPIC_API_KEY", "k");
+        assert_eq!(
+            after,
+            "# Clerq — written by the desktop app\nANTHROPIC_API_KEY=k\n"
+        );
+    }
+
+    #[test]
+    fn does_not_mistake_a_longer_key_for_this_one() {
+        let after = upsert_env_line("ANTHROPIC_API_KEY_BACKUP=b\n", "ANTHROPIC_API_KEY", "k");
+        assert_eq!(after, "ANTHROPIC_API_KEY_BACKUP=b\nANTHROPIC_API_KEY=k\n");
+    }
 }

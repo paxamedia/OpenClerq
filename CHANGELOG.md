@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`~/.clerq` is private to its owner.** Five code paths created it, three of them world-traversable, and whichever ran first decided its mode — so the API key in `.env`, every conversation and prompt in `clerq.db`, and the encrypted vault could be readable by other accounts on the machine. There is now one way to create the directory (0700) and one way to write a file in it (0600), and the gateway repairs existing installs on startup. The desktop app's API-key save also overwrote the whole `.env`, discarding any other keys in it; it now changes only its own line. `CLERQ_KEEP_PERMISSIONS=1` leaves deliberately shared paths alone.
 - **Triggers no longer vanish after the first restart.** The store imported `~/.clerq/triggers.json` and archived it as `triggers.json.migrated`, while `triggers.ts` went on reading that file — so every cron, file-watch and webhook trigger disappeared on the next start. Triggers are now read from and written to the store, which also recovers any already imported.
 - **Webhook firings are recorded as runs** (`trigger: 'webhook'`), and the response carries the `runId`. They previously executed with no trace at all.
 - **A file-watch firing is recorded as `trigger: 'event'`**, not `'schedule'`.

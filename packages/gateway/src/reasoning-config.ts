@@ -4,6 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { clerqHome, writePrivateFile } from '@clerq/store';
 
 export interface ReasoningConfig {
   temperature?: number;
@@ -11,13 +12,7 @@ export interface ReasoningConfig {
 }
 
 function getPath(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  return path.join(home, '.clerq', 'reasoning.json');
-}
-
-function ensureDir(): void {
-  const dir = path.dirname(getPath());
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(clerqHome(), 'reasoning.json');
 }
 
 export function loadReasoning(): ReasoningConfig {
@@ -39,6 +34,5 @@ export function loadReasoning(): ReasoningConfig {
 }
 
 export function saveReasoning(config: ReasoningConfig): void {
-  ensureDir();
-  fs.writeFileSync(getPath(), JSON.stringify(config, null, 2), 'utf8');
+  writePrivateFile(getPath(), JSON.stringify(config, null, 2));
 }

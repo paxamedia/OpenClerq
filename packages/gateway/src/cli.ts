@@ -19,9 +19,23 @@ if (homedir && fs.existsSync(userEnv)) {
 dotenv.config({ path: path.join(process.cwd(), '.env') });
 dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
+import { secureClerqHome } from '@clerq/store';
 import { createGateway } from './gateway.js';
 
 import { resolveGatewayToken } from './security/auth.js';
+
+// ~/.clerq holds API keys, conversations and the vault. Earlier builds could
+// leave it readable by other accounts; repair that before anything is served.
+try {
+  const tightened = secureClerqHome();
+  if (tightened.length > 0) {
+    console.log(`[Clerq] Restricted ${tightened.length} path(s) under ~/.clerq to this account.`);
+  }
+} catch (e) {
+  console.warn(
+    `[Clerq] Could not restrict ~/.clerq permissions: ${e instanceof Error ? e.message : e}`
+  );
+}
 
 const port = parseInt(process.env.CLERQ_PORT ?? '18790', 10);
 const host = process.env.CLERQ_HOST ?? '127.0.0.1';

@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from './driver.js';
+import { clerqHome } from './local-files.js';
 
 export interface ImportResult {
   memory: number;
@@ -19,8 +20,7 @@ export interface ImportResult {
 }
 
 function clerqDir(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  return path.join(home, '.clerq');
+  return clerqHome();
 }
 
 function readJson(file: string): unknown | null {

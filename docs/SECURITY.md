@@ -50,6 +50,7 @@ That is a legitimate thing to build. It is not a thing to build casually.
 - **CORS is allow-listed.** Origins are reflected only when explicitly configured. There is no wildcard path in any mode.
 - **Filesystem reads are canonically contained.** `fs.read` resolves against a `realpath`'d root and rejects traversal, prefix-sibling escapes, absolute paths, NUL bytes, and symlinks leaving the root. Reads are size-capped and refuse non-regular files.
 - **Outbound HTTP is SSRF-hardened.** `http.request` is unregistered without an allowlist. When enabled it permits https only by default, refuses URL credentials, resolves DNS and rejects loopback, private, CGNAT, link-local and cloud-metadata addresses, revalidates every redirect hop, and bounds both time and response size.
+- **Local state is private to its owner.** `~/.clerq` is 0700 and every file holding keys, conversations or secrets is 0600, repaired at startup on installs made before this was enforced. Transcripts and prompts are stored unencrypted inside it: the protection is the account boundary, not encryption at rest.
 - **Request bodies are bounded.** JSON parsing is capped (default 1 MiB).
 - **No write tools ship.** There is no `fs.write` and no `exec` tool. The current blast radius is bounded by that absence, not by a policy engine.
 - **Secrets are encrypted at rest.** AES-256-GCM with per-entry IV and auth tag. Values are never returned by the listing endpoint; `GET /secrets` returns names only.

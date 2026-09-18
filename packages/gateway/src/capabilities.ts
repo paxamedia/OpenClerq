@@ -7,6 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { clerqHome, writePrivateFile } from '@clerq/store';
 import type { ToolConfig } from './tools.js';
 
 export interface CapabilitiesConfig {
@@ -27,13 +28,7 @@ export interface CapabilitiesConfig {
 }
 
 function getPath(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  return path.join(home, '.clerq', 'capabilities.json');
-}
-
-function ensureDir(): void {
-  const dir = path.dirname(getPath());
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(clerqHome(), 'capabilities.json');
 }
 
 function positiveInt(value: unknown): number | undefined {
@@ -73,8 +68,7 @@ export function loadCapabilities(): CapabilitiesConfig {
 }
 
 export function saveCapabilities(config: CapabilitiesConfig): void {
-  ensureDir();
-  fs.writeFileSync(getPath(), JSON.stringify(config, null, 2), 'utf8');
+  writePrivateFile(getPath(), JSON.stringify(config, null, 2));
 }
 
 export function capabilitiesToToolConfig(c: CapabilitiesConfig): ToolConfig {
