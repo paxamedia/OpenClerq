@@ -1,6 +1,6 @@
 # Security
 
-**Status:** current as of the 0.5 development line, 2026-09-17.
+**Status:** current as of release 0.5.0, 2026-09-18.
 
 This document states what OpenClerq protects today, what it does **not** protect today, and
 the rules that bind future work. It supersedes the previous `SAFETY_CHECKLIST.md`.

@@ -27,6 +27,11 @@ jobs:
       - name: Build workspace packages
         run: pnpm -r build
 
+      # One version across every package, the Tauri config, the desktop crate
+      # and /health. Five packages once drifted because nothing checked.
+      - name: Versions in sync
+        run: node scripts/sync-version.js --check
+
       - name: Typecheck gateway
         run: pnpm --filter @clerq/gateway exec tsc --noEmit
 

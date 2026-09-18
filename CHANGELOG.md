@@ -5,7 +5,9 @@ All notable changes to OpenClerq will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 0.5 Execution
+## [Unreleased]
+
+## [0.5.0] — Execution — 2026-09-18
 
 > **Libraries versus the running product.** `packages/policy`, `packages/sandbox` and
 > `packages/workspaces` are built and tested here, but the gateway does not call them yet: no
@@ -41,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One version, checked in CI.** `scripts/sync-version.js` finds every package under `packages/` and `apps/` instead of keeping a hand-written list, which had left the five packages added in this release behind. It also syncs the desktop crate's `Cargo.lock`, edits versions in place rather than reformatting files, and `--check` reports drift without writing — now a CI step.
 - **The gateway calls models through `@clerq/providers`** instead of its own client, removing the `@anthropic-ai/sdk` dependency. Provider failures of every kind — missing key, unreachable endpoint, vendor error — now answer `503 ai_unavailable` rather than some of them `500`.
 - The built-in provider registry is compiled in rather than read from a `providers.yaml` beside the build. The desktop sidecar is a single binary with nowhere to read it from, and the copy step would have failed on Windows. Override it with `~/.clerq/providers.yaml` or `CLERQ_PROVIDERS_FILE`.
 - `CLERQ_OLLAMA_URL` accepts the server root or its `/v1` root; one form previously broke model calls and the other broke model listing.

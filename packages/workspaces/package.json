@@ -1,6 +1,6 @@
 {
   "name": "@clerq/workspaces",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Repository checkouts, per-run git worktrees, and the branch/commit/push/PR publish path",
   "type": "module",
   "main": "dist/index.js",
