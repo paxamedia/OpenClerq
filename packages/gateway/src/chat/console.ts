@@ -37,6 +37,8 @@ export interface SendInput {
   mode?: unknown;
   model?: string;
   onDelta?: (text: string) => void;
+  /** Called once the run exists, with its id — before any model call. */
+  onStart?: (runId: string) => void;
   managed?: ManagedPipeline;
   /** Cancels the run when it aborts — typically the client disconnecting. */
   signal?: AbortSignal;
@@ -93,6 +95,7 @@ export async function sendMessage(input: SendInput): Promise<SendResult> {
     { trigger: 'manual', message: text, signal: input.signal },
     async () => {
       runId = currentRunId() as string;
+      input.onStart?.(runId);
 
       if (mode === 'managed') {
         if (!input.managed) throw new SessionError('The managed pipeline is not available here.');

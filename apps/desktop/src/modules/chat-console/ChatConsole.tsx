@@ -118,6 +118,8 @@ export function ChatConsole({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const transcriptEnd = useRef<HTMLDivElement>(null);
+  /** The answer being streamed, so Stop can end it — and its spending. */
+  const inFlight = useRef<AbortController | null>(null);
 
   const refreshSessions = useCallback(async () => {
     const { sessions: list } = await gateway.sessions();
@@ -185,23 +187,41 @@ export function ChatConsole({
     setStreaming('');
     const text = draft;
     setDraft('');
+    const controller = new AbortController();
+    inFlight.current = controller;
     try {
       await gateway.sendMessage(
         current.id,
         { text, model: model || undefined },
         // Managed mode answers in one piece; raw mode arrives token by token.
-        (delta) => setStreaming((s) => s + delta)
+        (delta) => setStreaming((s) => s + delta),
+        controller.signal
       );
       await openSession(current.id);
       await refreshSessions();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setDraft(text);
+      if (controller.signal.aborted) {
+        // Stopped on purpose: the gateway recorded the run as cancelled and
+        // kept the question, so show the transcript as it now stands.
+        await openSession(current.id).catch(() => undefined);
+        await refreshSessions().catch(() => undefined);
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+        setDraft(text);
+      }
     } finally {
+      inFlight.current = null;
       setStreaming('');
       setBusy(false);
     }
   }, [current, draft, model, busy, openSession, refreshSessions]);
+
+  const stop = useCallback(() => {
+    inFlight.current?.abort();
+  }, []);
+
+  // Leaving the console mid-answer stops the answer too.
+  useEffect(() => () => inFlight.current?.abort(), []);
 
   const runComparison = useCallback(async () => {
     if (!current || !draft.trim() || compareModels.length < 2) return;
@@ -400,16 +420,22 @@ export function ChatConsole({
                     }
                   }}
                 />
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={
-                    busy || !draft.trim() || (panel === 'compare' && compareModels.length < 2)
-                  }
-                  onClick={panel === 'compare' ? runComparison : send}
-                >
-                  {busy ? 'Working…' : panel === 'compare' ? 'Compare' : 'Send'}
-                </button>
+                {busy && panel !== 'compare' ? (
+                  <button type="button" className="btn" onClick={stop}>
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={
+                      busy || !draft.trim() || (panel === 'compare' && compareModels.length < 2)
+                    }
+                    onClick={panel === 'compare' ? runComparison : send}
+                  >
+                    {busy ? 'Working…' : panel === 'compare' ? 'Compare' : 'Send'}
+                  </button>
+                )}
               </div>
             </>
           )}

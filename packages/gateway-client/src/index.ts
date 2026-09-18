@@ -267,6 +267,9 @@ export const gateway = {
    *
    * EventSource cannot POST, so this reads the response body directly. `onDelta`
    * is called with each piece; the promise resolves with the stored message.
+   *
+   * Aborting `signal` stops the run on the gateway by id, not just by hanging
+   * up: the desktop sidecar runs under Bun, which cannot see a hang-up.
    */
   async sendMessage(
     id: string,
@@ -297,6 +300,11 @@ export const gateway = {
     const decoder = new TextDecoder();
     let buffer = '';
     let result: { runId: string; message: ChatMessage } | undefined;
+    let runId: string | undefined;
+    const cancelOnAbort = () => {
+      if (runId) void gateway.cancelRun(runId).catch(() => undefined);
+    };
+    signal?.addEventListener('abort', cancelOnAbort, { once: true });
 
     const handle = (frame: string): void => {
       for (const line of frame.split(/\r?\n/)) {
@@ -308,7 +316,8 @@ export const gateway = {
           runId?: string;
           message?: ChatMessage;
         };
-        if (event.type === 'delta' && event.text) onDelta(event.text);
+        if (event.type === 'start' && event.runId) runId = event.runId;
+        else if (event.type === 'delta' && event.text) onDelta(event.text);
         else if (event.type === 'error') throw new Error(event.error ?? 'The model call failed.');
         else if (event.type === 'done' && event.message) {
           result = { runId: event.runId ?? '', message: event.message };
@@ -316,17 +325,21 @@ export const gateway = {
       }
     };
 
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let sep: number;
-      while ((sep = buffer.indexOf('\n\n')) !== -1) {
-        handle(buffer.slice(0, sep));
-        buffer = buffer.slice(sep + 2);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buffer.indexOf('\n\n')) !== -1) {
+          handle(buffer.slice(0, sep));
+          buffer = buffer.slice(sep + 2);
+        }
       }
+      if (buffer.trim()) handle(buffer);
+    } finally {
+      signal?.removeEventListener('abort', cancelOnAbort);
     }
-    if (buffer.trim()) handle(buffer);
 
     if (!result) throw new Error('The stream ended without an answer.');
     return result;
@@ -371,6 +384,11 @@ export const gateway = {
   /** Restart triggers paused by the kill switch. */
   resume(): Promise<{ ok: boolean; triggersResumed: boolean; wasPaused: boolean }> {
     return fetchJson('/resume', { method: 'POST', body: '{}' });
+  },
+
+  /** Stop a run in flight. Rejects when the run is not running. */
+  cancelRun(id: string): Promise<{ ok: boolean; id: string }> {
+    return fetchJson(`/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: '{}' });
   },
 
   runs(limit = 50): Promise<{ runs: RunSummary[] }> {

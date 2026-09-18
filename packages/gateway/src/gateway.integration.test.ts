@@ -640,6 +640,43 @@ describe('gateway integration', () => {
     expect(slowCalls.abandoned).toBeGreaterThan(before);
   });
 
+  it('names the run first on a stream, and stops it by id without a hang-up', async () => {
+    // The desktop sidecar runs under Bun, where a hang-up is invisible, so
+    // cancelling by id is the path that must work everywhere.
+    const session = (await (await post(`${baseUrl}/sessions`)).json()) as { id: string };
+    const res = await post(`${baseUrl}/sessions/${session.id}/send`, { text: 'SLOW by id' });
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let runId = '';
+    while (!runId) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      runId = /"type":"start","runId":"([^"]+)"/.exec(text)?.[1] ?? '';
+    }
+    expect(runId).toMatch(/^run_/);
+
+    const cancelled = await post(`${baseUrl}/runs/${runId}/cancel`);
+    expect(await cancelled.json()).toEqual({ ok: true, id: runId });
+
+    // The same connection then carries the outcome.
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    expect(text).toMatch(/"type":"error"/);
+    const run = (await (await authed(`${baseUrl}/runs/${runId}`)).json()) as {
+      status: string;
+      exitReason: string;
+    };
+    expect(run).toMatchObject({ status: 'cancelled', exitReason: 'Cancelled by request' });
+
+    // A second cancel finds nothing running.
+    expect((await post(`${baseUrl}/runs/${runId}/cancel`)).status).toBe(404);
+  });
+
   it('finishes the call anyway when the client asks it to', async () => {
     const client = new AbortController();
     const pending = post(

@@ -147,6 +147,45 @@ describe('sendMessage — streaming', () => {
     );
   });
 
+  it('cancels the run by id when the caller aborts, since a hang-up alone may go unseen', async () => {
+    const encoder = new TextEncoder();
+    calls = [];
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      if (url.endsWith('/cancel')) return Response.json({ ok: true, id: 'run_42' });
+      // A stream that names its run, then stays open until the client aborts.
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(frame({ type: 'start', runId: 'run_42' })));
+            controller.enqueue(encoder.encode(frame({ type: 'delta', text: 'partial' })));
+            init?.signal?.addEventListener('abort', () =>
+              controller.error(new DOMException('aborted', 'AbortError'))
+            );
+          },
+        })
+      );
+    });
+
+    const stop = new AbortController();
+    const deltas: string[] = [];
+    const pending = gateway.sendMessage(
+      'ses_1',
+      { text: 'long answer' },
+      (d) => {
+        deltas.push(d);
+        stop.abort();
+      },
+      stop.signal
+    );
+
+    await expect(pending).rejects.toThrow();
+    expect(deltas).toEqual(['partial']);
+    const cancel = calls.find(([url]) => url.endsWith('/cancel'));
+    expect(cancel?.[0]).toBe('http://127.0.0.1:18790/runs/run_42/cancel');
+    expect(cancel?.[1]?.method).toBe('POST');
+  });
+
   it('passes continueOnDisconnect through', async () => {
     stubFetch(() => sse([frame({ type: 'done', runId: 'r', message })]));
     await gateway.sendMessage('ses_1', { text: 'hi', continueOnDisconnect: true }, () => {});

@@ -123,6 +123,13 @@ A caller that wants the work finished regardless sends `continueOnDisconnect: tr
 the outcome from `GET /runs/:id` later. A cancelled run is recorded as `cancelled`, and the
 request answers `409 run_cancelled` rather than blaming the provider.
 
+Hang-up detection works when the gateway runs under Node — the server and CLI installs. Under
+Bun, which the desktop sidecar is compiled with, nothing signals a hang-up once the request body
+has been read (verified on Bun 1.3.10). So a streamed answer names its run in its first event,
+`{"type":"start","runId":…}`, and `POST /runs/:id/cancel` stops that run on any runtime. The
+client library cancels by id when its caller aborts, and the chat console's **Stop** button uses
+it.
+
 `POST /kill` refuses every pending approval, cancels every run in flight, and pauses triggers so
 nothing new starts on its own. Each part can be left out: `{ "triggers": false }` stops what is
 running without touching the schedule. Triggers stay paused until `POST /resume` or a restart;
@@ -153,7 +160,7 @@ The gateway is the control plane. Endpoints:
 | Tools       | `GET /tools`, `POST /tools/run`                                                                                            |
 | Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                |
 | Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                          |
-| Runs        | `GET /runs`, `GET /runs/:id`                                                                                               |
+| Runs        | `GET /runs`, `GET /runs/:id`, `POST /runs/:id/cancel`                                                                      |
 | Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update` |
 | Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                |
 | Events      | `GET /events` (SSE)                                                                                                        |
@@ -209,6 +216,7 @@ All errors use one shape, and carry no PII:
 | `skill_not_found`, `memory_not_found`, `webhook not found`                             | 404  | No such resource                                                            |
 | `ai_unavailable`                                                                       | 503  | Model provider unusable: no key, unreachable, or it returned an error       |
 | `run_cancelled`                                                                        | 409  | The run was stopped by the kill switch or the client hanging up             |
+| `run_not_active`                                                                       | 404  | `POST /runs/:id/cancel` on a run that is not running                        |
 | `triggers_paused`                                                                      | 503  | A webhook fired while the kill switch holds triggers paused                 |
 | `invalid_session`                                                                      | 400  | Bad chat request: unknown session, empty text, unknown mode, bad model list |
 | `calculation_engine_unavailable`                                                       | 503  | Rust engine not built                                                       |

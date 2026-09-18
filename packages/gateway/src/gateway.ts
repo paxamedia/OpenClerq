@@ -41,7 +41,15 @@ import {
 } from './triggers.js';
 import { listMemory, getMemory, setMemory, deleteMemory, searchMemory } from './memory-layer.js';
 import { initStore } from './store.js';
-import { recordRun, listRuns, getRun, currentRunId, cancelAllRuns, activeRunIds } from './runs.js';
+import {
+  recordRun,
+  listRuns,
+  getRun,
+  currentRunId,
+  cancelRun,
+  cancelAllRuns,
+  activeRunIds,
+} from './runs.js';
 import { emit, subscribeEvents, recentEvents } from './events.js';
 import { listPending, decide, denyAllPending } from './approvals.js';
 import {
@@ -106,6 +114,12 @@ function cancelledResponse(res: Response, e: unknown): Response {
  *
  * A caller that wants the work finished regardless sends
  * `continueOnDisconnect: true` and reads the outcome from GET /runs/:id later.
+ *
+ * This works under Node. Under Bun — the compiled desktop sidecar — nothing
+ * signals a hang-up once the request body has been read: no event fires and
+ * no state changes (verified on Bun 1.3.10). So a client should not rely on
+ * hanging up alone; the streamed answer names its run first, and
+ * POST /runs/:id/cancel stops it on any runtime.
  */
 function disconnectSignal(res: Response, continueOnDisconnect: unknown): AbortSignal | undefined {
   if (continueOnDisconnect === true) return undefined;
@@ -725,6 +739,8 @@ export function createGateway(config: GatewayConfig = {}): {
         ...input,
         managed,
         signal,
+        // The run id comes first, so the client can cancel by id.
+        onStart: (runId) => send({ type: 'start', runId }),
         onDelta: (text) => send({ type: 'delta', text }),
       });
       send({ type: 'done', ...result });
@@ -775,6 +791,15 @@ export function createGateway(config: GatewayConfig = {}): {
       logger.error('runs list error', { err: e instanceof Error ? e.message : String(e) });
       res.status(500).json({ error: 'runs_list_failed' });
     }
+  });
+
+  /** Stop one run. Works on every runtime, unlike detecting a hang-up. */
+  app.post('/runs/:id/cancel', (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    if (!cancelRun(id, 'Cancelled by request')) {
+      return res.status(404).json({ error: 'run_not_active', id });
+    }
+    res.json({ ok: true, id });
   });
 
   app.get('/runs/:id', (req: Request, res: Response) => {
