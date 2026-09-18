@@ -13,11 +13,16 @@ on:
 jobs:
   build-macos-signed:
     runs-on: macos-latest
+    # A step's `if:` cannot read the secrets context — GitHub rejects the whole
+    # file, and then reports a failed run on every push, tag or not. Whether the
+    # certificate is configured is read here, where secrets are allowed.
+    env:
+      HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Import Apple Developer Certificate
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        if: env.HAS_APPLE_CERTIFICATE == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}

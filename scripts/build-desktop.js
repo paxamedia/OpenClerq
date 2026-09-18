@@ -13,6 +13,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopDir = path.join(__dirname, '..', 'apps', 'desktop');
 
 const env = { ...process.env };
+
+// GitHub Actions passes a secret that is not configured as an empty string, not
+// as nothing. Tauri then signs with the identity "" and fails ("no identity
+// found"), so an unsigned release build broke on every tag. Empty means unset.
+for (const name of [
+  'APPLE_SIGNING_IDENTITY',
+  'APPLE_CERTIFICATE',
+  'APPLE_CERTIFICATE_PASSWORD',
+  'APPLE_ID',
+  'APPLE_PASSWORD',
+  'APPLE_TEAM_ID',
+  'TAURI_SIGNING_PRIVATE_KEY',
+  'TAURI_SIGNING_PRIVATE_KEY_PASSWORD',
+]) {
+  if (typeof env[name] === 'string' && env[name].trim() === '') delete env[name];
+}
+
 if (process.env.UNSET_CI === '1') {
   delete env.CI;
   env.TAURI_CI = 'false';

@@ -558,6 +558,24 @@ describe('gateway integration', () => {
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+  /**
+   * Wait for a condition rather than a clock. A fixed sleep that is ample on a
+   * laptop can be too short on a loaded CI runner, and a test that acts before
+   * its request has arrived fails for reasons that have nothing to do with the
+   * code under test.
+   */
+  async function waitFor(what: string, condition: () => boolean, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await sleep(20);
+    }
+  }
+
+  /** Wait until the fake provider is serving one more slow call than before. */
+  const slowCallArrives = (before: number) =>
+    waitFor('the slow call to reach the provider', () => slowCalls.started > before);
+
   /** The newest run, once it has left the executing state. */
   async function settledLatestRun(): Promise<{ id: string; status: string; exitReason?: string }> {
     // Generous: under a loaded CI runner a slow call can take seconds to settle.
@@ -573,8 +591,9 @@ describe('gateway integration', () => {
 
   it('stops a run in flight, pauses triggers, and resumes them', async () => {
     // Before, /kill only refused approvals: runs, spend and schedules carried on.
+    const started = slowCalls.started;
     const task = post(`${baseUrl}/task`, { message: 'SLOW kill me' });
-    await sleep(300);
+    await slowCallArrives(started);
 
     const killed = await post(`${baseUrl}/kill`);
     expect(killed.status).toBe(200);
@@ -618,6 +637,7 @@ describe('gateway integration', () => {
   it('stops a streamed call when the client hangs up', async () => {
     const session = (await (await post(`${baseUrl}/sessions`)).json()) as { id: string };
     const before = slowCalls.abandoned;
+    const started = slowCalls.started;
     const client = new AbortController();
     const pending = post(
       `${baseUrl}/sessions/${session.id}/send`,
@@ -626,7 +646,7 @@ describe('gateway integration', () => {
     )
       .then((r) => r.text())
       .catch(() => undefined);
-    await sleep(300);
+    await slowCallArrives(started);
     client.abort();
     await pending;
 
@@ -636,8 +656,7 @@ describe('gateway integration', () => {
       status: 'cancelled',
       exitReason: 'The client disconnected.',
     });
-    await sleep(100);
-    expect(slowCalls.abandoned).toBeGreaterThan(before);
+    await waitFor('the provider call to be abandoned', () => slowCalls.abandoned > before);
   });
 
   it('names the run first on a stream, and stops it by id without a hang-up', async () => {
@@ -678,13 +697,16 @@ describe('gateway integration', () => {
   });
 
   it('finishes the call anyway when the client asks it to', async () => {
+    const started = slowCalls.started;
     const client = new AbortController();
     const pending = post(
       `${baseUrl}/task`,
       { message: 'SLOW but keep going', continueOnDisconnect: true },
       client.signal
     ).catch(() => undefined);
-    await sleep(300);
+    // Hang up only once the run exists and its model call is in flight, so the
+    // newest run below is this one and not the previous test's.
+    await slowCallArrives(started);
     client.abort();
     await pending;
 
