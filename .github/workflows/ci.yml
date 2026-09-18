@@ -39,6 +39,32 @@ jobs:
       - name: Unit and integration tests
         run: pnpm -r test
 
+  # The security-critical tests that only mean anything on macOS: the seatbelt
+  # sandbox (including the live egress-allowlist check) and the keychain
+  # round-trip. On Linux they are skipped, so without this job they would
+  # never run in CI at all.
+  verify-macos:
+    name: Tests on macOS (seatbelt, keychain)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: pnpm -r build
+
+      - name: Unit and integration tests
+        run: pnpm -r test
+
   rust:
     name: Rust tests
     runs-on: ubuntu-latest
@@ -80,10 +106,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Advisory: fails the job on high/critical only, so a low-severity
-      # transitive advisory does not block every PR.
+      # Fails on moderate and above. A high-only gate let three moderate
+      # request-parsing DoS advisories (qs, via express) through unnoticed —
+      # on the one code path every request takes. Low still passes, so a
+      # cosmetic transitive advisory does not block every PR.
       - name: pnpm audit
-        run: pnpm audit --audit-level high
+        run: pnpm audit --audit-level moderate
 
       - uses: dtolnay/rust-toolchain@stable
 
