@@ -274,6 +274,32 @@ describe('gateway integration', () => {
     expect(body.model).toBe('priced');
   });
 
+  it("sends the selected skill's instructions, and previews exactly what is sent", async () => {
+    seen.length = 0;
+    const question = 'Explain the fixture numbers';
+    const res = await authed(`${baseUrl}/task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: question }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { skillSlug?: string }).skillSlug).toBe('fixture-skill');
+    const [system, user] = seen[0].messages ?? [];
+    expect(system.role).toBe('system');
+    expect(system.content).toContain('Answer in one sentence.');
+    expect(system.content).not.toContain("slug: 'fixture-skill'");
+
+    const preview = (await (
+      await authed(`${baseUrl}/context/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, skillSlug: 'fixture-skill' }),
+      })
+    ).json()) as { systemPrompt: string; userContent: string };
+    expect(preview.systemPrompt).toBe(system.content);
+    expect(preview.userContent).toBe(user.content);
+  });
+
   it('GET /health needs no token', async () => {
     const res = await fetch(`${baseUrl}/health`);
     expect(res.status).toBe(200);

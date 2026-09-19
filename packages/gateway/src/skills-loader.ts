@@ -180,6 +180,21 @@ export async function loadSkillContent(
   }
 }
 
+/**
+ * Load a skill from the first of several skills directories that has it, in
+ * the order given — the same precedence the skill list uses.
+ */
+export async function loadSkillContentFrom(
+  skillsDirs: string[],
+  slug: string
+): Promise<{ meta: SkillMeta; body: string } | null> {
+  for (const dir of skillsDirs) {
+    const content = await loadSkillContent(dir, slug);
+    if (content) return content;
+  }
+  return null;
+}
+
 function frontmatterToString(fm: Record<string, unknown>): string {
   const lines: string[] = ['---'];
   for (const [k, v] of Object.entries(fm)) {

@@ -72,16 +72,15 @@ You can edit schemas and dependencies via the desktop (Skills section) or `PUT /
 
 When you call `POST /task`:
 
-1. The gateway loads the list of skills (metadata only).
-2. It runs a simple matcher that:
-   - Checks `triggers` against the message text.
-   - Optionally boosts a skill if its jurisdiction matches the request.
-3. If a suitable skill is found, the agent uses that skill’s instructions; otherwise it falls back to a generic explain path.
+1. The gateway loads the skill list (frontmatter only) from your skills directory and each module’s `skills/` folder.
+2. It selects the skill whose `triggers` appear in the message. A skill without `triggers` matches on its slug or name.
+3. The selected skill’s instructions — the Markdown after the frontmatter — are appended to the system prompt in a `<skill_instructions>` block, capped at 16,000 characters. With no match, the plain system prompt is used.
 
 You can test this behaviour by:
 
 - Adding `triggers` to your skill frontmatter.
 - Calling `/task` with messages that include those keywords.
+- Calling `POST /context/preview` with `skillSlug` to see the prompt a task with that skill would send.
 
 ---
 

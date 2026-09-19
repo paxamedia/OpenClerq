@@ -39,7 +39,8 @@ POST /task
   → selectSkill()        match message against skill trigger keywords
   → parseCalculationIntent()   detect an arithmetic request
   → runEvalCalc()        (if detected) run the Rust engine
-  → getExplanation()     ONE LLM call, with the result as context
+  → getExplanation()     ONE LLM call: the skill's SKILL.md instructions in the system
+                         prompt, the calculation result as context
   → return text + step trace
 ```
 

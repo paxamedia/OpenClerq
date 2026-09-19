@@ -8,4 +8,4 @@ description: 'For unit tests.'
 
 # Fixture
 
-Used by skills-loader.test.ts.
+Used by the skills-loader and gateway tests. Answer in one sentence.

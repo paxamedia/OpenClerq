@@ -13,6 +13,8 @@ export interface TaskRequest {
   skillSlug?: string;
   /** Optional: skill display name for explain context */
   skillName?: string;
+  /** Optional: the skill's instructions (SKILL.md body), sent with the explain call */
+  skillInstructions?: string;
   /** Optional: run calculation when intent detected (e.g. "Calculate 25% on 100") */
   runCalc?: (
     expression: string,
@@ -45,7 +47,7 @@ export interface TaskResponse {
  * Run a single agent task: optionally run calculation, then get AI explanation.
  */
 export async function runTask(req: TaskRequest): Promise<TaskResponse> {
-  const { message, skillSlug, skillName, runCalc, dryRun } = req;
+  const { message, skillSlug, skillName, skillInstructions, runCalc, dryRun } = req;
   const trimmed = message?.trim() ?? '';
   const trace: TaskStep[] = [];
 
@@ -108,6 +110,7 @@ export async function runTask(req: TaskRequest): Promise<TaskResponse> {
     context,
     skillSlug,
     skillName,
+    skillInstructions,
     model: req.model,
   });
   trace[trace.length - 1].duration_ms = Date.now() - t0;

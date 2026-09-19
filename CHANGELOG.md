@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A skill selected by `/task` now sends its `SKILL.md` instructions to the model, in the system prompt and capped at 16,000 characters. Before, only its name was sent. `POST /context/preview` with `skillSlug` shows the same prompt.
+
 ## [0.5.0] — Execution — 2026-09-18
 
 `packages/policy`, `packages/sandbox` and `packages/workspaces` ship as tested libraries. The

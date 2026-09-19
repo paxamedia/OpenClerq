@@ -10,6 +10,7 @@ import {
   getSkillsDir,
   loadSkillsFromDir,
   loadSkillContent,
+  loadSkillContentFrom,
   saveSkillFrontmatter,
 } from './skills-loader.js';
 import { getExplanation, buildContextPreview } from './agent/explain.js';
@@ -887,7 +888,7 @@ export function createGateway(config: GatewayConfig = {}): {
     }
   });
 
-  app.post('/context/preview', (req: Request, res: Response) => {
+  app.post('/context/preview', async (req: Request, res: Response) => {
     const body = req.body as {
       question?: string;
       context?: Record<string, unknown>;
@@ -895,12 +896,17 @@ export function createGateway(config: GatewayConfig = {}): {
       skillName?: string;
     };
     const question = typeof body?.question === 'string' ? body.question.trim() : '';
+    const skillSlug = typeof body?.skillSlug === 'string' ? body.skillSlug : undefined;
     try {
+      // The skill's instructions are loaded as /task loads them, so the
+      // preview shows what a task with this skill would send.
+      const skill = skillSlug ? await loadSkillContentFrom(allSkillsDirs(), skillSlug) : null;
       const preview = buildContextPreview({
         question: question || '(no question)',
         context: body.context,
-        skillSlug: body.skillSlug,
-        skillName: body.skillName,
+        skillSlug,
+        skillName: typeof body?.skillName === 'string' ? body.skillName : skill?.meta.name,
+        skillInstructions: skill?.body,
       });
       res.json(preview);
     } catch (e) {
@@ -987,6 +993,11 @@ export function createGateway(config: GatewayConfig = {}): {
     );
   }
 
+  /** Skills directories in lookup order: the configured one, then each module's. */
+  function allSkillsDirs(): string[] {
+    return [skillsDir, ...getModuleSkillsDirs(loadedModules)];
+  }
+
   async function runTaskFromContext(message: string, model?: string, dryRun?: boolean) {
     let skills: Awaited<ReturnType<typeof loadSkillsFromDir>> = [];
     try {
@@ -1006,6 +1017,9 @@ export function createGateway(config: GatewayConfig = {}): {
       // continue
     }
     const selection = selectSkill(message.trim(), skills);
+    const skill = selection.skillSlug
+      ? await loadSkillContentFrom(allSkillsDirs(), selection.skillSlug)
+      : null;
     const runCalc = fssync.existsSync(calcPath)
       ? async (expression: string, inputs?: Record<string, number>) => {
           const r = await runEvalCalc({ expression, inputs: inputs ?? {} }, calcPath);
@@ -1016,6 +1030,7 @@ export function createGateway(config: GatewayConfig = {}): {
       message: message.trim(),
       skillSlug: selection.skillSlug,
       skillName: selection.skill?.name,
+      skillInstructions: skill?.body,
       runCalc,
       model,
       dryRun,
