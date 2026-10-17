@@ -128,7 +128,11 @@ describe('egress proxy', () => {
   });
 
   it('refuses an allowed host on a port that is not allowed', async () => {
-    const res = await viaProxy(`http://127.0.0.1:${upstreamPort + 1000}/`);
+    // Ephemeral ports reach 65535 on macOS, so adding to one can leave the valid range.
+    const other = [upstreamPort + 1000, upstreamPort - 1000].find(
+      (p) => p > 0 && p <= 65535 && p !== tcpPort
+    );
+    const res = await viaProxy(`http://127.0.0.1:${other}/`);
     expect(res.status).toBe(403);
   });
 
