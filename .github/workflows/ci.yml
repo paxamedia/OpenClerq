@@ -93,6 +93,37 @@ jobs:
       - name: Test
         run: cargo test --manifest-path packages/calculation-core/Cargo.toml
 
+  # The desktop crate links the system webview. On macOS that needs no extra
+  # packages, and it is the platform the desktop build runs on first.
+  rust-desktop:
+    name: Desktop crate checks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Format check
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+
+      # tauri-build expects the sidecars and the built frontend to exist. Clippy
+      # only checks the code, so empty stand-ins are enough.
+      - name: Stand-in sidecars and frontend
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p apps/desktop/dist apps/desktop/src-tauri/binaries
+          touch "apps/desktop/src-tauri/binaries/clerq-gateway-$triple"
+          touch "apps/desktop/src-tauri/binaries/clerq-calc-$triple"
+
+      - name: Clippy
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
+
   audit:
     name: Dependency and secret audit
     runs-on: ubuntu-latest
@@ -126,8 +157,17 @@ jobs:
         with:
           tool: cargo-audit
 
-      - name: cargo audit
+      - name: cargo audit (calculation engine)
         run: cargo audit --file packages/calculation-core/Cargo.lock
+
+      # The ignored zip advisories: zip 4 comes only from tauri-plugin-updater
+      # 2.x, on Windows, which unpacks an update only after its minisign
+      # signature verifies. No 4.x release has the fixes. Remove the ignores
+      # once the updater moves to zip 9.
+      - name: cargo audit (desktop)
+        run: >-
+          cargo audit --file apps/desktop/src-tauri/Cargo.lock
+          --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369
 
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2

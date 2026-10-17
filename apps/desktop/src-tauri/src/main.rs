@@ -182,6 +182,33 @@ fn gateway_running() -> bool {
     std::net::TcpStream::connect(std::net::SocketAddr::from(([127, 0, 0, 1], GATEWAY_PORT))).is_ok()
 }
 
+/// Starts the bundled gateway sidecar, pointed at the bundled calculation engine.
+fn spawn_gateway(app: &tauri::App) {
+    if let Ok(shell) = app.shell().sidecar("clerq-gateway") {
+        if let Ok(calc_path) = clerq_calc_path() {
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+            let mut cmd = shell
+                .env("CLERQ_CALC_PATH", calc_path.to_string_lossy().as_ref())
+                .env("CLERQ_PORT", GATEWAY_PORT.to_string())
+                .env("CLERQ_HOST", "127.0.0.1");
+            if let Some(ref dir) = exe_dir {
+                cmd = cmd.current_dir(dir);
+            }
+            match cmd.spawn() {
+                Ok((mut _rx, _child)) => {
+                    // Give gateway a moment to bind
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                }
+                Err(e) => {
+                    eprintln!("[Clerq] Failed to spawn gateway sidecar: {}", e);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
@@ -189,33 +216,9 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // In release builds with sidecars, auto-start the gateway if not already running.
-            #[cfg(not(debug_assertions))]
-            {
-                if !gateway_running() {
-                    if let Ok(shell) = app.shell().sidecar("clerq-gateway") {
-                        if let Ok(calc_path) = clerq_calc_path() {
-                            let exe_dir = std::env::current_exe()
-                                .ok()
-                                .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-                            let mut cmd = shell
-                                .env("CLERQ_CALC_PATH", calc_path.to_string_lossy().as_ref())
-                                .env("CLERQ_PORT", GATEWAY_PORT.to_string())
-                                .env("CLERQ_HOST", "127.0.0.1");
-                            if let Some(ref dir) = exe_dir {
-                                cmd = cmd.current_dir(dir);
-                            }
-                            match cmd.spawn() {
-                                Ok((mut _rx, _child)) => {
-                                    // Give gateway a moment to bind
-                                    std::thread::sleep(std::time::Duration::from_millis(1500));
-                                }
-                                Err(e) => {
-                                    eprintln!("[Clerq] Failed to spawn gateway sidecar: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
+            // cfg! rather than #[cfg], so debug and release compile and lint the same code.
+            if !cfg!(debug_assertions) && !gateway_running() {
+                spawn_gateway(app);
             }
             Ok(())
         })

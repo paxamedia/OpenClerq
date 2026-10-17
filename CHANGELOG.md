@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A managed chat session now sends its earlier turns to the model; each message used to be answered on its own. `POST /context/preview` with `sessionId` includes them.
 - A file trigger fires once its file has been quiet for a second, instead of once per filesystem event. A cron or file trigger whose previous run is still going is skipped and logged rather than started again.
 
+### Security
+
+- The desktop app's Rust dependencies are updated past advisories in `rustls`, `rustls-webpki`, `tar` and `quick-xml`.
+
 ## [0.5.0] — Execution — 2026-09-18
 
 `packages/policy`, `packages/sandbox` and `packages/workspaces` ship as tested libraries. The
