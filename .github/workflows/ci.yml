@@ -9,7 +9,7 @@ on:
 # Before release 0.4 none of this ran: CI only built installers.
 jobs:
   verify:
-    name: Typecheck, lint and test
+    name: Typecheck, format and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
