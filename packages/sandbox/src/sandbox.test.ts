@@ -241,6 +241,82 @@ describe('native execution', () => {
     expect(r.stdout.trim()).toBe('hi there');
   });
 
+  it("does not pass the caller's environment through unless asked to", async () => {
+    process.env.CLERQ_SANDBOX_LEAK_TEST = 'leaked';
+    try {
+      const r = await exec(spec(), 'sh', ['-c', 'echo "[$CLERQ_SANDBOX_LEAK_TEST]" "$HOME"']);
+      expect(r.stdout).toContain('[]');
+      // The basics a command needs are still there.
+      expect(r.stdout).toContain(os.homedir());
+      const inherited = await exec({ ...spec(), inheritEnv: true }, 'sh', [
+        '-c',
+        'echo "[$CLERQ_SANDBOX_LEAK_TEST]"',
+      ]);
+      expect(inherited.stdout.trim()).toBe('[leaked]');
+    } finally {
+      delete process.env.CLERQ_SANDBOX_LEAK_TEST;
+    }
+  });
+
+  it('streams output line by line as it arrives, redacted', async () => {
+    const lines: Array<[string, string]> = [];
+    const r = await exec(
+      { ...spec(), secrets: { TOKEN: 'line-secret-123456' } },
+      'sh',
+      ['-c', 'echo one; echo "two $TOKEN"; echo err >&2; printf three'],
+      { onLine: (line, stream) => lines.push([stream, line]) }
+    );
+    expect(r.code).toBe(0);
+    expect(lines.filter(([s]) => s === 'stdout').map(([, l]) => l)).toEqual([
+      'one',
+      'two «redacted»',
+      'three',
+    ]);
+    expect(lines).toContainEqual(['stderr', 'err']);
+  });
+
+  it('keeps streaming lines after the captured output is full', async () => {
+    let count = 0;
+    const r = await exec(
+      { ...spec(), limits: { maxOutputBytes: 64 } },
+      'sh',
+      ['-c', 'i=0; while [ $i -lt 200 ]; do echo "line $i"; i=$((i+1)); done'],
+      { onLine: () => count++ }
+    );
+    expect(r.truncated).toBe(true);
+    expect(count).toBe(200);
+  });
+
+  it('kills the process group when the signal aborts', async () => {
+    const controller = new AbortController();
+    const marker = path.join(work, 'child-survived.txt');
+    fs.rmSync(marker, { force: true });
+    setTimeout(() => controller.abort(), 200);
+    const r = await exec(
+      { ...spec(), limits: { wallMs: 20_000 } },
+      'sh',
+      ['-c', `(sleep 1.5; touch ${JSON.stringify(marker)}) & sleep 10`],
+      { signal: controller.signal }
+    );
+    expect(r.cancelled).toBe(true);
+    expect(r.timedOut).toBe(false);
+    expect(r.durationMs).toBeLessThan(5_000);
+    // The background child was in the same group and went with it.
+    await new Promise((res) => setTimeout(res, 2_000));
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('does not start a command whose signal has already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const marker = path.join(work, 'never-started.txt');
+    const r = await exec(spec(), 'sh', ['-c', `touch ${JSON.stringify(marker)}`], {
+      signal: controller.signal,
+    });
+    expect(r.cancelled).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
   it('surfaces a failure to start as a SandboxError', async () => {
     await expect(exec(spec(), 'this-command-does-not-exist-xyz')).rejects.toThrow(SandboxError);
   });

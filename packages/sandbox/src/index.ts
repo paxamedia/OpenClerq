@@ -79,8 +79,17 @@ export interface SandboxSpec {
    */
   network?: 'none' | 'all' | string[];
   limits?: SandboxLimits;
-  /** Plain environment variables. */
+  /**
+   * Plain environment variables, on top of a minimal base: PATH, HOME, the
+   * user and locale, and the variables Windows needs to start a process.
+   */
   env?: Record<string, string>;
+  /**
+   * Pass the caller's whole environment through. Off by default: the gateway's
+   * environment holds provider keys and its own token, and a sandboxed command
+   * should receive only what it is given.
+   */
+  inheritEnv?: boolean;
   /**
    * Secrets injected as environment variables and redacted from captured
    * output. Never logged, never returned.
@@ -97,6 +106,8 @@ export interface ExecResult {
   stderr: string;
   /** True when the wall-clock limit killed the process. */
   timedOut: boolean;
+  /** True when the caller's signal killed the process. */
+  cancelled: boolean;
   /** True when either stream hit maxOutputBytes and was cut short. */
   truncated: boolean;
   durationMs: number;
@@ -115,9 +126,61 @@ export class SandboxError extends Error {
   }
 }
 
+export interface ExecOptions {
+  /** Kills the process group when it aborts. The result then has `cancelled: true`. */
+  signal?: AbortSignal;
+  /**
+   * Each complete output line as it arrives, redacted. Lines are delivered even
+   * after the captured output reaches maxOutputBytes, so a long-running agent
+   * can be followed to the end; a single line is cut at maxLineBytes.
+   */
+  onLine?: (line: string, stream: 'stdout' | 'stderr') => void;
+}
+
+/** Variables a process needs to start and find its tools, and nothing else. */
+const BASE_ENV = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'TZ',
+  'TMPDIR',
+  // Windows
+  'SYSTEMROOT',
+  'SystemRoot',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'TEMP',
+  'TMP',
+  'ProgramData',
+  'ProgramFiles',
+];
+
+function baseEnv(inherit: boolean | undefined): Record<string, string> {
+  if (inherit) return { ...(process.env as Record<string, string>) };
+  const out: Record<string, string> = {};
+  for (const name of BASE_ENV) {
+    const value = process.env[name];
+    if (value !== undefined) out[name] = value;
+  }
+  return out;
+}
+
 const DEFAULTS = {
   wallMs: 120_000,
   maxOutputBytes: 1_048_576,
+  maxLineBytes: 4_194_304,
 };
 
 /**
@@ -289,7 +352,8 @@ function spawnSyncQuiet(cmd: string, args: string[]): boolean {
 export async function exec(
   spec: SandboxSpec,
   command: string,
-  args: string[] = []
+  args: string[] = [],
+  options: ExecOptions = {}
 ): Promise<ExecResult> {
   assertAbsolute(spec.cwd, 'cwd');
   if (!fs.existsSync(spec.cwd)) {
@@ -301,6 +365,21 @@ export async function exec(
   const wallMs = limits.wallMs ?? DEFAULTS.wallMs;
   const maxBytes = limits.maxOutputBytes ?? DEFAULTS.maxOutputBytes;
   const warnings: string[] = [];
+
+  if (options.signal?.aborted) {
+    return {
+      code: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+      cancelled: true,
+      truncated: false,
+      durationMs: 0,
+      profile: spec.profile,
+      warnings,
+    };
+  }
 
   let file = command;
   let argv = args;
@@ -397,7 +476,7 @@ export async function exec(
       child = spawn(file, argv, {
         cwd: spec.cwd,
         env: {
-          ...process.env,
+          ...baseEnv(spec.inheritEnv),
           ...(privateTmp ? { TMPDIR: privateTmp, TMP: privateTmp, TEMP: privateTmp } : {}),
           ...proxyEnv,
           ...spec.env,
@@ -418,15 +497,45 @@ export async function exec(
     let stderr = '';
     let truncated = false;
     let timedOut = false;
+    let cancelled = false;
     let settled = false;
 
+    // Partial lines held until their newline arrives, per stream.
+    const pending = { out: '', err: '' };
+    const onLine = options.onLine;
+    const emitLines = (into: 'out' | 'err', text: string, flush: boolean) => {
+      if (!onLine) return;
+      let buffer = pending[into] + text;
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).replace(/\r$/, '');
+        buffer = buffer.slice(nl + 1);
+        onLine(redact(line, spec.secrets), into === 'out' ? 'stdout' : 'stderr');
+      }
+      if (buffer.length > DEFAULTS.maxLineBytes) {
+        // One line this long is not something a caller can use whole.
+        onLine(
+          redact(buffer.slice(0, DEFAULTS.maxLineBytes), spec.secrets),
+          into === 'out' ? 'stdout' : 'stderr'
+        );
+        buffer = '';
+        truncated = true;
+      }
+      if (flush && buffer) {
+        onLine(redact(buffer, spec.secrets), into === 'out' ? 'stdout' : 'stderr');
+        buffer = '';
+      }
+      pending[into] = buffer;
+    };
+
     const capture = (chunk: Buffer, into: 'out' | 'err') => {
+      const text = chunk.toString('utf8');
+      emitLines(into, text, false);
       const current = into === 'out' ? stdout : stderr;
       if (current.length >= maxBytes) {
         truncated = true;
         return;
       }
-      const text = chunk.toString('utf8');
       const room = maxBytes - current.length;
       const slice = text.length > room ? text.slice(0, room) : text;
       if (slice.length < text.length) truncated = true;
@@ -450,17 +559,30 @@ export async function exec(
       }
     };
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const stop = () => {
       killTree('SIGTERM');
       // Escalate if it ignores the polite request.
       setTimeout(() => killTree('SIGKILL'), 2000).unref?.();
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
     }, wallMs);
+
+    const onAbort = () => {
+      cancelled = true;
+      stop();
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
 
     const finish = (code: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
+      emitLines('out', '', true);
+      emitLines('err', '', true);
       cleanup?.();
       const egress = proxy ? { allowed: proxy.allowed, denied: [...proxy.denied] } : undefined;
       // The proxy outlives nothing: the run is over, so its only route out closes.
@@ -471,6 +593,7 @@ export async function exec(
         stdout: redact(stdout, spec.secrets),
         stderr: redact(stderr, spec.secrets),
         timedOut,
+        cancelled,
         truncated,
         durationMs: Date.now() - started,
         profile: spec.profile,
@@ -483,6 +606,7 @@ export async function exec(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
       cleanup?.();
       void proxy?.close();
       reject(new SandboxError(`Sandbox failed to run "${file}": ${e.message}`));
