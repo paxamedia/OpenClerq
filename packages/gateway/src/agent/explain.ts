@@ -4,6 +4,7 @@
  * Set CLERQ_LLM_PROVIDER=ollama for local models; no API key required.
  */
 
+import type { ChatMessage } from '@clerq/providers';
 import { callLLM } from './llm-provider.js';
 import { loadSystemPrompt } from '../system-prompt.js';
 
@@ -22,6 +23,8 @@ export interface ExplainRequest {
   skillName?: string;
   /** Optional: the selected skill's instructions (the SKILL.md body). */
   skillInstructions?: string;
+  /** Optional: earlier turns of a conversation, sent before the question. */
+  history?: ChatMessage[];
   /** Optional: model override (use when user has multiple models) */
   model?: string;
   /** Stops the model call, e.g. when the client that asked has gone. */
@@ -30,6 +33,8 @@ export interface ExplainRequest {
 
 export interface ContextPreview {
   systemPrompt: string;
+  /** Earlier turns, sent between the system prompt and the user turn. */
+  history: ChatMessage[];
   userContent: string;
   /** Approximate token count (chars / 4). */
   estimatedInputTokens?: number;
@@ -37,7 +42,7 @@ export interface ContextPreview {
 
 type PromptInput = Pick<
   ExplainRequest,
-  'question' | 'context' | 'skillSlug' | 'skillName' | 'skillInstructions'
+  'question' | 'context' | 'skillSlug' | 'skillName' | 'skillInstructions' | 'history'
 >;
 
 /** Cut instructions to the cap without splitting a surrogate pair. */
@@ -78,8 +83,10 @@ function buildPrompt(req: PromptInput): { systemPrompt: string; userContent: str
  */
 export function buildContextPreview(req: PromptInput): ContextPreview {
   const { systemPrompt, userContent } = buildPrompt(req);
-  const estimatedInputTokens = Math.ceil((systemPrompt.length + userContent.length) / 4);
-  return { systemPrompt, userContent, estimatedInputTokens };
+  const history = req.history ?? [];
+  const chars = history.reduce((n, m) => n + m.content.length, 0);
+  const estimatedInputTokens = Math.ceil((systemPrompt.length + chars + userContent.length) / 4);
+  return { systemPrompt, history, userContent, estimatedInputTokens };
 }
 
 export interface ExplainResponse {
@@ -90,7 +97,13 @@ export interface ExplainResponse {
 
 export async function getExplanation(req: ExplainRequest): Promise<ExplainResponse> {
   const { systemPrompt, userContent } = buildPrompt(req);
-  const { text, model } = await callLLM(systemPrompt, userContent, req.model, req.signal);
+  const { text, model } = await callLLM(
+    systemPrompt,
+    userContent,
+    req.model,
+    req.signal,
+    req.history
+  );
 
   return {
     explanation: text,

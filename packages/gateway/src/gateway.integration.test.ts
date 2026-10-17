@@ -846,6 +846,54 @@ describe('gateway integration', () => {
       expect(seen[0].messages?.[0].role).toBe('system');
     });
 
+    it('carries the conversation in managed mode, as the preview shows it', async () => {
+      const session = (await (await json(`${baseUrl}/sessions`, { mode: 'managed' })).json()) as {
+        id: string;
+      };
+      await json(`${baseUrl}/sessions/${session.id}/send`, {
+        text: 'My invoice total is 420',
+        stream: false,
+      });
+      const question = 'Explain the fixture numbers again';
+      const preview = (await (
+        await json(`${baseUrl}/context/preview`, {
+          question,
+          skillSlug: 'fixture-skill',
+          sessionId: session.id,
+        })
+      ).json()) as {
+        systemPrompt: string;
+        history: Array<{ role: string; content: string }>;
+        userContent: string;
+      };
+
+      seen.length = 0;
+      await json(`${baseUrl}/sessions/${session.id}/send`, { text: question, stream: false });
+
+      // Turn 2 sees turn 1, under the managed system prompt and the skill's instructions.
+      const [system, ...turns] = seen[0].messages ?? [];
+      expect(system.role).toBe('system');
+      expect(system.content).toContain('Answer in one sentence.');
+      expect(turns).toEqual([
+        { role: 'user', content: 'My invoice total is 420' },
+        { role: 'assistant', content: 'echo from priced' },
+        { role: 'user', content: question },
+      ]);
+      expect([
+        { role: 'system', content: preview.systemPrompt },
+        ...preview.history,
+        { role: 'user', content: preview.userContent },
+      ]).toEqual(seen[0].messages);
+    });
+
+    it('refuses a preview for an unknown session', async () => {
+      const res = await json(`${baseUrl}/context/preview`, {
+        question: 'hi',
+        sessionId: 'ses_nope',
+      });
+      expect(res.status).toBe(404);
+    });
+
     it('titles an untitled conversation after its opening line', async () => {
       const session = (await (await json(`${baseUrl}/sessions`)).json()) as { id: string };
       await json(`${baseUrl}/sessions/${session.id}/send`, { text: 'Summarise Q3', stream: false });

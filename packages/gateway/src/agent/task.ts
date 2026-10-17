@@ -4,6 +4,7 @@
  * the result as context to the LLM.
  */
 
+import type { ChatMessage } from '@clerq/providers';
 import { getExplanation } from './explain.js';
 import { parseCalculationIntent } from './calc-intent.js';
 
@@ -22,6 +23,8 @@ export interface TaskRequest {
   ) => Promise<{ values: Record<string, number> }>;
   /** Optional: model override (use when user has multiple models) */
   model?: string;
+  /** Optional: earlier turns of a chat conversation. /task leaves it empty. */
+  history?: ChatMessage[];
   /** When true: parse intent, show trace, but do not call LLM or run calc. */
   dryRun?: boolean;
 }
@@ -111,6 +114,7 @@ export async function runTask(req: TaskRequest): Promise<TaskResponse> {
     skillSlug,
     skillName,
     skillInstructions,
+    history: req.history,
     model: req.model,
   });
   trace[trace.length - 1].duration_ms = Date.now() - t0;

@@ -99,7 +99,7 @@ Sessions and their transcripts live in the store.
 | Mode        | What the gateway adds                                                                                                  |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------- |
 | **Raw**     | Nothing. No system prompt, no skill selection, no memory, no tools. The exact request body is kept and is inspectable. |
-| **Managed** | The full `/task` pipeline: system prompt, skill routing, calculation engine, durable transcript.                       |
+| **Managed** | The full `/task` pipeline, with earlier turns: system prompt, skill routing, calculation engine, durable transcript.   |
 
 Raw removes OpenClerq's additions, not the vendor's: both modes call the same endpoint under
 the user's own key. Use it to tell whether an unexpected answer comes from the model or from

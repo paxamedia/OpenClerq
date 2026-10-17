@@ -98,4 +98,20 @@ describe('getExplanation', () => {
     expect(system).toBe(preview.systemPrompt);
     expect(user).toBe(preview.userContent);
   });
+
+  it('sends earlier turns before the question, exactly as previewed', async () => {
+    const history = [
+      { role: 'user' as const, content: 'My invoice total is 420' },
+      { role: 'assistant' as const, content: 'Noted.' },
+    ];
+    await getExplanation({ question: 'What was the total?', history });
+
+    const sent = callLLM.mock.calls[0][4];
+    expect(sent).toEqual(history);
+    const preview = buildContextPreview({ question: 'What was the total?', history });
+    expect(preview.history).toEqual(history);
+    expect(preview.estimatedInputTokens).toBeGreaterThan(
+      buildContextPreview({ question: 'What was the total?' }).estimatedInputTokens!
+    );
+  });
 });

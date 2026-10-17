@@ -213,19 +213,21 @@ export async function chat(opts: ChatCallOptions): Promise<CallResult> {
 }
 
 /**
- * Call the configured model with one user turn and the agent's system prompt.
+ * Call the configured model with the agent's system prompt and one user turn,
+ * after any earlier turns of the conversation.
  * @param modelOverride A bare model for the configured provider, or "provider/model".
  */
 export async function callLLM(
   system: string,
   userContent: string,
   modelOverride?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  history: ChatMessage[] = []
 ): Promise<LLMCallResult> {
   const reasoning = loadReasoning();
   const res = await chat({
     system,
-    messages: [{ role: 'user', content: userContent }],
+    messages: [...history, { role: 'user', content: userContent }],
     model: modelOverride,
     temperature: reasoning.temperature,
     maxTokens: reasoning.maxTokens,

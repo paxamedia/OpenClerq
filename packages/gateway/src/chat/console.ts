@@ -24,10 +24,14 @@ import {
 import { getStore } from '../store.js';
 import { logger } from '../logger.js';
 
-/** The managed pipeline, injected so this module stays free of the agent wiring. */
+/**
+ * The managed pipeline, injected so this module stays free of the agent wiring.
+ * It is given the conversation before this message, so a turn sees the ones before it.
+ */
 export type ManagedPipeline = (
   message: string,
-  model?: string
+  model: string | undefined,
+  history: Array<{ role: 'user' | 'assistant'; content: string }>
 ) => Promise<{ explanation: string; model?: string; skillSlug?: string }>;
 
 export interface SendInput {
@@ -87,6 +91,7 @@ export function validateSend(input: Pick<SendInput, 'sessionId' | 'text' | 'mode
 export async function sendMessage(input: SendInput): Promise<SendResult> {
   const { session, text, mode, model } = validateSend(input);
 
+  const history = conversation(session.id);
   addMessage(session.id, { role: 'user', content: text });
   if (!session.title) updateSession(session.id, { title: titleFrom(text) });
 
@@ -99,7 +104,7 @@ export async function sendMessage(input: SendInput): Promise<SendResult> {
 
       if (mode === 'managed') {
         if (!input.managed) throw new SessionError('The managed pipeline is not available here.');
-        const result = await input.managed(text, model);
+        const result = await input.managed(text, model, history);
         return addMessage(session.id, {
           role: 'assistant',
           content: result.explanation,

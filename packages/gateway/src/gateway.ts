@@ -13,6 +13,7 @@ import {
   loadSkillContentFrom,
   saveSkillFrontmatter,
 } from './skills-loader.js';
+import type { ChatMessage } from '@clerq/providers';
 import { getExplanation, buildContextPreview } from './agent/explain.js';
 import { getLLMProviderStatus, getAvailableModels, listProviders } from './agent/llm-provider.js';
 import { runTask } from './agent/task.js';
@@ -60,6 +61,7 @@ import {
   updateSession,
   deleteSession,
   listMessages,
+  conversation,
   SessionError,
 } from './chat/sessions.js';
 import {
@@ -708,8 +710,8 @@ export function createGateway(config: GatewayConfig = {}): {
     }
     const signal = disconnectSignal(res, body.continueOnDisconnect);
 
-    const managed: ManagedPipeline = async (message, model) => {
-      const result = await runTaskFromContext(message, model);
+    const managed: ManagedPipeline = async (message, model, history) => {
+      const result = await runTaskFromContext(message, { model, history });
       return {
         explanation: result.explanation,
         model: result.model,
@@ -894,12 +896,18 @@ export function createGateway(config: GatewayConfig = {}): {
       context?: Record<string, unknown>;
       skillSlug?: string;
       skillName?: string;
+      sessionId?: string;
     };
     const question = typeof body?.question === 'string' ? body.question.trim() : '';
     const skillSlug = typeof body?.skillSlug === 'string' ? body.skillSlug : undefined;
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : undefined;
     try {
+      if (sessionId && !getSession(sessionId)) {
+        return res.status(404).json({ error: 'session_not_found', id: sessionId });
+      }
       // The skill's instructions are loaded as /task loads them, so the
-      // preview shows what a task with this skill would send.
+      // preview shows what a task with this skill would send. With a session,
+      // its conversation so far is included, as a managed turn sends it.
       const skill = skillSlug ? await loadSkillContentFrom(allSkillsDirs(), skillSlug) : null;
       const preview = buildContextPreview({
         question: question || '(no question)',
@@ -907,6 +915,7 @@ export function createGateway(config: GatewayConfig = {}): {
         skillSlug,
         skillName: typeof body?.skillName === 'string' ? body.skillName : skill?.meta.name,
         skillInstructions: skill?.body,
+        history: sessionId ? conversation(sessionId) : undefined,
       });
       res.json(preview);
     } catch (e) {
@@ -946,7 +955,7 @@ export function createGateway(config: GatewayConfig = {}): {
     try {
       // The caller gets the run id so it can follow the run at GET /runs/:id.
       const runId = await recordRun({ trigger: 'webhook', message: effective }, async () => {
-        await runTaskFromContext(effective, undefined);
+        await runTaskFromContext(effective);
         return currentRunId();
       });
       res.json({ ok: true, runId });
@@ -998,7 +1007,11 @@ export function createGateway(config: GatewayConfig = {}): {
     return [skillsDir, ...getModuleSkillsDirs(loadedModules)];
   }
 
-  async function runTaskFromContext(message: string, model?: string, dryRun?: boolean) {
+  /** The managed pipeline. Only a chat session passes history; /task and triggers are single-turn. */
+  async function runTaskFromContext(
+    message: string,
+    opts: { model?: string; dryRun?: boolean; history?: ChatMessage[] } = {}
+  ) {
     let skills: Awaited<ReturnType<typeof loadSkillsFromDir>> = [];
     try {
       skills = await loadSkillsFromDir(skillsDir);
@@ -1032,8 +1045,9 @@ export function createGateway(config: GatewayConfig = {}): {
       skillName: selection.skill?.name,
       skillInstructions: skill?.body,
       runCalc,
-      model,
-      dryRun,
+      model: opts.model,
+      dryRun: opts.dryRun,
+      history: opts.history,
     });
   }
 
@@ -1051,11 +1065,10 @@ export function createGateway(config: GatewayConfig = {}): {
     try {
       // A dry run performs no work, so it does not warrant a run record.
       const exec = () =>
-        runTaskFromContext(
-          message.trim(),
-          typeof body.model === 'string' ? body.model : undefined,
-          body.dryRun === true
-        );
+        runTaskFromContext(message.trim(), {
+          model: typeof body.model === 'string' ? body.model : undefined,
+          dryRun: body.dryRun === true,
+        });
       const result =
         body.dryRun === true
           ? await exec()

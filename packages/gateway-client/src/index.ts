@@ -175,6 +175,14 @@ export interface ExplainResponse {
   disclaimer: string;
 }
 
+export interface ContextPreview {
+  systemPrompt: string;
+  /** Earlier turns of the session, sent between the system prompt and the user turn. */
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  userContent: string;
+  estimatedInputTokens?: number;
+}
+
 export interface EvalCalcResponse {
   values: Record<string, number>;
   proof: Record<string, unknown>;
@@ -566,14 +574,13 @@ export const gateway = {
     context?: Record<string, unknown>;
     skillSlug?: string;
     skillName?: string;
-  }): Promise<{ systemPrompt: string; userContent: string; estimatedInputTokens?: number }> {
-    return fetchJson<{ systemPrompt: string; userContent: string; estimatedInputTokens?: number }>(
-      '/context/preview',
-      {
-        method: 'POST',
-        body: JSON.stringify(body),
-      }
-    );
+    /** Include this chat session's conversation, as a managed turn sends it. */
+    sessionId?: string;
+  }): Promise<ContextPreview> {
+    return fetchJson<ContextPreview>('/context/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
   },
 
   task(message: string, model?: string, dryRun?: boolean): Promise<TaskResponse> {
