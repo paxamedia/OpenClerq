@@ -72,14 +72,28 @@ Or use `pnpm run build:installers:local` (sets `UNSET_CI=1`).
 
 ## Tauri updater (in-app updates)
 
-The app includes an updater that checks GitHub Releases for new versions. To enable it:
+The app checks `releases/latest/download/latest.json` on GitHub and installs an update only if
+its signature verifies against the public key built into the app.
 
-1. **Generate signing keys** (run once):
+1. **Generate the key pair** once, outside the repository, and choose a password:
    ```bash
-   cd apps/desktop && pnpm exec tauri signer generate -w ../../.tauri/clerq.key
+   pnpm --dir apps/desktop exec tauri signer generate -w ~/.tauri/clerq-updater.key
    ```
-2. **Add the public key** to `tauri.conf.json` → `plugins.updater.pubkey` (replace `PLACEHOLDER_REPLACE_WITH_TAURI_SIGNER_PUBKEY`).
-3. **Store the private key** securely. For CI: add `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` as secrets.
-4. **Build with signing**: set `TAURI_SIGNING_PRIVATE_KEY` when running `tauri build`. The release workflow generates `latest.json` when `TAURI_SIGNING_PRIVATE_KEY` is set.
+2. **Put the public key** (`~/.tauri/clerq-updater.key.pub`) in `tauri.conf.json` → `plugins.updater.pubkey`.
+3. **Add two Actions secrets:** `TAURI_SIGNING_PRIVATE_KEY` (the contents of the `.key` file) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+4. **Back up the private key and its password.** Lose either and installed apps can never update again; they only trust the key they shipped with.
 
-Without valid keys, the "Check for updates" button will show an error. The app runs normally.
+## Releasing
+
+1. `node scripts/sync-version.js X.Y.Z` and move `[Unreleased]` in `CHANGELOG.md` under a new heading.
+2. Commit, then tag and push: `git tag -a vX.Y.Z -m "OpenClerq X.Y.Z"` and `git push origin main vX.Y.Z`.
+
+`release.yml` refuses a tag that does not match the version, builds macOS (Apple Silicon) and
+Windows, stages each platform's files with the architecture in their names
+(`scripts/stage-release-files.js`), writes `latest.json` from the signed bundles
+(`scripts/generate-updater-manifest.js`) and publishes the GitHub Release. Without the signing
+secrets the installers still publish, but no `latest.json` is written and "Check for updates"
+reports an error.
+
+An update can only be tested across two releases: install one, publish the next, then use
+"Check for updates" in the About screen.

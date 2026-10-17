@@ -9,7 +9,24 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # A tag that disagrees with the app's version would publish an update
+      # the app never stops offering.
+      - name: Tag matches the app version
+        run: |
+          node scripts/sync-version.js --check
+          APP_VERSION=$(node -p "require('./package.json').version")
+          if [ "v$APP_VERSION" != "${{ github.ref_name }}" ]; then
+            echo "Tag ${{ github.ref_name }} does not match version $APP_VERSION" >&2
+            exit 1
+          fi
+
   release:
+    needs: [version]
     strategy:
       fail-fast: false
       matrix:
@@ -50,27 +67,18 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Upload macOS artifacts
-        if: matrix.platform == 'macos-latest'
-        uses: actions/upload-artifact@v7
-        with:
-          name: macos-build
-          path: |
-            apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            apps/desktop/src-tauri/target/release/bundle/macos/*.app
-            apps/desktop/src-tauri/target/release/bundle/macos/*.tar.gz
-            apps/desktop/src-tauri/target/release/bundle/macos/*.sig
+      # One flat folder per platform, every file named with its architecture.
+      # Tauri's own layout nests each bundle type in a folder, and those folders
+      # were what reached the release step, which then found nothing to attach.
+      - name: Stage release files
+        run: node scripts/stage-release-files.js release-files
 
-      - name: Upload Windows artifacts
-        if: matrix.platform == 'windows-latest'
+      - name: Upload release files
         uses: actions/upload-artifact@v7
         with:
-          name: windows-build
-          path: |
-            apps/desktop/src-tauri/target/release/bundle/msi/*.msi
-            apps/desktop/src-tauri/target/release/bundle/msi/*.sig
-            apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
-            apps/desktop/src-tauri/target/release/bundle/nsis/*.sig
+          name: ${{ matrix.name }}-build
+          path: release-files/*
+          if-no-files-found: error
 
   publish:
     needs: [release]
@@ -82,14 +90,10 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           pattern: '*-build'
-          path: artifacts
+          path: release
+          merge-multiple: true
 
-      - name: Merge artifacts into release/
-        run: |
-          mkdir -p release
-          cp -r artifacts/macos-build/* release/ 2>/dev/null || true
-          cp -r artifacts/windows-build/* release/ 2>/dev/null || true
-          ls -la release/
+      - run: ls -la release/
 
       - name: Generate latest.json (updater manifest)
         run: |
