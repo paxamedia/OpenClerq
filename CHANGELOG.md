@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-10-17
+
+The first published release. Its installers carry the real updater key, so they can update in-app from 0.5.1 on.
+
 ### Fixed
 
 - A skill selected by `/task` now sends its `SKILL.md` instructions to the model, in the system prompt and capped at 16,000 characters. Before, only its name was sent. `POST /context/preview` with `skillSlug` shows the same prompt.
@@ -18,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The desktop app's Rust dependencies are updated past advisories in `rustls`, `rustls-webpki`, `tar` and `quick-xml`.
 - `proxy-addr` (used by Express in the gateway) and `source-map-js` (desktop build tooling) are pinned to their patched releases.
+- The desktop updater is built without its `zip` feature, removing the `zip` crate and three advisories in its extraction code. Releases ship the `.msi` and setup `.exe` unzipped, which is all the updater now accepts on Windows.
 
 ## [0.5.0] — Execution — 2026-09-18
 
