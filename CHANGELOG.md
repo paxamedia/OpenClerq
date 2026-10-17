@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A skill selected by `/task` now sends its `SKILL.md` instructions to the model, in the system prompt and capped at 16,000 characters. Before, only its name was sent. `POST /context/preview` with `skillSlug` shows the same prompt.
 - A managed chat session now sends its earlier turns to the model; each message used to be answered on its own. `POST /context/preview` with `sessionId` includes them.
+- A file trigger fires once its file has been quiet for a second, instead of once per filesystem event. A cron or file trigger whose previous run is still going is skipped and logged rather than started again.
 
 ## [0.5.0] — Execution — 2026-09-18
 

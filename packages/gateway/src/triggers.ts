@@ -187,18 +187,32 @@ export function markTriggerFired(id: string): void {
   }
 }
 
+/** How long a watched file must stay quiet before its trigger fires. */
+export const FILE_DEBOUNCE_MS = 1000;
+
 const cronJobs: cron.ScheduledTask[] = [];
 let fileWatcher: ReturnType<typeof chokidar.watch> | null = null;
 const webhookTriggers: Map<string, string> = new Map();
 let taskRunner: ((message: string, source: TriggerSource) => Promise<unknown>) | null = null;
+/** Pending file firings, by trigger id. */
+const fileTimers = new Map<string, NodeJS.Timeout>();
+/** Triggers whose last run has not finished. Kept across restarts, so a save cannot double up a run. */
+const inFlight = new Set<string>();
 
 async function runTriggeredTask(message: string, source: TriggerSource, id: string): Promise<void> {
+  // Each firing is a paid run. One that outlasts its schedule must not pile
+  // further runs up behind it.
+  if (inFlight.has(id)) {
+    logger.warn('Trigger skipped: its previous run is still in flight', { source, id });
+    return;
+  }
   logger.info('Trigger firing', { source, id, message: message.slice(0, 50) });
   if (!taskRunner) {
     logger.warn('Trigger skipped: no task runner');
     return;
   }
   markTriggerFired(id);
+  inFlight.add(id);
   try {
     await taskRunner(message, source);
   } catch (e) {
@@ -207,7 +221,21 @@ async function runTriggeredTask(message: string, source: TriggerSource, id: stri
       id,
       err: e instanceof Error ? e.message : String(e),
     });
+  } finally {
+    inFlight.delete(id);
   }
+}
+
+/** A save is often several events; fire once the file has been quiet for FILE_DEBOUNCE_MS. */
+function fileChanged(t: FileTrigger): void {
+  clearTimeout(fileTimers.get(t.id));
+  fileTimers.set(
+    t.id,
+    setTimeout(() => {
+      fileTimers.delete(t.id);
+      void runTriggeredTask(t.message, 'file', t.id);
+    }, FILE_DEBOUNCE_MS)
+  );
 }
 
 function startCron(config: TriggersConfig): void {
@@ -236,9 +264,7 @@ function startFileWatchers(config: TriggersConfig): void {
     fileWatcher = chokidar.watch(pathsToWatch, { ignoreInitial: true });
     fileWatcher.on('all', (_event: string, p: string) => {
       const triggers = pathToTriggers.get(p) ?? pathToTriggers.get(path.normalize(p));
-      for (const t of triggers ?? []) {
-        runTriggeredTask(t.message, 'file', t.id);
-      }
+      for (const t of triggers ?? []) fileChanged(t);
     });
   } catch (e) {
     logger.error('File watcher failed', { err: e instanceof Error ? e.message : String(e) });
@@ -252,10 +278,12 @@ function loadWebhooks(config: TriggersConfig): void {
   }
 }
 
-/** Stop every cron job and file watcher, and forget the webhooks. */
+/** Stop every cron job, file watcher and pending file firing, and forget the webhooks. */
 export function stopTriggers(): void {
   cronJobs.forEach((j) => j.stop());
   cronJobs.length = 0;
+  fileTimers.forEach((timer) => clearTimeout(timer));
+  fileTimers.clear();
   if (fileWatcher) {
     fileWatcher.close();
     fileWatcher = null;
