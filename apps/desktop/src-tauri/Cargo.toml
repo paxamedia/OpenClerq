@@ -22,4 +22,6 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
+# No "zip" feature: releases ship the .msi and setup .exe themselves, not zipped,
+# and the zip crate's extraction carries advisories with no 4.x fix.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
