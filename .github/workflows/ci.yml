@@ -113,7 +113,7 @@ jobs:
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
 
       # tauri-build expects the sidecars and the built frontend to exist. Clippy
-      # only checks the code, so empty stand-ins are enough.
+      # and the unit tests never start them, so empty stand-ins are enough.
       - name: Stand-in sidecars and frontend
         run: |
           triple=$(rustc -vV | sed -n 's/^host: //p')
@@ -123,6 +123,9 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
   audit:
     name: Dependency and secret audit
