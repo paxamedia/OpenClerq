@@ -6,7 +6,6 @@ import { gateway } from '../gateway';
 
 interface CapabilitiesConfig {
   fsRoot?: string;
-  fsAllowWrite?: boolean;
   httpAllowlist?: string[];
 }
 

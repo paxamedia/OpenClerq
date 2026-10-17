@@ -474,13 +474,12 @@ export const gateway = {
     });
   },
 
-  capabilities(): Promise<{ fsRoot?: string; fsAllowWrite?: boolean; httpAllowlist?: string[] }> {
+  capabilities(): Promise<{ fsRoot?: string; httpAllowlist?: string[] }> {
     return fetchJson('/capabilities');
   },
 
   saveCapabilities(config: {
     fsRoot?: string;
-    fsAllowWrite?: boolean;
     httpAllowlist?: string[];
   }): Promise<{ ok: boolean }> {
     return fetchJson<{ ok: boolean }>('/capabilities', {
