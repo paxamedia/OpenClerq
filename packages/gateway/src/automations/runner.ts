@@ -18,6 +18,7 @@ import {
 } from '@clerq/policy';
 import { exec } from '@clerq/sandbox';
 import {
+  defaultBranch,
   git,
   openWorkspace,
   openPullRequest,
@@ -235,41 +236,72 @@ async function execute(
       `Opening a pull request needs a forge token: store one in the vault as ${spec.publish.tokenSecret}, or set publish.pull_request: none.`
     );
   }
+  // The URL as configured: `git remote get-url` would apply url.insteadOf
+  // rewrites, and a rewritten URL no longer names the GitHub project.
+  const origin = await git(['config', '--get', 'remote.origin.url'], {
+    cwd: repoPath,
+    allowFailure: true,
+  });
+  const remoteUrl = origin.code === 0 ? origin.stdout.trim() : null;
+  const project = githubProject(remoteUrl);
+  if (spec.publish.pullRequest === 'draft' && !project) {
+    throw new Error(
+      `The repository's origin (${remoteUrl ?? 'none'}) is not on GitHub, so no pull request can be opened. Set publish.pull_request: none.`
+    );
+  }
+  if (spec.publish.push && !remoteUrl) {
+    throw new Error('The repository has no origin remote to push to. Set publish.push: false.');
+  }
 
   setRunFields(runId, { repoId: ensureLocalRepo(spec.repo.path) });
+
+  // Start from the remote's copy of the base branch: a local branch the user
+  // has not pulled in weeks would give the agent stale code and the PR conflicts.
+  const baseBranch = spec.repo.ref ?? (await defaultBranch(repoPath));
+  let startRef = baseBranch;
+  if (remoteUrl) {
+    const fetched = await git(
+      ['fetch', '--quiet', 'origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+      {
+        cwd: repoPath,
+        allowFailure: true,
+        timeoutMs: 120_000,
+        env: project && token ? githubAuthEnv(token) : undefined,
+      }
+    );
+    if (fetched.code === 0) startRef = `origin/${baseBranch}`;
+    addRunStep(runId, {
+      kind: 'git',
+      input: { action: 'fetch', ref: baseBranch },
+      output:
+        fetched.code === 0
+          ? { startRef }
+          : {
+              startRef,
+              error: tail(fetched.stderr.trim(), 2_000),
+              note: 'Starting from the local branch.',
+            },
+      status: fetched.code === 0 ? 'ok' : 'warning',
+    });
+  }
+
   const branch = renderBranchName(spec.publish.branch, {
     automation: spec.name,
     run: runId.slice(4, 12),
   });
   const ws = await openWorkspace(
-    { kind: 'local', location: repoPath, ref: spec.repo.ref },
+    { kind: 'local', location: repoPath, ref: startRef },
     { branch, cacheDir: deps.workspaceCacheDir }
   );
   let keepBranch = false;
   try {
     setRunFields(runId, { branch });
-    // The URL as configured: `git remote get-url` would apply url.insteadOf
-    // rewrites, and a rewritten URL no longer names the GitHub project.
-    const origin = await git(['config', '--get', 'remote.origin.url'], {
-      cwd: ws.repoRoot,
-      allowFailure: true,
-    });
-    const remoteUrl = origin.code === 0 ? origin.stdout.trim() : null;
-    const project = githubProject(remoteUrl);
     addRunStep(runId, {
       kind: 'git',
-      input: { action: 'worktree', repo: repoPath, ref: spec.repo.ref ?? null },
+      input: { action: 'worktree', repo: repoPath, ref: startRef },
       output: { branch, baseSha: ws.baseSha, remote: remoteUrl, path: ws.path },
       status: 'ok',
     });
-    if (spec.publish.pullRequest === 'draft' && !project) {
-      throw new Error(
-        `The repository's origin (${remoteUrl ?? 'none'}) is not on GitHub, so no pull request can be opened. Set publish.pull_request: none.`
-      );
-    }
-    if (spec.publish.push && !remoteUrl) {
-      throw new Error('The repository has no origin remote to push to. Set publish.push: false.');
-    }
 
     setRunStatus(runId, 'executing');
     const result = await guard(rules, TOOLS.agent, budget, () =>
@@ -372,7 +404,7 @@ async function execute(
             title,
             body: pullRequestBody(spec, runId, result, stat),
             head: branch,
-            base: ws.baseRef,
+            base: baseBranch,
             draft: true,
             token: token as string,
           },
@@ -538,6 +570,16 @@ async function runGate(
   }
 }
 
+/** git configuration, through the environment, that authenticates to github.com with `token`. */
+function githubAuthEnv(token: string): Record<string, string> {
+  const basic = Buffer.from(`x-access-token:${token}`).toString('base64');
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+  };
+}
+
 /**
  * Push the run's branch. With a token, over HTTPS with the token in an
  * environment-supplied header, so it never reaches the argv or the remote URL;
@@ -551,15 +593,10 @@ async function pushBranch(
 ): Promise<void> {
   const refspec = `refs/heads/${branch}:refs/heads/${branch}`;
   if (project && token) {
-    const basic = Buffer.from(`x-access-token:${token}`).toString('base64');
     await git(['push', `https://github.com/${project}.git`, refspec], {
       cwd: ws.path,
       timeoutMs: 300_000,
-      env: {
-        GIT_CONFIG_COUNT: '1',
-        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
-        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
-      },
+      env: githubAuthEnv(token),
     });
     return;
   }

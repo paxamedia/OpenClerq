@@ -158,7 +158,7 @@ preparing → executing → verifying → publishing → done
                                 awaiting_approval
 ```
 
-- **preparing** — a new branch in a fresh `git worktree`; the user's checkout is never touched.
+- **preparing** — a new branch in a fresh `git worktree`, started from origin's copy of the base branch (fetched first; the local branch if the fetch fails). The user's checkout is never touched.
 - **executing** — the `claude-code` driver runs `claude -p` in the worktree under the user's own sign-in, with a minimal environment: no gateway token, and no API key unless the spec names a vault secret. Its tool calls become run steps, and the cost it reports goes on the run.
 - **verifying** — the agent's changes are committed, then each gate runs in the worktree. The first failure ends the run.
 - **publishing** — push, then a draft pull request on GitHub. The push waits in the approvals inbox unless the spec sets `approvals.push: auto`, and an automation's first push always waits.

@@ -478,6 +478,25 @@ describe('an automation run', () => {
     expect(remoteBranches()).not.toContain(run.branch);
   });
 
+  it("starts from origin's copy of the base branch, not a stale local one", async () => {
+    // Someone else pushes to main; the local main never pulls it.
+    const other = path.join(root, 'other');
+    sh(root, 'clone', '-q', bare, other);
+    fs.writeFileSync(path.join(other, 'REMOTE_ONLY.md'), 'from origin\n');
+    sh(other, 'add', '.');
+    sh(other, 'commit', '-q', '-m', 'remote change');
+    sh(other, 'push', '-q', 'origin', 'main');
+    expect(fs.existsSync(path.join(repo, 'REMOTE_ONLY.md'))).toBe(false);
+
+    const id = await create('fresh-base', 'publish:\n  push: false');
+    const run = await waitForRun(await start(id), finished);
+    expect(run.status).toBe('done');
+    expect(sh(repo, 'show', `${run.branch}:REMOTE_ONLY.md`)).toBe('from origin');
+    expect(run.steps.find((s) => s.input?.action === 'fetch')?.status).toBe('ok');
+    // The user's own checkout is left as it was.
+    expect(fs.existsSync(path.join(repo, 'REMOTE_ONLY.md'))).toBe(false);
+  });
+
   it('pauses an automation that spends its monthly budget', async () => {
     const id = await create(
       'budgeted',
