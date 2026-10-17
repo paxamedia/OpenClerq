@@ -163,7 +163,7 @@ into.
 - [x] Typed event bus + append-only audit log
 - [x] Remove the unused `fsAllowWrite` flag
 - [x] Fix version drift; extend `sync-version.js` to cover `/health`
-- [x] CI gates: typecheck, lint, Vitest, `cargo test`, `pnpm audit`, `cargo audit`, secret scan — all required before build
+- [x] CI gates on every push and pull request: typecheck, Prettier check, Vitest on Linux and macOS, `cargo fmt`, `clippy` and `cargo test`, `pnpm audit`, `cargo audit`, secret scan
 
 ### 0.5 — Execution — shipped
 
@@ -299,7 +299,7 @@ manage it.
 
 | Provider                        | Adapter         | Notes                                                    |
 | ------------------------------- | --------------- | -------------------------------------------------------- |
-| Anthropic (Claude)              | `native`        | Already wired via `@anthropic-ai/sdk`; refresh model IDs |
+| Anthropic (Claude)              | `anthropic`     | Messages API called directly; the SDK was removed in 0.5 |
 | OpenAI (incl. Codex models)     | `openai-compat` | Existing generic adapter once a base URL is set          |
 | DeepSeek                        | `openai-compat` | Registry row; chat + reasoner variants                   |
 | Moonshot (Kimi)                 | `openai-compat` | Registry row; separate CN and international hosts        |

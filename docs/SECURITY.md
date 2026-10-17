@@ -176,7 +176,7 @@ Run before tagging any release.
 
 ### CI
 
-- [ ] Typecheck, lint, Vitest, `cargo test` all pass and are required
+- [ ] Typecheck, Prettier check, Vitest, `cargo fmt`, `clippy` and `cargo test` all pass and are required
 - [ ] `pnpm audit` and `cargo audit` clean or triaged with written justification
 - [ ] Build succeeds on every target platform
 
