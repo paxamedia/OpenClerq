@@ -46,7 +46,9 @@
     "overrides": {
       "path-to-regexp": ">=8.4.0",
       "qs": ">=6.16.0",
-      "body-parser": ">=2.3.0"
+      "body-parser": ">=2.3.0",
+      "proxy-addr": ">=2.0.8",
+      "source-map-js": ">=1.2.2"
     }
   }
 }

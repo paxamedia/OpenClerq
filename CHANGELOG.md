@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - The desktop app's Rust dependencies are updated past advisories in `rustls`, `rustls-webpki`, `tar` and `quick-xml`.
+- `proxy-addr` (used by Express in the gateway) and `source-map-js` (desktop build tooling) are pinned to their patched releases.
 
 ## [0.5.0] — Execution — 2026-09-18
 
