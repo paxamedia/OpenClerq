@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Automations.** A YAML spec (a subset of the format in `docs/ROADMAP.md` §4) runs a coding agent against a local repository, on a schedule or on demand: in a fresh git worktree, then the spec's gates, then a push and a draft pull request. New automations are saved disabled. Pushing waits in the approvals inbox unless the spec sets `approvals.push: auto`, and an automation's first push always waits. Endpoints under `/automations`, plus `GET /drivers` and `GET /runs/:id/artifacts/:id`.
+- **`claude-code` driver** (`packages/drivers`). It runs Claude Code's CLI under the user's own sign-in, with no API key unless the spec names a vault secret.
+- Budgets per run (passed to the CLI) and per month (pausing the automation), one run per automation at a time, and a global cap, `CLERQ_MAX_CONCURRENT_RUNS`.
+- A run records the worktree, the agent's tool calls, each gate, the commit, the push and the PR as steps, and keeps the diff and the agent's output. A run interrupted by a restart is marked failed and its worktree removed.
+- Desktop **Automations** module: a spec editor that checks a spec against this machine before saving, runs with their steps and diff, and the approvals inbox.
+
+### Changed
+
+- `packages/sandbox` gives a command a minimal environment unless `inheritEnv` is set, streams output line by line, and stops on an abort signal.
+- In this release automations run without isolation, and a spec must say `sandbox: { profile: native }` to run.
+
 ### Fixed
 
 - Cron triggers with a weekday or day-of-month field, such as `0 8 * * 1`, could fail to fire: node-cron 4.2.1 miscalculated when they were next due. Upgraded to 4.6.0.
+- A module list saved in the desktop settings hid modules bundled with later releases.
 
 ## [0.5.1] — 2026-10-17
 

@@ -184,25 +184,39 @@ consumer.
 - [x] **Chat console — raw mode.** Per-provider conversations, streaming, full request/response inspection
 - [x] **Chat console — comparison mode.** One message fanned out to N models, side by side with latency, tokens and cost; any column can be promoted into the transcript
 
-### 0.6 — Agents and automations
+### 0.6a — First automation
 
-- [ ] Driver interface + process supervision (stream parsing, cancellation, orphan reaping)
-- [ ] `claude-code`, `codex`, `cursor-agent` drivers; each detects its CLI and says so plainly if absent
+One automation end to end: a scheduled agent that opens a gated draft PR. It is the first
+consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
+
+- [x] Driver interface; `claude-code` driver with stream parsing, cancellation, and the process group killed on cancel or timeout. It says plainly when the CLI is missing or not signed in
+- [x] YAML spec parser with line-accurate errors. Documented keys this release does not run are refused by name
+- [x] Run pipeline — worktree → agent → commit → shell gates → approval → push → draft PR, each state written before it starts
+- [x] Every action decided by `packages/policy`; pushing waits for approval by default and on an automation's first push
+- [x] Budgets — per run, passed to the CLI; per month, pausing the automation
+- [x] One run per automation, and a global cap
+- [x] Runs interrupted by a restart are marked failed and their worktrees removed
+- [x] Desktop Automations module over the module slot contract: spec editor with a check, runs with steps and diff, approvals inbox
+
+### 0.6b — Agents and automations
+
+- [ ] `codex` and `cursor-agent` drivers
+- [ ] Seatbelt and container profiles for automation runs, with egress limited to the spec's hosts; remote repositories
+- [ ] Kill agent processes a crashed gateway left behind
+- [ ] Tool calling in `packages/providers` — the `builtin` driver needs it
 - [ ] `builtin` driver — real tool-calling loop, every call through `packages/policy`
 - [ ] Context management — token estimation, rolling history, compaction, pinned context, tool-output truncation
 - [ ] Durable queue with leases; missed-schedule catch-up on wake from sleep
-- [ ] Concurrency caps per automation and global; fair scheduling across repos
+- [ ] Fair scheduling across repos
 - [ ] Retry with backoff; model escalation on gate failure
-- [ ] YAML automation spec parser + validator with line-accurate errors
-- [ ] Gate runner — shell gates and `diff.*` assertions
-- [ ] Budget enforcement with automation pause
+- [ ] Gate `diff.*` assertions
 - [ ] Model routing and fallback chains with strictness rules (explicit user selection is strict; defaults and scheduled jobs may fall back)
 - [ ] Memory 2.0 — typed records, SQLite FTS search, summarisation, policy-controlled retrieval
 - [ ] Sub-agents — `sessions.spawn`, isolated policy, `maxConcurrent = 4`, `maxDepth = 1`
-- [ ] `packages/web` extracted from `App.tsx` with routing; Automations, Runs, Approvals, Repos, Providers screens
+- [ ] `packages/web` extracted from `App.tsx` with routing; Repos and Providers screens
 - [ ] **Chat console — managed mode.** System prompt, skills, memory, policy-filtered tools, inline approvals, mode diff against raw
 - [ ] **Conversational automation authoring.** Draft → preview → dry run → save disabled, with `approvals.push` forced to manual on first run
-- [ ] Console registered through the existing module slot contract rather than extending `App.tsx`
+- [x] Console registered through the existing module slot contract rather than extending `App.tsx`
 
 ### 1.0 — Platform
 
@@ -323,9 +337,9 @@ manage it.
 | `builtin`                    | In-process tool loop         | Any layer-1 provider              | High      |
 | `aider`, `opencode`, `goose` | CLI                          | Any                               | Community |
 
-A driver is a small interface — `prepare(workspace)`, `run(prompt, signal) → AsyncIterable<Step>`,
-`collect() → Diff`. All drivers normalise to the same `Step` stream so the run detail view is
-driver-agnostic.
+A driver is a small interface — `detect()` and `run(input) → AsyncIterable<DriverEvent>`. Preparing
+the worktree and collecting the diff are the same for every agent, so the runner does them. All
+drivers normalise to the same event stream so the run detail view is driver-agnostic.
 
 ---
 

@@ -30,7 +30,13 @@ import { loadReasoning, saveReasoning, type ReasoningConfig } from './reasoning-
 import { loadSystemPrompt, saveSystemPrompt, DEFAULT_PROMPT } from './system-prompt.js';
 import { getObservability } from './observability.js';
 import { getLogBuffer, subscribe, type LogEntry } from './log-stream.js';
-import { listSecrets, setSecret, deleteSecret, vaultKeyStatus } from './secrets-vault.js';
+import {
+  listSecrets,
+  setSecret,
+  deleteSecret,
+  vaultKeyStatus,
+  getSecret,
+} from './secrets-vault.js';
 import {
   startTriggers,
   stopTriggers,
@@ -71,6 +77,11 @@ import {
   promote,
   type ManagedPipeline,
 } from './chat/console.js';
+
+import { mountAutomationRoutes, recoverAfterRestart } from './automations/routes.js';
+import { startAutomationSchedules, stopAutomationSchedules } from './automations/scheduler.js';
+import { userShellPath } from './automations/shell-path.js';
+import type { RunnerDeps } from './automations/runner.js';
 
 const DEFAULT_PORT = 18790;
 
@@ -152,6 +163,16 @@ export function createGateway(config: GatewayConfig = {}): {
   const calcPath = config.calculationEnginePath ?? getCalcBinaryPath();
   const initialToolsConfig = config.toolsConfig ?? capabilitiesToToolConfig(loadCapabilities());
   let toolRegistry = createToolRegistry(initialToolsConfig);
+
+  const automationDeps: RunnerDeps = {
+    getSecret: config.automations?.getSecret ?? ((name) => getSecret(name) ?? undefined),
+    path: config.automations?.path ?? userShellPath,
+    driverFor: config.automations?.driverFor,
+    fetcher: config.automations?.fetcher,
+    workspaceCacheDir: config.automations?.workspaceCacheDir,
+    maxConcurrent:
+      config.automations?.maxConcurrent ?? (Number(process.env.CLERQ_MAX_CONCURRENT_RUNS) || 2),
+  };
 
   const app = express();
   let loadedModules: Awaited<ReturnType<typeof loadModulesFromDir>> = [];
@@ -580,6 +601,7 @@ export function createGateway(config: GatewayConfig = {}): {
       let triggersPaused = triggersPausedAt !== null;
       if (body.triggers !== false) {
         stopTriggers();
+        stopAutomationSchedules();
         triggersPausedAt ??= new Date().toISOString();
         triggersPaused = true;
       }
@@ -597,6 +619,7 @@ export function createGateway(config: GatewayConfig = {}): {
       const wasPaused = triggersPausedAt !== null;
       triggersPausedAt = null;
       startTriggers(runTriggered);
+      startAutomationSchedules(automationDeps);
       emit('kill.released', { wasPaused });
       logger.info('Triggers resumed', { wasPaused });
       res.json({ ok: true, triggersResumed: true, wasPaused });
@@ -817,6 +840,10 @@ export function createGateway(config: GatewayConfig = {}): {
       res.status(500).json({ error: 'run_get_failed' });
     }
   });
+
+  // Automations: scheduled agent runs that end in a draft pull request.
+  // Their schedules pause with the triggers under the kill switch.
+  mountAutomationRoutes(app, automationDeps, () => triggersPausedAt === null);
 
   app.post('/calculate/eval', async (req: Request, res: Response) => {
     if (!fssync.existsSync(calcPath)) {
@@ -1119,6 +1146,14 @@ export function createGateway(config: GatewayConfig = {}): {
       logger.info('Generated a new gateway token at ~/.clerq/gateway-token (mode 0600).');
     }
     startTriggers(runTriggered);
+    try {
+      await recoverAfterRestart();
+      startAutomationSchedules(automationDeps);
+    } catch (e) {
+      logger.error('Automations failed to start', {
+        err: e instanceof Error ? e.message : String(e),
+      });
+    }
     try {
       const modules = await loadModulesFromDir(config.modulesDir ?? process.env.CLERQ_MODULES_DIR);
       loadedModules = modules;

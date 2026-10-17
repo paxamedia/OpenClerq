@@ -15,6 +15,7 @@ For where this architecture is going, see [ROADMAP.md](ROADMAP.md).
 | Desktop app      | Tauri v2 + React    | Native UI on macOS and Windows                          |
 | Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration |
 | Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration           |
+| Agent drivers    | `packages/drivers`  | Run a coding agent's CLI (Claude Code) in a workspace   |
 | Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                            |
 | Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets               |
 
@@ -145,30 +146,60 @@ with no price records `costUsd: null` and marks the run `costKnown: false`, so i
 as a lower bound. Keyless local providers cost nothing. `GET /metrics` reports
 `llm_cost_usd_total` alongside `llm_unpriced_calls_total`.
 
+### Automations
+
+An automation is a YAML spec — a subset of [ROADMAP.md §4](ROADMAP.md#4-automations-as-code) —
+that runs a coding agent against a local repository, on a schedule or on demand. Each state is
+written before its work starts:
+
+```text
+preparing → executing → verifying → publishing → done
+                                        ↕
+                                awaiting_approval
+```
+
+- **preparing** — a new branch in a fresh `git worktree`; the user's checkout is never touched.
+- **executing** — the `claude-code` driver runs `claude -p` in the worktree under the user's own sign-in, with a minimal environment: no gateway token, and no API key unless the spec names a vault secret. Its tool calls become run steps, and the cost it reports goes on the run.
+- **verifying** — the agent's changes are committed, then each gate runs in the worktree. The first failure ends the run.
+- **publishing** — push, then a draft pull request on GitHub. The push waits in the approvals inbox unless the spec sets `approvals.push: auto`, and an automation's first push always waits.
+
+`packages/policy` decides each action first: running the agent, a gate, committing, pushing,
+opening the PR. Anything the spec does not ask to publish is denied. The diff and the agent's
+output stay with the run, and the worktree is removed afterwards. A run interrupted by a restart
+is marked failed and its worktree removed. New automations are saved disabled. Each automation
+runs once at a time, and at most `CLERQ_MAX_CONCURRENT_RUNS` (default 2) run at once; a firing
+beyond that is skipped, not queued. `max_usd_per_run` becomes the CLI's own budget, and reaching
+`max_usd_per_month` pauses the automation. The kill switch pauses automation schedules with the
+triggers.
+
+In this release the agent and the gates run with the `native` profile, without isolation, and a
+spec must say so to run. See [SECURITY.md](SECURITY.md).
+
 ---
 
 ## 4. Gateway
 
 The gateway is the control plane. Endpoints:
 
-| Group       | Endpoints                                                                                                                  |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                                                    |
-| Models      | `GET /models`, `GET /providers`                                                                                            |
-| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                                                     |
-| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                                                    |
-| Tools       | `GET /tools`, `POST /tools/run`                                                                                            |
-| Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                |
-| Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                          |
-| Runs        | `GET /runs`, `GET /runs/:id`, `POST /runs/:id/cancel`                                                                      |
-| Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update` |
-| Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                |
-| Events      | `GET /events` (SSE)                                                                                                        |
-| Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                        |
-| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`                                        |
-| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                   |
-| Automation  | `GET \| POST /triggers`, `POST /webhook/:id`                                                                               |
-| Modules     | mounted at `/api/modules/:moduleId/*`                                                                                      |
+| Group       | Endpoints                                                                                                                                                                                     |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                                                                                                                       |
+| Models      | `GET /models`, `GET /providers`                                                                                                                                                               |
+| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                                                                                                                        |
+| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                                                                                                                       |
+| Tools       | `GET /tools`, `POST /tools/run`                                                                                                                                                               |
+| Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                                                                                   |
+| Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                                                                                             |
+| Runs        | `GET /runs`, `GET /runs/:id`, `POST /runs/:id/cancel`                                                                                                                                         |
+| Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update`                                                                    |
+| Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                                                                                   |
+| Events      | `GET /events` (SSE)                                                                                                                                                                           |
+| Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                                                                                           |
+| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`                                                                                                           |
+| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                                                                                      |
+| Automations | `GET \| POST /automations`, `POST /automations/preview`, `GET \| PUT \| DELETE /automations/:id`, `POST /automations/:id/run\|enable\|disable`, `GET /drivers`, `GET /runs/:id/artifacts/:id` |
+| Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                  |
+| Modules     | mounted at `/api/modules/:moduleId/*`                                                                                                                                                         |
 
 Responsibilities: loading skills from disk and normalising metadata (`inputSchema`,
 `outputSchema`, `dependsOn`); hosting tools under capability restrictions; store-backed memory,
@@ -239,6 +270,7 @@ A control tower for configuring and running the agent, in Builder or Operator mo
 - **Triggers** — cron, file watchers, webhooks
 - **Secrets** — vault entries by name
 - **Observability** — metrics, live log stream, step traces
+- **Automations** (module) — spec editor that checks a spec against this machine, runs with their steps and diff, and the approvals inbox
 
 The desktop stores only local configuration and talks to `http://127.0.0.1:18790` by default.
 It launches the gateway and calculation engine as Tauri sidecars; the Tauri capability
@@ -259,6 +291,7 @@ manifest permits executing exactly those two binaries and nothing else.
 | `~/.clerq/secrets.vault`     | AES-256-GCM encrypted secrets; the key lives in the OS keychain |
 | `~/.clerq/vault.key`         | Master key, mode 0600 — only where there is no keychain         |
 | `~/.clerq/secrets.audit.log` | Append-only vault access log                                    |
+| `~/.clerq/workspaces/`       | Worktrees of automation runs in progress                        |
 
 A pre-0.5 `memory.json` or `triggers.json` is imported into `clerq.db` on first start and kept as
 `*.migrated`. The remaining JSON files are read-modify-write with no locking, so concurrent

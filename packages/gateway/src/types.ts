@@ -17,6 +17,8 @@ export interface GatewayConfig {
   dbPath?: string;
   /** Optional configuration for built-in generic tools (fs, http, etc.). */
   toolsConfig?: import('./tools.js').ToolConfig;
+  /** Automation runner overrides; tests pass a fake driver, forge and vault. */
+  automations?: Partial<import('./automations/runner.js').RunnerDeps>;
 }
 
 export interface GatewayContext {

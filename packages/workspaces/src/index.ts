@@ -93,7 +93,9 @@ export class Workspace {
      * is already checked out in another worktree — which the source repository
      * usually is — so a branchless workspace is detached at the base commit.
      */
-    readonly detached: boolean = false
+    readonly detached: boolean = false,
+    /** The branch or ref the workspace was cut from: where its changes would merge. */
+    readonly baseRef: string = ''
   ) {}
 
   private opts(extra?: Partial<{ allowFailure: boolean }>) {
@@ -273,7 +275,7 @@ export async function openWorkspace(repo: RepoRef, options?: WorkspaceOptions): 
   }
 
   const sha = await headSha(dir);
-  return new Workspace(dir, repoRoot, branch, sha, options?.env, true, detached);
+  return new Workspace(dir, repoRoot, branch, sha, options?.env, true, detached, base);
 }
 
 /** Remove worktrees left behind by runs that died before disposing. */

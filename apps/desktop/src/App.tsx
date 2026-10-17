@@ -24,6 +24,7 @@ import { moduleRegistry } from './moduleRegistry';
 import { ModuleHost } from './ModuleHost';
 
 import { CHAT_CONSOLE_ID, chatConsoleComponent, chatConsoleManifest } from './modules/chat-console';
+import { AUTOMATIONS_ID, automationsComponent, automationsManifest } from './modules/automations';
 
 /**
  * Modules shipped with the app. They register here rather than being wired into
@@ -31,6 +32,7 @@ import { CHAT_CONSOLE_ID, chatConsoleComponent, chatConsoleManifest } from './mo
  */
 const bundledComponents: Record<string, import('./moduleSlots').ModuleUIComponent> = {
   [CHAT_CONSOLE_ID]: chatConsoleComponent,
+  [AUTOMATIONS_ID]: automationsComponent,
 };
 
 const GITHUB_URL = 'https://github.com/paxamedia/OpenClerq';
@@ -225,6 +227,12 @@ import type { AppConfig, ModuleEntry, ModulePathEntry } from './configTypes';
 export type { AppConfig, ModuleEntry, ModulePathEntry };
 
 const DEFAULT_MODULES: ModuleEntry[] = [
+  {
+    id: AUTOMATIONS_ID,
+    name: automationsManifest.name,
+    description: automationsManifest.description ?? '',
+    enabled: true,
+  },
   {
     id: CHAT_CONSOLE_ID,
     name: chatConsoleManifest.name,
@@ -1395,7 +1403,15 @@ function App() {
 
   const themeToggle = <ThemeToggle theme={theme} setTheme={setTheme} />;
 
-  const baseModules = config?.modules?.length ? config.modules : DEFAULT_MODULES;
+  const savedModules = config?.modules?.length ? config.modules : DEFAULT_MODULES;
+  // A list saved before a bundled module shipped does not mention it, so it is
+  // added; one the user switched off is listed, and stays off.
+  const baseModules = [
+    ...savedModules,
+    ...DEFAULT_MODULES.filter(
+      (d) => bundledComponents[d.id] && !savedModules.some((m) => m.id === d.id)
+    ),
+  ];
   const loadedEntries = loadedModuleManifests.map((m) => ({
     id: m.id,
     name: m.name,

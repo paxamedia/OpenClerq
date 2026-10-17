@@ -160,7 +160,7 @@ pnpm build:core
 └─────────────────────────────────────────────────────────┘
 ```
 
-_Desktop UI (Control Tower):_ Gateway health, skills (with schema/dependency editing), tools, calculator, memory, Ask (explain/task) with context preview and dry-run, observability metrics including model spend. Builder mode for configuration; Operator mode for day-to-day use. The **Chat console** module talks to any configured model, raw or through the full pipeline, and compares models side by side.
+_Desktop UI (Control Tower):_ Gateway health, skills (with schema/dependency editing), tools, calculator, memory, Ask (explain/task) with context preview and dry-run, observability metrics including model spend. Builder mode for configuration; Operator mode for day-to-day use. The **Chat console** module talks to any configured model, raw or through the full pipeline, and compares models side by side. The **Automations** module runs Claude Code on a schedule in a git worktree of a local repository, checks the result with your gates, and opens a draft pull request once you approve the push.
 
 ## Quick Start
 
@@ -179,20 +179,21 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 
 ### API (gateway on :18790)
 
-| Method   | Path             | Description                                                                                             |
-| -------- | ---------------- | ------------------------------------------------------------------------------------------------------- |
-| GET      | /health          | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider`                               |
-| GET      | /skills          | List skills (from disk or fallback)                                                                     |
-| GET      | /skills/:slug    | Get skill detail (meta, body). PUT to update schemas/dependencies.                                      |
-| GET      | /metrics         | Observability: uptime, LLM calls, latency, token usage                                                  |
-| POST     | /context/preview | Preview the LLM request (no API call). Body: `question`, optional `context`, `skillSlug`, `sessionId`   |
-| GET      | /memory          | List file-backed memory entries. POST to add; DELETE /memory/:key to remove                             |
-| GET      | /capabilities    | Filesystem/network restrictions. POST to save.                                                          |
-| GET/POST | /reasoning       | Temperature, max tokens. POST to save.                                                                  |
-| GET/POST | /system-prompt   | System prompt editor. POST to save.                                                                     |
-| POST     | /calculate/eval  | Arithmetic engine (body: expression or spec+inputs). Deterministic, auditable.                          |
-| POST     | /explain         | AI explanation (body: question, optional context). Uses configured LLM.                                 |
-| POST     | /task            | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`. |
+| Method   | Path             | Description                                                                                                        |
+| -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| GET      | /health          | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider`                                          |
+| GET      | /skills          | List skills (from disk or fallback)                                                                                |
+| GET      | /skills/:slug    | Get skill detail (meta, body). PUT to update schemas/dependencies.                                                 |
+| GET      | /metrics         | Observability: uptime, LLM calls, latency, token usage                                                             |
+| POST     | /context/preview | Preview the LLM request (no API call). Body: `question`, optional `context`, `skillSlug`, `sessionId`              |
+| GET      | /memory          | List file-backed memory entries. POST to add; DELETE /memory/:key to remove                                        |
+| GET      | /capabilities    | Filesystem/network restrictions. POST to save.                                                                     |
+| GET/POST | /reasoning       | Temperature, max tokens. POST to save.                                                                             |
+| GET/POST | /system-prompt   | System prompt editor. POST to save.                                                                                |
+| POST     | /calculate/eval  | Arithmetic engine (body: expression or spec+inputs). Deterministic, auditable.                                     |
+| POST     | /explain         | AI explanation (body: question, optional context). Uses configured LLM.                                            |
+| POST     | /task            | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`.            |
+| POST     | /automations     | Save an automation from its YAML spec (body: `spec`). It starts disabled. `POST /automations/:id/run` runs it now. |
 
 ## Project Structure
 

@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { gateway, setGatewayBaseUrl, setGatewayToken, hasGatewayToken } from './index.js';
+import {
+  gateway,
+  setGatewayBaseUrl,
+  setGatewayToken,
+  hasGatewayToken,
+  GatewayError,
+} from './index.js';
 
 type FetchArgs = [string, RequestInit | undefined];
 
@@ -233,5 +239,27 @@ describe('addresses', () => {
     stubFetch(() => Response.json({ sessions: [] }));
     await gateway.sessions();
     expect(calls[0][0]).toBe('http://127.0.0.1:18790/sessions?limit=50');
+  });
+});
+
+describe('automations', () => {
+  it('sends the spec as YAML text and starts runs by id', async () => {
+    stubFetch((url) =>
+      url.endsWith('/run') ? Response.json({ runId: 'run_1' }) : Response.json({ id: 'aut_1' })
+    );
+    await gateway.createAutomation('name: x\n');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/automations');
+    expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ spec: 'name: x\n' });
+    expect(await gateway.runAutomation('aut 1')).toEqual({ runId: 'run_1' });
+    expect(calls[1][0]).toBe('http://127.0.0.1:18790/automations/aut%201/run');
+  });
+
+  it('carries a refusal’s status and body, so an editor can point at the line', async () => {
+    stubFetch(() =>
+      Response.json({ error: 'invalid_spec', message: 'bad', line: 3, column: 5 }, { status: 400 })
+    );
+    const err = await gateway.previewAutomation('x').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GatewayError);
+    expect(err).toMatchObject({ status: 400, body: { line: 3, column: 5 } });
   });
 });

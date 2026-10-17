@@ -17,6 +17,7 @@ export type EventName =
   | 'session.updated'
   | 'run.queued'
   | 'run.started'
+  | 'run.status'
   | 'run.completed'
   | 'run.failed'
   | 'run.cancelled'

@@ -31,6 +31,11 @@ export interface RunRecord {
   status: RunStatus;
   trigger: RunTrigger;
   automationId?: string;
+  automationName?: string;
+  repoId?: string;
+  /** The branch an automation run committed to. */
+  branch?: string;
+  prUrl?: string;
   /** What the run was asked to do. */
   input?: string;
   exitReason?: string;
@@ -49,7 +54,9 @@ export interface RunRecord {
 const RUN_COLUMNS = `runs.*, (
   SELECT COUNT(*) FROM run_steps s
   WHERE s.run_id = runs.id AND s.kind = 'llm' AND s.status = 'ok' AND s.cost_usd IS NULL
-) AS unpriced_calls`;
+) AS unpriced_calls, (
+  SELECT name FROM automations a WHERE a.id = runs.automation_id
+) AS automation_name`;
 
 function rowToRun(r: Record<string, unknown>): RunRecord {
   return {
@@ -57,6 +64,10 @@ function rowToRun(r: Record<string, unknown>): RunRecord {
     status: r.status as RunStatus,
     trigger: r.trigger as RunTrigger,
     automationId: r.automation_id ? String(r.automation_id) : undefined,
+    automationName: r.automation_name ? String(r.automation_name) : undefined,
+    repoId: r.repo_id ? String(r.repo_id) : undefined,
+    branch: r.branch ? String(r.branch) : undefined,
+    prUrl: r.pr_url ? String(r.pr_url) : undefined,
     input: r.input ? String(r.input) : undefined,
     exitReason: r.exit_reason ? String(r.exit_reason) : undefined,
     startedAt: r.started_at ? String(r.started_at) : undefined,
@@ -73,15 +84,24 @@ export function createRun(input: {
   trigger: RunTrigger;
   automationId?: string;
   input?: string;
+  status?: RunStatus;
 }): string {
   const id = `run_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
   getStore()
     .prepare(
       `INSERT INTO runs (id, automation_id, input, status, trigger, started_at, created_at)
-       VALUES (?, ?, ?, 'executing', ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, input.automationId ?? null, input.input ?? null, input.trigger, now, now);
+    .run(
+      id,
+      input.automationId ?? null,
+      input.input ?? null,
+      input.status ?? 'executing',
+      input.trigger,
+      now,
+      now
+    );
   return id;
 }
 
@@ -90,9 +110,128 @@ export function finishRun(
   status: Extract<RunStatus, 'done' | 'failed' | 'cancelled'>,
   exitReason?: string
 ): void {
+  // A reason recorded during the run ("No changes") stands unless replaced.
   getStore()
-    .prepare('UPDATE runs SET status = ?, exit_reason = ?, finished_at = ? WHERE id = ?')
+    .prepare(
+      'UPDATE runs SET status = ?, exit_reason = COALESCE(?, exit_reason), finished_at = ? WHERE id = ?'
+    )
     .run(status, exitReason ?? null, new Date().toISOString(), id);
+}
+
+/** Move a run to its next state, before the work of that state starts. */
+export function setRunStatus(id: string, status: RunStatus): void {
+  getStore().prepare('UPDATE runs SET status = ? WHERE id = ?').run(status, id);
+  emit('run.status', { status }, { runId: id });
+}
+
+/** Record what a run produced along the way. */
+export function setRunFields(
+  id: string,
+  fields: { repoId?: string; branch?: string; prUrl?: string; exitReason?: string }
+): void {
+  const columns: Record<string, string | undefined> = {
+    repo_id: fields.repoId,
+    branch: fields.branch,
+    pr_url: fields.prUrl,
+    exit_reason: fields.exitReason,
+  };
+  const set = Object.entries(columns).filter(([, v]) => v !== undefined);
+  if (set.length === 0) return;
+  getStore()
+    .prepare(`UPDATE runs SET ${set.map(([k]) => `${k} = ?`).join(', ')} WHERE id = ?`)
+    .run(...set.map(([, v]) => v as string), id);
+}
+
+/**
+ * Mark runs a previous gateway left unfinished as failed. Nothing can still be
+ * working on them: their processes were tied to the gateway that died.
+ */
+export function reapInterruptedRuns(): string[] {
+  const db = getStore();
+  const ids = db
+    .prepare("SELECT id FROM runs WHERE status NOT IN ('done', 'failed', 'cancelled')")
+    .all()
+    .map((r) => String(r.id));
+  const mark = db.prepare(
+    `UPDATE runs SET status = 'failed', finished_at = ?,
+       exit_reason = 'Interrupted: the gateway stopped while this run was in progress.'
+     WHERE id = ?`
+  );
+  const now = new Date().toISOString();
+  for (const id of ids) mark.run(now, id);
+  return ids;
+}
+
+export type ArtifactKind = 'diff' | 'log' | 'file' | 'report';
+
+/** The most of one artifact kept, in characters. */
+const MAX_ARTIFACT_CHARS = 2_000_000;
+
+export function addArtifact(
+  runId: string,
+  kind: ArtifactKind,
+  content: string,
+  name?: string
+): number {
+  const text =
+    content.length > MAX_ARTIFACT_CHARS
+      ? `${content.slice(0, MAX_ARTIFACT_CHARS)}\n[…truncated at ${MAX_ARTIFACT_CHARS} characters]`
+      : content;
+  const res = getStore()
+    .prepare(
+      'INSERT INTO artifacts (run_id, kind, path, blob, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    )
+    .run(
+      runId,
+      kind,
+      name ?? null,
+      text,
+      crypto.createHash('sha256').update(text).digest('hex'),
+      new Date().toISOString()
+    );
+  return Number(res.lastInsertRowid);
+}
+
+export interface ArtifactInfo {
+  id: number;
+  kind: ArtifactKind;
+  name?: string;
+  size: number;
+  sha256: string;
+}
+
+function listArtifacts(runId: string): ArtifactInfo[] {
+  return getStore()
+    .prepare(
+      'SELECT id, kind, path, LENGTH(blob) AS size, sha256 FROM artifacts WHERE run_id = ? ORDER BY id'
+    )
+    .all(runId)
+    .map((a) => ({
+      id: Number(a.id),
+      kind: a.kind as ArtifactKind,
+      name: a.path ? String(a.path) : undefined,
+      size: Number(a.size ?? 0),
+      sha256: String(a.sha256),
+    }));
+}
+
+export function getArtifact(
+  runId: string,
+  id: number
+): (ArtifactInfo & { content: string }) | null {
+  const a = getStore()
+    .prepare('SELECT id, kind, path, blob, sha256 FROM artifacts WHERE run_id = ? AND id = ?')
+    .get(runId, id);
+  if (!a) return null;
+  const content = a.blob === null || a.blob === undefined ? '' : String(a.blob);
+  return {
+    id: Number(a.id),
+    kind: a.kind as ArtifactKind,
+    name: a.path ? String(a.path) : undefined,
+    size: content.length,
+    sha256: String(a.sha256),
+    content,
+  };
 }
 
 /** Append a step to a run. `seq` is assigned from the steps already recorded. */
@@ -108,7 +247,7 @@ export function addRunStep(
     tokensOut?: number;
     costUsd?: number | null;
   }
-): void {
+): number {
   const db = getStore();
   const next =
     Number(
@@ -132,6 +271,27 @@ export function addRunStep(
     step.costUsd ?? null,
     new Date().toISOString()
   );
+  return next;
+}
+
+/** Fill in a step once the work it describes has finished. */
+export function completeRunStep(
+  runId: string,
+  seq: number,
+  step: { output?: unknown; status?: string; durationMs?: number }
+): void {
+  getStore()
+    .prepare(
+      `UPDATE run_steps SET output = ?, status = COALESCE(?, status), duration_ms = COALESCE(?, duration_ms)
+       WHERE run_id = ? AND seq = ?`
+    )
+    .run(
+      step.output === undefined ? null : JSON.stringify(step.output),
+      step.status ?? null,
+      step.durationMs ?? null,
+      runId,
+      seq
+    );
 }
 
 export function listRuns(limit = 50): RunRecord[] {
@@ -141,7 +301,9 @@ export function listRuns(limit = 50): RunRecord[] {
     .map(rowToRun);
 }
 
-export function getRun(id: string): (RunRecord & { steps: unknown[] }) | null {
+export function getRun(
+  id: string
+): (RunRecord & { steps: unknown[]; artifacts: ArtifactInfo[] }) | null {
   const db = getStore();
   const row = db.prepare(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`).get(id);
   if (!row) return null;
@@ -164,7 +326,7 @@ export function getRun(id: string): (RunRecord & { steps: unknown[] }) | null {
       costUsd: s.cost_usd === null ? null : Number(s.cost_usd),
       createdAt: String(s.created_at),
     }));
-  return { ...rowToRun(row), steps };
+  return { ...rowToRun(row), steps, artifacts: listArtifacts(id) };
 }
 
 /** The run the current async call chain belongs to, if any. */
@@ -292,14 +454,25 @@ export function recordModelCall(call: ModelCallRecord): void {
  * cancelled, not failed.
  */
 export async function recordRun<T>(
-  input: { trigger: RunTrigger; automationId?: string; message?: string; signal?: AbortSignal },
+  input: {
+    trigger: RunTrigger;
+    automationId?: string;
+    message?: string;
+    signal?: AbortSignal;
+    /** The state the run starts in. Default: executing. */
+    status?: RunStatus;
+    /** Called once the run exists, before `fn` starts. */
+    onCreated?: (runId: string) => void;
+  },
   fn: () => Promise<T>
 ): Promise<T> {
   const runId = createRun({
     trigger: input.trigger,
     automationId: input.automationId,
     input: input.message,
+    status: input.status,
   });
+  input.onCreated?.(runId);
   const controller = new AbortController();
   const detach = link(input.signal, controller);
   activeRuns.set(runId, controller);
@@ -313,7 +486,13 @@ export async function recordRun<T>(
     return result;
   } catch (e) {
     if (isCancellation(e, controller.signal)) {
-      const reason = reasonOf(controller.signal).message;
+      // Cancelled from outside: the signal says why. Cancelled by the run's own
+      // decision (a push nobody approved): the error does.
+      const reason = controller.signal.aborted
+        ? reasonOf(controller.signal).message
+        : e instanceof Error
+          ? e.message
+          : 'Cancelled';
       finishRun(runId, 'cancelled', reason);
       emit('run.cancelled', { reason }, { runId });
       throw e;

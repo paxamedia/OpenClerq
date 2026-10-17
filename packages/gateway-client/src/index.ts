@@ -33,6 +33,18 @@ function authHeaders(): Record<string, string> {
   return gatewayToken ? { Authorization: `Bearer ${gatewayToken}` } : {};
 }
 
+/** A refusal from the gateway, with its status and parsed JSON body when it had one. */
+export class GatewayError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: Record<string, unknown> | null
+  ) {
+    super(message);
+    this.name = 'GatewayError';
+  }
+}
+
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(getUrl(path), {
     ...options,
@@ -40,7 +52,13 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Gateway ${res.status}: ${body || res.statusText}`);
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(body) as Record<string, unknown>;
+    } catch {
+      /* not JSON */
+    }
+    throw new GatewayError(`Gateway ${res.status}: ${body || res.statusText}`, res.status, parsed);
   }
   return res.json() as Promise<T>;
 }
@@ -106,6 +124,73 @@ export interface RunSummary {
   costKnown: boolean;
   tokensIn: number;
   tokensOut: number;
+  automationName?: string;
+  repoId?: string;
+  /** The branch an automation run committed to. */
+  branch?: string;
+  prUrl?: string;
+}
+
+export interface ArtifactInfo {
+  id: number;
+  kind: 'diff' | 'log' | 'file' | 'report';
+  name?: string;
+  size: number;
+  sha256: string;
+}
+
+export interface RunDetail extends RunSummary {
+  steps: RunStep[];
+  artifacts: ArtifactInfo[];
+}
+
+export interface DriverInfo {
+  id: string;
+  available: boolean;
+  path?: string;
+  version?: string;
+  /** Why it cannot run. */
+  reason?: string;
+}
+
+export interface AutomationSummary {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  schedule: string | null;
+  nextRunAt: string | null;
+  driver: string | null;
+  repo: string | null;
+  /** Why a spec saved by an earlier release no longer passes; it needs editing. */
+  problem: string | null;
+  running: boolean;
+  monthSpendUsd: number;
+  lastRun: {
+    id: string;
+    status: string;
+    exitReason?: string;
+    prUrl?: string;
+    createdAt: string;
+  } | null;
+  updatedAt: string;
+}
+
+export interface AutomationPreview {
+  nextRunAt: string | null;
+  repo: { path: string; origin?: string | null; project?: string | null; base?: string };
+  driver: DriverInfo;
+  checks: Array<{ level: 'ok' | 'warning' | 'error'; message: string }>;
+  ready: boolean;
+}
+
+export interface Approval {
+  id: number;
+  runId: string;
+  tool: string;
+  tier: 'low' | 'medium' | 'high';
+  reason: string;
+  requestedAt: string;
 }
 
 export type PipelineMode = 'raw' | 'managed';
@@ -399,11 +484,73 @@ export const gateway = {
     return fetchJson(`/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: '{}' });
   },
 
+  artifact(runId: string, artifactId: number): Promise<ArtifactInfo & { content: string }> {
+    return fetchJson(
+      `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(String(artifactId))}`
+    );
+  },
+
+  drivers(): Promise<{ drivers: DriverInfo[] }> {
+    return fetchJson('/drivers');
+  },
+
+  automations(): Promise<{ automations: AutomationSummary[] }> {
+    return fetchJson('/automations');
+  },
+
+  automation(id: string): Promise<AutomationSummary & { source: string }> {
+    return fetchJson(`/automations/${encodeURIComponent(id)}`);
+  },
+
+  /** Check a spec against this machine without saving or running it. */
+  previewAutomation(spec: string, id?: string): Promise<AutomationPreview> {
+    return fetchJson('/automations/preview', {
+      method: 'POST',
+      body: JSON.stringify({ spec, id }),
+    });
+  },
+
+  /** Save a new automation. It starts disabled. */
+  createAutomation(spec: string): Promise<AutomationSummary & { source: string }> {
+    return fetchJson('/automations', { method: 'POST', body: JSON.stringify({ spec }) });
+  },
+
+  updateAutomation(id: string, spec: string): Promise<AutomationSummary & { source: string }> {
+    return fetchJson(`/automations/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ spec }),
+    });
+  },
+
+  deleteAutomation(id: string): Promise<{ ok: boolean }> {
+    return fetchJson(`/automations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  setAutomationEnabled(id: string, enabled: boolean): Promise<AutomationSummary> {
+    return fetchJson(`/automations/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, {
+      method: 'POST',
+      body: '{}',
+    });
+  },
+
+  /** Start a run now. Resolves once the run exists; follow it with run(). */
+  runAutomation(id: string): Promise<{ runId: string }> {
+    return fetchJson(`/automations/${encodeURIComponent(id)}/run`, { method: 'POST', body: '{}' });
+  },
+
+  approvals(): Promise<{ approvals: Approval[] }> {
+    return fetchJson('/approvals');
+  },
+
+  decideApproval(id: number, decision: 'approve' | 'deny'): Promise<{ ok: boolean }> {
+    return fetchJson(`/approvals/${id}/${decision}`, { method: 'POST', body: '{}' });
+  },
+
   runs(limit = 50): Promise<{ runs: RunSummary[] }> {
     return fetchJson(`/runs?limit=${encodeURIComponent(String(limit))}`);
   },
 
-  run(id: string): Promise<RunSummary & { steps: RunStep[] }> {
+  run(id: string): Promise<RunDetail> {
     return fetchJson(`/runs/${encodeURIComponent(id)}`);
   },
 

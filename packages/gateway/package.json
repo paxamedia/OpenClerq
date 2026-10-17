@@ -14,12 +14,17 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@clerq/drivers": "workspace:^",
+    "@clerq/policy": "workspace:^",
     "@clerq/providers": "workspace:^",
+    "@clerq/sandbox": "workspace:^",
     "@clerq/store": "workspace:^",
+    "@clerq/workspaces": "workspace:^",
     "chokidar": "^5.0.0",
     "dotenv": "^16.4.0",
     "express": "^5.0.0",
-    "node-cron": "^4.6.0"
+    "node-cron": "^4.6.0",
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
