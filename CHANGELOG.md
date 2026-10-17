@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Cron triggers with a weekday or day-of-month field, such as `0 8 * * 1`, could fail to fire: node-cron 4.2.1 miscalculated when they were next due. Upgraded to 4.6.0.
+
 ## [0.5.1] — 2026-10-17
 
 The first published release. Its installers carry the real updater key, so they can update in-app from 0.5.1 on.

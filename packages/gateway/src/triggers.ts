@@ -7,7 +7,7 @@
  */
 
 import path from 'node:path';
-import cron from 'node-cron';
+import cron, { type ScheduledTask } from 'node-cron';
 import chokidar from 'chokidar';
 import { getStore, isStoreOpen } from './store.js';
 import { logger } from './logger.js';
@@ -190,7 +190,7 @@ export function markTriggerFired(id: string): void {
 /** How long a watched file must stay quiet before its trigger fires. */
 export const FILE_DEBOUNCE_MS = 1000;
 
-const cronJobs: cron.ScheduledTask[] = [];
+const cronJobs: ScheduledTask[] = [];
 let fileWatcher: ReturnType<typeof chokidar.watch> | null = null;
 const webhookTriggers: Map<string, string> = new Map();
 let taskRunner: ((message: string, source: TriggerSource) => Promise<unknown>) | null = null;
