@@ -16,6 +16,7 @@ For where this architecture is going, see [ROADMAP.md](ROADMAP.md).
 | Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration |
 | Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration           |
 | Agent drivers    | `packages/drivers`  | Run a coding agent's CLI (Claude Code) in a workspace   |
+| Interface kit    | `packages/web`      | Tokens, fonts and icons for the next desktop UI         |
 | Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                            |
 | Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets               |
 

@@ -1,0 +1,115 @@
+/*
+ * Design tokens. This is the only file that may name a colour, a radius or a
+ * font: src/guards.test.ts fails on any found elsewhere, and checks the text and
+ * state colours for WCAG AA contrast in both themes.
+ *
+ * <html data-theme="light|dark"> forces a theme; without it the system setting
+ * decides. The two dark blocks must stay identical, which the guards also check.
+ */
+
+:root {
+  --font-sans: 'DM Sans Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* For the `font` shorthand: weight size/line family. */
+  --type-page: 600 20px/28px var(--font-sans);
+  --type-section: 600 15px/22px var(--font-sans);
+  --type-body: 400 14px/20px var(--font-sans);
+  --type-secondary: 400 13px/18px var(--font-sans);
+  --type-label: 500 12px/16px var(--font-sans);
+  --type-kpi: 500 28px/32px var(--font-mono);
+  --type-code: 400 13px/20px var(--font-mono);
+  --tracking-label: 0.04em;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* Square everywhere; controls (buttons, inputs, checkboxes, switches) may use 1px. */
+  --radius: 0;
+  --radius-control: 1px;
+  --line-width: 1px;
+  --focus-width: 2px;
+  --focus-offset: 1px;
+  --dot-size: 6px;
+
+  --rail-width: 200px;
+  --rail-width-collapsed: 48px;
+  --topbar-height: 48px;
+  --statusbar-height: 28px;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 120ms;
+  --duration-panel: 200ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-panel: 0ms;
+  }
+}
+
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --surface-2: #f3f1ec;
+  --line: #e3e0d7;
+  --line-strong: #cbc7b9;
+  --ink: #14140f;
+  --ink-2: #3f3f37;
+  --ink-3: #6b6a60;
+  --accent: #0d5c54;
+  --on-accent: #ffffff;
+  --accent-weak: #e9f1ef;
+  --ok: #1f7a4a;
+  --warn: #a35f00;
+  --err: #b3261e;
+  --scrim: rgb(20 20 15 / 0.4);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #11110e;
+    --surface: #191915;
+    --surface-2: #22221d;
+    --line: #2f2e27;
+    --line-strong: #46443a;
+    --ink: #f2f0e8;
+    --ink-2: #c6c3b7;
+    --ink-3: #8f8c80;
+    --accent: #4fb3a5;
+    --on-accent: #0b1f1c;
+    --accent-weak: #16302c;
+    --ok: #4cc38a;
+    --warn: #e0a53b;
+    --err: #f0786c;
+    --scrim: rgb(0 0 0 / 0.6);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #11110e;
+  --surface: #191915;
+  --surface-2: #22221d;
+  --line: #2f2e27;
+  --line-strong: #46443a;
+  --ink: #f2f0e8;
+  --ink-2: #c6c3b7;
+  --ink-3: #8f8c80;
+  --accent: #4fb3a5;
+  --on-accent: #0b1f1c;
+  --accent-weak: #16302c;
+  --ok: #4cc38a;
+  --warn: #e0a53b;
+  --err: #f0786c;
+  --scrim: rgb(0 0 0 / 0.6);
+}
