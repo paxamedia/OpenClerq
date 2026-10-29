@@ -1,0 +1,15 @@
+.ui-tooltip-anchor {
+  display: inline-flex;
+}
+
+.ui-tooltip {
+  max-width: 240px;
+  padding: var(--space-1) var(--space-2);
+  border: var(--line-width) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--bg);
+  font: var(--type-secondary);
+  pointer-events: none;
+  animation: ui-rise var(--duration-fast) var(--ease);
+}

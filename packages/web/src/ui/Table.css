@@ -1,0 +1,121 @@
+.ui-table-wrap {
+  max-height: 100%;
+  overflow: auto;
+  border: var(--line-width) solid var(--line);
+  background: var(--surface);
+}
+
+.ui-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.ui-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 32px;
+  padding: 0 var(--space-3);
+  border-bottom: var(--line-width) solid var(--line);
+  background: var(--surface);
+  color: var(--ink-3);
+  font: var(--type-label);
+  letter-spacing: var(--tracking-label);
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ui-th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.ui-th-sort:hover {
+  color: var(--ink);
+}
+
+.ui-th-icon {
+  opacity: 0.5;
+}
+
+.ui-th-icon.is-active {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.ui-table td {
+  height: 40px;
+  padding: 0 var(--space-3);
+  border-bottom: var(--line-width) solid var(--line);
+  color: var(--ink);
+  vertical-align: middle;
+}
+
+.ui-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ui-table td:first-child {
+  border-left: var(--focus-width) solid transparent;
+}
+
+.ui-table .is-end {
+  text-align: right;
+}
+
+.ui-table td.is-mono {
+  font: var(--type-code);
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-table tr.is-clickable {
+  cursor: pointer;
+}
+
+.ui-table tr.is-clickable:hover td {
+  background: var(--surface-2);
+}
+
+.ui-table tr.is-clickable:focus-visible {
+  outline-offset: calc(-1 * var(--focus-width));
+}
+
+.ui-table tr.is-selected td {
+  background: var(--accent-weak);
+}
+
+.ui-table tr.is-selected td:first-child {
+  border-left-color: var(--accent);
+}
+
+.ui-table-empty {
+  padding: var(--space-8) var(--space-3);
+  text-align: center;
+}
+
+.ui-col--xs {
+  width: 64px;
+}
+
+.ui-col--sm {
+  width: 120px;
+}
+
+.ui-col--md {
+  width: 200px;
+}
+
+.ui-col--lg {
+  width: 320px;
+}

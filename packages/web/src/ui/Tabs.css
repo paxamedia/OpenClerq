@@ -1,0 +1,63 @@
+.ui-tablist {
+  display: flex;
+  gap: var(--space-4);
+  border-bottom: var(--line-width) solid var(--line);
+}
+
+.ui-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 36px;
+  margin-bottom: calc(-1 * var(--line-width));
+  padding: 0;
+  border: 0;
+  border-bottom: var(--focus-width) solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink-3);
+  font: var(--type-body);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease);
+}
+
+.ui-tab:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.ui-tab[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+
+.ui-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ui-tab-count {
+  min-width: 18px;
+  padding: 0 var(--space-1);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font: var(--type-label);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.ui-tab[aria-selected='true'] .ui-tab-count {
+  background: var(--accent-weak);
+  color: var(--accent);
+}
+
+.ui-tabpanel {
+  padding-top: var(--space-4);
+}
+
+.ui-tabpanel:focus-visible {
+  outline-offset: var(--space-1);
+}

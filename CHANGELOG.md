@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A run records the worktree, the agent's tool calls, each gate, the commit, the push and the PR as steps, and keeps the diff and the agent's output. A run interrupted by a restart is marked failed and its worktree removed.
 - Desktop **Automations** module: a spec editor that checks a spec against this machine before saving, runs with their steps and diff, and the approvals inbox.
 - `packages/web`, the start of the rebuilt desktop interface: design tokens for light and dark, bundled DM Sans and JetBrains Mono, an icon wrapper, and tests that fail on corners over 1px, inline styles, colours or fonts outside the tokens, and text contrast below WCAG AA.
+- Component kit in `packages/web` for the new interface: buttons, fields, checkbox, switch, segmented control, tabs, a sortable table, run status tags, key–value lists, code blocks, skeletons, empty states, tooltips, popovers, menus, dialogs, a drawer and toasts. All keyboard-operable; the Foundations page shows each one in both themes.
 
 ### Changed
 

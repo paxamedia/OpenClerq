@@ -1,0 +1,42 @@
+.ui-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink);
+  font: var(--type-secondary);
+  white-space: nowrap;
+}
+
+.ui-status-dot {
+  flex-shrink: 0;
+  width: var(--dot-size);
+  height: var(--dot-size);
+  background: var(--ink-3);
+}
+
+.ui-status--accent .ui-status-dot {
+  background: var(--accent);
+  animation: ui-pulse 0.8s var(--ease) infinite alternate;
+}
+
+.ui-status--ok .ui-status-dot {
+  background: var(--ok);
+}
+
+.ui-status--warn .ui-status-dot {
+  background: var(--warn);
+}
+
+.ui-status--err .ui-status-dot {
+  background: var(--err);
+}
+
+.ui-status--err {
+  color: var(--err);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-status--accent .ui-status-dot {
+    animation: none;
+  }
+}

@@ -1,6 +1,6 @@
 /**
- * Foundations: the colours, type, spacing, shapes, motion and icons on one page,
- * in either theme, for checking the design system while the interface is built.
+ * Foundations: the colours, type, spacing, icons and components on one page, in
+ * either theme, for checking the design system while the interface is built.
  * The desktop dev server serves it at /foundations.html; release builds leave it out.
  */
 
@@ -30,8 +30,11 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
+import { SegmentedControl } from '../ui/Choice';
 import { Icon } from '../ui/Icon';
+import { ToastProvider } from '../ui/Toast';
 import { contrastRatio } from '../ui/contrast';
+import { ComponentsDemo } from './ComponentsDemo';
 import './foundations.css';
 
 type Theme = 'auto' | 'light' | 'dark';
@@ -49,6 +52,7 @@ const COLOURS: Array<[token: string, use: string]> = [
   ['--ink-2', 'Secondary text'],
   ['--ink-3', 'Labels, metadata'],
   ['--accent', 'Primary action, focus, running'],
+  ['--accent-hover', 'Primary action on hover'],
   ['--on-accent', 'Text on accent'],
   ['--accent-weak', 'Selected nav, accent fills'],
   ['--ok', 'Done, passed'],
@@ -79,14 +83,6 @@ const TYPE: Array<[role: string, spec: string, sample: string]> = [
 ];
 
 const SPACE = [1, 2, 3, 4, 6, 8, 12];
-
-const STATES: Array<[tone: string, label: string]> = [
-  ['muted', 'Queued'],
-  ['accent', 'Running'],
-  ['warn', 'Needs approval'],
-  ['ok', 'Done'],
-  ['err', 'Failed'],
-];
 
 const ICONS: Array<[name: string, glyph: LucideIcon]> = [
   ['Home', House],
@@ -160,106 +156,84 @@ export function Foundations() {
   }, [refresh]);
 
   return (
-    <main className="fdn">
-      <header className="fdn-head">
-        <div>
-          <h1 className="fdn-title">Foundations</h1>
-          <p className="fdn-sub">Tokens, type and icons for the OpenClerq interface.</p>
-        </div>
-        <div className="fdn-switch" role="group" aria-label="Theme">
-          {(['auto', 'light', 'dark'] as Theme[]).map((t) => (
-            <button
-              key={t}
-              type="button"
-              className="fdn-switch-option"
-              aria-pressed={theme === t}
-              onClick={() => setTheme(t)}
-            >
-              {t === 'auto' ? 'System' : t === 'light' ? 'Light' : 'Dark'}
-            </button>
-          ))}
-        </div>
-      </header>
+    <ToastProvider>
+      <main className="fdn">
+        <header className="fdn-head">
+          <div>
+            <h1 className="fdn-title">Foundations</h1>
+            <p className="fdn-sub">
+              Tokens, type, icons and components for the OpenClerq interface.
+            </p>
+          </div>
+          <SegmentedControl
+            label="Theme"
+            value={theme}
+            onChange={setTheme}
+            options={[
+              { value: 'auto', label: 'System' },
+              { value: 'light', label: 'Light' },
+              { value: 'dark', label: 'Dark' },
+            ]}
+          />
+        </header>
 
-      <section className="fdn-section">
-        <h2 className="fdn-label">Colour</h2>
-        <ul className="fdn-swatches">
-          {COLOURS.map(([token, use]) => (
-            <li key={token} className="fdn-swatch">
-              <span className="fdn-chip" data-token={token} />
-              <code className="fdn-token">{token}</code>
-              <span className="fdn-meta">{use}</span>
-              <span className="fdn-meta fdn-mono">
-                {tokens[token]}
-                {TEXT_ON.has(token) && ` · ${ratio(tokens[token], tokens[TEXT_ON.get(token)!])}`}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </section>
+        <section className="fdn-section">
+          <h2 className="fdn-label">Colour</h2>
+          <ul className="fdn-swatches">
+            {COLOURS.map(([token, use]) => (
+              <li key={token} className="fdn-swatch">
+                <span className="fdn-chip" data-token={token} />
+                <code className="fdn-token">{token}</code>
+                <span className="fdn-meta">{use}</span>
+                <span className="fdn-meta fdn-mono">
+                  {tokens[token]}
+                  {TEXT_ON.has(token) && ` · ${ratio(tokens[token], tokens[TEXT_ON.get(token)!])}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
 
-      <section className="fdn-section">
-        <h2 className="fdn-label">Type</h2>
-        <dl className="fdn-type">
-          {TYPE.map(([role, spec, sample]) => (
-            <div key={role} className="fdn-type-row">
-              <dt className="fdn-meta">{spec}</dt>
-              <dd className="fdn-type-sample" data-role={role}>
-                {sample}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </section>
+        <section className="fdn-section">
+          <h2 className="fdn-label">Type</h2>
+          <dl className="fdn-type">
+            {TYPE.map(([role, spec, sample]) => (
+              <div key={role} className="fdn-type-row">
+                <dt className="fdn-meta">{spec}</dt>
+                <dd className="fdn-type-sample" data-role={role}>
+                  {sample}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
 
-      <section className="fdn-section">
-        <h2 className="fdn-label">Space</h2>
-        <ul className="fdn-space">
-          {SPACE.map((step) => (
-            <li key={step} className="fdn-space-row">
-              <span className="fdn-space-bar" data-step={step} />
-              <span className="fdn-meta fdn-mono">--space-{step}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
+        <section className="fdn-section">
+          <h2 className="fdn-label">Space</h2>
+          <ul className="fdn-space">
+            {SPACE.map((step) => (
+              <li key={step} className="fdn-space-row">
+                <span className="fdn-space-bar" data-step={step} />
+                <span className="fdn-meta fdn-mono">--space-{step}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
 
-      <section className="fdn-section">
-        <h2 className="fdn-label">Shape and state</h2>
-        <div className="fdn-row">
-          <button type="button" className="fdn-button fdn-button--primary">
-            <Icon glyph={Play} />
-            Run now
-          </button>
-          <button type="button" className="fdn-button">
-            <Icon glyph={Plus} />
-            New automation
-          </button>
-          <input className="fdn-input" placeholder="Search runs" aria-label="Search runs" />
-          <span className="fdn-panel">Panel · square</span>
-        </div>
-        <ul className="fdn-row fdn-states">
-          {STATES.map(([tone, label]) => (
-            <li key={tone} className="fdn-state">
-              <span className="fdn-dot" data-tone={tone} />
-              {label}
-            </li>
-          ))}
-        </ul>
-        <div className="fdn-progress" role="progressbar" aria-label="Working" />
-      </section>
+        <section className="fdn-section">
+          <h2 className="fdn-label">Icons · 16 px · stroke 1.5 · square caps</h2>
+          <ul className="fdn-icons">
+            {ICONS.map(([name, glyph]) => (
+              <li key={name} className="fdn-icon">
+                <Icon glyph={glyph} />
+                <span className="fdn-meta">{name}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
 
-      <section className="fdn-section">
-        <h2 className="fdn-label">Icons · 16 px · stroke 1.5 · square caps</h2>
-        <ul className="fdn-icons">
-          {ICONS.map(([name, glyph]) => (
-            <li key={name} className="fdn-icon">
-              <Icon glyph={glyph} />
-              <span className="fdn-meta">{name}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-    </main>
+        <ComponentsDemo />
+      </main>
+    </ToastProvider>
   );
 }

@@ -183,6 +183,7 @@ describe('colour tokens', () => {
         ]
       ),
       ['--on-accent', '--accent'],
+      ['--on-accent', '--accent-hover'],
     ];
     const failures = Object.entries({ light, dark: darkForced }).flatMap(([theme, values]) =>
       pairs

@@ -1,0 +1,190 @@
+/* Checkbox */
+.ui-check {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.ui-check.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ui-check-input {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.ui-check-box {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: var(--line-width) solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--on-accent);
+  transition:
+    background var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease);
+}
+
+.ui-check-box svg {
+  opacity: 0;
+}
+
+.ui-check:hover .ui-check-input:not(:disabled) + .ui-check-box {
+  border-color: var(--ink-3);
+}
+
+.ui-check-input:checked + .ui-check-box {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.ui-check-input:checked + .ui-check-box svg {
+  opacity: 1;
+}
+
+.ui-check-input:focus-visible + .ui-check-box {
+  outline: var(--focus-width) solid var(--accent);
+  outline-offset: var(--focus-offset);
+}
+
+.ui-check-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-check-hint {
+  font: var(--type-secondary);
+  color: var(--ink-3);
+}
+
+/* Switch */
+.ui-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.ui-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ui-switch-track {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 28px;
+  height: 16px;
+  border: var(--line-width) solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  transition:
+    background var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease);
+}
+
+.ui-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  background: var(--ink-3);
+  transition:
+    transform var(--duration-fast) var(--ease),
+    background var(--duration-fast) var(--ease);
+}
+
+.ui-switch[aria-checked='true'] .ui-switch-track {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.ui-switch[aria-checked='true'] .ui-switch-thumb {
+  background: var(--on-accent);
+  transform: translateX(12px);
+}
+
+.ui-switch:focus-visible {
+  outline: none;
+}
+
+.ui-switch:focus-visible .ui-switch-track {
+  outline: var(--focus-width) solid var(--accent);
+  outline-offset: var(--focus-offset);
+}
+
+/* Segmented control */
+.ui-segmented {
+  display: inline-flex;
+  border: var(--line-width) solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
+
+.ui-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 30px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink-2);
+  font: var(--type-body);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
+}
+
+.ui-segment + .ui-segment {
+  border-left: var(--line-width) solid var(--line-strong);
+}
+
+.ui-segmented--sm .ui-segment {
+  height: 26px;
+  padding: 0 var(--space-2);
+  font: var(--type-secondary);
+}
+
+.ui-segment:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.ui-segment[aria-checked='true'] {
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.ui-segment:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ui-segment:focus-visible {
+  outline-offset: -2px;
+}
