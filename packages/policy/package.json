@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "typescript": "^5.6.0",
-    "vitest": "^5.0.0",
+    "vitest": "^5.0.5",
     "@types/node": "^22.0.0"
   },
   "description": "Capability policy: what an agent may ask for, before the sandbox decides what it can do"

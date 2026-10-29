@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cron triggers with a weekday or day-of-month field, such as `0 8 * * 1`, could fail to fire: node-cron 4.2.1 miscalculated when they were next due. Upgraded to 4.6.0.
 - A module list saved in the desktop settings hid modules bundled with later releases.
 
+### Security
+
+- `body-parser` and `qs`, used by Express in the gateway, are pinned to their patched releases.
+- The desktop's `rustls-webpki` and `webpki-root-certs` are updated past advisories that let distrusted certificate intermediates verify.
+- Build and test tooling moves to `vite` 7.3.7 and `vitest` 5.0.5, past advisories in the dev server and the test mocker.
+
 ## [0.5.1] — 2026-10-17
 
 The first published release. Its installers carry the real updater key, so they can update in-app from 0.5.1 on.
