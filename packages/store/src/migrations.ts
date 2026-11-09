@@ -259,4 +259,22 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_scoped_tokens_subject ON scoped_tokens(kind, subject);
     `,
   },
+  {
+    id: 7,
+    name: 'modules',
+    // Every module the gateway has started, with what its manifest declares.
+    sql: `
+      CREATE TABLE modules (
+        id            TEXT PRIMARY KEY,
+        name          TEXT NOT NULL,
+        version       TEXT NOT NULL,
+        dir           TEXT NOT NULL,
+        permissions   TEXT NOT NULL,
+        status        TEXT NOT NULL CHECK (status IN ('loaded','failed')),
+        error         TEXT,
+        first_seen_at TEXT NOT NULL,
+        loaded_at     TEXT NOT NULL
+      );
+    `,
+  },
 ];

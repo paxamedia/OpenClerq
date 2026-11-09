@@ -119,6 +119,11 @@ launchd does not have it and kickstarts it; stop boots it out. Over HTTP:
 `GET /api/modules/<id>/services` and `POST /api/modules/<id>/services/<label>/start|stop`. Each
 start and stop is audited and emits `service.changed`. Labels not in the manifest get `404`.
 
+**Permissions.** A manifest may declare `permissions`: `exec` (exact commands), `fs.read` and
+`fs.write` (paths), `net` (hosts), `secrets`, `services` and `llm`. They are parsed, shown at
+`GET /modules` with any warnings, given to the module as `ctx.permissions`, and recorded; a change
+since the last start goes in the audit log. **They are not enforced yet.**
+
 **UI.** A module that ships `dist/ui/index.html` has it served at `/api/modules/<id>/ui/`, without
 a token: these are static files with no data in them, and an iframe cannot send a header. The UI
 gets a token from the desktop (below) and sends it on its API calls. Every path under `/ui` is

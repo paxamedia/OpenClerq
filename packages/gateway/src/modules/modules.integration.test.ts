@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGateway } from '../gateway.js';
+import { getStore } from '../store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXAMPLE = path.resolve(__dirname, '../../../module-sdk/examples/hello-world');
@@ -382,5 +383,33 @@ describe('module services', () => {
     expect(fs.readFileSync(path.join(home, 'launchctl.log'), 'utf8')).not.toMatch(
       /bootstrap|kickstart/
     );
+  });
+});
+
+describe('module permissions', () => {
+  it('lists what a manifest declares, and records it in the audit log', async () => {
+    const { modules } = (await (await api('/modules')).json()) as {
+      modules: Array<{
+        id: string;
+        permissions: Record<string, unknown>;
+        permissionWarnings: string[];
+      }>;
+    };
+    const hello = modules.find((m) => m.id === 'hello-world')!;
+    expect(hello.permissions).toEqual({
+      exec: [],
+      fs: { read: [], write: [] },
+      net: [],
+      secrets: ['token'],
+      services: ['org.example.hello-world.worker'],
+      llm: false,
+    });
+    expect(hello.permissionWarnings).toEqual([]);
+    const row = getStore()
+      .prepare(
+        "SELECT detail FROM audit_log WHERE action = 'module.installed' AND subject = 'hello-world'"
+      )
+      .get();
+    expect(JSON.parse(String(row?.detail)).permissions.secrets).toEqual(['token']);
   });
 });

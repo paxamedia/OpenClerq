@@ -249,6 +249,17 @@ export interface ModuleInfo {
   /** Where its UI is served, e.g. `/api/modules/<id>/ui/`; null without one. */
   ui: string | null;
   badge: string | null;
+  /** What the manifest declares it needs. Not enforced. */
+  permissions: {
+    exec: string[];
+    fs: { read: string[]; write: string[] };
+    net: string[];
+    secrets: string[];
+    services: string[];
+    llm: boolean;
+  };
+  /** Parts of `permissions` that were malformed and ignored. */
+  permissionWarnings: string[];
   triggers: Array<{
     id: string;
     kind: 'cron' | 'file' | 'webhook';

@@ -37,6 +37,8 @@ export function mountModuleRoutes(app: Express, host: ModuleHost): void {
         ui: h.status === 'loaded' && uiDir(h.module.dir) ? `/api/modules/${h.module.id}/ui/` : null,
         triggers: host.triggers.list(h.module.id),
         badge: badgeOf(h.module.id),
+        permissions: h.permissions,
+        permissionWarnings: h.permissionWarnings,
       })),
     });
   });

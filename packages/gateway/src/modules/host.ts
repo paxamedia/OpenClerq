@@ -16,6 +16,7 @@ import { loadModulesFromDir, type LoadedModule } from '../module-loader.js';
 import { createModuleContext, type ContextHandle } from './context.js';
 import { ModuleTriggers, TriggerError } from './triggers.js';
 import { ServiceError } from './services.js';
+import { parsePermissions, recordModule, type ModulePermissions } from './permissions.js';
 
 export type ModuleStatus = 'loaded' | 'failed';
 
@@ -24,6 +25,9 @@ export interface HostedModule {
   status: ModuleStatus;
   error?: string;
   handle?: ContextHandle;
+  /** Declared in the manifest; not enforced. */
+  permissions: ModulePermissions;
+  permissionWarnings: string[];
 }
 
 export class ModuleHost {
@@ -51,8 +55,15 @@ export class ModuleHost {
 
   private async start(mod: LoadedModule): Promise<void> {
     if (this.hosted.has(mod.id)) return;
-    const entry: HostedModule = { module: mod, status: 'loaded' };
+    const { permissions, warnings } = parsePermissions(mod.manifest);
+    const entry: HostedModule = {
+      module: mod,
+      status: 'loaded',
+      permissions,
+      permissionWarnings: warnings,
+    };
     this.hosted.set(mod.id, entry);
+    for (const w of warnings) logger.warn('Module manifest', { moduleId: mod.id, problem: w });
     if (mod.error) return this.fail(entry, mod.error);
     const handle = createModuleContext(mod, { triggers: this.triggers });
     entry.handle = handle;
@@ -123,13 +134,34 @@ export class ModuleHost {
       );
     }
     this.app.use(`/api/modules/${mod.id}`, handle.router);
+    this.record(entry);
     logger.info('Module loaded', { moduleId: mod.id, version: mod.manifest.version });
+  }
+
+  private record(entry: HostedModule): void {
+    try {
+      recordModule({
+        id: entry.module.id,
+        name: String(entry.module.manifest.name ?? entry.module.id),
+        version: String(entry.module.manifest.version ?? '0.0.0'),
+        dir: entry.module.dir,
+        status: entry.status,
+        error: entry.error,
+        permissions: entry.permissions,
+      });
+    } catch (e) {
+      logger.warn('Could not record module', {
+        moduleId: entry.module.id,
+        err: e instanceof Error ? e.message : String(e),
+      });
+    }
   }
 
   private fail(entry: HostedModule, error: string): void {
     this.triggers.remove(entry.module.id);
     entry.status = 'failed';
     entry.error = error;
+    this.record(entry);
     logger.error('Module failed to load', { moduleId: entry.module.id, err: error });
   }
 }

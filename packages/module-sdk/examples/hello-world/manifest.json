@@ -13,5 +13,10 @@
       "label": "org.example.hello-world.worker",
       "name": "Example worker"
     }
-  ]
+  ],
+  "permissions": {
+    "secrets": ["token"],
+    "services": ["org.example.hello-world.worker"],
+    "llm": false
+  }
 }

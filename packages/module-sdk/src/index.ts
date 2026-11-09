@@ -218,6 +218,21 @@ export interface ModuleLogger {
   error(message: string, meta?: Record<string, unknown>): void;
 }
 
+/** What a manifest's `permissions` declare. Shown to the operator; not enforced yet. */
+export interface ModulePermissions {
+  /** Exact commands it runs. */
+  exec: string[];
+  fs: { read: string[]; write: string[] };
+  /** Hosts it calls. */
+  net: string[];
+  /** Its vault names. */
+  secrets: string[];
+  /** launchd labels. */
+  services: string[];
+  /** Whether it calls models. */
+  llm: boolean;
+}
+
 export interface ModuleContext {
   /** The manifest id. */
   readonly id: string;
@@ -229,6 +244,7 @@ export interface ModuleContext {
    * `~/.clerq/modules/<id>.json` when that file exists.
    */
   readonly config: Readonly<Record<string, unknown>>;
+  readonly permissions: Readonly<ModulePermissions>;
   routes: ModuleRoutes;
   store: ModuleStore;
   secrets: ModuleSecrets;

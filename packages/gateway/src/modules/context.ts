@@ -22,6 +22,7 @@ import type { LoadedModule, ModuleRouteHandler } from '../module-loader.js';
 import type { ModuleTriggers } from './triggers.js';
 import { createNotify } from './notify.js';
 import { ModuleServices, servicesOf } from './services.js';
+import { parsePermissions } from './permissions.js';
 
 /** Gateway services a context is built over. */
 export interface ContextDeps {
@@ -95,6 +96,7 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
     dir: mod.dir,
     version: String(mod.manifest.version ?? '0.0.0'),
     config: loadConfig(mod),
+    permissions: Object.freeze(parsePermissions(mod.manifest).permissions),
     routes: {
       get: route('get'),
       post: route('post'),
