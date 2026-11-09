@@ -17,7 +17,7 @@ import path from 'node:path';
 import { writePrivateFile } from '@clerq/store';
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { principalAllows, resolveToken, type Principal } from './scoped-tokens.js';
+import { normalisePath, principalAllows, resolveToken, type Principal } from './scoped-tokens.js';
 import { DEFAULT_TENANT, TENANT_ID, runInTenant } from '../tenant.js';
 
 /** Endpoints reachable without a token. These must reveal no configuration. */
@@ -139,6 +139,9 @@ export function requireAuth(
 ): (req: Request, res: Response, next: NextFunction) => void {
   return (req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'OPTIONS') return next();
+    if (normalisePath(req.path) === null) {
+      return res.status(400).json({ error: 'invalid_path', message: 'The path is not valid.' });
+    }
     if (isPublic(req)) return next();
 
     const presented = extractToken(req);

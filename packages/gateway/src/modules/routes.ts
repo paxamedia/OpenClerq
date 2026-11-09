@@ -3,7 +3,7 @@
  */
 
 import type { Express, Request, Response } from 'express';
-import { issueToken, revokeTokens, SCOPE } from '../security/scoped-tokens.js';
+import { declarableScope, issueToken, revokeTokens } from '../security/scoped-tokens.js';
 import { currentTenant } from '../tenant.js';
 import { uiDir, type ModuleHost } from './host.js';
 import { badgeOf } from './notify.js';
@@ -17,7 +17,7 @@ const MAX_TTL_S = 24 * 60 * 60;
 export function coreEndpointsOf(manifest: Record<string, unknown>): string[] {
   const raw = manifest.coreEndpoints;
   return Array.isArray(raw)
-    ? raw.filter((s): s is string => typeof s === 'string' && SCOPE.test(s))
+    ? raw.filter((s): s is string => typeof s === 'string' && declarableScope(s))
     : [];
 }
 

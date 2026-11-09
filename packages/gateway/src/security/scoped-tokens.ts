@@ -47,24 +47,56 @@ function hash(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+/**
+ * The path as the checks compare it: each segment decoded and lower-cased,
+ * empty segments dropped. Express matches routes without regard to case, so
+ * `/SECRETS` must be checked as `/secrets`. Null when a segment cannot be
+ * decoded.
+ */
+export function normalisePath(path: string): string | null {
+  try {
+    const segments = path
+      .split('/')
+      .filter(Boolean)
+      .map((s) => decodeURIComponent(s).toLowerCase());
+    if (segments.some((s) => s.includes('/'))) return null;
+    return `/${segments.join('/')}`;
+  } catch {
+    return null;
+  }
+}
+
 export function operatorOnly(path: string): boolean {
-  return OPERATOR_ONLY.some((re) => re.test(path));
+  const p = normalisePath(path);
+  return p === null || OPERATOR_ONLY.some((re) => re.test(p));
 }
 
 /** Whether one scope admits `method path`. */
 export function scopeAllows(scope: string, method: string, path: string): boolean {
   const m = SCOPE.exec(scope);
-  if (!m) return false;
+  const p = normalisePath(path);
+  if (!m || p === null) return false;
   if (m[1] !== '*' && m[1] !== method.toUpperCase()) return false;
-  const want = m[2].split('/').filter(Boolean);
-  const got = path.split('/').filter(Boolean);
+  const want = m[2].toLowerCase().split('/').filter(Boolean);
+  const got = p.split('/').filter(Boolean);
   for (let i = 0; i < want.length; i++) {
     if (want[i] === '*' && i === want.length - 1) return true;
     if (i >= got.length) return false;
     if (want[i].startsWith(':')) continue;
-    if (want[i] !== decodeURIComponent(got[i])) return false;
+    if (want[i] !== got[i]) return false;
   }
   return want.length === got.length;
+}
+
+/**
+ * A scope a manifest may declare: a fixed first segment, so it names part of
+ * the API rather than all of it.
+ */
+export function declarableScope(scope: string): boolean {
+  const m = SCOPE.exec(scope);
+  if (!m) return false;
+  const first = m[2].split('/').filter(Boolean)[0];
+  return first !== undefined && first !== '*' && !first.startsWith(':');
 }
 
 export function principalAllows(p: Principal, method: string, path: string): boolean {

@@ -318,6 +318,10 @@ describe('module tokens', () => {
     expect((await as(body.token, '/api/modules/hello-world/hello')).status).toBe(401);
   });
 
+  it('answers 400 to a path that cannot be decoded', async () => {
+    expect((await api('/runs/%E0%A4%A')).status).toBe(400);
+  });
+
   it('is only issued for a loaded module', async () => {
     expect((await mint('broken')).status).toBe(404);
   });

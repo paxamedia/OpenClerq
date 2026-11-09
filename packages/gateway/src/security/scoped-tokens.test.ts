@@ -6,6 +6,8 @@ import {
   revokeTokens,
   scopeAllows,
   principalAllows,
+  declarableScope,
+  normalisePath,
   lastSeen,
 } from './scoped-tokens.js';
 
@@ -35,6 +37,31 @@ describe('scopes', () => {
     expect(principalAllows(p, 'GET', '/devices')).toBe(false);
     expect(principalAllows(p, 'GET', '/devices/me')).toBe(true);
     expect(principalAllows(p, 'PUT', '/remote')).toBe(false);
+  });
+
+  it('compare paths as Express routes them: any case, decoded, no empty segments', () => {
+    const p = { kind: 'module' as const, scopes: ['* /*'] };
+    for (const path of [
+      '/SECRETS',
+      '/Remote',
+      '/Devices/pairing',
+      '/Modules/x/token',
+      '//secrets',
+      '/%73ecrets',
+    ]) {
+      expect(principalAllows(p, 'GET', path), path).toBe(false);
+    }
+    expect(scopeAllows('GET /runs/:id', 'GET', '/RUNS/run_1')).toBe(true);
+    expect(normalisePath('/a/%E0%A4%A')).toBeNull();
+    expect(normalisePath('/a/%2Fsecrets')).toBeNull();
+    expect(principalAllows(p, 'GET', '/a/%E0%A4%A')).toBe(false);
+  });
+
+  it('let a manifest declare only scopes with a fixed first segment', () => {
+    expect(declarableScope('GET /runs/:id')).toBe(true);
+    expect(declarableScope('* /*')).toBe(false);
+    expect(declarableScope('GET /:anything')).toBe(false);
+    expect(declarableScope('GET /')).toBe(false);
   });
 });
 
