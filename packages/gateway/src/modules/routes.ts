@@ -4,6 +4,7 @@
 
 import type { Express, Request, Response } from 'express';
 import { issueToken, revokeTokens, SCOPE } from '../security/scoped-tokens.js';
+import { currentTenant } from '../tenant.js';
 import { uiDir, type ModuleHost } from './host.js';
 import { badgeOf } from './notify.js';
 import { EXTENSION_POINTS, emptyExtensions } from './extensions.js';
@@ -94,8 +95,9 @@ export function mountModuleRoutes(app: Express, host: ModuleHost): void {
       subject: hosted.module.id,
       scopes,
       ttlMs: ttl * 1000,
+      tenantId: currentTenant(),
     });
-    res.status(201).json({ token, expiresAt, scopes });
+    res.status(201).json({ token, expiresAt, scopes, tenantId: currentTenant() });
   });
 
   /** Revoke every token issued for a module's UI. */

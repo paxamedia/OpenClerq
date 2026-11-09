@@ -46,6 +46,7 @@ designed on that basis.
 - **The gateway is authenticated.** Every endpoint except `/health` requires a bearer token, compared in constant time. There is no development bypass. The token is generated on first run at `~/.clerq/gateway-token` (mode 0600), or supplied via `CLERQ_GATEWAY_TOKEN`.
 - **Scoped tokens.** A module UI's token reaches only its module's routes and the core endpoints its manifest declares, and expires (15 minutes by default). Scoped tokens are stored as SHA-256 hashes, can be revoked at once, and never reach token, device, remote or vault endpoints.
 - **Module permissions are declared, not enforced.** A manifest's `permissions` are parsed, listed and audited when they change, but module server code still runs with the gateway's full access.
+- **Tenants are kept apart in the gateway.** Records, links, activities, inbox items and module tables are filtered by tenant, and a scoped token is bound to its tenant. Module code shares the process and the database, so a module's raw SQL must filter on its tenant itself; database-level isolation (row-level security) is planned.
 - **Module UI files are public.** `GET /api/modules/<id>/ui/*` needs no token: it serves only the module's static `dist/ui` files, and no other route can sit under it. They reveal which modules are installed, and nothing else.
 - **The gateway binds loopback.** `127.0.0.1` unless `CLERQ_HOST` is set deliberately, which also logs a warning.
 - **CORS is allow-listed.** Origins are reflected only when explicitly configured. There is no wildcard path in any mode.

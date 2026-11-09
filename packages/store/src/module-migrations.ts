@@ -7,6 +7,10 @@
  * colliding with core tables and with each other; it is not a security
  * boundary, since module code has the store anyway.
  *
+ * Every table a module creates gets a `tenant_id` column (default
+ * `default`) and an index on it, added by the store after each migration,
+ * so module data is scoped by tenant whether or not the module thinks about it.
+ *
  * Like core migrations they are append-only. Each is recorded with a checksum,
  * and one that changed after it was applied is refused rather than skipped.
  */
@@ -116,6 +120,7 @@ export function migrateModule(db: Database, moduleId: string, migrations: Migrat
     }
     db.transaction(() => {
       db.exec(m.sql);
+      addTenantColumns(db, moduleId);
       db.prepare(
         'INSERT INTO module_migrations (module_id, id, name, checksum, applied_at) VALUES (?, ?, ?, ?, ?)'
       ).run(moduleId, m.id, m.name, sum, new Date().toISOString());
@@ -123,4 +128,31 @@ export function migrateModule(db: Database, moduleId: string, migrations: Migrat
     ran.push(m.id);
   }
   return ran;
+}
+
+/**
+ * Give each of a module's ordinary tables a `tenant_id` column and an index,
+ * where it lacks them. Virtual tables (FTS and the like) and their shadow
+ * tables are left alone: SQLite cannot alter them.
+ */
+export function addTenantColumns(db: Database, moduleId: string): string[] {
+  const prefix = moduleTablePrefix(moduleId);
+  const objects = db
+    .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name LIKE ? ESCAPE '\\'")
+    .all(`${prefix.replace(/_/g, '\\_')}%`)
+    .map((r) => ({ name: String(r.name), sql: String(r.sql ?? '') }));
+  const virtual = objects.filter((o) => /^CREATE\s+VIRTUAL\b/i.test(o.sql)).map((o) => o.name);
+  const added: string[] = [];
+  for (const { name } of objects) {
+    if (virtual.some((v) => name === v || name.startsWith(`${v}_`))) continue;
+    const cols = db
+      .prepare(`PRAGMA table_info("${name}")`)
+      .all()
+      .map((c) => String(c.name));
+    if (cols.includes('tenant_id')) continue;
+    db.exec(`ALTER TABLE "${name}" ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'`);
+    db.exec(`CREATE INDEX IF NOT EXISTS "${name}_tenant" ON "${name}"(tenant_id)`);
+    added.push(name);
+  }
+  return added;
 }

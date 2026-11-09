@@ -109,6 +109,7 @@ complete example.
 | `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                       |
 | `audit`     | `append(action)`, recorded as `module.<id>.<action>`                                                         |
 | `logger`    | the gateway log, tagged with the module id                                                                   |
+| `tenant`    | the current tenant (`default` on a single-tenant install); `withTenant(id, fn)`                              |
 | `config`    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                                            |
 
 **Triggers.** A firing is recorded as a run with `moduleId` and `triggerId`; the handler's return
@@ -193,9 +194,27 @@ module that fails or takes over 1.5 s is listed under `errors`.
 `PATCH /inbox/items/:id { status }` and `POST /inbox/items/:id/respond { text, data }`, which calls
 the module's `onRespond` and closes the item. Events `inbox.item.created|updated|responded`.
 
+## 8. Tenants
+
+One gateway can serve several tenants (a hosted multi-tenant app) or one (a gateway per client).
+A single-tenant install only ever sees the tenant `default` and needs to do nothing.
+
+- A request runs in one tenant: a scoped token's own, or for the gateway token the one named by
+  `X-Clerq-Tenant` (else `default`). A scoped token naming another tenant gets `403`.
+- Shared records, links, activities and inbox items are per tenant. Identity resolution never
+  matches across tenants: the same email is a different person in each.
+- Every `mod_<id>_*` table gets a `tenant_id` column (default `default`) and an index, added by the
+  store after each module migration. `ctx.store.rows('items')` reads and writes only the current
+  tenant's rows; raw SQL through `ctx.store.prepare` must filter on `tenant_id = ctx.tenant` itself.
+- `ctx.tenant` is the current tenant: the request's, or `default` for triggers and timers.
+  `ctx.withTenant(id, fn)` runs work as another tenant.
+- Events from a tenant other than `default` carry `context.tenantId`; a scoped token's event stream
+  shows only its tenant's.
+- Not per tenant yet: runs, approvals, automations, secrets and module config.
+
 ---
 
-## 8. Safety expectations
+## 9. Safety expectations
 
 Modules and skills must respect the **safety guarantees** of the OSS core:
 

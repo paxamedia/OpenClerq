@@ -586,3 +586,55 @@ describe('inbox', () => {
     ).toBe(400);
   });
 });
+
+describe('tenants', () => {
+  const inTenant = (tenant: string, p: string, init: RequestInit = {}) =>
+    api(p, { ...init, headers: { 'X-Clerq-Tenant': tenant, ...init.headers } });
+
+  it("keeps a module's rows and the shared records apart per tenant", async () => {
+    await inTenant('acme', '/api/modules/hello-world/greetings', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Wile', email: 'barbara@example.org' }),
+    });
+    const acme = (await (await inTenant('acme', '/api/modules/hello-world/greetings')).json()) as {
+      greetings: Array<{ name: string }>;
+    };
+    expect(acme.greetings.map((g) => g.name)).toEqual(['Wile']);
+    const plain = (await (await api('/api/modules/hello-world/greetings')).json()) as {
+      greetings: Array<{ name: string }>;
+    };
+    expect(plain.greetings.map((g) => g.name)).not.toContain('Wile');
+
+    // The same email is a different person in each tenant.
+    const inAcme = (await (await inTenant('acme', '/records?q=barbara@example.org')).json()) as {
+      records: Array<{ id: string; name: string; tenantId: string }>;
+    };
+    const inDefault = (await (await api('/records?q=barbara@example.org')).json()) as {
+      records: Array<{ id: string; name: string }>;
+    };
+    expect(inAcme.records).toMatchObject([{ name: 'Wile', tenantId: 'acme' }]);
+    expect(inDefault.records).toMatchObject([{ name: 'Barbara' }]);
+    expect(inAcme.records[0].id).not.toBe(inDefault.records[0].id);
+    const acmeInbox = (await (await inTenant('acme', '/inbox')).json()) as {
+      items: Array<{ title: string }>;
+    };
+    expect(acmeInbox.items.map((i) => i.title)).toEqual(['Follow up with Wile']);
+  });
+
+  it('binds a module token to the tenant it was issued in', async () => {
+    const minted = await inTenant('acme', '/modules/hello-world/token', {
+      method: 'POST',
+      body: '{}',
+    });
+    const { token, tenantId } = (await minted.json()) as { token: string; tenantId: string };
+    expect(tenantId).toBe('acme');
+    const as = (headers: Record<string, string> = {}) =>
+      fetch(`${baseUrl}/api/modules/hello-world/greetings`, {
+        headers: { Authorization: `Bearer ${token}`, ...headers },
+      });
+    const own = (await (await as()).json()) as { greetings: Array<{ name: string }> };
+    expect(own.greetings.map((g) => g.name)).toEqual(['Wile']);
+    expect((await as({ 'X-Clerq-Tenant': 'default' })).status).toBe(403);
+    expect((await inTenant('Not Valid', '/runs')).status).toBe(400);
+  });
+});

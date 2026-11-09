@@ -18,6 +18,7 @@ export { openDatabase } from './driver.js';
 export { MIGRATIONS, type Migration } from './migrations.js';
 export {
   migrateModule,
+  addTenantColumns,
   checkModuleSql,
   moduleTablePrefix,
   ModuleMigrationError,

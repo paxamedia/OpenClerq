@@ -248,6 +248,7 @@ export const MIGRATIONS: Migration[] = [
         id           TEXT PRIMARY KEY,
         kind         TEXT NOT NULL CHECK (kind IN ('module','device')),
         subject      TEXT NOT NULL,
+        tenant_id    TEXT NOT NULL DEFAULT 'default',
         token_hash   TEXT NOT NULL UNIQUE,
         scopes       TEXT NOT NULL,
         created_at   TEXT NOT NULL,
@@ -281,38 +282,42 @@ export const MIGRATIONS: Migration[] = [
     id: 8,
     name: 'records',
     // Shared records every module can point at: people, organisations and
-    // activities, found again by email, phone or domain. Modules keep their
+    // activities, found again by email, phone or domain, within one tenant. Modules keep their
     // own types and link to these by ref (<module>:<type>:<id>).
     sql: `
       CREATE TABLE records (
         id           TEXT PRIMARY KEY,
+        tenant_id    TEXT NOT NULL DEFAULT 'default',
         type         TEXT NOT NULL CHECK (type IN ('person','organisation','activity')),
         name         TEXT,
         data         TEXT NOT NULL DEFAULT '{}',
         merged_into  TEXT REFERENCES records(id) ON DELETE SET NULL,
+        occurred_at  TEXT,
         created_by   TEXT,
         created_at   TEXT NOT NULL,
         updated_at   TEXT NOT NULL
       );
-      CREATE INDEX idx_records_type ON records(type, updated_at DESC);
+      CREATE INDEX idx_records_type ON records(tenant_id, type, updated_at DESC);
 
       CREATE TABLE record_identities (
+        tenant_id TEXT NOT NULL DEFAULT 'default',
         kind      TEXT NOT NULL CHECK (kind IN ('email','phone','domain')),
         value     TEXT NOT NULL,
         record_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE,
-        PRIMARY KEY (kind, value)
+        PRIMARY KEY (tenant_id, kind, value)
       );
       CREATE INDEX idx_record_identities_record ON record_identities(record_id);
 
       CREATE TABLE record_links (
+        tenant_id  TEXT NOT NULL DEFAULT 'default',
         from_ref   TEXT NOT NULL,
         to_ref     TEXT NOT NULL,
         kind       TEXT NOT NULL,
         created_by TEXT,
         created_at TEXT NOT NULL,
-        PRIMARY KEY (from_ref, to_ref, kind)
+        PRIMARY KEY (tenant_id, from_ref, to_ref, kind)
       );
-      CREATE INDEX idx_record_links_to ON record_links(to_ref);
+      CREATE INDEX idx_record_links_to ON record_links(tenant_id, to_ref);
     `,
   },
   {
@@ -323,6 +328,7 @@ export const MIGRATIONS: Migration[] = [
     sql: `
       CREATE TABLE inbox_items (
         id          TEXT PRIMARY KEY,
+        tenant_id   TEXT NOT NULL DEFAULT 'default',
         module_id   TEXT,
         external_id TEXT,
         kind        TEXT NOT NULL CHECK (kind IN ('approval','reply','task','alert')),
@@ -338,8 +344,8 @@ export const MIGRATIONS: Migration[] = [
         resolved_at TEXT,
         resolved_by TEXT
       );
-      CREATE INDEX idx_inbox_open ON inbox_items(status, priority DESC, created_at DESC);
-      CREATE UNIQUE INDEX idx_inbox_external ON inbox_items(module_id, external_id)
+      CREATE INDEX idx_inbox_open ON inbox_items(tenant_id, status, priority DESC, created_at DESC);
+      CREATE UNIQUE INDEX idx_inbox_external ON inbox_items(tenant_id, module_id, external_id)
         WHERE external_id IS NOT NULL;
     `,
   },

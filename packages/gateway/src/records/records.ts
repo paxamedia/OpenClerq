@@ -15,6 +15,7 @@
 import crypto from 'node:crypto';
 import { getStore } from '../store.js';
 import { emit } from '../events.js';
+import { currentTenant } from '../tenant.js';
 
 export type CoreType = 'person' | 'organisation' | 'activity';
 export type IdentityKind = 'email' | 'phone' | 'domain';
@@ -31,6 +32,7 @@ export interface Identities {
 export interface CoreRecord {
   id: string;
   ref: string;
+  tenantId: string;
   type: CoreType;
   name: string | null;
   data: Record<string, unknown>;
@@ -124,8 +126,10 @@ function identityList(ids: Identities): Array<{ kind: IdentityKind; value: strin
 function rowToRecord(r: Record<string, unknown>): CoreRecord {
   const id = String(r.id);
   const ids = getStore()
-    .prepare('SELECT kind, value FROM record_identities WHERE record_id = ? ORDER BY kind, value')
-    .all(id);
+    .prepare(
+      'SELECT kind, value FROM record_identities WHERE tenant_id = ? AND record_id = ? ORDER BY kind, value'
+    )
+    .all(String(r.tenant_id ?? currentTenant()), id);
   const pick = (k: IdentityKind) => ids.filter((i) => i.kind === k).map((i) => String(i.value));
   let data: Record<string, unknown> = {};
   try {
@@ -136,6 +140,7 @@ function rowToRecord(r: Record<string, unknown>): CoreRecord {
   return {
     id,
     ref: refOf(r.type as CoreType, id),
+    tenantId: String(r.tenant_id ?? 'default'),
     type: r.type as CoreType,
     name: r.name === null || r.name === undefined ? null : String(r.name),
     data,
@@ -151,9 +156,11 @@ function rowToRecord(r: Record<string, unknown>): CoreRecord {
 /** A record by id. A merged record answers with the record it was merged into. */
 export function getRecord(id: string): CoreRecord | null {
   const db = getStore();
-  let row = db.prepare('SELECT * FROM records WHERE id = ?').get(id);
+  const byId = db.prepare('SELECT * FROM records WHERE tenant_id = ? AND id = ?');
+  const tenant = currentTenant();
+  let row = byId.get(tenant, id);
   for (let hops = 0; row?.merged_into && hops < 10; hops++) {
-    row = db.prepare('SELECT * FROM records WHERE id = ?').get(String(row.merged_into));
+    row = byId.get(tenant, String(row.merged_into));
   }
   return row ? rowToRecord(row) : null;
 }
@@ -168,8 +175,10 @@ export function findByIdentity(kind: IdentityKind, value: string): CoreRecord | 
   const v = NORMALISE[kind](value);
   if (!v) return null;
   const row = getStore()
-    .prepare('SELECT record_id FROM record_identities WHERE kind = ? AND value = ?')
-    .get(kind, v);
+    .prepare(
+      'SELECT record_id FROM record_identities WHERE tenant_id = ? AND kind = ? AND value = ?'
+    )
+    .get(currentTenant(), kind, v);
   return row ? getRecord(String(row.record_id)) : null;
 }
 
@@ -177,8 +186,8 @@ export function findByIdentity(kind: IdentityKind, value: string): CoreRecord | 
 export function listRecords(
   opts: { type?: string; q?: string; limit?: number } = {}
 ): CoreRecord[] {
-  const where = ['merged_into IS NULL'];
-  const params: Array<string | number> = [];
+  const where = ['tenant_id = ?', 'merged_into IS NULL'];
+  const params: Array<string | number> = [currentTenant()];
   if (opts.type) {
     where.push('type = ?');
     params.push(opts.type);
@@ -190,9 +199,9 @@ export function listRecords(
       .replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
     where.push(
       `(LOWER(COALESCE(name, '')) LIKE ? ESCAPE '\\' OR id IN (
-         SELECT record_id FROM record_identities WHERE value LIKE ? ESCAPE '\\'))`
+         SELECT record_id FROM record_identities WHERE tenant_id = ? AND value LIKE ? ESCAPE '\\'))`
     );
-    params.push(like, like);
+    params.push(like, currentTenant(), like);
   }
   params.push(Math.min(Math.max(opts.limit ?? 50, 1), 500));
   return getStore()
@@ -207,13 +216,16 @@ export function listRecords(
 
 function attach(recordId: string, ids: Array<{ kind: IdentityKind; value: string }>): void {
   const db = getStore();
-  const owner = db.prepare('SELECT record_id FROM record_identities WHERE kind = ? AND value = ?');
+  const tenant = currentTenant();
+  const owner = db.prepare(
+    'SELECT record_id FROM record_identities WHERE tenant_id = ? AND kind = ? AND value = ?'
+  );
   const insert = db.prepare(
-    'INSERT INTO record_identities (kind, value, record_id) VALUES (?, ?, ?)'
+    'INSERT INTO record_identities (tenant_id, kind, value, record_id) VALUES (?, ?, ?, ?)'
   );
   for (const i of ids) {
-    const found = owner.get(i.kind, i.value);
-    if (!found) insert.run(i.kind, i.value, recordId);
+    const found = owner.get(tenant, i.kind, i.value);
+    if (!found) insert.run(tenant, i.kind, i.value, recordId);
     else if (String(found.record_id) !== recordId) {
       throw new RecordError(
         'identity_conflict',
@@ -229,6 +241,8 @@ export function createRecord(input: {
   name?: string | null;
   data?: Record<string, unknown>;
   identities?: Identities;
+  /** When an activity happened. */
+  occurredAt?: string;
   actor?: string;
 }): CoreRecord {
   if (!CORE_TYPES.includes(input.type)) {
@@ -240,13 +254,16 @@ export function createRecord(input: {
   const db = getStore();
   db.transaction(() => {
     db.prepare(
-      `INSERT INTO records (id, type, name, data, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO records
+         (id, tenant_id, type, name, data, occurred_at, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
+      currentTenant(),
       input.type,
       input.name?.trim() || null,
       JSON.stringify(input.data ?? {}),
+      input.occurredAt ?? null,
       input.actor ?? null,
       now,
       now
@@ -254,7 +271,12 @@ export function createRecord(input: {
     attach(id, ids);
   });
   const record = requireRecord(id);
-  emit('record.created', { ref: record.ref, type: record.type, by: input.actor });
+  emit('record.created', {
+    ref: record.ref,
+    type: record.type,
+    tenantId: record.tenantId,
+    by: input.actor,
+  });
   return record;
 }
 
@@ -277,10 +299,12 @@ export function resolveRecord(input: {
   if (ids.length === 0)
     throw new RecordError('invalid', 'Give at least one email, phone or domain.');
   const db = getStore();
-  const owner = db.prepare('SELECT record_id FROM record_identities WHERE kind = ? AND value = ?');
+  const owner = db.prepare(
+    'SELECT record_id FROM record_identities WHERE tenant_id = ? AND kind = ? AND value = ?'
+  );
   const matches = new Map<string, string[]>();
   for (const i of ids) {
-    const row = owner.get(i.kind, i.value);
+    const row = owner.get(currentTenant(), i.kind, i.value);
     if (!row) continue;
     const rec = getRecord(String(row.record_id));
     if (!rec) continue;
@@ -383,16 +407,32 @@ export function mergeRecords(intoId: string, fromId: string, actor?: string): Co
       into.id,
       from.id
     );
-    // A link the target already has would collide; drop the duplicate.
-    db.prepare(`UPDATE OR IGNORE record_links SET from_ref = ? WHERE from_ref = ?`).run(
-      into.ref,
+    // Move the merged record's links to the target, skipping any it already has.
+    const tenant = currentTenant();
+    const moved = db
+      .prepare('SELECT * FROM record_links WHERE tenant_id = ? AND (from_ref = ? OR to_ref = ?)')
+      .all(tenant, from.ref, from.ref);
+    db.prepare('DELETE FROM record_links WHERE tenant_id = ? AND (from_ref = ? OR to_ref = ?)').run(
+      tenant,
+      from.ref,
       from.ref
     );
-    db.prepare(`UPDATE OR IGNORE record_links SET to_ref = ? WHERE to_ref = ?`).run(
-      into.ref,
-      from.ref
+    const insert = db.prepare(
+      `INSERT INTO record_links (tenant_id, from_ref, to_ref, kind, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`
     );
-    db.prepare('DELETE FROM record_links WHERE from_ref = ? OR to_ref = ?').run(from.ref, from.ref);
+    for (const l of moved) {
+      const a = String(l.from_ref) === from.ref ? into.ref : String(l.from_ref);
+      const b = String(l.to_ref) === from.ref ? into.ref : String(l.to_ref);
+      insert.run(
+        tenant,
+        a,
+        b,
+        String(l.kind),
+        l.created_by ? String(l.created_by) : null,
+        String(l.created_at)
+      );
+    }
     db.prepare('UPDATE records SET name = ?, data = ?, updated_at = ? WHERE id = ?').run(
       into.name ?? from.name,
       JSON.stringify({ ...from.data, ...into.data }),
@@ -413,7 +453,11 @@ export function deleteRecord(id: string, actor?: string): void {
   const rec = requireRecord(id);
   const db = getStore();
   db.transaction(() => {
-    db.prepare('DELETE FROM record_links WHERE from_ref = ? OR to_ref = ?').run(rec.ref, rec.ref);
+    db.prepare('DELETE FROM record_links WHERE tenant_id = ? AND (from_ref = ? OR to_ref = ?)').run(
+      currentTenant(),
+      rec.ref,
+      rec.ref
+    );
     db.prepare('UPDATE records SET merged_into = NULL WHERE merged_into = ?').run(rec.id);
     db.prepare('DELETE FROM records WHERE id = ?').run(rec.id);
   });
@@ -450,10 +494,10 @@ export function link(from: string, to: string, kind: string, actor?: string): Re
   const now = new Date().toISOString();
   getStore()
     .prepare(
-      `INSERT OR IGNORE INTO record_links (from_ref, to_ref, kind, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO record_links (tenant_id, from_ref, to_ref, kind, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`
     )
-    .run(a, b, kind, actor ?? null, now);
+    .run(currentTenant(), a, b, kind, actor ?? null, now);
   emit('record.linked', { from: a, to: b, kind, by: actor });
   return { from: a, to: b, kind, createdBy: actor ?? null, createdAt: now };
 }
@@ -461,8 +505,10 @@ export function link(from: string, to: string, kind: string, actor?: string): Re
 export function unlink(from: string, to: string, kind: string, actor?: string): boolean {
   const removed =
     getStore()
-      .prepare('DELETE FROM record_links WHERE from_ref = ? AND to_ref = ? AND kind = ?')
-      .run(canonical(from), canonical(to), kind).changes > 0;
+      .prepare(
+        'DELETE FROM record_links WHERE tenant_id = ? AND from_ref = ? AND to_ref = ? AND kind = ?'
+      )
+      .run(currentTenant(), canonical(from), canonical(to), kind).changes > 0;
   if (removed) emit('record.unlinked', { from, to, kind, by: actor });
   return removed;
 }
@@ -471,8 +517,11 @@ export function unlink(from: string, to: string, kind: string, actor?: string): 
 export function linksOf(ref: string): RecordLink[] {
   const r = canonical(ref);
   return getStore()
-    .prepare(`SELECT * FROM record_links WHERE from_ref = ? OR to_ref = ? ORDER BY created_at DESC`)
-    .all(r, r)
+    .prepare(
+      `SELECT * FROM record_links WHERE tenant_id = ? AND (from_ref = ? OR to_ref = ?)
+       ORDER BY created_at DESC`
+    )
+    .all(currentTenant(), r, r)
     .map((l) => ({
       from: String(l.from_ref),
       to: String(l.to_ref),
@@ -509,6 +558,7 @@ export function addActivity(input: {
     type: 'activity',
     name: input.summary.trim().slice(0, 500),
     data: { ...input.data, kind: input.kind, at: at.toISOString() },
+    occurredAt: at.toISOString(),
     actor: input.actor,
   });
   for (const r of refs) link(activity.ref, r, 'about', input.actor);
@@ -522,10 +572,10 @@ export function activitiesOf(ref: string, limit = 50): CoreRecord[] {
   return getStore()
     .prepare(
       `SELECT records.* FROM record_links l
-       JOIN records ON l.from_ref = 'core:activity:' || records.id
-       WHERE l.to_ref = ? AND l.kind = 'about'
-       ORDER BY json_extract(records.data, '$.at') DESC LIMIT ?`
+       JOIN records ON records.tenant_id = l.tenant_id AND l.from_ref = 'core:activity:' || records.id
+       WHERE l.tenant_id = ? AND l.to_ref = ? AND l.kind = 'about'
+       ORDER BY records.occurred_at DESC LIMIT ?`
     )
-    .all(r, Math.min(Math.max(limit, 1), 500))
+    .all(currentTenant(), r, Math.min(Math.max(limit, 1), 500))
     .map(rowToRecord);
 }

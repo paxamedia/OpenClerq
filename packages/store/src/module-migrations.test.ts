@@ -88,3 +88,44 @@ describe('module migrations', () => {
     for (const sql of allowed) expect(() => checkModuleSql('hello-world', sql), sql).not.toThrow();
   });
 });
+
+describe('module tables and tenants', () => {
+  it('get a tenant_id column and index, defaulting to default', () => {
+    migrateModule(db, 'hello-world', [
+      items,
+      { id: 2, name: 'fts', sql: 'CREATE VIRTUAL TABLE mod_hello_world_fts USING fts5(text);' },
+    ]);
+    db.prepare("INSERT INTO mod_hello_world_items (text) VALUES ('x')").run();
+    expect(db.prepare('SELECT tenant_id FROM mod_hello_world_items').get()).toEqual({
+      tenant_id: 'default',
+    });
+    const indexes = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'mod_hello_world_items'"
+      )
+      .all()
+      .map((r) => r.name);
+    expect(indexes).toContain('mod_hello_world_items_tenant');
+    // The virtual table is left as it was.
+    const cols = db
+      .prepare('PRAGMA table_info(mod_hello_world_fts)')
+      .all()
+      .map((c) => c.name);
+    expect(cols).not.toContain('tenant_id');
+  });
+
+  it('keep a tenant_id the module declared itself', () => {
+    migrateModule(db, 'own', [
+      {
+        id: 1,
+        name: 'own',
+        sql: "CREATE TABLE mod_own_t (id INTEGER, tenant_id TEXT NOT NULL DEFAULT 'default');",
+      },
+    ]);
+    const cols = db
+      .prepare('PRAGMA table_info(mod_own_t)')
+      .all()
+      .map((c) => c.name);
+    expect(cols.filter((c) => c === 'tenant_id')).toHaveLength(1);
+  });
+});

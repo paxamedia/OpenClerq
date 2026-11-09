@@ -24,6 +24,8 @@ import { createNotify } from './notify.js';
 import { ModuleServices, servicesOf } from './services.js';
 import { parsePermissions } from './permissions.js';
 import * as records from '../records/records.js';
+import { currentTenant, runInTenant } from '../tenant.js';
+import { tenantTable } from './tenant-table.js';
 import { registerSearch } from './search.js';
 import * as inbox from '../inbox/inbox.js';
 
@@ -40,6 +42,11 @@ export interface ContextHandle {
 }
 
 const TABLE_NAME = /^[a-z0-9_]+$/;
+
+function checkTable(name: string): string {
+  if (!TABLE_NAME.test(name)) throw new Error(`Invalid table name "${name}".`);
+  return name;
+}
 const EVENT_NAME = /^[a-z0-9][a-z0-9_.-]*$/;
 
 /** `~/.clerq/modules/<id>.json` over the manifest's `config` defaults. */
@@ -101,6 +108,10 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
     version: String(mod.manifest.version ?? '0.0.0'),
     config: loadConfig(mod),
     permissions: Object.freeze(parsePermissions(mod.manifest).permissions),
+    get tenant() {
+      return currentTenant();
+    },
+    withTenant: (tenantId, fn) => runInTenant(tenantId, fn),
     routes: {
       get: route('get'),
       post: route('post'),
@@ -109,10 +120,8 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
       delete: route('delete'),
     },
     store: {
-      table(name) {
-        if (!TABLE_NAME.test(name)) throw new Error(`Invalid table name "${name}".`);
-        return `${prefix}${name}`;
-      },
+      table: (name) => `${prefix}${checkTable(name)}`,
+      rows: (name) => tenantTable(`${prefix}${checkTable(name)}`),
       prepare: (sql) => getStore().prepare(sql),
       exec: (sql) => getStore().exec(sql),
       transaction: (fn) => getStore().transaction(fn),

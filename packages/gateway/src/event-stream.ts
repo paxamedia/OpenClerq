@@ -14,6 +14,8 @@
 
 import type { Request, Response } from 'express';
 import { eventsSince, lastEventId, subscribeEvents, type ClerqEvent } from './events.js';
+import { principalOf } from './security/auth.js';
+import { currentTenant, DEFAULT_TENANT } from './tenant.js';
 
 export const DEFAULT_HEARTBEAT_MS = 15_000;
 
@@ -51,7 +53,13 @@ export function streamEvents(req: Request, res: Response): void {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
-  const keep = nameFilter(req);
+  // A scoped token, or the gateway token naming a tenant, sees that tenant's
+  // events only; the gateway token alone sees everything.
+  const byName = nameFilter(req);
+  const tenantOnly = principalOf(res)?.kind !== 'operator' || res.locals.tenantNamed === true;
+  const tenant = currentTenant();
+  const keep = (e: ClerqEvent) =>
+    byName(e) && (!tenantOnly || (e.context.tenantId ?? DEFAULT_TENANT) === tenant);
   let closed = false;
   let unsub: () => void = () => undefined;
   let timer: NodeJS.Timeout | undefined;

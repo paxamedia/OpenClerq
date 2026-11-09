@@ -5,7 +5,9 @@
 /** @type {import('@clerq/module-sdk').ClerqModule} */
 export default {
   register(ctx) {
-    const greetings = ctx.store.table('greetings'); // mod_hello_world_greetings
+    // mod_hello_world_greetings, seen through the current tenant: the gateway
+    // adds tenant_id to every module table and these helpers filter on it.
+    const greetings = ctx.store.rows('greetings');
 
     ctx.routes.get('/hello', (req, res) => {
       const name = typeof req.query.name === 'string' ? req.query.name : 'world';
@@ -15,9 +17,10 @@ export default {
     // Remembers who was greeted, in the module's own table (migrations/0001_greetings.sql).
     ctx.routes.post('/greetings', (req, res) => {
       const name = String(req.body?.name ?? 'world');
-      const { lastInsertRowid } = ctx.store
-        .prepare(`INSERT INTO ${greetings} (name, created_at) VALUES (?, ?)`)
-        .run(name, new Date().toISOString());
+      const { id: lastInsertRowid } = greetings.insert({
+        name,
+        created_at: new Date().toISOString(),
+      });
       // With an email, the greeting attaches to the shared person record that
       // every module sees, and shows on that person's activity timeline.
       if (typeof req.body?.email === 'string') {
@@ -40,14 +43,15 @@ export default {
       }
       // On the bus as module.hello-world.greeted, so GET /events/stream shows it.
       ctx.events.emit('greeted', { name });
-      const { n } = ctx.store.prepare(`SELECT COUNT(*) AS n FROM ${greetings}`).get();
-      ctx.notify.badge(String(n));
+      ctx.notify.badge(String(greetings.count()));
       ctx.notify({ title: `Greeted ${name}`, link: '/' });
       res.status(201).json({ message: `${ctx.config.greeting}, ${name}` });
     });
     ctx.routes.get('/greetings', (_req, res) => {
       res.json({
-        greetings: ctx.store.prepare(`SELECT name, created_at FROM ${greetings} ORDER BY id`).all(),
+        greetings: greetings
+          .find({}, { orderBy: 'id' })
+          .map(({ name, created_at }) => ({ name, created_at })),
       });
     });
 
@@ -69,8 +73,7 @@ export default {
       description: 'Counts the greetings so far.',
       handler(event) {
         if (event.payload?.fail) throw new Error('Asked to fail.');
-        const row = ctx.store.prepare(`SELECT COUNT(*) AS n FROM ${greetings}`).get();
-        return { greetings: Number(row?.n ?? 0) };
+        return { greetings: greetings.count() };
       },
     });
     ctx.triggers.register({
@@ -104,9 +107,13 @@ export default {
 
     // Global search: greetings by name.
     ctx.search.register((q, { limit }) =>
+      // Raw SQL filters on the tenant itself.
       ctx.store
-        .prepare(`SELECT id, name FROM ${greetings} WHERE name LIKE ? ORDER BY id DESC LIMIT ?`)
-        .all(`%${q}%`, limit)
+        .prepare(
+          `SELECT id, name FROM ${greetings.name}
+           WHERE tenant_id = ? AND name LIKE ? ORDER BY id DESC LIMIT ?`
+        )
+        .all(ctx.tenant, `%${q}%`, limit)
         .map((g) => ({
           ref: ctx.records.ref('greeting', String(g.id)),
           title: `Greeting for ${g.name}`,

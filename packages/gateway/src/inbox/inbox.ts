@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import { getStore } from '../store.js';
 import { emit } from '../events.js';
 import { listPending } from '../approvals.js';
+import { currentTenant, DEFAULT_TENANT } from '../tenant.js';
 
 export type InboxKind = 'approval' | 'reply' | 'task' | 'alert';
 export type InboxStatus = 'open' | 'done' | 'dismissed';
@@ -85,7 +86,9 @@ function rowToItem(r: Record<string, unknown>): InboxItem {
 }
 
 export function getItem(id: string): InboxItem | null {
-  const row = getStore().prepare('SELECT * FROM inbox_items WHERE id = ?').get(id);
+  const row = getStore()
+    .prepare('SELECT * FROM inbox_items WHERE tenant_id = ? AND id = ?')
+    .get(currentTenant(), id);
   return row ? rowToItem(row) : null;
 }
 
@@ -124,8 +127,11 @@ export function addItem(moduleId: string | null, input: NewItem): InboxItem {
   const existing =
     input.externalId !== undefined
       ? db
-          .prepare('SELECT id FROM inbox_items WHERE module_id IS ? AND external_id = ?')
-          .get(moduleId, String(input.externalId))
+          .prepare(
+            `SELECT id FROM inbox_items
+             WHERE tenant_id = ? AND COALESCE(module_id, '') = ? AND external_id = ?`
+          )
+          .get(currentTenant(), moduleId ?? '', String(input.externalId))
       : undefined;
   if (existing) {
     const id = String(existing.id);
@@ -147,10 +153,12 @@ export function addItem(moduleId: string | null, input: NewItem): InboxItem {
   const id = `inb_${crypto.randomUUID()}`;
   db.prepare(
     `INSERT INTO inbox_items
-       (id, module_id, external_id, kind, title, body, ref, link, priority, due_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, tenant_id, module_id, external_id, kind, title, body, ref, link, priority, due_at,
+        created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
+    currentTenant(),
     moduleId,
     input.externalId === undefined ? null : String(input.externalId),
     ...fields,
@@ -187,8 +195,8 @@ export function setStatus(id: string, status: InboxStatus, by: string): InboxIte
 /** A module's item by its own id. */
 export function findExternal(moduleId: string, externalId: string): InboxItem | null {
   const row = getStore()
-    .prepare('SELECT * FROM inbox_items WHERE module_id = ? AND external_id = ?')
-    .get(moduleId, externalId);
+    .prepare('SELECT * FROM inbox_items WHERE tenant_id = ? AND module_id = ? AND external_id = ?')
+    .get(currentTenant(), moduleId, externalId);
   return row ? rowToItem(row) : null;
 }
 
@@ -221,8 +229,8 @@ export function listInbox(
   opts: { status?: InboxStatus; kind?: InboxKind; moduleId?: string; limit?: number } = {}
 ): InboxItem[] {
   const status = opts.status ?? 'open';
-  const where = ['status = ?'];
-  const params: Array<string | number> = [status];
+  const where = ['tenant_id = ?', 'status = ?'];
+  const params: Array<string | number> = [currentTenant(), status];
   if (opts.kind) {
     where.push('kind = ?');
     params.push(opts.kind);
@@ -241,7 +249,11 @@ export function listInbox(
     .all(...params)
     .map(rowToItem);
   const approvals =
-    status === 'open' && (!opts.kind || opts.kind === 'approval') && !opts.moduleId
+    // Runs and their approvals are not per tenant yet: they show in the default one.
+    status === 'open' &&
+    (!opts.kind || opts.kind === 'approval') &&
+    !opts.moduleId &&
+    currentTenant() === DEFAULT_TENANT
       ? approvalItems()
       : [];
   return [...approvals, ...stored]

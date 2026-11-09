@@ -64,13 +64,35 @@ export interface SqlStatement {
 }
 
 /**
+ * One of the module's tables, scoped to the current tenant: every read,
+ * update and delete filters on `tenant_id`, and every insert sets it.
+ * `where` matches columns by equality (`null` matches NULL).
+ */
+export interface TenantTable {
+  readonly name: string;
+  insert(row: Record<string, SqlParam>): { id: number | bigint; changes: number };
+  find(
+    where?: Record<string, SqlParam>,
+    opts?: { orderBy?: string; desc?: boolean; limit?: number }
+  ): SqlRow[];
+  get(where: Record<string, SqlParam>): SqlRow | undefined;
+  update(where: Record<string, SqlParam>, set: Record<string, SqlParam>): number;
+  delete(where: Record<string, SqlParam>): number;
+  count(where?: Record<string, SqlParam>): number;
+}
+
+/**
  * The gateway's SQLite store. A module's tables are named `mod_<id>_<name>`
- * (hyphens in the id become underscores) and created by its migrations;
- * `table('items')` gives the full name.
+ * (hyphens in the id become underscores) and created by its migrations; the
+ * store adds a `tenant_id` column to each. `rows('items')` reads and writes
+ * the current tenant's rows. Raw SQL through `prepare` must filter on
+ * `tenant_id = ctx.tenant` itself.
  */
 export interface ModuleStore {
   /** `mod_<id>_<name>`. */
   table(name: string): string;
+  /** The current tenant's rows of `mod_<id>_<name>`. */
+  rows(name: string): TenantTable;
   prepare(sql: string): SqlStatement;
   exec(sql: string): void;
   /** Run `fn` in a transaction, rolling back if it throws. */
@@ -217,6 +239,7 @@ export type CoreRecordType = 'person' | 'organisation' | 'activity';
 export interface CoreRecord {
   id: string;
   ref: string;
+  tenantId: string;
   type: CoreRecordType;
   name: string | null;
   data: Record<string, unknown>;
@@ -389,6 +412,13 @@ export interface ModuleContext {
    */
   readonly config: Readonly<Record<string, unknown>>;
   readonly permissions: Readonly<ModulePermissions>;
+  /**
+   * The tenant this call runs in: the request's, or `default` for background
+   * work (triggers, timers). A single-tenant install only ever sees `default`.
+   */
+  readonly tenant: string;
+  /** Run `fn` as tenant `tenantId`, e.g. a nightly job going through each tenant. */
+  withTenant<T>(tenantId: string, fn: () => T): T;
   routes: ModuleRoutes;
   store: ModuleStore;
   secrets: ModuleSecrets;

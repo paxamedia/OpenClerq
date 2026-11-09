@@ -9,6 +9,7 @@
  */
 
 import { logger } from './logger.js';
+import { currentTenant, DEFAULT_TENANT } from './tenant.js';
 
 /** Core events, plus `module.<id>.<name>` from modules (see ModuleContext.events). */
 export type EventName = CoreEventName | `module.${string}`;
@@ -62,6 +63,8 @@ export interface EventContext {
   sessionId?: string;
   runId?: string;
   toolCallId?: string;
+  /** Set when the event happened in a tenant other than `default`. */
+  tenantId?: string;
 }
 
 export interface ClerqEvent<T = unknown> {
@@ -124,6 +127,10 @@ export function recentEvents(limit = MAX_RECENT): ClerqEvent[] {
 
 export function emit<T>(name: EventName, payload: T, context: EventContext = {}): ClerqEvent<T> {
   seq += 1;
+  const tenant = currentTenant();
+  if (tenant !== DEFAULT_TENANT && context.tenantId === undefined) {
+    context = { ...context, tenantId: tenant };
+  }
   const event: ClerqEvent<T> = {
     id: `${EPOCH}-${seq}`,
     name,

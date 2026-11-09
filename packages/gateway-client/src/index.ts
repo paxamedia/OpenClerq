@@ -7,6 +7,7 @@ const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:18790';
 
 let gatewayBaseUrl: string = DEFAULT_GATEWAY_URL;
 let gatewayToken: string | null = null;
+let gatewayTenant: string | null = null;
 
 function getUrl(path: string): string {
   const base = gatewayBaseUrl.replace(/\/$/, '');
@@ -25,12 +26,23 @@ export function setGatewayToken(token: string | null): void {
   gatewayToken = token?.trim() || null;
 }
 
+/**
+ * Act in one tenant (sent as X-Clerq-Tenant). Null, the default, uses the
+ * token's own tenant, or `default` for the gateway token.
+ */
+export function setGatewayTenant(tenant: string | null): void {
+  gatewayTenant = tenant?.trim() || null;
+}
+
 export function hasGatewayToken(): boolean {
   return gatewayToken !== null;
 }
 
 function authHeaders(): Record<string, string> {
-  return gatewayToken ? { Authorization: `Bearer ${gatewayToken}` } : {};
+  return {
+    ...(gatewayToken ? { Authorization: `Bearer ${gatewayToken}` } : {}),
+    ...(gatewayTenant ? { 'X-Clerq-Tenant': gatewayTenant } : {}),
+  };
 }
 
 /** A refusal from the gateway, with its status and parsed JSON body when it had one. */
@@ -289,6 +301,7 @@ export type CoreRecordType = 'person' | 'organisation' | 'activity';
 export interface CoreRecord {
   id: string;
   ref: string;
+  tenantId: string;
   type: CoreRecordType;
   name: string | null;
   data: Record<string, unknown>;

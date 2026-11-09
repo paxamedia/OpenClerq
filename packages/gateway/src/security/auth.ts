@@ -18,6 +18,7 @@ import { writePrivateFile } from '@clerq/store';
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { principalAllows, resolveToken, type Principal } from './scoped-tokens.js';
+import { DEFAULT_TENANT, TENANT_ID, runInTenant } from '../tenant.js';
 
 /** Endpoints reachable without a token. These must reveal no configuration. */
 export const PUBLIC_PATHS = new Set(['/health']);
@@ -148,9 +149,20 @@ export function requireAuth(
       });
     }
 
+    // The gateway token reaches every tenant and picks one with X-Clerq-Tenant;
+    // a scoped token is bound to one and may only name that one.
+    const header = req.headers['x-clerq-tenant'];
+    const named = typeof header === 'string' && header.trim() ? header.trim() : undefined;
+    if (named !== undefined && !TENANT_ID.test(named)) {
+      return res
+        .status(400)
+        .json({ error: 'invalid_tenant', message: `Invalid tenant "${named}".` });
+    }
+
     if (tokensMatch(presented, expectedToken)) {
       res.locals.principal = { kind: 'operator' } satisfies Principal;
-      return next();
+      res.locals.tenantNamed = named !== undefined;
+      return runInTenant(named ?? DEFAULT_TENANT, next);
     }
 
     const scoped = resolveScoped(presented);
@@ -166,7 +178,14 @@ export function requireAuth(
         message: `This token is not valid for ${req.method} ${req.path}.`,
       });
     }
+    const tenant = scoped.tenantId ?? DEFAULT_TENANT;
+    if (named !== undefined && named !== tenant) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'This token is bound to another tenant.',
+      });
+    }
     res.locals.principal = scoped;
-    next();
+    runInTenant(tenant, next);
   };
 }

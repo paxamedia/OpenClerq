@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { initStore, closeStore } from '../store.js';
+import { runInTenant } from '../tenant.js';
 import {
   activitiesOf,
   addActivity,
@@ -99,6 +100,29 @@ describe('records', () => {
     expect(activitiesOf(p.ref).map((a) => a.name)).toEqual(['Emailed', 'Called']);
     expect(activitiesOf('outreach:campaign:7').map((a) => a.name)).toEqual(['Emailed']);
     expect(() => addActivity({ kind: 'call', summary: 'x', refs: ['core:person:nope'] })).toThrow(
+      /No record/
+    );
+  });
+});
+
+describe('tenants', () => {
+  it('never resolve or read across tenants', () => {
+    const a = runInTenant('acme', () =>
+      resolveRecord({ type: 'person', identities: { emails: ['same@tenant.test'] } })
+    );
+    const b = runInTenant('globex', () =>
+      resolveRecord({ type: 'person', identities: { emails: ['same@tenant.test'] } })
+    );
+    expect(a.created && b.created).toBe(true);
+    expect(a.record?.id).not.toBe(b.record?.id);
+    expect(a.record?.tenantId).toBe('acme');
+    expect(runInTenant('globex', () => getRecord(a.record!.id))).toBeNull();
+    expect(getRecord(a.record!.id)).toBeNull(); // default
+    expect(runInTenant('acme', () => findByIdentity('email', 'same@tenant.test'))?.id).toBe(
+      a.record?.id
+    );
+    expect(listRecords({ q: 'same@tenant.test' })).toEqual([]);
+    expect(() => runInTenant('globex', () => link('crm:deal:9', a.record!.ref, 'contact'))).toThrow(
       /No record/
     );
   });

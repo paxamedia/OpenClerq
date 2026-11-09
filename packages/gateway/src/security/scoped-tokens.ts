@@ -13,6 +13,7 @@
 
 import crypto from 'node:crypto';
 import { getStore, isStoreOpen } from '../store.js';
+import { DEFAULT_TENANT } from '../tenant.js';
 
 export type TokenKind = 'module' | 'device';
 
@@ -22,6 +23,8 @@ export interface Principal {
   tokenId?: string;
   /** The module id or device id. */
   subject?: string;
+  /** The tenant a scoped token is bound to. */
+  tenantId?: string;
   scopes?: string[];
 }
 
@@ -79,6 +82,7 @@ export function issueToken(input: {
   ttlMs: number;
   /** Extend the expiry to now + idleMs on each use. */
   idleMs?: number;
+  tenantId?: string;
 }): { id: string; token: string; expiresAt: string } {
   const bad = input.scopes.find((s) => !SCOPE.test(s));
   if (bad) throw new Error(`Invalid scope "${bad}". Use "METHOD /path".`);
@@ -88,13 +92,15 @@ export function issueToken(input: {
   const expiresAt = new Date(now + input.ttlMs).toISOString();
   getStore()
     .prepare(
-      `INSERT INTO scoped_tokens (id, kind, subject, token_hash, scopes, created_at, expires_at, idle_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO scoped_tokens
+         (id, kind, subject, tenant_id, token_hash, scopes, created_at, expires_at, idle_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
       input.kind,
       input.subject,
+      input.tenantId ?? DEFAULT_TENANT,
       hash(token),
       JSON.stringify(input.scopes),
       new Date(now).toISOString(),
@@ -113,7 +119,7 @@ export function resolveToken(token: string): Principal | null {
   const db = getStore();
   const row = db
     .prepare(
-      `SELECT id, kind, subject, scopes, expires_at, idle_ms, revoked_at, last_seen_at
+      `SELECT id, kind, subject, tenant_id, scopes, expires_at, idle_ms, revoked_at, last_seen_at
        FROM scoped_tokens WHERE token_hash = ?`
     )
     .get(hash(token));
@@ -135,6 +141,7 @@ export function resolveToken(token: string): Principal | null {
     kind: row.kind as TokenKind,
     tokenId: String(row.id),
     subject: String(row.subject),
+    tenantId: String(row.tenant_id ?? DEFAULT_TENANT),
     scopes: JSON.parse(String(row.scopes)) as string[],
   };
 }
