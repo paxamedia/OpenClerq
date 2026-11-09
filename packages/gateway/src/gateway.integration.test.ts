@@ -754,6 +754,104 @@ describe('gateway integration', () => {
     expect((await fetch(`${baseUrl}/events`)).status).toBe(401);
   });
 
+  /** Read SSE frames from a response until `done` says stop, or the time runs out. */
+  async function readFrames(
+    res: Response,
+    done: (text: string) => boolean,
+    ms = 3000
+  ): Promise<string> {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    const timer = setTimeout(() => void reader.cancel(), ms);
+    try {
+      for (;;) {
+        const { done: end, value } = await reader.read();
+        if (end) break;
+        text += decoder.decode(value, { stream: true });
+        if (done(text)) break;
+      }
+    } finally {
+      clearTimeout(timer);
+      await reader.cancel().catch(() => undefined);
+    }
+    return text;
+  }
+
+  describe('event stream', () => {
+    const ids = (text: string) => [...text.matchAll(/^id: (.+)$/gm)].map((m) => m[1]);
+
+    it('needs a token, and accepts it as a query parameter', async () => {
+      expect((await fetch(`${baseUrl}/events/stream`)).status).toBe(401);
+      const ok = await fetch(`${baseUrl}/events/stream?token=${TEST_TOKEN}`);
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get('content-type')).toContain('text/event-stream');
+      await ok.body?.cancel();
+    });
+
+    it('streams live events with ids, filtered by name', async () => {
+      const res = await authed(`${baseUrl}/events/stream?names=kill.`);
+      const reading = readFrames(res, (t) => t.includes('kill.released'));
+      await new Promise((r) => setTimeout(r, 50));
+      await authed(`${baseUrl}/kill`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approvals: false, runs: false }),
+      });
+      await authed(`${baseUrl}/resume`, { method: 'POST' });
+      const text = await reading;
+      expect(text).toContain('"name":"kill.engaged"');
+      expect(text).toContain('"name":"kill.released"');
+      expect(text).not.toContain('"name":"gateway.');
+      expect(ids(text)).toHaveLength(2);
+    });
+
+    it('replays what was missed after Last-Event-ID, and resets when it cannot', async () => {
+      const first = await authed(`${baseUrl}/events/stream?names=kill.`);
+      const reading = readFrames(first, (t) => t.includes('kill.engaged'));
+      await new Promise((r) => setTimeout(r, 50));
+      await authed(`${baseUrl}/kill`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approvals: false, runs: false }),
+      });
+      const seenId = ids(await reading)[0];
+      // Missed while disconnected.
+      await authed(`${baseUrl}/resume`, { method: 'POST' });
+
+      const again = await authed(`${baseUrl}/events/stream?names=kill.`, {
+        headers: { 'Last-Event-ID': seenId },
+      });
+      const replay = await readFrames(again, (t) => t.includes('kill.released'));
+      expect(replay).toContain('"name":"kill.released"');
+      expect(replay).not.toContain('event: reset');
+
+      const stale = await authed(`${baseUrl}/events/stream`, {
+        headers: { 'Last-Event-ID': 'abc-1' },
+      });
+      expect(await readFrames(stale, (t) => t.includes('event: reset'))).toContain('event: reset');
+    });
+
+    it('sends a heartbeat', async () => {
+      process.env.CLERQ_SSE_HEARTBEAT_MS = '50';
+      try {
+        const res = await authed(`${baseUrl}/events/stream`);
+        expect(await readFrames(res, (t) => t.includes(': ping'))).toContain(': ping');
+      } finally {
+        delete process.env.CLERQ_SSE_HEARTBEAT_MS;
+      }
+    });
+  });
+
+  it('filters run history by age, and refuses a bad time', async () => {
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    const none = await authed(`${baseUrl}/runs?since=${encodeURIComponent(future)}`);
+    expect(((await none.json()) as { runs: unknown[] }).runs).toEqual([]);
+    const all = await authed(`${baseUrl}/runs?since=2000-01-01T00:00:00Z`);
+    expect(((await all.json()) as { runs: unknown[] }).runs.length).toBeGreaterThan(0);
+    expect((await authed(`${baseUrl}/runs?since=yesterday-ish`)).status).toBe(400);
+  });
+
   describe('chat console', () => {
     const json = (url: string, body?: unknown, method = 'POST') =>
       authed(url, {

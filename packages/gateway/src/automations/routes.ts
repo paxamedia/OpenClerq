@@ -33,7 +33,15 @@ import {
   startAutomationRun,
   type RunnerDeps,
 } from './runner.js';
-import { nextRunOf, startAutomationSchedules, stopAutomationSchedules } from './scheduler.js';
+import {
+  nextRunOf,
+  nextRunsOf,
+  startAutomationSchedules,
+  stopAutomationSchedules,
+} from './scheduler.js';
+
+/** How many upcoming firings a summary lists. */
+const NEXT_FIRINGS = 10;
 
 function fail(res: Response, e: unknown, code: string): Response {
   if (e instanceof SpecError) {
@@ -85,11 +93,16 @@ function summary(a: Automation) {
     enabled: a.enabled,
     schedule: a.spec?.schedule ?? null,
     nextRunAt: a.nextRunAt ?? null,
+    // From the schedule alone: `enabled` says whether they will happen.
+    nextFirings: a.spec?.schedule
+      ? nextRunsOf(a.spec.schedule, NEXT_FIRINGS).map((d) => d.toISOString())
+      : [],
     driver: a.spec?.agent.driver ?? null,
     repo: a.spec?.repo.path ?? null,
     problem: a.problem ?? null,
     running: runningAutomations().includes(a.id),
     monthSpendUsd: monthSpendUsd(a.id),
+    monthBudgetUsd: a.spec?.budget.maxUsdPerMonth ?? null,
     lastRun: lastRun(a.id),
     updatedAt: a.updatedAt,
   };
@@ -166,6 +179,9 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
   return {
     spec,
     nextRunAt: spec.schedule ? (nextRunOf(spec.schedule)?.toISOString() ?? null) : null,
+    nextFirings: spec.schedule
+      ? nextRunsOf(spec.schedule, NEXT_FIRINGS).map((d) => d.toISOString())
+      : [],
     repo,
     driver,
     policy: policyFor(spec, firstPush),

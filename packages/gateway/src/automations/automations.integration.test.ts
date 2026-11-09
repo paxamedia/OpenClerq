@@ -334,6 +334,16 @@ describe('automations API', () => {
     });
     expect(on.body.enabled).toBe(true);
     expect(new Date(on.body.nextRunAt).getHours()).toBe(4);
+    const listed = await json<{
+      automations: Array<{ id: string; nextFirings: string[]; monthBudgetUsd: number | null }>;
+    }>('/automations');
+    const mine = listed.body.automations.find((a) => a.id === id)!;
+    expect(mine.nextFirings).toHaveLength(10);
+    expect(mine.nextFirings[0]).toBe(on.body.nextRunAt);
+    expect(new Date(mine.nextFirings[1]).getTime() - new Date(mine.nextFirings[0]).getTime()).toBe(
+      86_400_000
+    );
+    expect(mine.monthBudgetUsd).toBeNull();
     const off = await json<{ enabled: boolean; nextRunAt: string | null }>(
       `/automations/${id}/disable`,
       {
@@ -503,6 +513,9 @@ describe('an automation run', () => {
       'publish:\n  push: false\nbudget:\n  max_usd_per_month: 0.2'
     );
     await api(`/automations/${id}/enable`, { method: 'POST' });
+    expect((await json<{ monthBudgetUsd: number }>(`/automations/${id}`)).body.monthBudgetUsd).toBe(
+      0.2
+    );
     await waitForRun(await start(id), finished);
     let enabled = true;
     for (let i = 0; i < 40 && enabled; i++) {

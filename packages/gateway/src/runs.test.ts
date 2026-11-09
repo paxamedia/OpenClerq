@@ -90,6 +90,17 @@ describe('run accounting', () => {
     expect(listRuns(10).find((r) => r.id === id)?.costKnown).toBe(false);
   });
 
+  it('lists only runs created since a time', async () => {
+    const before = await runWith('old one', async () => undefined);
+    getStore()
+      .prepare("UPDATE runs SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = ?")
+      .run(before);
+    const after = await runWith('new one', async () => undefined);
+    const ids = listRuns(500, { since: '2021-01-01T00:00:00.000Z' }).map((r) => r.id);
+    expect(ids).toContain(after);
+    expect(ids).not.toContain(before);
+  });
+
   it('does not count a failed call against the price check', async () => {
     const id = await runWith('failed call', async () => {
       recordModelCall({

@@ -191,10 +191,10 @@ The gateway is the control plane. Endpoints:
 | Tools       | `GET /tools`, `POST /tools/run`                                                                                                                                                               |
 | Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                                                                                   |
 | Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                                                                                             |
-| Runs        | `GET /runs`, `GET /runs/:id`, `POST /runs/:id/cancel`                                                                                                                                         |
+| Runs        | `GET /runs?since=&limit=`, `GET /runs/:id`, `POST /runs/:id/cancel`                                                                                                                           |
 | Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update`                                                                    |
 | Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                                                                                   |
-| Events      | `GET /events` (SSE)                                                                                                                                                                           |
+| Events      | `GET /events` (SSE), `GET /events/stream` (SSE, resumable)                                                                                                                                    |
 | Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                                                                                           |
 | Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`                                                                                                           |
 | Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                                                                                      |
@@ -217,7 +217,16 @@ Authorization: Bearer $(cat ~/.clerq/gateway-token)
 
 The gateway generates that file (mode 0600) on first run, or uses `CLERQ_GATEWAY_TOKEN` when
 set. There is no development bypass — `CLERQ_DEV` affects conveniences, never access.
-`GET /logs/stream` additionally accepts `?token=` because `EventSource` cannot set headers.
+`GET /logs/stream`, `GET /events` and `GET /events/stream` also accept `?token=`, because
+`EventSource` cannot set headers.
+
+### Event stream
+
+`GET /events/stream` sends every event on the bus as SSE, with `id: <epoch>-<seq>`. A client that
+reconnects with `Last-Event-ID` gets what it missed from the last 500 events; when that is not
+possible (a restarted gateway, or a gap that is too old) it gets an `event: reset` frame and
+should refetch. `?names=run.,approval.` filters by name prefix. A `: ping` comment goes out every
+15 s (`CLERQ_SSE_HEARTBEAT_MS`). `GET /events` is the older form: the last 100 events, then live.
 
 Licensing is a separate concern: `middleware/license.ts` attaches entitlement information and
 never rejects in the OSS build. Conflating the two was the pre-0.4 design and is what left the

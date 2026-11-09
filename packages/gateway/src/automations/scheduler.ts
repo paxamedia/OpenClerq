@@ -15,13 +15,40 @@ const jobs = new Map<string, ScheduledTask>();
 
 /** When a cron expression next fires, in the host's time zone. */
 export function nextRunOf(expression: string): Date | null {
-  if (!cron.validate(expression)) return null;
-  const probe = cron.schedule(expression, () => undefined);
+  return nextRunsOf(expression, 1)[0] ?? null;
+}
+
+/**
+ * The next `count` times a cron expression fires after `from`, in the host's
+ * time zone. Empty for an invalid expression.
+ */
+export function nextRunsOf(expression: string, count: number, from = new Date()): Date[] {
+  if (!cron.validate(expression) || count < 1) return [];
+  const probe = cron.createTask(expression, () => undefined);
   try {
-    return probe.getNextRun();
+    // node-cron exposes only the next run; its matcher, which it uses for
+    // that, walks further. Fall back to the one run if that ever moves.
+    const matcher = (probe as unknown as { runner?: { timeMatcher?: Matcher } }).runner
+      ?.timeMatcher;
+    if (typeof matcher?.getNextMatch !== 'function') {
+      probe.start();
+      const next = probe.getNextRun();
+      return next ? [next] : [];
+    }
+    const out: Date[] = [];
+    let at = from;
+    while (out.length < count) {
+      at = matcher.getNextMatch(at);
+      out.push(at);
+    }
+    return out;
   } finally {
     void probe.destroy();
   }
+}
+
+interface Matcher {
+  getNextMatch(date: Date): Date;
 }
 
 function fire(id: string, deps: RunnerDeps): void {

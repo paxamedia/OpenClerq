@@ -63,6 +63,21 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** One SSE frame's fields. Comment lines (heartbeats) are skipped. */
+function parseFrame(raw: string): { id?: string; event?: string; data?: string } {
+  const out: { id?: string; event?: string; data?: string } = {};
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line || line.startsWith(':')) continue;
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    const value = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '');
+    if (field === 'id') out.id = value;
+    else if (field === 'event') out.event = value;
+    else if (field === 'data') out.data = out.data === undefined ? value : `${out.data}\n${value}`;
+  }
+  return out;
+}
+
 export interface HealthResponse {
   status: string;
   service: string;
@@ -166,6 +181,10 @@ export interface AutomationSummary {
   problem: string | null;
   running: boolean;
   monthSpendUsd: number;
+  /** The spec's `budget.max_usd_per_month`, or null when it sets none. */
+  monthBudgetUsd: number | null;
+  /** The next ten times the schedule fires, whether or not the automation is enabled. */
+  nextFirings: string[];
   lastRun: {
     id: string;
     status: string;
@@ -178,10 +197,40 @@ export interface AutomationSummary {
 
 export interface AutomationPreview {
   nextRunAt: string | null;
+  nextFirings: string[];
   repo: { path: string; origin?: string | null; project?: string | null; base?: string };
   driver: DriverInfo;
   checks: Array<{ level: 'ok' | 'warning' | 'error'; message: string }>;
   ready: boolean;
+}
+
+/** One event from the gateway's bus, as GET /events/stream sends it. */
+export interface ClerqEvent<T = unknown> {
+  /** `<epoch>-<seq>`; pass the last one seen to resume. */
+  id: string;
+  /** e.g. `run.started`, `approval.requested`, `module.<id>.<name>`. */
+  name: string;
+  at: string;
+  context: { requestId?: string; sessionId?: string; runId?: string; toolCallId?: string };
+  payload: T;
+}
+
+export interface EventStreamOptions {
+  /** Keep only events whose name starts with one of these, e.g. `['run.', 'approval.']`. */
+  names?: string[];
+  /** Resume after this event id. */
+  lastEventId?: string;
+  /** Stops the stream. Without one it runs until the page or process goes away. */
+  signal?: AbortSignal;
+  /**
+   * Events were missed and cannot be replayed (the gateway restarted, or the
+   * gap is too old): refetch whatever is shown.
+   */
+  onReset?: () => void;
+  /** The connection is open, the first time and after every reconnect. */
+  onOpen?: () => void;
+  /** Wait before reconnecting, in ms. Default 3000. */
+  retryMs?: number;
 }
 
 export interface Approval {
@@ -311,6 +360,76 @@ export const gateway = {
   logsStreamUrl(): string {
     const url = getUrl('/logs/stream');
     return gatewayToken ? `${url}?token=${encodeURIComponent(gatewayToken)}` : url;
+  },
+
+  /**
+   * URL for an EventSource on GET /events/stream. EventSource sends
+   * Last-Event-ID itself when it reconnects; `lastEventId` sets where a first
+   * connection starts. The token travels as a query parameter, as for logs.
+   */
+  eventsStreamUrl(opts: { names?: string[]; lastEventId?: string } = {}): string {
+    const params = new URLSearchParams();
+    if (gatewayToken) params.set('token', gatewayToken);
+    if (opts.names?.length) params.set('names', opts.names.join(','));
+    if (opts.lastEventId) params.set('lastEventId', opts.lastEventId);
+    const query = params.toString();
+    return query ? `${getUrl('/events/stream')}?${query}` : getUrl('/events/stream');
+  },
+
+  /**
+   * Follow GET /events/stream without EventSource (the token goes in a
+   * header), reconnecting after a drop and resuming from the last event seen.
+   * Resolves when `signal` aborts.
+   */
+  async streamEvents(onEvent: (event: ClerqEvent) => void, opts: EventStreamOptions = {}) {
+    let lastId = opts.lastEventId;
+    const retry = opts.retryMs ?? 3000;
+    const { signal } = opts;
+    while (!signal?.aborted) {
+      try {
+        const query = opts.names?.length
+          ? `?names=${encodeURIComponent(opts.names.join(','))}`
+          : '';
+        const res = await fetch(getUrl(`/events/stream${query}`), {
+          headers: { ...authHeaders(), ...(lastId ? { 'Last-Event-ID': lastId } : {}) },
+          signal,
+        });
+        if (!res.ok || !res.body) throw new GatewayError(`Gateway ${res.status}`, res.status, null);
+        opts.onOpen?.();
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sep: number;
+          while ((sep = buffer.search(/\r?\n\r?\n/)) !== -1) {
+            const frame = parseFrame(buffer.slice(0, sep));
+            buffer = buffer.slice(sep).replace(/^\r?\n\r?\n/, '');
+            if (frame.id) lastId = frame.id;
+            if (frame.event === 'reset') opts.onReset?.();
+            else if (frame.data) onEvent(JSON.parse(frame.data) as ClerqEvent);
+          }
+        }
+      } catch (e) {
+        if (signal?.aborted) break;
+        // A refused token will not get better by retrying.
+        if (e instanceof GatewayError && e.status === 401) throw e;
+      }
+      if (signal?.aborted) break;
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, retry);
+        signal?.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(t);
+            resolve();
+          },
+          { once: true }
+        );
+      });
+    }
   },
 
   models(): Promise<{ models: string[]; current: string }> {
@@ -546,8 +665,13 @@ export const gateway = {
     return fetchJson(`/approvals/${id}/${decision}`, { method: 'POST', body: '{}' });
   },
 
-  runs(limit = 50): Promise<{ runs: RunSummary[] }> {
-    return fetchJson(`/runs?limit=${encodeURIComponent(String(limit))}`);
+  /** Newest first. `since` keeps runs created at or after it, and allows up to 5000. */
+  runs(limit = 50, opts: { since?: string | Date } = {}): Promise<{ runs: RunSummary[] }> {
+    const since = opts.since instanceof Date ? opts.since.toISOString() : (opts.since ?? undefined);
+    const query = `limit=${encodeURIComponent(String(limit))}${
+      since ? `&since=${encodeURIComponent(since)}` : ''
+    }`;
+    return fetchJson(`/runs?${query}`);
   },
 
   run(id: string): Promise<RunDetail> {

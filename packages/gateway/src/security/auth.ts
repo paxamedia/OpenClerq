@@ -26,7 +26,7 @@ export const PUBLIC_PATHS = new Set(['/health']);
  * header. This exists solely for Server-Sent Events: the browser EventSource API
  * cannot set request headers. Restricted to loopback-facing read-only streams.
  */
-export const QUERY_TOKEN_PATHS = new Set(['/logs/stream', '/events']);
+export const QUERY_TOKEN_PATHS = new Set(['/logs/stream', '/events', '/events/stream']);
 
 const TOKEN_BYTES = 32;
 

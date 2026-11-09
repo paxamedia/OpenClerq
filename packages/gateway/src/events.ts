@@ -49,6 +49,12 @@ export interface EventContext {
 }
 
 export interface ClerqEvent<T = unknown> {
+  /**
+   * `<epoch>-<seq>`: the epoch changes with every gateway start and the
+   * sequence rises by one per event, so a stream can resume after a drop and
+   * notice when it cannot.
+   */
+  id: string;
   name: EventName;
   at: string;
   context: EventContext;
@@ -60,6 +66,34 @@ type Subscriber = (event: ClerqEvent) => void;
 const subscribers = new Set<Subscriber>();
 const recent: ClerqEvent[] = [];
 const MAX_RECENT = 500;
+
+/** Distinguishes this process's event ids from an earlier gateway's. */
+const EPOCH = Date.now().toString(36);
+let seq = 0;
+
+/** Split an event id. Null when it is malformed. */
+export function parseEventId(id: string): { epoch: string; seq: number } | null {
+  const m = /^([0-9a-z]+)-(\d+)$/.exec(id.trim());
+  return m ? { epoch: m[1], seq: Number(m[2]) } : null;
+}
+
+/**
+ * The events after `lastId`, oldest first, or null when they cannot all be
+ * supplied: the id is from another gateway process, or older than the backlog.
+ */
+export function eventsSince(lastId: string): ClerqEvent[] | null {
+  const parsed = parseEventId(lastId);
+  if (!parsed || parsed.epoch !== EPOCH || parsed.seq > seq) return null;
+  const oldest = recent.length > 0 ? (parseEventId(recent[0].id)?.seq ?? 0) : seq + 1;
+  // The event right after lastId must still be in the backlog.
+  if (parsed.seq + 1 < oldest) return null;
+  return recent.filter((e) => (parseEventId(e.id)?.seq ?? 0) > parsed.seq);
+}
+
+/** The id of the newest event, so a client can resume from "now". */
+export function lastEventId(): string {
+  return `${EPOCH}-${seq}`;
+}
 
 /** Subscribe to every event. Returns an unsubscribe function. */
 export function subscribeEvents(fn: Subscriber): () => void {
@@ -73,7 +107,9 @@ export function recentEvents(limit = MAX_RECENT): ClerqEvent[] {
 }
 
 export function emit<T>(name: EventName, payload: T, context: EventContext = {}): ClerqEvent<T> {
+  seq += 1;
   const event: ClerqEvent<T> = {
+    id: `${EPOCH}-${seq}`,
     name,
     at: new Date().toISOString(),
     context,

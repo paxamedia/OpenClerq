@@ -263,3 +263,63 @@ describe('automations', () => {
     expect(err).toMatchObject({ status: 400, body: { line: 3, column: 5 } });
   });
 });
+
+describe('event stream', () => {
+  const event = (id: string, name: string) =>
+    `id: ${id}\ndata: ${JSON.stringify({ id, name, at: 't', context: {}, payload: {} })}\n\n`;
+
+  it('builds an EventSource URL with the token, filter and start point', () => {
+    const url = new URL(
+      gateway.eventsStreamUrl({ names: ['run.', 'approval.'], lastEventId: 'a-3' })
+    );
+    expect(url.pathname).toBe('/events/stream');
+    expect(url.searchParams.get('token')).toBe('test-token-123');
+    expect(url.searchParams.get('names')).toBe('run.,approval.');
+    expect(url.searchParams.get('lastEventId')).toBe('a-3');
+  });
+
+  it('reconnects after a drop, resuming from the last event and reporting a reset', async () => {
+    const controller = new AbortController();
+    const got: string[] = [];
+    let resets = 0;
+    let n = 0;
+    stubFetch(() => {
+      n += 1;
+      if (n === 1)
+        return sse([': connected\n\n', event('a-1', 'run.started'), event('a-2', 'run.co')]);
+      if (n === 2) return sse(['event: reset\nid: b-0\ndata: {}\n\n', event('b-1', 'run.started')]);
+      controller.abort();
+      return sse([]);
+    });
+    await gateway.streamEvents((e) => got.push(e.id), {
+      names: ['run.'],
+      signal: controller.signal,
+      retryMs: 1,
+      onReset: () => resets++,
+    });
+    expect(got).toEqual(['a-1', 'a-2', 'b-1']);
+    expect(resets).toBe(1);
+    expect(calls[0][0]).toContain('/events/stream?names=run.');
+    const second = calls[1][1]?.headers as Record<string, string>;
+    expect(second['Last-Event-ID']).toBe('a-2');
+    expect(second.Authorization).toBe('Bearer test-token-123');
+    expect((calls[2][1]?.headers as Record<string, string>)['Last-Event-ID']).toBe('b-1');
+  });
+
+  it('gives up on a refused token', async () => {
+    stubFetch(() => new Response('{}', { status: 401 }));
+    await expect(gateway.streamEvents(() => undefined, { retryMs: 1 })).rejects.toBeInstanceOf(
+      GatewayError
+    );
+  });
+});
+
+describe('run history', () => {
+  it('passes since as an ISO time', async () => {
+    stubFetch(() => Response.json({ runs: [] }));
+    await gateway.runs(1000, { since: new Date('2026-11-02T00:00:00Z') });
+    expect(calls[0][0]).toBe(
+      'http://127.0.0.1:18790/runs?limit=1000&since=2026-11-02T00%3A00%3A00.000Z'
+    );
+  });
+});

@@ -294,10 +294,13 @@ export function completeRunStep(
     );
 }
 
-export function listRuns(limit = 50): RunRecord[] {
+/** Newest first. `since` keeps runs created at or after that ISO time. */
+export function listRuns(limit = 50, opts: { since?: string } = {}): RunRecord[] {
+  const where = opts.since ? 'WHERE created_at >= ?' : '';
+  const params = opts.since ? [opts.since, limit] : [limit];
   return getStore()
-    .prepare(`SELECT ${RUN_COLUMNS} FROM runs ORDER BY created_at DESC LIMIT ?`)
-    .all(limit)
+    .prepare(`SELECT ${RUN_COLUMNS} FROM runs ${where} ORDER BY created_at DESC LIMIT ?`)
+    .all(...params)
     .map(rowToRun);
 }
 

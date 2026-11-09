@@ -59,6 +59,7 @@ import {
   activeRunIds,
 } from './runs.js';
 import { emit, subscribeEvents, recentEvents } from './events.js';
+import { streamEvents } from './event-stream.js';
 import { listPending, decide, denyAllPending } from './approvals.js';
 import {
   createSession,
@@ -639,6 +640,8 @@ export function createGateway(config: GatewayConfig = {}): {
     req.on('close', unsub);
   });
 
+  app.get('/events/stream', streamEvents);
+
   // ---------------------------------------------------------------------
   // Chat console. A message is a run; the console is one client of these
   // endpoints, not their definition — `clerq chat` will be another.
@@ -810,9 +813,22 @@ export function createGateway(config: GatewayConfig = {}): {
   });
 
   app.get('/runs', (req: Request, res: Response) => {
-    const limit = Math.min(Number(req.query?.limit ?? 50) || 50, 500);
+    // `since` (an ISO time) bounds the list by age, for views over a period;
+    // it may then hold more runs than the default page.
+    const rawSince = req.query?.since;
+    let since: string | undefined;
+    if (rawSince !== undefined) {
+      const t = typeof rawSince === 'string' ? Date.parse(rawSince) : NaN;
+      if (Number.isNaN(t)) {
+        return res
+          .status(400)
+          .json({ error: 'invalid_since', message: 'since must be an ISO time.' });
+      }
+      since = new Date(t).toISOString();
+    }
+    const limit = Math.min(Number(req.query?.limit ?? 50) || 50, since ? 5000 : 500);
     try {
-      res.json({ runs: listRuns(limit) });
+      res.json({ runs: listRuns(limit, { since }) });
     } catch (e) {
       logger.error('runs list error', { err: e instanceof Error ? e.message : String(e) });
       res.status(500).json({ error: 'runs_list_failed' });

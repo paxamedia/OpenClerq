@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { emit, subscribeEvents, recentEvents, resetEvents } from './events.js';
+import {
+  emit,
+  subscribeEvents,
+  recentEvents,
+  resetEvents,
+  eventsSince,
+  lastEventId,
+} from './events.js';
 
 beforeEach(() => resetEvents());
 
@@ -43,5 +50,23 @@ describe('event bus', () => {
   it('stamps an ISO timestamp', () => {
     const e = emit('gateway.started', {});
     expect(e.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('numbers events so a stream can resume after a gap', () => {
+    const a = emit('run.started', { n: 1 });
+    const b = emit('run.completed', { n: 2 });
+    const c = emit('run.started', { n: 3 });
+    expect(lastEventId()).toBe(c.id);
+    expect(eventsSince(a.id)?.map((e) => e.id)).toEqual([b.id, c.id]);
+    expect(eventsSince(c.id)).toEqual([]);
+  });
+
+  it('says when a gap cannot be replayed', () => {
+    emit('run.started', {});
+    expect(eventsSince('zzz-1')).toBeNull(); // another gateway process
+    expect(eventsSince('not an id')).toBeNull();
+    const first = emit('run.started', {});
+    for (let i = 0; i < 600; i++) emit('run.started', { i });
+    expect(eventsSince(first.id)).toBeNull(); // older than the backlog
   });
 });
