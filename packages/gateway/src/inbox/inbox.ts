@@ -64,6 +64,10 @@ export function onRespond(moduleId: string, handler: RespondHandler): void {
   responders.set(moduleId, handler);
 }
 
+export function offRespond(moduleId: string): void {
+  responders.delete(moduleId);
+}
+
 function rowToItem(r: Record<string, unknown>): InboxItem {
   const s = (v: unknown) => (v === null || v === undefined ? null : String(v));
   return {

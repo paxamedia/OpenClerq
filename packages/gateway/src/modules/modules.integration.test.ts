@@ -70,6 +70,24 @@ beforeAll(async () => {
     JSON.stringify({ id: 'trespasser', slug: 'trespasser', name: 'T', version: '0.1.0' })
   );
   fs.writeFileSync(path.join(trespasser, 'migrations', '0001_x.sql'), 'DROP TABLE runs;');
+  // Sets things up, then fails: none of it may stay behind.
+  const half = path.join(modulesDir, 'half-done');
+  fs.mkdirSync(path.join(half, 'dist'), { recursive: true });
+  fs.writeFileSync(
+    path.join(half, 'manifest.json'),
+    JSON.stringify({ id: 'half-done', slug: 'half-done', name: 'Half', version: '0.1.0' })
+  );
+  fs.writeFileSync(
+    path.join(half, 'dist', 'routes.js'),
+    `export function register(ctx) {
+  globalThis.__halfSeen = 0;
+  ctx.events.subscribe('*', () => { globalThis.__halfSeen += 1; });
+  ctx.inbox.onRespond(() => ({ fromHalf: true }));
+  ctx.search.register(() => [{ ref: 'half-done:x:1', title: 'from half' }]);
+  throw new Error('half done');
+}
+`
+  );
   // Settings override the manifest's defaults.
   fs.mkdirSync(path.join(home, '.clerq', 'modules'), { recursive: true });
   fs.writeFileSync(
@@ -641,4 +659,40 @@ describe('tenants', () => {
     expect((await as({ 'X-Clerq-Tenant': 'default' })).status).toBe(403);
     expect((await inTenant('Not Valid', '/runs')).status).toBe(400);
   });
+});
+
+describe('a module that fails part-way', () => {
+  it('leaves no subscriptions, search handler or inbox handler behind', async () => {
+    const { modules } = (await (await api('/modules')).json()) as {
+      modules: Array<{ id: string; status: string }>;
+    };
+    expect(modules.find((m) => m.id === 'half-done')?.status).toBe('failed');
+    const seen = (globalThis as { __halfSeen?: number }).__halfSeen;
+    await api('/kill', { method: 'POST', body: JSON.stringify({ approvals: false, runs: false }) });
+    await api('/resume', { method: 'POST' });
+    expect((globalThis as { __halfSeen?: number }).__halfSeen).toBe(seen);
+    const { results } = (await (await api('/search?q=from')).json()) as {
+      results: Array<{ moduleId: string }>;
+    };
+    expect(results.some((r) => r.moduleId === 'half-done')).toBe(false);
+  });
+});
+
+describe('service audit', () => {
+  it("records the module's UI token as the actor, not the operator", async () => {
+    const { token } = (await (
+      await api('/modules/hello-world/token', { method: 'POST', body: '{}' })
+    ).json()) as { token: string };
+    const res = await fetch(
+      `${baseUrl}/api/modules/hello-world/services/org.example.hello-world.worker/stop`,
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+    );
+    expect(res.status).toBe(200);
+    const row = getStore()
+      .prepare(
+        "SELECT actor FROM audit_log WHERE action = 'module.hello-world.service.stop' ORDER BY id DESC"
+      )
+      .get();
+    expect(row?.actor).toBe('module:hello-world');
+  }, 60_000);
 });

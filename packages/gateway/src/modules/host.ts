@@ -19,6 +19,7 @@ import { ServiceError } from './services.js';
 import { parsePermissions, recordModule, type ModulePermissions } from './permissions.js';
 import { parseExtensions, type Extensions } from './extensions.js';
 import { unregisterSearch } from './search.js';
+import { actorOf } from '../records/routes.js';
 
 export type ModuleStatus = 'loaded' | 'failed';
 
@@ -108,7 +109,8 @@ export class ModuleHost {
     for (const action of ['start', 'stop'] as const) {
       handle.router.post(`/services/:label/${action}`, async (req, res) => {
         try {
-          res.json(await handle.services[action](String(req.params.label)));
+          // The audit names who asked: the operator, or the module's UI token.
+          res.json(await handle.services[action](String(req.params.label), actorOf(res)));
         } catch (e) {
           serviceError(res, e);
         }
@@ -166,6 +168,8 @@ export class ModuleHost {
   }
 
   private fail(entry: HostedModule, error: string): void {
+    // A register() that threw part-way may have left subscriptions and handlers behind.
+    entry.handle?.dispose();
     this.triggers.remove(entry.module.id);
     unregisterSearch(entry.module.id);
     entry.status = 'failed';

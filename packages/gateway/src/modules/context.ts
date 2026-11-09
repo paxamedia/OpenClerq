@@ -26,7 +26,7 @@ import { parsePermissions } from './permissions.js';
 import * as records from '../records/records.js';
 import { currentTenant, runInTenant } from '../tenant.js';
 import { tenantTable } from './tenant-table.js';
-import { registerSearch } from './search.js';
+import { registerSearch, unregisterSearch } from './search.js';
 import * as inbox from '../inbox/inbox.js';
 
 /** Gateway services a context is built over. */
@@ -39,6 +39,8 @@ export interface ContextHandle {
   ctx: ModuleContext & { push(route: ModuleRouteHandler): void };
   router: Router;
   services: ModuleServices;
+  /** Undo what register() set up outside the module: subscriptions, handlers, triggers. */
+  dispose(): void;
 }
 
 const TABLE_NAME = /^[a-z0-9_]+$/;
@@ -101,6 +103,7 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
 
   const services = new ModuleServices(id, servicesOf(mod.manifest));
   const actor = `module:${id}`;
+  const subscriptions = new Set<() => void>();
 
   const ctx: ContextHandle['ctx'] = {
     id,
@@ -150,9 +153,14 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
         return emit(`module.${id}.${name}`, payload, { runId: context?.runId ?? currentRunId() });
       },
       subscribe(prefix, fn) {
-        return subscribeEvents((e) => {
+        const off = subscribeEvents((e) => {
           if (prefix === '*' || e.name.startsWith(prefix)) fn(e);
         });
+        subscriptions.add(off);
+        return () => {
+          subscriptions.delete(off);
+          off();
+        };
       },
     },
     triggers: {
@@ -258,5 +266,12 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
       route(method)(r.path, r.handler as unknown as RouteHandler);
     },
   };
-  return { ctx, router, services };
+  const dispose = () => {
+    for (const off of subscriptions) off();
+    subscriptions.clear();
+    inbox.offRespond(id);
+    unregisterSearch(id);
+    deps.triggers.remove(id);
+  };
+  return { ctx, router, services, dispose };
 }
