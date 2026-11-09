@@ -1,0 +1,151 @@
+/**
+ * @clerq/module-sdk — what an OpenClerq module's server code is given.
+ *
+ * A module's server entry (`dist/routes.js` by default, one self-contained
+ * ESM bundle) exports `register(ctx)`, or a default `defineModule({ register })`.
+ * The gateway calls it once at start with a ModuleContext scoped to the module:
+ *
+ * ```ts
+ * import { defineModule } from '@clerq/module-sdk';
+ *
+ * export default defineModule({
+ *   register(ctx) {
+ *     ctx.routes.get('/hello', (_req, res) => res.json({ hello: ctx.id }));
+ *   },
+ * });
+ * ```
+ *
+ * Module code runs inside the gateway process with the gateway's access. The
+ * context is a convenience and a namespace, not a sandbox.
+ *
+ * This package is types plus two small helpers, with no runtime dependencies,
+ * so a module bundle stays self-contained.
+ */
+
+/** A request, as much of Express's as a module may rely on. */
+export interface ModuleRequest {
+  method: string;
+  /** The path below `/api/modules/<id>`. */
+  path: string;
+  params: Record<string, string>;
+  query: Record<string, unknown>;
+  body: unknown;
+  headers: Record<string, string | string[] | undefined>;
+}
+
+/** A response, as much of Express's as a module may rely on. */
+export interface ModuleResponse {
+  status(code: number): ModuleResponse;
+  json(body: unknown): unknown;
+  send(body?: unknown): unknown;
+  setHeader(name: string, value: string | number | readonly string[]): unknown;
+  write(chunk: string | Uint8Array): boolean;
+  end(chunk?: string | Uint8Array): unknown;
+}
+
+export type RouteHandler = (req: ModuleRequest, res: ModuleResponse) => unknown;
+
+/** Routes mount under `/api/modules/<id>`; `ctx.routes.get('/x', …)` serves `/api/modules/<id>/x`. */
+export interface ModuleRoutes {
+  get(path: string, handler: RouteHandler): void;
+  post(path: string, handler: RouteHandler): void;
+  put(path: string, handler: RouteHandler): void;
+  patch(path: string, handler: RouteHandler): void;
+  delete(path: string, handler: RouteHandler): void;
+}
+
+export type SqlParam = string | number | bigint | boolean | null | Uint8Array;
+export type SqlRow = Record<string, unknown>;
+
+export interface SqlStatement {
+  run(...params: SqlParam[]): { changes: number; lastInsertRowid: number | bigint };
+  get(...params: SqlParam[]): SqlRow | undefined;
+  all(...params: SqlParam[]): SqlRow[];
+}
+
+/**
+ * The gateway's SQLite store. A module's tables are named `mod_<id>_<name>`
+ * (hyphens in the id become underscores) and created by its migrations;
+ * `table('items')` gives the full name.
+ */
+export interface ModuleStore {
+  /** `mod_<id>_<name>`. */
+  table(name: string): string;
+  prepare(sql: string): SqlStatement;
+  exec(sql: string): void;
+  /** Run `fn` in a transaction, rolling back if it throws. */
+  transaction<T>(fn: () => T): T;
+}
+
+/**
+ * Vault secrets under `<id>/`. `get('api-key')` reads the vault entry
+ * `<id>/api-key`; names never include the prefix.
+ */
+export interface ModuleSecrets {
+  get(name: string): string | null;
+  set(name: string, value: string): void;
+  delete(name: string): void;
+  /** Names without the prefix. */
+  list(): string[];
+}
+
+export type RiskTier = 'low' | 'medium' | 'high';
+
+/** The approvals inbox the operator already uses for agent tool calls. */
+export interface ModuleApprovals {
+  /** Ask a person. `runId` defaults to the run this call belongs to, if any. */
+  request(input: {
+    action: string;
+    reason: string;
+    tier?: RiskTier;
+    details?: unknown;
+    runId?: string;
+  }): Promise<{ id: number }>;
+  /** Resolves true on approval; false on denial or after `timeoutMs` (default 5 min). */
+  wait(id: number, timeoutMs?: number): Promise<boolean>;
+}
+
+/** The append-only audit log. Entries are recorded as `module.<id>.<action>`. */
+export interface ModuleAudit {
+  append(action: string, subject?: string, detail?: unknown): void;
+}
+
+export interface ModuleLogger {
+  debug(message: string, meta?: Record<string, unknown>): void;
+  info(message: string, meta?: Record<string, unknown>): void;
+  warn(message: string, meta?: Record<string, unknown>): void;
+  error(message: string, meta?: Record<string, unknown>): void;
+}
+
+export interface ModuleContext {
+  /** The manifest id. */
+  readonly id: string;
+  /** The module's directory on disk. */
+  readonly dir: string;
+  readonly version: string;
+  /**
+   * Settings: the manifest's `config` defaults, overlaid with
+   * `~/.clerq/modules/<id>.json` when that file exists.
+   */
+  readonly config: Readonly<Record<string, unknown>>;
+  routes: ModuleRoutes;
+  store: ModuleStore;
+  secrets: ModuleSecrets;
+  approvals: ModuleApprovals;
+  audit: ModuleAudit;
+  logger: ModuleLogger;
+}
+
+export interface ClerqModule {
+  register(ctx: ModuleContext): void | Promise<void>;
+}
+
+/** Identity at runtime; it exists so a module's `register` is type-checked. */
+export function defineModule(module: ClerqModule): ClerqModule {
+  return module;
+}
+
+/** The prefix a module's tables carry: `mod_<id>_`, hyphens as underscores. */
+export function tablePrefix(moduleId: string): string {
+  return `mod_${moduleId.replace(/-/g, '_')}_`;
+}

@@ -197,8 +197,12 @@ export function setSecret(name: string, value: string): { ok: boolean; error?: s
   if (!key) {
     return { ok: false, error: 'Vault unavailable: no master key could be stored on this host.' };
   }
-  if (!name || typeof name !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(name)) {
-    return { ok: false, error: 'Invalid secret name. Use alphanumeric, underscore, hyphen.' };
+  // One optional `/` separates a module's secrets (`<module>/<name>`) from the rest.
+  if (!name || typeof name !== 'string' || !/^[a-zA-Z0-9_-]+(\/[a-zA-Z0-9_-]+)?$/.test(name)) {
+    return {
+      ok: false,
+      error: 'Invalid secret name. Use alphanumeric, underscore, hyphen, and at most one "/".',
+    };
   }
   try {
     const iv = crypto.randomBytes(IV_LEN);

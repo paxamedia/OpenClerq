@@ -84,7 +84,33 @@ You can test this behaviour by:
 
 ---
 
-## 5. Safety expectations
+## 5. Server modules
+
+A module is a directory with a `manifest.json` and a server entry (`dist/routes.js`, or the
+manifest's `entryPoints.routes[0]`): one self-contained ES module. The gateway loads every module
+under `CLERQ_MODULES_DIR` (or the single module there) at start, and lists them at `GET /modules`.
+
+The entry exports `register(ctx)`, or a default `{ register }`. Types are in `@clerq/module-sdk`;
+[`packages/module-sdk/examples/hello-world`](../packages/module-sdk/examples/hello-world) is a
+complete example.
+
+| `ctx.`      | What it is                                                                       |
+| ----------- | -------------------------------------------------------------------------------- |
+| `routes`    | `get/post/put/patch/delete(path, handler)`, served at `/api/modules/<id>/<path>` |
+| `store`     | the gateway's SQLite store; `table('x')` is `mod_<id>_x`                         |
+| `secrets`   | vault entries named `<id>/<name>`                                                |
+| `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`           |
+| `audit`     | `append(action)`, recorded as `module.<id>.<action>`                             |
+| `logger`    | the gateway log, tagged with the module id                                       |
+| `config`    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                |
+
+A module whose `register` throws is listed as `failed` and gets no routes. Module code runs in the
+gateway process with the gateway's access: the context is a namespace, not a sandbox. Modules that
+export a `routes` array (the earlier contract) still load.
+
+---
+
+## 6. Safety expectations
 
 Modules and skills must respect the **safety guarantees** of the OSS core:
 

@@ -101,6 +101,9 @@ importers:
       '@clerq/drivers':
         specifier: workspace:^
         version: link:../drivers
+      '@clerq/module-sdk':
+        specifier: workspace:^
+        version: link:../module-sdk
       '@clerq/policy':
         specifier: workspace:^
         version: link:../policy
@@ -159,6 +162,15 @@ importers:
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
+
+  packages/module-sdk:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@types/node@22.19.11)(vite@7.3.7(@types/node@22.19.11)(lightningcss@1.33.0)(yaml@2.9.0))
 
   packages/policy:
     devDependencies:

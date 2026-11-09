@@ -18,7 +18,8 @@ import { getExplanation, buildContextPreview } from './agent/explain.js';
 import { getLLMProviderStatus, getAvailableModels, listProviders } from './agent/llm-provider.js';
 import { runTask } from './agent/task.js';
 import { selectSkill } from './agent/skill-selector.js';
-import { loadModulesFromDir, mountModuleRoutes, getModuleSkillsDirs } from './module-loader.js';
+import { getModuleSkillsDirs } from './module-loader.js';
+import { ModuleHost } from './modules/host.js';
 import { createToolRegistry } from './tools.js';
 import {
   loadCapabilities,
@@ -149,6 +150,8 @@ function disconnectSignal(res: Response, continueOnDisconnect: unknown): AbortSi
 export function createGateway(config: GatewayConfig = {}): {
   app: express.Express;
   server: Server;
+  /** Settles once the store is open and modules are loaded. */
+  ready: Promise<void>;
 } {
   const port = config.port ?? DEFAULT_PORT;
   // Loopback unless an operator deliberately opts out. Binding a wider interface
@@ -176,7 +179,7 @@ export function createGateway(config: GatewayConfig = {}): {
   };
 
   const app = express();
-  let loadedModules: Awaited<ReturnType<typeof loadModulesFromDir>> = [];
+  const modules = new ModuleHost(app);
 
   // Origins are reflected only when explicitly allow-listed. There is no wildcard
   // path: a wildcard lets any page the user visits drive their local gateway.
@@ -420,7 +423,7 @@ export function createGateway(config: GatewayConfig = {}): {
   app.get('/skills', async (_req, res) => {
     try {
       const skills = await loadSkillsFromDir(skillsDir);
-      const moduleSkillsDirs = getModuleSkillsDirs(loadedModules);
+      const moduleSkillsDirs = getModuleSkillsDirs(modules.loaded());
       for (const dir of moduleSkillsDirs) {
         const fromModule = await loadSkillsFromDir(dir);
         const seen = new Set(skills.map((s) => s.slug));
@@ -857,6 +860,20 @@ export function createGateway(config: GatewayConfig = {}): {
     }
   });
 
+  /** Modules found at start, with whether each loaded. */
+  app.get('/modules', (_req: Request, res: Response) => {
+    res.json({
+      modules: modules.list().map((h) => ({
+        id: h.module.id,
+        name: h.module.manifest.name ?? h.module.id,
+        version: h.module.manifest.version ?? null,
+        dir: h.module.dir,
+        status: h.status,
+        error: h.error ?? null,
+      })),
+    });
+  });
+
   // Automations: scheduled agent runs that end in a draft pull request.
   // Their schedules pause with the triggers under the kill switch.
   mountAutomationRoutes(app, automationDeps, () => triggersPausedAt === null);
@@ -1047,7 +1064,7 @@ export function createGateway(config: GatewayConfig = {}): {
 
   /** Skills directories in lookup order: the configured one, then each module's. */
   function allSkillsDirs(): string[] {
-    return [skillsDir, ...getModuleSkillsDirs(loadedModules)];
+    return [skillsDir, ...getModuleSkillsDirs(modules.loaded())];
   }
 
   /** The managed pipeline. Only a chat session passes history; /task and triggers are single-turn. */
@@ -1058,7 +1075,7 @@ export function createGateway(config: GatewayConfig = {}): {
     let skills: Awaited<ReturnType<typeof loadSkillsFromDir>> = [];
     try {
       skills = await loadSkillsFromDir(skillsDir);
-      const moduleSkillsDirs = getModuleSkillsDirs(loadedModules);
+      const moduleSkillsDirs = getModuleSkillsDirs(modules.loaded());
       for (const dir of moduleSkillsDirs) {
         const fromModule = await loadSkillsFromDir(dir);
         const seen = new Set(skills.map((s) => s.slug));
@@ -1142,6 +1159,8 @@ export function createGateway(config: GatewayConfig = {}): {
     }
   });
 
+  let markReady: () => void = () => undefined;
+  const ready = new Promise<void>((resolve) => (markReady = resolve));
   const server = app.listen(port, host, async () => {
     logger.info('Gateway started', { host, port, url: `http://${host}:${port}` });
     try {
@@ -1171,21 +1190,12 @@ export function createGateway(config: GatewayConfig = {}): {
       });
     }
     try {
-      const modules = await loadModulesFromDir(config.modulesDir ?? process.env.CLERQ_MODULES_DIR);
-      loadedModules = modules;
-      if (modules.length > 0) {
-        for (const mod of modules) {
-          if (mod.routeHandlers.length > 0) {
-            mountModuleRoutes(app, mod);
-          } else {
-            logger.info('Module loaded', { moduleId: mod.id, routes: 0 });
-          }
-        }
-      }
+      await modules.loadAll(config.modulesDir ?? process.env.CLERQ_MODULES_DIR);
     } catch (e) {
       logger.warn('Module load error', { err: e instanceof Error ? e.message : String(e) });
     }
+    markReady();
   });
 
-  return { app, server };
+  return { app, server, ready };
 }

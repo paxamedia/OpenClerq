@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop **Automations** module: a spec editor that checks a spec against this machine before saving, runs with their steps and diff, and the approvals inbox.
 - `packages/web`, the start of the rebuilt desktop interface: design tokens for light and dark, bundled DM Sans and JetBrains Mono, an icon wrapper, and tests that fail on corners over 1px, inline styles, colours or fonts outside the tokens, and text contrast below WCAG AA.
 - `GET /events/stream`: the event bus as resumable SSE, with `Last-Event-ID`, a `reset` frame, name filters and a heartbeat. `gateway.streamEvents()` and `gateway.eventsStreamUrl()` in `@clerq/gateway-client`.
+- **Module platform.** A module's `register(ctx)` gets a ModuleContext: routes, store, secrets, approvals, audit, logger and config, scoped to its id. Types in the new `@clerq/module-sdk`, with a hello-world example. `GET /modules` lists modules and whether each loaded.
 - Automation summaries carry `monthBudgetUsd` and `nextFirings` (the next ten); `GET /runs` takes `since`.
 - Component kit in `packages/web` for the new interface: buttons, fields, checkbox, switch, segmented control, tabs, a sortable table, run status tags, key–value lists, code blocks, skeletons, empty states, tooltips, popovers, menus, dialogs, a drawer and toasts. All keyboard-operable; the Foundations page shows each one in both themes.
 

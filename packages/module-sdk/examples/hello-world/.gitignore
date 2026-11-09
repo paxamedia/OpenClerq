@@ -1,0 +1,2 @@
+# This example is a module as it ships: its dist/ is the module, not a build output.
+!dist/

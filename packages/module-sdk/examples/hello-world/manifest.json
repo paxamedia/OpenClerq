@@ -1,0 +1,8 @@
+{
+  "id": "hello-world",
+  "slug": "hello-world",
+  "name": "Hello world",
+  "version": "0.1.0",
+  "description": "The smallest module that uses the module platform: a route, a table, a secret, an event and a UI.",
+  "config": { "greeting": "Hello" }
+}

@@ -24,6 +24,9 @@ export interface ModuleManifestStub {
   name?: string;
   version?: string;
   entryPoints?: { routes?: string[] };
+  /** Defaults for `ctx.config`. */
+  config?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 /** Result of loading a module. */
@@ -31,7 +34,12 @@ export interface LoadedModule {
   id: string;
   manifest: ModuleManifestStub;
   dir: string;
+  /** Routes from a module that exports a `routes` array (the pre-0.6 contract). */
   routeHandlers: ModuleRouteHandler[];
+  /** `register(ctx)`, from a module that exports one or a default `{ register }`. */
+  register?: (ctx: unknown) => unknown;
+  /** Why the server entry could not be imported. */
+  error?: string;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -64,37 +72,66 @@ function loadManifest(moduleDir: string): ModuleManifestStub | null {
   }
 }
 
+/** Module ids double as URL segments and table prefixes. */
+const MODULE_ID = /^[a-z][a-z0-9-]*$/;
+
 /**
- * Try to load route handlers from a module.
- * Looks for dist/routes.js or build/routes.js (compiled output).
+ * Import a module's server entry: the manifest's `entryPoints.routes[0]`, or
+ * else dist/routes.js, dist/routes.cjs or build/routes.js.
+ *
+ * It may export `register(ctx)` (or a default `{ register }`), or a `routes`
+ * array of handlers. A `register` written for the pre-0.6 contract, which took
+ * an array and pushed handlers onto it, still works: the context has `push`.
  */
-async function loadRouteHandlers(
+async function loadEntry(
   moduleDir: string,
   manifest: ModuleManifestStub
-): Promise<ModuleRouteHandler[]> {
-  const candidates = [
-    path.join(moduleDir, 'dist', 'routes.js'),
-    path.join(moduleDir, 'dist', 'routes.cjs'),
-    path.join(moduleDir, 'build', 'routes.js'),
-  ];
-  for (const p of candidates) {
-    if (fssync.existsSync(p)) {
-      try {
-        const mod = await import(pathToFileURL(p).href);
-        const routes = mod.routes ?? mod.default ?? mod.register;
-        if (Array.isArray(routes)) return routes as ModuleRouteHandler[];
-        if (typeof routes === 'function') {
-          const out: ModuleRouteHandler[] = [];
-          routes(out);
-          return out;
-        }
-      } catch (e) {
-        console.warn(`[Clerq] Failed to load routes from ${p}:`, e);
-      }
-      break;
-    }
+): Promise<Pick<LoadedModule, 'routeHandlers' | 'register' | 'error'>> {
+  const declared = manifest.entryPoints?.routes?.[0];
+  const candidates = declared
+    ? [path.resolve(moduleDir, declared)]
+    : [
+        path.join(moduleDir, 'dist', 'routes.js'),
+        path.join(moduleDir, 'dist', 'routes.cjs'),
+        path.join(moduleDir, 'build', 'routes.js'),
+      ];
+  const p = candidates.find((c) => fssync.existsSync(c));
+  if (!p) return { routeHandlers: [] };
+  try {
+    const mod = (await import(pathToFileURL(p).href)) as Record<string, unknown>;
+    const def = mod.default as Record<string, unknown> | ((...a: unknown[]) => unknown) | undefined;
+    const register =
+      typeof mod.register === 'function'
+        ? mod.register
+        : typeof def === 'function'
+          ? def
+          : def && typeof def.register === 'function'
+            ? (def.register as (ctx: unknown) => unknown).bind(def)
+            : undefined;
+    const routes = Array.isArray(mod.routes)
+      ? mod.routes
+      : Array.isArray(def)
+        ? (def as unknown[])
+        : [];
+    return {
+      routeHandlers: routes as ModuleRouteHandler[],
+      register: register as LoadedModule['register'],
+    };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    console.warn(`[Clerq] Failed to load module entry ${p}:`, error);
+    return { routeHandlers: [], error };
   }
-  return [];
+}
+
+async function loadOne(dir: string): Promise<LoadedModule | null> {
+  const manifest = loadManifest(dir);
+  if (!manifest) return null;
+  if (!MODULE_ID.test(manifest.id)) {
+    console.warn(`[Clerq] Skipping module in ${dir}: id "${manifest.id}" is not [a-z][a-z0-9-]*`);
+    return null;
+  }
+  return { id: manifest.id, manifest, dir, ...(await loadEntry(dir, manifest)) };
 }
 
 /**
@@ -108,26 +145,22 @@ export async function loadModulesFromDir(modulesDir?: string): Promise<LoadedMod
 
   const loaded: LoadedModule[] = [];
   const manifestPath = path.join(dir, 'manifest.json');
-
-  if (fssync.existsSync(manifestPath)) {
-    const manifest = loadManifest(dir);
-    if (manifest) {
-      const routeHandlers = await loadRouteHandlers(dir, manifest);
-      loaded.push({ id: manifest.id, manifest, dir, routeHandlers });
+  const dirs = fssync.existsSync(manifestPath)
+    ? [dir]
+    : fssync
+        .readdirSync(dir, { withFileTypes: true })
+        .filter((ent) => ent.isDirectory())
+        .map((ent) => path.join(dir, ent.name))
+        .sort();
+  for (const d of dirs) {
+    const mod = await loadOne(d);
+    if (!mod) continue;
+    if (loaded.some((m) => m.id === mod.id)) {
+      console.warn(`[Clerq] Skipping module in ${d}: id "${mod.id}" is already loaded`);
+      continue;
     }
-  } else {
-    const entries = fssync.readdirSync(dir, { withFileTypes: true });
-    for (const ent of entries) {
-      if (!ent.isDirectory()) continue;
-      const subDir = path.join(dir, ent.name);
-      const manifest = loadManifest(subDir);
-      if (manifest) {
-        const routeHandlers = await loadRouteHandlers(subDir, manifest);
-        loaded.push({ id: manifest.id, manifest, dir: subDir, routeHandlers });
-      }
-    }
+    loaded.push(mod);
   }
-
   return loaded;
 }
 
