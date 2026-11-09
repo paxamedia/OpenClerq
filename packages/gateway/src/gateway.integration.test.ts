@@ -803,7 +803,9 @@ describe('gateway integration', () => {
       expect(text).toContain('"name":"kill.engaged"');
       expect(text).toContain('"name":"kill.released"');
       expect(text).not.toContain('"name":"gateway.');
-      expect(ids(text)).toHaveLength(2);
+      // The opening frame's id, then one per event.
+      expect(ids(text)).toHaveLength(3);
+      expect(text.startsWith('retry: 3000\nid: ')).toBe(true);
     });
 
     it('replays what was missed after Last-Event-ID, and resets when it cannot', async () => {
@@ -815,7 +817,7 @@ describe('gateway integration', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ approvals: false, runs: false }),
       });
-      const seenId = ids(await reading)[0];
+      const seenId = ids(await reading).at(-1) as string;
       // Missed while disconnected.
       await authed(`${baseUrl}/resume`, { method: 'POST' });
 

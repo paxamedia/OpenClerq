@@ -17,6 +17,7 @@ import { getStore } from '../store.js';
 import { emit } from '../events.js';
 import { currentTenant } from '../tenant.js';
 import { issueToken, lastSeen, revokeTokens } from '../security/scoped-tokens.js';
+import { notifyTokensChanged } from '../security/token-watch.js';
 
 export const PAIRING_TTL_MS = 5 * 60_000;
 /** A device token expires after this long unused; each use extends it. */
@@ -155,6 +156,8 @@ export function updateRemoteSettings(
   writeSetting('remote.publicUrl', next.publicUrl ?? '');
   writeSetting('remote.ntfyServer', next.ntfyServer);
   cached = { ...next, publicUrl: next.publicUrl || null };
+  // Device connections still open must notice remote mode going off.
+  if (current.enabled && !next.enabled) notifyTokensChanged();
   if (current.enabled !== next.enabled) {
     audit(getStore(), { actor, action: next.enabled ? 'remote.enabled' : 'remote.disabled' });
   }

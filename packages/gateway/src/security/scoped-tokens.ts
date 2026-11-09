@@ -14,6 +14,7 @@
 import crypto from 'node:crypto';
 import { getStore, isStoreOpen } from '../store.js';
 import { DEFAULT_TENANT } from '../tenant.js';
+import { notifyTokensChanged } from './token-watch.js';
 
 export type TokenKind = 'module' | 'device';
 
@@ -181,12 +182,14 @@ export function resolveToken(token: string): Principal | null {
 /** Revoke every live token of one module or device. Returns how many. */
 export function revokeTokens(kind: TokenKind, subject: string): number {
   const now = new Date().toISOString();
-  return getStore()
+  const revoked = getStore()
     .prepare(
       `UPDATE scoped_tokens SET revoked_at = ?
        WHERE kind = ? AND subject = ? AND revoked_at IS NULL AND expires_at > ?`
     )
     .run(now, kind, subject, now).changes;
+  notifyTokensChanged();
+  return revoked;
 }
 
 /** When a device or module last used a token, if ever. */
@@ -195,4 +198,13 @@ export function lastSeen(kind: TokenKind, subject: string): string | null {
     .prepare('SELECT MAX(last_seen_at) AS at FROM scoped_tokens WHERE kind = ? AND subject = ?')
     .get(kind, subject);
   return row?.at ? String(row.at) : null;
+}
+
+/** Whether a token row is still live: not revoked, not expired. */
+export function tokenStillValid(tokenId: string): boolean {
+  if (!isStoreOpen()) return false;
+  const row = getStore()
+    .prepare('SELECT expires_at, revoked_at FROM scoped_tokens WHERE id = ?')
+    .get(tokenId);
+  return Boolean(row && !row.revoked_at && Date.parse(String(row.expires_at)) > Date.now());
 }

@@ -286,7 +286,11 @@ describe('event stream', () => {
     stubFetch(() => {
       n += 1;
       if (n === 1)
-        return sse([': connected\n\n', event('a-1', 'run.started'), event('a-2', 'run.co')]);
+        return sse([
+          'id: a-0\n: connected\n\n',
+          event('a-1', 'run.started'),
+          event('a-2', 'run.co'),
+        ]);
       if (n === 2) return sse(['event: reset\nid: b-0\ndata: {}\n\n', event('b-1', 'run.started')]);
       controller.abort();
       return sse([]);

@@ -16,6 +16,9 @@ import type { Request, Response } from 'express';
 import { eventsSince, lastEventId, subscribeEvents, type ClerqEvent } from './events.js';
 import { principalOf } from './security/auth.js';
 import { currentTenant, DEFAULT_TENANT } from './tenant.js';
+import { tokenStillValid } from './security/scoped-tokens.js';
+import { onTokensChanged } from './security/token-watch.js';
+import { remoteSettings } from './remote/devices.js';
 
 export const DEFAULT_HEARTBEAT_MS = 15_000;
 
@@ -62,17 +65,34 @@ export function streamEvents(req: Request, res: Response): void {
     byName(e) && (!tenantOnly || (e.context.tenantId ?? DEFAULT_TENANT) === tenant);
   let closed = false;
   let unsub: () => void = () => undefined;
+  let unwatch: () => void = () => undefined;
   let timer: NodeJS.Timeout | undefined;
+
+  // A scoped token is checked again on every send and heartbeat, and when
+  // tokens change: a revoked or expired token, or a device after remote mode
+  // goes off, ends the stream.
+  const principal = principalOf(res);
+  const stillAllowed = () =>
+    !principal ||
+    principal.kind === 'operator' ||
+    (tokenStillValid(String(principal.tokenId)) &&
+      (principal.kind !== 'device' || remoteSettings().enabled));
 
   const close = () => {
     if (closed) return;
     closed = true;
     unsub();
+    unwatch();
     clearInterval(timer);
+  };
+  const end = () => {
+    close();
+    if (!res.writableEnded) res.end();
   };
   const write = (chunk: string) => {
     if (closed) return;
     if (res.writableEnded || res.destroyed) return close();
+    if (!stillAllowed()) return end();
     try {
       res.write(chunk);
     } catch {
@@ -83,7 +103,8 @@ export function streamEvents(req: Request, res: Response): void {
     if (keep(e)) write(`id: ${e.id}\ndata: ${JSON.stringify(e)}\n\n`);
   };
 
-  write(`retry: 3000\n: connected ${lastEventId()}\n\n`);
+  // The opening id gives a client a resume point before any event arrives.
+  write(`retry: 3000\nid: ${lastEventId()}\n: connected\n\n`);
   const from = resumeFrom(req);
   if (from) {
     const missed = eventsSince(from);
@@ -96,6 +117,9 @@ export function streamEvents(req: Request, res: Response): void {
   }
 
   unsub = subscribeEvents(send);
+  unwatch = onTokensChanged(() => {
+    if (!stillAllowed()) end();
+  });
   timer = setInterval(() => write(`: ping ${new Date().toISOString()}\n\n`), heartbeatMs());
   timer.unref?.();
   req.on('close', close);

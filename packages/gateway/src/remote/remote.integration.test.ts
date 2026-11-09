@@ -150,6 +150,50 @@ describe('pairing', () => {
     expect((await api('/runs', {}, t)).status).toBe(401);
   });
 
+  it('ends an open event stream when its device is revoked or remote mode goes off', async () => {
+    const pairOne = async (name: string) => {
+      const { code } = (await (await api('/devices/pairing', { method: 'POST' })).json()) as {
+        code: string;
+      };
+      return (await (await pair({ code, deviceName: name, platform: 'ios' })).json()) as {
+        token: string;
+        device: { id: string };
+      };
+    };
+    /** Resolves when the stream ends, or false after two seconds. */
+    const ends = async (res: Response) => {
+      const reader = res.body!.getReader();
+      const timer = setTimeout(() => void reader.cancel(), 2000);
+      let ended = false;
+      for (;;) {
+        const { done } = await reader.read().catch(() => ({ done: true }));
+        if (done) {
+          ended = true;
+          break;
+        }
+      }
+      clearTimeout(timer);
+      return ended;
+    };
+    const t0 = Date.now();
+    const a = await pairOne('Streamer A');
+    const streamA = await api('/events/stream', {}, a.token);
+    expect(streamA.status).toBe(200);
+    const endedA = ends(streamA);
+    await api(`/devices/${a.device.id}`, { method: 'DELETE' });
+    expect(await endedA).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(1900);
+
+    const b = await pairOne('Streamer B');
+    const streamB = await api('/events/stream', {}, b.token);
+    const endedB = ends(streamB);
+    const t1 = Date.now();
+    await api('/remote', { method: 'PUT', body: JSON.stringify({ enabled: false }) });
+    expect(await endedB).toBe(true);
+    expect(Date.now() - t1).toBeLessThan(1900);
+    await api('/remote', { method: 'PUT', body: JSON.stringify({ enabled: true }) });
+  });
+
   it('refuses wrong codes, and stops answering after too many', async () => {
     let last = 0;
     for (let i = 0; i < 11; i++) {
