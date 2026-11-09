@@ -8,13 +8,13 @@
   "properties": {
     "id": {
       "type": "string",
-      "description": "Unique module identifier (e.g. my-module)",
-      "pattern": "^[a-z][a-z0-9-]*$"
+      "description": "Unique module identifier: lower-case words joined by single hyphens (e.g. my-module)",
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
     },
     "slug": {
       "type": "string",
       "description": "Machine-readable slug, same as id typically",
-      "pattern": "^[a-z][a-z0-9-]*$"
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
     },
     "name": {
       "type": "string",
@@ -66,7 +66,194 @@
         "type": "string"
       },
       "description": "Dependencies (e.g. clerq-core: >=0.1.0)"
+    },
+    "config": {
+      "type": "object",
+      "description": "Default settings, overlaid with the operator's ~/.clerq/modules/<id>.json"
+    },
+    "coreEndpoints": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(GET|POST|PUT|PATCH|DELETE) /[^\\s]+$"
+      },
+      "description": "Core endpoints the module's UI token may call, e.g. \"GET /runs/:id\""
+    },
+    "services": {
+      "type": "array",
+      "description": "launchd agents the module may start and stop",
+      "items": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": ["label"],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "plist": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "description": "What the module needs. Declared and shown to the operator; not enforced",
+      "properties": {
+        "exec": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fs": {
+          "type": "object",
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "net": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "llm": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "extensions": {
+      "type": "object",
+      "description": "What the module adds to the shell",
+      "properties": {
+        "nav": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "home.tile": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "record.panel": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "record.action": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "search": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "inbox.item": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "settings.page": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        }
+      },
+      "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "definitions": {
+    "extensionItem": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "A path inside the module's UI, opened at #/m/<module>/<path>; {ref} stands for a record's ref"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "order": {
+          "type": "number"
+        },
+        "size": {
+          "enum": ["s", "m", "l"]
+        },
+        "types": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*:[a-z][a-z0-9_-]*$"
+          },
+          "description": "Record types as <module>:<type>, e.g. core:person"
+        },
+        "trigger": {
+          "type": "string",
+          "description": "record.action: the module trigger to fire with { ref }"
+        },
+        "confirm": {
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": ["approval", "reply", "task", "alert"]
+        }
+      }
+    }
+  }
 }
