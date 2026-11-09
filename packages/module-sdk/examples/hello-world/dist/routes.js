@@ -5,9 +5,25 @@
 /** @type {import('@clerq/module-sdk').ClerqModule} */
 export default {
   register(ctx) {
+    const greetings = ctx.store.table('greetings'); // mod_hello_world_greetings
+
     ctx.routes.get('/hello', (req, res) => {
       const name = typeof req.query.name === 'string' ? req.query.name : 'world';
       res.json({ message: `${ctx.config.greeting}, ${name}` });
+    });
+
+    // Remembers who was greeted, in the module's own table (migrations/0001_greetings.sql).
+    ctx.routes.post('/greetings', (req, res) => {
+      const name = String(req.body?.name ?? 'world');
+      ctx.store
+        .prepare(`INSERT INTO ${greetings} (name, created_at) VALUES (?, ?)`)
+        .run(name, new Date().toISOString());
+      res.status(201).json({ message: `${ctx.config.greeting}, ${name}` });
+    });
+    ctx.routes.get('/greetings', (_req, res) => {
+      res.json({
+        greetings: ctx.store.prepare(`SELECT name, created_at FROM ${greetings} ORDER BY id`).all(),
+      });
     });
 
     // The value goes into the vault as `hello-world/token`; only whether it is set comes back.

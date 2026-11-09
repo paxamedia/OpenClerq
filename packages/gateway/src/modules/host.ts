@@ -6,7 +6,11 @@
  * the gateway and the other modules carry on.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Express } from 'express';
+import { migrateModule, type Migration } from '@clerq/store';
+import { getStore } from '../store.js';
 import { logger } from '../logger.js';
 import { loadModulesFromDir, type LoadedModule } from '../module-loader.js';
 import { createModuleContext, type ContextHandle } from './context.js';
@@ -50,6 +54,8 @@ export class ModuleHost {
     const handle = createModuleContext(mod);
     entry.handle = handle;
     try {
+      const ran = migrateModule(getStore(), mod.id, readMigrations(mod.dir));
+      if (ran.length > 0) logger.info('Module migrated', { moduleId: mod.id, applied: ran });
       for (const r of mod.routeHandlers) handle.ctx.push(r);
       await mod.register?.(handle.ctx);
     } catch (e) {
@@ -64,4 +70,22 @@ export class ModuleHost {
     entry.error = error;
     logger.error('Module failed to load', { moduleId: entry.module.id, err: error });
   }
+}
+
+const MIGRATION_FILE = /^(\d+)[_-]([\w-]+)\.sql$/;
+
+/** `<module>/migrations/0001_name.sql`, …: the number is the id, in order. */
+export function readMigrations(moduleDir: string): Migration[] {
+  const dir = path.join(moduleDir, 'migrations');
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .map((f) => ({ f, m: MIGRATION_FILE.exec(f) }))
+    .filter((x): x is { f: string; m: RegExpExecArray } => x.m !== null)
+    .map(({ f, m }) => ({
+      id: Number(m[1]),
+      name: m[2],
+      sql: fs.readFileSync(path.join(dir, f), 'utf8'),
+    }))
+    .sort((a, b) => a.id - b.id);
 }

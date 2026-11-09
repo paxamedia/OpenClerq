@@ -104,7 +104,12 @@ complete example.
 | `logger`    | the gateway log, tagged with the module id                                       |
 | `config`    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                |
 
-A module whose `register` throws is listed as `failed` and gets no routes. Module code runs in the
+**Tables.** SQL files in `<module>/migrations/`, named `0001_name.sql` and so on, run in order
+before `register`, each once and in its own transaction. They may create, change or write only
+objects named `mod_<id>_*` (hyphens in the id become underscores); anything else fails the module.
+Like core migrations they are append-only: one edited after it ran is refused.
+
+A module whose migrations or `register` throw is listed as `failed` and gets no routes. Module code runs in the
 gateway process with the gateway's access: the context is a namespace, not a sandbox. Modules that
 export a `routes` array (the earlier contract) still load.
 

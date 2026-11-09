@@ -15,7 +15,13 @@ import { clerqHome, ensurePrivateDir, restrictFile } from './local-files.js';
 
 export type { Database, Statement, Row, Param } from './driver.js';
 export { openDatabase } from './driver.js';
-export { MIGRATIONS } from './migrations.js';
+export { MIGRATIONS, type Migration } from './migrations.js';
+export {
+  migrateModule,
+  checkModuleSql,
+  moduleTablePrefix,
+  ModuleMigrationError,
+} from './module-migrations.js';
 export { importLegacyJson, type ImportResult } from './import-legacy.js';
 export {
   clerqHome,

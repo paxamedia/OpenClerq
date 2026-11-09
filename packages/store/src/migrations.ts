@@ -213,4 +213,19 @@ export const MIGRATIONS: Migration[] = [
     // look like that JSON. It gets a column of its own.
     sql: `ALTER TABLE messages ADD COLUMN meta TEXT;`,
   },
+  {
+    id: 4,
+    name: 'module_migrations',
+    // Each module's own migrations, applied by migrateModule().
+    sql: `
+      CREATE TABLE module_migrations (
+        module_id  TEXT NOT NULL,
+        id         INTEGER NOT NULL,
+        name       TEXT NOT NULL,
+        checksum   TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        PRIMARY KEY (module_id, id)
+      );
+    `,
+  },
 ];

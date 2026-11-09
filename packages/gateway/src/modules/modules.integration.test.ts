@@ -55,6 +55,13 @@ beforeAll(async () => {
     path.join(broken, 'dist', 'routes.js'),
     "export function register() { throw new Error('cannot start'); }\n"
   );
+  const trespasser = path.join(modulesDir, 'trespasser');
+  fs.mkdirSync(path.join(trespasser, 'migrations'), { recursive: true });
+  fs.writeFileSync(
+    path.join(trespasser, 'manifest.json'),
+    JSON.stringify({ id: 'trespasser', slug: 'trespasser', name: 'T', version: '0.1.0' })
+  );
+  fs.writeFileSync(path.join(trespasser, 'migrations', '0001_x.sql'), 'DROP TABLE runs;');
   // Settings override the manifest's defaults.
   fs.mkdirSync(path.join(home, '.clerq', 'modules'), { recursive: true });
   fs.writeFileSync(
@@ -102,6 +109,26 @@ describe('module context', () => {
     const res = await api('/api/modules/hello-world/hello?name=Ada');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ message: 'Howdy, Ada' });
+  });
+
+  it("runs a module's migrations and lets it use its tables", async () => {
+    const post = await api('/api/modules/hello-world/greetings', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Grace' }),
+    });
+    expect(post.status).toBe(201);
+    const { greetings } = (await (await api('/api/modules/hello-world/greetings')).json()) as {
+      greetings: Array<{ name: string }>;
+    };
+    expect(greetings.map((g) => g.name)).toEqual(['Grace']);
+  });
+
+  it('fails a module whose migration touches tables it does not own', async () => {
+    const { modules } = (await (await api('/modules')).json()) as {
+      modules: Array<{ id: string; status: string; error: string | null }>;
+    };
+    expect(modules.find((m) => m.id === 'trespasser')).toMatchObject({ status: 'failed' });
+    expect(modules.find((m) => m.id === 'trespasser')?.error).toMatch(/mod_trespasser_/);
   });
 
   it('requires the gateway token on module routes', async () => {
