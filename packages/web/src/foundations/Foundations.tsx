@@ -34,6 +34,7 @@ import { SegmentedControl } from '../ui/Choice';
 import { Icon } from '../ui/Icon';
 import { ToastProvider } from '../ui/Toast';
 import { contrastRatio } from '../ui/contrast';
+import { PageHeader } from '../shell/layout';
 import { ComponentsDemo } from './ComponentsDemo';
 import './foundations.css';
 
@@ -131,8 +132,10 @@ function ratio(fg: string | undefined, bg: string | undefined): string {
   }
 }
 
-export function Foundations() {
+/** `embedded`: drawn inside the app at #/dev/gallery rather than as its own page. */
+export function Foundations({ embedded = false }: { embedded?: boolean }) {
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
+  const Root = embedded ? 'div' : 'main';
   const [tokens, setTokens] = useState<Record<string, string>>({});
 
   const refresh = useCallback(() => setTokens(readTokens()), []);
@@ -157,7 +160,12 @@ export function Foundations() {
 
   return (
     <ToastProvider>
-      <main className="fdn">
+      {embedded && (
+        <PageHeader
+          crumbs={[{ label: 'Developer', to: '/developer' }, { label: 'Component gallery' }]}
+        />
+      )}
+      <Root className="fdn">
         <header className="fdn-head">
           <div>
             <h1 className="fdn-title">Foundations</h1>
@@ -233,7 +241,7 @@ export function Foundations() {
         </section>
 
         <ComponentsDemo />
-      </main>
+      </Root>
     </ToastProvider>
   );
 }

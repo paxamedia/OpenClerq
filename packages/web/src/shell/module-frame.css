@@ -1,0 +1,32 @@
+.module-frame {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.module-frame--fill {
+  flex: 1;
+  min-height: 480px;
+}
+
+.module-frame-iframe {
+  display: block;
+  width: 100%;
+  border: var(--line-width) solid var(--line);
+  background: var(--surface);
+}
+
+.module-frame--fill .module-frame-iframe {
+  flex: 1;
+  min-height: 480px;
+}
+
+.module-frame--fit .module-frame-iframe {
+  height: var(--frame-height, 160px);
+  border: 0;
+}
+
+.module-page {
+  height: 100%;
+}

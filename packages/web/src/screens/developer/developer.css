@@ -1,0 +1,73 @@
+.dev-panel {
+  padding-top: var(--space-4);
+  max-width: 880px;
+}
+
+.dev-form,
+.dev-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dev-log {
+  height: 56vh;
+  min-height: 240px;
+  padding: var(--space-2) 0;
+  overflow: auto;
+  border: var(--line-width) solid var(--line);
+  background: var(--surface);
+  font: var(--type-code);
+}
+
+.dev-log-empty {
+  padding: var(--space-3);
+}
+
+.dev-log-line {
+  display: grid;
+  grid-template-columns: 80px 48px minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border-left: var(--focus-width) solid transparent;
+}
+
+.dev-log-line.is-warn {
+  border-left-color: var(--warn);
+}
+
+.dev-log-line.is-error {
+  border-left-color: var(--err);
+}
+
+.dev-log-time {
+  color: var(--ink-3);
+}
+
+.dev-log-level {
+  color: var(--ink-3);
+}
+
+.dev-log-line.is-warn .dev-log-level {
+  color: var(--warn);
+}
+
+.dev-log-line.is-error .dev-log-level {
+  color: var(--err);
+}
+
+.dev-log-msg {
+  overflow-wrap: anywhere;
+}
+
+.dev-log-data {
+  color: var(--ink-3);
+}
+
+@media (max-width: 640px) {
+  .dev-log-line {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding-bottom: var(--space-1);
+  }
+}

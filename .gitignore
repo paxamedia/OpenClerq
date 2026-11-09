@@ -21,3 +21,4 @@ apps/desktop/src-tauri/binaries/
 # Internal planning (keep locally, not for public push)
 docs/CONTROL_TOWER_VISION.md
 docs/internal/
+ui-shots/

@@ -1,0 +1,191 @@
+.runs-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 200px)) auto;
+  align-items: end;
+  gap: var(--space-3);
+}
+
+.runs-clear {
+  justify-self: start;
+  margin-bottom: 2px;
+}
+
+.runs-name {
+  display: block;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Diff viewer */
+.diff {
+  display: flex;
+  flex-direction: column;
+  border: var(--line-width) solid var(--line);
+  background: var(--surface);
+}
+
+.diff-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--line-width) solid var(--line);
+}
+
+.diff-summary {
+  display: flex;
+  gap: var(--space-3);
+  color: var(--ink-2);
+  font: var(--type-secondary);
+}
+
+.diff-body {
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.diff-files {
+  max-height: 520px;
+  margin: 0;
+  padding: var(--space-1) 0;
+  overflow: auto;
+  border-right: var(--line-width) solid var(--line);
+  list-style: none;
+}
+
+.diff-file {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-left: var(--focus-width) solid transparent;
+  background: none;
+  color: var(--ink-2);
+  font: var(--type-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.diff-file:hover {
+  background: var(--surface-2);
+}
+
+.diff-file.is-active {
+  border-left-color: var(--accent);
+  background: var(--accent-weak);
+  color: var(--ink);
+}
+
+.diff-file-path {
+  overflow: hidden;
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-file-count {
+  font: var(--type-label);
+  font-family: var(--font-mono);
+}
+
+.diff-table-wrap {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--type-code);
+}
+
+.diff-table.is-split {
+  table-layout: fixed;
+}
+
+.diff-table.is-split .diff-no {
+  width: 48px;
+}
+
+.diff-no {
+  width: 48px;
+  padding: 0 var(--space-2);
+  border-right: var(--line-width) solid var(--line);
+  color: var(--ink-3);
+  text-align: right;
+  vertical-align: top;
+  user-select: none;
+}
+
+.diff-cell {
+  padding: 0 var(--space-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.diff-cell.is-add {
+  background: var(--accent-weak);
+}
+
+.diff-cell.is-add .diff-sign {
+  color: var(--ok);
+}
+
+.diff-cell.is-del {
+  background: var(--surface-2);
+}
+
+.diff-cell.is-del .diff-sign {
+  color: var(--err);
+}
+
+.diff-cell.is-blank {
+  background: var(--bg);
+}
+
+.diff-sign {
+  display: inline-block;
+  width: 1.5ch;
+  color: var(--ink-3);
+}
+
+.diff-hunk {
+  padding: var(--space-1) var(--space-2);
+  border-top: var(--line-width) solid var(--line);
+  border-bottom: var(--line-width) solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+
+.diff-binary {
+  padding: var(--space-4);
+}
+
+@media (max-width: 900px) {
+  .runs-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .diff-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .diff-files {
+    max-height: 160px;
+    border-right: 0;
+    border-bottom: var(--line-width) solid var(--line);
+  }
+}

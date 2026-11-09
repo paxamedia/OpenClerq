@@ -1,0 +1,416 @@
+/**
+ * Live data: one cache of gateway reads, kept current by the event stream.
+ *
+ * A screen asks for a resource with `useResource(key, fetch, { on })`. Events
+ * from the gateway refetch the resources whose families they touch, so pages
+ * follow what happens without a refresh button. When the stream is down the
+ * same resources are polled instead.
+ *
+ * The stream is tried in order: GET /events/stream, then the older GET /events
+ * (same frames), then polling, retried every 30 s.
+ */
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
+import type { GatewayClient } from './client';
+
+/** Groups of data an event can change. */
+export type Family =
+  | 'runs'
+  | 'approvals'
+  | 'automations'
+  | 'sessions'
+  | 'health'
+  | 'memory'
+  | 'records'
+  | 'inbox'
+  | 'modules'
+  | 'devices';
+
+export interface GatewayEvent {
+  name: string;
+  at: string;
+  context: { runId?: string; sessionId?: string; [key: string]: unknown };
+  payload: unknown;
+}
+
+/** The families an event touches. */
+export function familiesOf(name: string): Family[] {
+  const [group] = name.split('.');
+  switch (group) {
+    case 'run':
+      return ['runs', 'automations', 'approvals', 'sessions'];
+    case 'approval':
+      return ['approvals', 'runs', 'inbox'];
+    case 'record':
+    case 'activity':
+      return ['records'];
+    case 'inbox':
+      return ['inbox'];
+    case 'notify':
+    case 'service':
+    case 'module':
+      return name === 'notify.posted' ? [] : ['modules'];
+    case 'device':
+      return ['devices'];
+    case 'tool':
+      return name === 'tool.approval_required' ? ['approvals', 'runs', 'inbox'] : ['runs'];
+    case 'gate':
+    case 'agent':
+    case 'model':
+    case 'budget':
+      return ['runs'];
+    case 'session':
+      return ['sessions'];
+    case 'memory':
+      return ['memory'];
+    case 'kill':
+      return ['runs', 'approvals', 'automations', 'health', 'inbox'];
+    case 'gateway':
+      return ['health'];
+    default:
+      return [];
+  }
+}
+
+export type StreamState = 'connecting' | 'live' | 'polling';
+
+export interface ResourceState<T> {
+  data: T | undefined;
+  error: unknown;
+  /** True until the first answer, and while a reload runs with nothing shown. */
+  loading: boolean;
+  /** Milliseconds since the epoch of the last good answer. */
+  updatedAt: number;
+}
+
+interface Entry {
+  state: ResourceState<unknown>;
+  fetcher?: () => Promise<unknown>;
+  on: Family[];
+  runId?: string;
+  listeners: Set<() => void>;
+  inflight: boolean;
+  again: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+const EMPTY: ResourceState<never> = { data: undefined, error: null, loading: true, updatedAt: 0 };
+
+/** Polling interval while the stream is down; slower safety refresh while it is up. */
+const POLL_MS = 5_000;
+const SAFETY_MS = 60_000;
+/** Events arrive in bursts; one refetch per resource per burst. */
+const SETTLE_MS = 300;
+const RETRY_MS = 30_000;
+
+export class LiveStore {
+  private entries = new Map<string, Entry>();
+  private stateListeners = new Set<() => void>();
+  private eventListeners = new Set<(e: GatewayEvent) => void>();
+  stream: StreamState = 'connecting';
+
+  private entry(key: string): Entry {
+    let e = this.entries.get(key);
+    if (!e) {
+      e = { state: EMPTY, on: [], listeners: new Set(), inflight: false, again: false };
+      this.entries.set(key, e);
+    }
+    return e;
+  }
+
+  snapshot = (key: string): ResourceState<unknown> => this.entries.get(key)?.state ?? EMPTY;
+
+  register(key: string, fetcher: () => Promise<unknown>, on: Family[], runId?: string): void {
+    const e = this.entry(key);
+    e.fetcher = fetcher;
+    e.on = on;
+    e.runId = runId;
+  }
+
+  subscribe(key: string, fn: () => void): () => void {
+    const e = this.entry(key);
+    e.listeners.add(fn);
+    return () => e.listeners.delete(fn);
+  }
+
+  private set(key: string, state: ResourceState<unknown>): void {
+    const e = this.entry(key);
+    e.state = state;
+    e.listeners.forEach((fn) => fn());
+  }
+
+  /** Replace a resource's data now, as after an action the gateway confirmed. */
+  write<T>(key: string, update: (current: T | undefined) => T): void {
+    const e = this.entry(key);
+    this.set(key, { ...e.state, data: update(e.state.data as T | undefined), loading: false });
+  }
+
+  async fetch(key: string): Promise<void> {
+    const e = this.entry(key);
+    if (!e.fetcher) return;
+    if (e.inflight) {
+      e.again = true;
+      return;
+    }
+    e.inflight = true;
+    if (e.state.data === undefined && !e.state.loading)
+      this.set(key, { ...e.state, loading: true });
+    try {
+      const data = await e.fetcher();
+      this.set(key, { data, error: null, loading: false, updatedAt: Date.now() });
+    } catch (error) {
+      this.set(key, { ...e.state, error, loading: false });
+    } finally {
+      e.inflight = false;
+      if (e.again) {
+        e.again = false;
+        void this.fetch(key);
+      }
+    }
+  }
+
+  private soon(key: string): void {
+    const e = this.entry(key);
+    if (e.timer) return;
+    e.timer = setTimeout(() => {
+      e.timer = undefined;
+      void this.fetch(key);
+    }, SETTLE_MS);
+  }
+
+  /** Refetch every watched resource in these families (all of them when none are named). */
+  invalidate(families?: Family[], runId?: string): void {
+    for (const [key, e] of this.entries) {
+      if (!e.listeners.size || !e.fetcher) continue;
+      if (families && !e.on.some((f) => families.includes(f))) continue;
+      if (e.runId && runId && e.runId !== runId) continue;
+      this.soon(key);
+    }
+  }
+
+  /** Refetch watched resources that follow live data; used by the poll and on focus. */
+  refreshLive(): void {
+    for (const [key, e] of this.entries) {
+      if (e.listeners.size && e.fetcher && e.on.length) void this.fetch(key);
+    }
+  }
+
+  dispatch(event: GatewayEvent): void {
+    this.eventListeners.forEach((fn) => fn(event));
+    const families = familiesOf(event.name);
+    if (families.length) this.invalidate(families, event.context?.runId);
+  }
+
+  onEvent(fn: (e: GatewayEvent) => void): () => void {
+    this.eventListeners.add(fn);
+    return () => this.eventListeners.delete(fn);
+  }
+
+  setStream(state: StreamState): void {
+    if (state === this.stream) return;
+    this.stream = state;
+    this.stateListeners.forEach((fn) => fn());
+  }
+
+  subscribeStream = (fn: () => void): (() => void) => {
+    this.stateListeners.add(fn);
+    return () => this.stateListeners.delete(fn);
+  };
+}
+
+/** Candidate stream URLs: the client's own, then the paths derived from the log stream's. */
+export function streamUrls(client: GatewayClient): string[] {
+  const out: string[] = [];
+  try {
+    if (client.eventsStreamUrl) out.push(client.eventsStreamUrl());
+  } catch {
+    /* an older client */
+  }
+  try {
+    const logs = client.logsStreamUrl();
+    out.push(
+      logs.replace('/logs/stream', '/events/stream'),
+      logs.replace('/logs/stream', '/events')
+    );
+  } catch {
+    /* no log stream either: poll */
+  }
+  return [...new Set(out)].filter((u) => /^https?:/.test(u));
+}
+
+/** Opens the first stream that answers and feeds its events to the store. Returns a closer. */
+export function connectStream(store: LiveStore, client: GatewayClient): () => void {
+  if (typeof EventSource === 'undefined') {
+    store.setStream('polling');
+    return () => {};
+  }
+  let closed = false;
+  let source: EventSource | null = null;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+
+  const attempt = (urls: string[], index: number) => {
+    if (closed) return;
+    if (index >= urls.length) {
+      store.setStream('polling');
+      retry = setTimeout(() => attempt(streamUrls(client), 0), RETRY_MS);
+      return;
+    }
+    const openedAt = Date.now();
+    let opened = false;
+    const es = new EventSource(urls[index]);
+    source = es;
+    es.onopen = () => {
+      opened = true;
+      store.setStream('live');
+      // Catch up on whatever changed while the stream was down.
+      store.refreshLive();
+    };
+    es.onmessage = (msg) => {
+      try {
+        const event = JSON.parse(msg.data) as GatewayEvent;
+        if (!event?.name) return;
+        // The older stream replays recent events on connect; they are history, not news.
+        if (event.at && Date.parse(event.at) < openedAt - 1000) return;
+        store.dispatch(event);
+      } catch {
+        /* not an event frame */
+      }
+    };
+    // The gateway could not replay what was missed: refetch everything.
+    es.addEventListener('reset', () => store.refreshLive());
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) {
+        es.close();
+        if (opened) attempt(urls, 0);
+        else attempt(urls, index + 1);
+      } else {
+        // The browser reconnects by itself; poll until it does.
+        store.setStream('polling');
+      }
+    };
+  };
+
+  attempt(streamUrls(client), 0);
+  return () => {
+    closed = true;
+    clearTimeout(retry);
+    source?.close();
+  };
+}
+
+const LiveContext = createContext<LiveStore | null>(null);
+
+/** Holds the cache and the stream for everything inside it. */
+export function LiveProvider({
+  client,
+  store: given,
+  children,
+}: {
+  client: GatewayClient;
+  /** A prepared store, as the fixtures and tests use; otherwise one is made. */
+  store?: LiveStore;
+  children: ReactNode;
+}) {
+  const store = useMemo(() => given ?? new LiveStore(), [given]);
+
+  useEffect(() => connectStream(store, client), [store, client]);
+
+  useEffect(() => {
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (store.stream !== 'live') store.refreshLive();
+    };
+    const poll = setInterval(tick, POLL_MS);
+    const safety = setInterval(() => store.refreshLive(), SAFETY_MS);
+    const onFocus = () => store.refreshLive();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(poll);
+      clearInterval(safety);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [store]);
+
+  return <LiveContext.Provider value={store}>{children}</LiveContext.Provider>;
+}
+
+export function useLive(): LiveStore {
+  const store = useContext(LiveContext);
+  if (!store) throw new Error('useLive needs a <LiveProvider>.');
+  return store;
+}
+
+export function useStreamState(): StreamState {
+  const store = useLive();
+  return useSyncExternalStore(
+    store.subscribeStream,
+    () => store.stream,
+    () => store.stream
+  );
+}
+
+export interface ResourceOptions {
+  /** Families whose events refetch it. Empty: fetched once per mount, never polled. */
+  on?: Family[];
+  /** Only events about this run refetch it. */
+  runId?: string;
+}
+
+export interface Resource<T> extends ResourceState<T> {
+  reload: () => Promise<void>;
+}
+
+/**
+ * A gateway read, cached under `key` and shared by every component that asks
+ * for the same key. A null key fetches nothing.
+ */
+export function useResource<T>(
+  key: string | null,
+  fetcher: () => Promise<T>,
+  options: ResourceOptions = {}
+): Resource<T> {
+  const store = useLive();
+  const fetchRef = useRef(fetcher);
+  fetchRef.current = fetcher;
+  const on = (options.on ?? []).join(',');
+
+  const subscribe = useCallback(
+    (fn: () => void) => (key ? store.subscribe(key, fn) : () => {}),
+    [store, key]
+  );
+  const state = useSyncExternalStore(
+    subscribe,
+    () => (key ? store.snapshot(key) : EMPTY),
+    () => (key ? store.snapshot(key) : EMPTY)
+  ) as ResourceState<T>;
+
+  useEffect(() => {
+    if (!key) return;
+    store.register(
+      key,
+      () => fetchRef.current(),
+      on ? (on.split(',') as Family[]) : [],
+      options.runId
+    );
+    const current = store.snapshot(key);
+    // Shared keys are fetched once; a later mount reuses a recent answer.
+    if (!current.updatedAt || Date.now() - current.updatedAt > 2_000 || current.error) {
+      void store.fetch(key);
+    }
+  }, [store, key, on, options.runId]);
+
+  const reload = useCallback(async () => {
+    if (key) await store.fetch(key);
+  }, [store, key]);
+
+  return { ...state, loading: key ? state.loading : false, reload };
+}

@@ -1,0 +1,13 @@
+.ui-qr {
+  display: block;
+  width: 224px;
+  height: 224px;
+}
+
+.ui-qr-paper {
+  fill: var(--qr-paper);
+}
+
+.ui-qr-ink {
+  fill: var(--qr-ink);
+}

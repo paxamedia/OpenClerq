@@ -1,0 +1,6 @@
+/* A module UI brings its own styles; these mimic the app for the preview only. */
+body { margin: 0; padding: 12px 16px; font: 14px/20px system-ui, sans-serif; color: #14140f; background: #ffffff; }
+html[data-theme='dark'] body { color: #f2f0e8; background: #191915; }
+h1 { margin: 0 0 8px; font-size: 15px; }
+p { margin: 0 0 8px; color: #6b6a60; }
+ul { margin: 0; padding-left: 18px; }

@@ -111,3 +111,41 @@
 .ui-modal-desc + .ui-modal-actions {
   margin-top: var(--space-4);
 }
+
+/* Phone width: drawers rise from the bottom as sheets, dialogs take the full width. */
+@keyframes ui-sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@media (max-width: 640px) {
+  .ui-dialog[open] {
+    place-items: end stretch;
+    padding: 0;
+  }
+
+  .ui-dialog .ui-modal-panel {
+    max-width: none;
+    max-height: 90%;
+    border-width: var(--line-width) 0 0;
+  }
+
+  .ui-drawer[open] {
+    align-items: flex-end;
+  }
+
+  .ui-drawer .ui-modal-panel,
+  .ui-drawer--md .ui-modal-panel,
+  .ui-drawer--lg .ui-modal-panel {
+    max-width: none;
+    height: auto;
+    max-height: 90%;
+    border-width: var(--line-width) 0 0;
+    animation: ui-sheet-in var(--duration-panel) var(--ease);
+  }
+
+  .ui-modal-actions {
+    padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+  }
+}

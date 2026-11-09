@@ -44,6 +44,10 @@
   --z-floating: 50;
   --z-toast: 60;
 
+  /* A QR code stays dark on light in both themes, so every camera can read it. */
+  --qr-ink: #14140f;
+  --qr-paper: #ffffff;
+
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --duration-fast: 120ms;
   --duration-panel: 200ms;

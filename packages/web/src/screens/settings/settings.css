@@ -1,0 +1,215 @@
+.settings {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: var(--space-8);
+  align-items: start;
+}
+
+.settings-nav ul {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-nav-link {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border-left: var(--focus-width) solid var(--line);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.settings-nav-link:hover {
+  color: var(--ink);
+}
+
+.settings-nav-link.is-active {
+  border-left-color: var(--accent);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  max-width: 760px;
+  min-width: 0;
+}
+
+.settings-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.settings-inline > .ui-button {
+  margin-top: 22px;
+}
+
+.settings-inline .ui-field {
+  flex: 1 1 180px;
+}
+
+.settings-preview {
+  align-self: center;
+  margin-top: 18px;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.settings-providers,
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  border: var(--line-width) solid var(--line);
+  background: var(--surface);
+  list-style: none;
+}
+
+.settings-list > li,
+.settings-provider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--line-width) solid var(--line);
+}
+
+.settings-list > li:last-child,
+.settings-provider:last-child {
+  border-bottom: 0;
+}
+
+.settings-list > li > code,
+.settings-module {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-module {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-provider-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-provider-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 500;
+}
+
+.settings-default {
+  padding: 0 var(--space-1);
+  border: var(--line-width) solid var(--accent);
+  color: var(--accent);
+  font: var(--type-label);
+}
+
+.settings-test {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font: var(--type-secondary);
+}
+
+.settings-trigger {
+  align-items: flex-start;
+}
+
+.settings-trigger .ui-field {
+  flex: 1;
+}
+
+.settings-hook {
+  flex: 1;
+  min-width: 0;
+  padding-top: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.settings-triggers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.settings-subtitle {
+  margin: 0;
+  color: var(--ink-2);
+  font: var(--type-body);
+  font-weight: 600;
+}
+
+.settings-value {
+  display: block;
+  max-width: 360px;
+  overflow: hidden;
+  font: var(--type-code);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-keys {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-keys kbd {
+  padding: 0 var(--space-1);
+  border: var(--line-width) solid var(--line-strong);
+}
+
+@media (max-width: 640px) {
+  .settings-nav-link {
+    padding: var(--space-3) var(--space-4);
+    border-bottom: var(--line-width) solid var(--line);
+    border-left: 0;
+  }
+
+  .settings-nav ul {
+    margin: 0 calc(-1 * var(--space-4));
+    border-top: var(--line-width) solid var(--line);
+  }
+
+  .settings-inline > .ui-button {
+    margin-top: 0;
+  }
+
+  .settings-provider {
+    flex-wrap: wrap;
+  }
+}
+
+.settings-pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-6);
+}
+
+.settings-pair .ui-kv {
+  flex: 1 1 200px;
+}

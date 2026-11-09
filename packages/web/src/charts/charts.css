@@ -1,0 +1,354 @@
+/* Charts: square marks, 1px axes, colour only from the state tokens. */
+
+.chart {
+  display: block;
+  overflow: visible;
+  font: var(--type-label);
+}
+
+.chart-wrap {
+  width: 100%;
+  min-width: 0;
+}
+
+.chart-axis {
+  stroke: var(--line-strong);
+  stroke-width: var(--line-width);
+}
+
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: var(--line-width);
+}
+
+.chart-tick {
+  fill: var(--ink-3);
+  font: var(--type-label);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-hit {
+  fill: transparent;
+}
+
+.chart-track,
+.chart-empty {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: var(--line-width);
+}
+
+.chart-fill {
+  fill: var(--ink-3);
+  transition: opacity var(--duration-fast) var(--ease);
+}
+
+.tone-accent .chart-fill,
+.chart-fill.tone-accent {
+  fill: var(--accent);
+}
+
+.tone-ok .chart-fill,
+.chart-fill.tone-ok {
+  fill: var(--ok);
+}
+
+.tone-warn .chart-fill,
+.chart-fill.tone-warn {
+  fill: var(--warn);
+}
+
+.tone-err .chart-fill,
+.chart-fill.tone-err {
+  fill: var(--err);
+}
+
+.tone-muted .chart-fill,
+.chart-fill.tone-muted {
+  fill: var(--ink-3);
+}
+
+.chart-mark {
+  outline: none;
+}
+
+.chart-mark.is-link {
+  cursor: pointer;
+}
+
+.chart-mark:hover .chart-fill,
+.chart-mark.chart-fill:hover {
+  opacity: 0.75;
+}
+
+.chart-mark:focus-visible .chart-fill,
+.chart-mark.chart-fill:focus-visible,
+.chart-mark.chart-heat-cell:focus-visible,
+.chart-mark:focus-visible .chart-track {
+  stroke: var(--accent);
+  stroke-width: var(--focus-width);
+}
+
+.chart-tip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chart-tip-title {
+  font-weight: 600;
+}
+
+.chart-tip-line {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Schedule heatmap */
+.chart-heat-cell {
+  fill: var(--surface);
+  stroke: var(--line);
+  stroke-width: var(--line-width);
+}
+
+.chart-heat-cell.level-1 {
+  fill: var(--accent-weak);
+  stroke: var(--accent);
+}
+
+.chart-heat-cell.level-2 {
+  fill: var(--accent);
+  fill-opacity: 0.55;
+  stroke: var(--accent);
+}
+
+.chart-heat-cell.level-3 {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.chart-heat-cell.is-past {
+  opacity: 0.35;
+}
+
+/* Pipeline stepper */
+.chart-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: var(--line-width) solid var(--line);
+  background: var(--surface);
+}
+
+.chart-step {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 96px;
+  border-right: var(--line-width) solid var(--line);
+}
+
+.chart-step:last-child {
+  border-right: 0;
+}
+
+.chart-step::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: var(--focus-width);
+  background: transparent;
+}
+
+.chart-step.is-done::after {
+  background: var(--ok);
+}
+
+.chart-step.is-current::after {
+  background: var(--accent);
+}
+
+.chart-step.is-waiting::after {
+  background: var(--warn);
+}
+
+.chart-step.is-failed::after {
+  background: var(--err);
+}
+
+.chart-step-button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: 40px;
+  padding: 0 var(--space-3);
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  font: var(--type-secondary);
+  text-align: left;
+}
+
+button.chart-step-button {
+  cursor: pointer;
+}
+
+button.chart-step-button:hover {
+  background: var(--surface-2);
+}
+
+.chart-step-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: var(--line-width) solid var(--line-strong);
+  border-radius: var(--radius);
+}
+
+.chart-step.is-done .chart-step-button,
+.chart-step.is-current .chart-step-button,
+.chart-step.is-waiting .chart-step-button,
+.chart-step.is-failed .chart-step-button {
+  color: var(--ink);
+}
+
+.chart-step.is-done .chart-step-mark {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.chart-step.is-current .chart-step-mark {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: ui-pulse 900ms var(--ease) infinite alternate;
+}
+
+.chart-step.is-waiting .chart-step-mark {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.chart-step.is-failed .chart-step-mark {
+  border-color: var(--err);
+  color: var(--err);
+}
+
+.chart-step.is-skipped .chart-step-label {
+  text-decoration: line-through;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-step.is-current .chart-step-mark {
+    animation: none;
+  }
+}
+
+/* Step waterfall */
+.chart-waterfall {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: var(--line-width) solid var(--line);
+  background: var(--surface);
+}
+
+.chart-waterfall-item {
+  border-bottom: var(--line-width) solid var(--line);
+}
+
+.chart-waterfall-item:last-child {
+  border-bottom: 0;
+}
+
+.chart-waterfall-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 2fr) minmax(80px, 1fr) 72px;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 36px;
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: var(--type-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chart-waterfall-row:hover {
+  background: var(--surface-2);
+}
+
+.chart-waterfall-item.is-open > .chart-waterfall-row {
+  background: var(--accent-weak);
+}
+
+.chart-waterfall-kind {
+  color: var(--ink-3);
+  font: var(--type-label);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.chart-waterfall-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-waterfall-track {
+  min-width: 0;
+}
+
+.chart-waterfall-time {
+  color: var(--ink-3);
+  font: var(--type-code);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.chart-waterfall-detail {
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+@media (max-width: 640px) {
+  .chart-waterfall-row {
+    grid-template-columns: minmax(0, 1fr) 64px;
+  }
+
+  .chart-waterfall-kind,
+  .chart-waterfall-track {
+    display: none;
+  }
+
+  .chart-step {
+    min-width: 33%;
+    border-bottom: var(--line-width) solid var(--line);
+  }
+}
+
+/* Compare bars */
+.chart-compare {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.chart-compare-group {
+  margin: 0;
+}
+
+.chart-compare-title {
+  margin-bottom: var(--space-1);
+  color: var(--ink-3);
+  font: var(--type-label);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
