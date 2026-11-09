@@ -5,7 +5,7 @@
 /** @type {import('@clerq/module-sdk').ClerqModule} */
 export default {
   register(ctx) {
-    // mod_hello_world_greetings, seen through the current tenant: the gateway
+    // mod_hello_world__greetings, seen through the current tenant: the gateway
     // adds tenant_id to every module table and these helpers filter on it.
     const greetings = ctx.store.rows('greetings');
 

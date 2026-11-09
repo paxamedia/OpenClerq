@@ -73,7 +73,8 @@ function loadManifest(moduleDir: string): ModuleManifestStub | null {
 }
 
 /** Module ids double as URL segments and table prefixes. */
-const MODULE_ID = /^[a-z][a-z0-9-]*$/;
+/** No `--` and no trailing `-`, so no module's table prefix covers another's (see the store). */
+const MODULE_ID = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 
 /**
  * Import a module's server entry: the manifest's `entryPoints.routes[0]`, or
@@ -128,7 +129,9 @@ async function loadOne(dir: string): Promise<LoadedModule | null> {
   const manifest = loadManifest(dir);
   if (!manifest) return null;
   if (!MODULE_ID.test(manifest.id)) {
-    console.warn(`[Clerq] Skipping module in ${dir}: id "${manifest.id}" is not [a-z][a-z0-9-]*`);
+    console.warn(
+      `[Clerq] Skipping module in ${dir}: id "${manifest.id}" must be lower-case words joined by single hyphens`
+    );
     return null;
   }
   return { id: manifest.id, manifest, dir, ...(await loadEntry(dir, manifest)) };

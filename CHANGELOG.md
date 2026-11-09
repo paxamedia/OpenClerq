@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `packages/web`, the start of the rebuilt desktop interface: design tokens for light and dark, bundled DM Sans and JetBrains Mono, an icon wrapper, and tests that fail on corners over 1px, inline styles, colours or fonts outside the tokens, and text contrast below WCAG AA.
 - `GET /events/stream`: the event bus as resumable SSE, with `Last-Event-ID`, a `reset` frame, name filters and a heartbeat. `gateway.streamEvents()` and `gateway.eventsStreamUrl()` in `@clerq/gateway-client`.
 - **Module platform.** A module's `register(ctx)` gets a ModuleContext: routes, store, secrets, approvals, audit, logger and config, scoped to its id. Types in the new `@clerq/module-sdk`, with a hello-world example. `GET /modules` lists modules and whether each loaded.
-- Module migrations: `<module>/migrations/NNNN_name.sql`, applied by `packages/store` and limited to tables named `mod_<id>_*`.
+- Module migrations: `<module>/migrations/NNNN_name.sql`, applied by `packages/store` and limited to tables named `mod_<id>__*`.
 - Module events: `ctx.events.emit('x')` puts `module.<id>.x` on the event bus.
 - Module handler triggers (cron, file, webhook), each firing recorded as a run with `moduleId` and `triggerId`, and paused by the kill switch.
 - Scoped module tokens: `POST /modules/:id/token` issues a short-lived token valid for `/api/modules/:id/*` plus the manifest's `coreEndpoints`; `DELETE /modules/:id/tokens` revokes them.

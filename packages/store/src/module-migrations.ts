@@ -1,7 +1,7 @@
 /**
  * Migrations a module ships for its own tables.
  *
- * A module owns tables named `mod_<id>_*` (hyphens in the id become
+ * A module owns tables named `mod_<id>__*` (hyphens in the id become
  * underscores) and nothing else: a migration that creates, alters, drops or
  * writes any other object is refused before it runs. This keeps modules from
  * colliding with core tables and with each other; it is not a security
@@ -26,8 +26,15 @@ export class ModuleMigrationError extends Error {
   }
 }
 
+/** Lower-case words joined by single hyphens: `crm`, `crm-sync`. */
+export const MODULE_ID = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+
+/**
+ * `mod_<id>__`, hyphens as underscores. The double underscore cannot occur in
+ * an id, so `mod_crm__` never covers `crm-sync`'s `mod_crm_sync__`.
+ */
 export function moduleTablePrefix(moduleId: string): string {
-  return `mod_${moduleId.replace(/-/g, '_')}_`;
+  return `mod_${moduleId.replace(/-/g, '_')}__`;
 }
 
 /** Strip comments and string literals, so names inside them are not mistaken for objects. */
@@ -92,6 +99,11 @@ function checksum(sql: string): string {
  * transaction. Returns the ids applied by this call.
  */
 export function migrateModule(db: Database, moduleId: string, migrations: Migration[]): number[] {
+  if (!MODULE_ID.test(moduleId)) {
+    throw new ModuleMigrationError(
+      `"${moduleId}" is not a module id: use lower-case words and single hyphens.`
+    );
+  }
   const sorted = [...migrations].sort((a, b) => a.id - b.id);
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i].id === sorted[i - 1].id) {

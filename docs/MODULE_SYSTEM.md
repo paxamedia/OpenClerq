@@ -97,7 +97,7 @@ complete example.
 | `ctx.`      | What it is                                                                                                   |
 | ----------- | ------------------------------------------------------------------------------------------------------------ |
 | `routes`    | `get/post/put/patch/delete(path, handler)`, served at `/api/modules/<id>/<path>`                             |
-| `store`     | the gateway's SQLite store; `table('x')` is `mod_<id>_x`                                                     |
+| `store`     | the gateway's SQLite store; `table('x')` is `mod_<id>__x`                                                    |
 | `secrets`   | vault entries named `<id>/<name>`                                                                            |
 | `events`    | `emit('x', payload)` puts `module.<id>.x` on the bus (and `GET /events/stream`); `subscribe(prefix, fn)`     |
 | `triggers`  | `register({ id, kind: 'cron' \| 'file' \| 'webhook', handler })`; each firing is a run                       |
@@ -141,7 +141,7 @@ elsewhere. Token, device, remote and vault endpoints are never reachable with it
 
 **Tables.** SQL files in `<module>/migrations/`, named `0001_name.sql` and so on, run in order
 before `register`, each once and in its own transaction. They may create, change or write only
-objects named `mod_<id>_*` (hyphens in the id become underscores); anything else fails the module.
+objects named `mod_<id>__*` (hyphens in the id become underscores); anything else fails the module.
 Like core migrations they are append-only: one edited after it ran is refused.
 
 A module whose migrations or `register` throw is listed as `failed` and gets no routes. Module code runs in the
@@ -203,7 +203,7 @@ A single-tenant install only ever sees the tenant `default` and needs to do noth
   `X-Clerq-Tenant` (else `default`). A scoped token naming another tenant gets `403`.
 - Shared records, links, activities and inbox items are per tenant. Identity resolution never
   matches across tenants: the same email is a different person in each.
-- Every `mod_<id>_*` table gets a `tenant_id` column (default `default`) and an index, added by the
+- Every `mod_<id>__*` table gets a `tenant_id` column (default `default`) and an index, added by the
   store after each module migration. `ctx.store.rows('items')` reads and writes only the current
   tenant's rows; raw SQL through `ctx.store.prepare` must filter on `tenant_id = ctx.tenant` itself.
 - `ctx.tenant` is the current tenant: the request's, or `default` for triggers and timers.

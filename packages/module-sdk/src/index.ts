@@ -82,16 +82,16 @@ export interface TenantTable {
 }
 
 /**
- * The gateway's SQLite store. A module's tables are named `mod_<id>_<name>`
+ * The gateway's SQLite store. A module's tables are named `mod_<id>__<name>`
  * (hyphens in the id become underscores) and created by its migrations; the
  * store adds a `tenant_id` column to each. `rows('items')` reads and writes
  * the current tenant's rows. Raw SQL through `prepare` must filter on
  * `tenant_id = ctx.tenant` itself.
  */
 export interface ModuleStore {
-  /** `mod_<id>_<name>`. */
+  /** `mod_<id>__<name>`. */
   table(name: string): string;
-  /** The current tenant's rows of `mod_<id>_<name>`. */
+  /** The current tenant's rows of `mod_<id>__<name>`. */
   rows(name: string): TenantTable;
   prepare(sql: string): SqlStatement;
   exec(sql: string): void;
@@ -443,7 +443,7 @@ export function defineModule(module: ClerqModule): ClerqModule {
   return module;
 }
 
-/** The prefix a module's tables carry: `mod_<id>_`, hyphens as underscores. */
+/** The prefix a module's tables carry: `mod_<id>__`, hyphens in the id as underscores; the double underscore keeps one module's prefix from covering another's. */
 export function tablePrefix(moduleId: string): string {
-  return `mod_${moduleId.replace(/-/g, '_')}_`;
+  return `mod_${moduleId.replace(/-/g, '_')}__`;
 }
