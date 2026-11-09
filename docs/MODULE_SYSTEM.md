@@ -102,6 +102,7 @@ complete example.
 | `events`    | `emit('x', payload)` puts `module.<id>.x` on the bus (and `GET /events/stream`); `subscribe(prefix, fn)`     |
 | `triggers`  | `register({ id, kind: 'cron' \| 'file' \| 'webhook', handler })`; each firing is a run                       |
 | `notify`    | `notify({ title, body, level, link })` and `notify.badge('3/10')`: `notify.posted` and `notify.badge` events |
+| `services`  | `status/start/stop(label)` for the launchd agents the manifest lists under `services` (macOS)                |
 | `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                       |
 | `audit`     | `append(action)`, recorded as `module.<id>.<action>`                                                         |
 | `logger`    | the gateway log, tagged with the module id                                                                   |
@@ -111,6 +112,12 @@ complete example.
 value is stored on it, and a throw fails it. `POST /api/modules/<id>/triggers/<triggerId>` fires
 any trigger (a webhook's JSON body becomes `payload`) and answers `202 { runId }`. A firing while
 the last one is still running is skipped (`409` over HTTP); the kill switch pauses them (`503`).
+
+**Services.** `"services": [{ "label": "org.example.worker", "plist": "~/Library/LaunchAgents/…" }]`
+(the plist defaults to `~/Library/LaunchAgents/<label>.plist`). Start bootstraps the agent if
+launchd does not have it and kickstarts it; stop boots it out. Over HTTP:
+`GET /api/modules/<id>/services` and `POST /api/modules/<id>/services/<label>/start|stop`. Each
+start and stop is audited and emits `service.changed`. Labels not in the manifest get `404`.
 
 **UI.** A module that ships `dist/ui/index.html` has it served at `/api/modules/<id>/ui/`, without
 a token: these are static files with no data in them, and an iframe cannot send a header. The UI

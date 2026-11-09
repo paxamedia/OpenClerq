@@ -15,6 +15,7 @@ import { logger } from '../logger.js';
 import { loadModulesFromDir, type LoadedModule } from '../module-loader.js';
 import { createModuleContext, type ContextHandle } from './context.js';
 import { ModuleTriggers, TriggerError } from './triggers.js';
+import { ServiceError } from './services.js';
 
 export type ModuleStatus = 'loaded' | 'failed';
 
@@ -68,6 +69,32 @@ export class ModuleHost {
           .json({ error: e.code === 'paused' ? 'triggers_paused' : e.code, message: e.message });
       }
     });
+    // Reserved too: the services the manifest declares.
+    const serviceError = (res: import('express').Response, e: unknown) => {
+      if (!(e instanceof ServiceError)) throw e;
+      const status = { not_declared: 404, unsupported: 501, failed: 502 }[e.code];
+      res.status(status).json({ error: `service_${e.code}`, message: e.message });
+    };
+    handle.router.get('/services', async (_req, res) => {
+      try {
+        res.json({
+          services: await Promise.all(
+            handle.services.list().map((s) => handle.services.status(s.label))
+          ),
+        });
+      } catch (e) {
+        serviceError(res, e);
+      }
+    });
+    for (const action of ['start', 'stop'] as const) {
+      handle.router.post(`/services/:label/${action}`, async (req, res) => {
+        try {
+          res.json(await handle.services[action](String(req.params.label)));
+        } catch (e) {
+          serviceError(res, e);
+        }
+      });
+    }
     try {
       const ran = migrateModule(getStore(), mod.id, readMigrations(mod.dir));
       if (ran.length > 0) logger.info('Module migrated', { moduleId: mod.id, applied: ran });

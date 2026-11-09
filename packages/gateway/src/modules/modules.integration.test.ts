@@ -17,7 +17,14 @@ import { createGateway } from '../gateway.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXAMPLE = path.resolve(__dirname, '../../../module-sdk/examples/hello-world');
 const TOKEN = 'modules-test-token-0123456789';
-const VARS = ['HOME', 'USERPROFILE', 'CLERQ_KEYCHAIN', 'CLERQ_VAULT_KEY', 'CLERQ_MODULES_DIR'];
+const VARS = [
+  'HOME',
+  'USERPROFILE',
+  'CLERQ_KEYCHAIN',
+  'CLERQ_VAULT_KEY',
+  'CLERQ_MODULES_DIR',
+  'CLERQ_LAUNCHCTL',
+];
 
 let baseUrl = '';
 let home = '';
@@ -69,6 +76,12 @@ beforeAll(async () => {
     JSON.stringify({ greeting: 'Howdy' })
   );
   process.env.CLERQ_MODULES_DIR = modulesDir;
+  // Never the real launchctl: this one knows no agents and records its calls.
+  const fake = path.join(home, 'launchctl');
+  fs.writeFileSync(fake, `#!/bin/sh\necho "$@" >> "${home}/launchctl.log"\nexit 113\n`, {
+    mode: 0o755,
+  });
+  process.env.CLERQ_LAUNCHCTL = fake;
 
   const gw = createGateway({
     port: 0,
@@ -335,5 +348,39 @@ describe('module UI', () => {
     };
     expect(modules.find((m) => m.id === 'hello-world')?.ui).toBe('/api/modules/hello-world/ui/');
     expect(modules.find((m) => m.id === 'broken')?.ui).toBeNull();
+  });
+});
+
+describe('module services', () => {
+  it('reports the services the manifest declares, and refuses others', async () => {
+    const res = await api('/api/modules/hello-world/services');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      services: [
+        {
+          label: 'org.example.hello-world.worker',
+          name: 'Example worker',
+          loaded: false,
+          running: false,
+          pid: null,
+          lastExitCode: null,
+        },
+      ],
+    });
+    const other = await api('/api/modules/hello-world/services/com.example.other/start', {
+      method: 'POST',
+    });
+    expect(other.status).toBe(404);
+    // Not loaded, and its plist is not on this machine: nothing is started.
+    const start = await api(
+      '/api/modules/hello-world/services/org.example.hello-world.worker/start',
+      {
+        method: 'POST',
+      }
+    );
+    expect(start.status).toBe(502);
+    expect(fs.readFileSync(path.join(home, 'launchctl.log'), 'utf8')).not.toMatch(
+      /bootstrap|kickstart/
+    );
   });
 });

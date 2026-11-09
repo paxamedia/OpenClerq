@@ -21,6 +21,7 @@ import { emit, subscribeEvents } from '../events.js';
 import type { LoadedModule, ModuleRouteHandler } from '../module-loader.js';
 import type { ModuleTriggers } from './triggers.js';
 import { createNotify } from './notify.js';
+import { ModuleServices, servicesOf } from './services.js';
 
 /** Gateway services a context is built over. */
 export interface ContextDeps {
@@ -31,6 +32,7 @@ export interface ContextDeps {
 export interface ContextHandle {
   ctx: ModuleContext & { push(route: ModuleRouteHandler): void };
   router: Router;
+  services: ModuleServices;
 }
 
 const TABLE_NAME = /^[a-z0-9_]+$/;
@@ -86,6 +88,8 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
     (level: 'info' | 'warn' | 'error') => (message: string, meta?: Record<string, unknown>) =>
       logger[level](message, { moduleId: id, ...meta });
 
+  const services = new ModuleServices(id, servicesOf(mod.manifest));
+
   const ctx: ContextHandle['ctx'] = {
     id,
     dir: mod.dir,
@@ -140,6 +144,12 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
       register: (def) => deps.triggers.register(id, def),
     },
     notify: createNotify(id),
+    services: {
+      list: () => services.list(),
+      status: (label) => services.status(label),
+      start: (label) => services.start(label, `module:${id}`),
+      stop: (label) => services.stop(label, `module:${id}`),
+    },
     approvals: {
       async request(input) {
         // An approval belongs to a run. Outside one, the request gets a run of
@@ -198,5 +208,5 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
       route(method)(r.path, r.handler as unknown as RouteHandler);
     },
   };
-  return { ctx, router };
+  return { ctx, router, services };
 }

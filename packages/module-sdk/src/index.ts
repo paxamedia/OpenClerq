@@ -190,6 +190,27 @@ export interface ModuleNotify {
   badge(text: string | null): void;
 }
 
+export interface ServiceStatus {
+  label: string;
+  name?: string;
+  /** launchd has the agent. */
+  loaded: boolean;
+  running: boolean;
+  pid: number | null;
+  lastExitCode: number | null;
+}
+
+/**
+ * The launchd agents the manifest declares under `services`, and only those
+ * (macOS). Start loads the agent if needed and starts it; stop unloads it.
+ */
+export interface ModuleServices {
+  list(): Array<{ label: string; name?: string; plist: string }>;
+  status(label: string): Promise<ServiceStatus>;
+  start(label: string): Promise<ServiceStatus>;
+  stop(label: string): Promise<ServiceStatus>;
+}
+
 export interface ModuleLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
@@ -214,6 +235,7 @@ export interface ModuleContext {
   events: ModuleEvents;
   triggers: ModuleTriggers;
   notify: ModuleNotify;
+  services: ModuleServices;
   approvals: ModuleApprovals;
   audit: ModuleAudit;
   logger: ModuleLogger;

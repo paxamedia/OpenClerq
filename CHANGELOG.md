@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scoped module tokens: `POST /modules/:id/token` issues a short-lived token valid for `/api/modules/:id/*` plus the manifest's `coreEndpoints`; `DELETE /modules/:id/tokens` revokes them.
 - Module UIs: the gateway serves `<module>/dist/ui` at `/api/modules/:id/ui/`.
 - `ctx.notify` and `ctx.notify.badge` emit `notify.posted` and `notify.badge` for the desktop and devices. `@clerq/gateway-client` gains `modules()`, `moduleToken()`, `revokeModuleTokens()` and `fireModuleTrigger()`.
+- Module services: start, stop and status for the launchd agents a manifest declares, as `ctx.services` and under `/api/modules/:id/services`.
 - Automation summaries carry `monthBudgetUsd` and `nextFirings` (the next ten); `GET /runs` takes `since`.
 - Component kit in `packages/web` for the new interface: buttons, fields, checkbox, switch, segmented control, tabs, a sortable table, run status tags, key–value lists, code blocks, skeletons, empty states, tooltips, popovers, menus, dialogs, a drawer and toasts. All keyboard-operable; the Foundations page shows each one in both themes.
 
