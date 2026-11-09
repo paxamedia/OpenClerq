@@ -68,6 +68,9 @@ describe('module migrations', () => {
       'CREATE INDEX mod_hello_world__i ON runs(id)',
       'CREATE TABLE temp.mod_hello_world__t (id INTEGER)',
       "ATTACH DATABASE 'x.db' AS x",
+      "UPDATE runs AS r SET status = 'done'",
+      "INSERT INTO mod_hello_world__items (text) VALUES ('--'); DROP TABLE runs",
+      "INSERT INTO mod_hello_world__items (text) VALUES ('it''s'); DELETE FROM runs",
       'PRAGMA foreign_keys = OFF',
     ];
     for (const sql of refused) {
@@ -84,6 +87,9 @@ describe('module migrations', () => {
       `CREATE TRIGGER mod_hello_world__t AFTER INSERT ON mod_hello_world__items
          BEGIN UPDATE mod_hello_world__items SET text = text WHERE id = NEW.id; END`,
       'CREATE VIEW mod_hello_world__v AS SELECT id FROM runs',
+      `INSERT INTO mod_hello_world__items (id, text) VALUES (1, 'x')
+         ON CONFLICT (id) DO UPDATE SET text = excluded.text`,
+      "/* it's a comment */ CREATE TABLE mod_hello_world__c (id INTEGER)",
     ];
     for (const sql of allowed) expect(() => checkModuleSql('hello-world', sql), sql).not.toThrow();
   });

@@ -37,12 +37,47 @@ export function moduleTablePrefix(moduleId: string): string {
   return `mod_${moduleId.replace(/-/g, '_')}__`;
 }
 
-/** Strip comments and string literals, so names inside them are not mistaken for objects. */
+/**
+ * Blank out comments and string literals in one pass, left to right, so a
+ * `--` inside a string or a quote inside a comment cannot hide a statement.
+ * Quoted identifiers are kept: they are names.
+ */
 function code(sql: string): string {
-  return sql
-    .replace(/--[^\n]*/g, ' ')
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/'(?:[^']|'')*'/g, "''");
+  let out = '';
+  let i = 0;
+  while (i < sql.length) {
+    const c = sql[i];
+    const next = sql[i + 1];
+    if (c === '-' && next === '-') {
+      const end = sql.indexOf('\n', i);
+      i = end === -1 ? sql.length : end;
+      out += ' ';
+    } else if (c === '/' && next === '*') {
+      const end = sql.indexOf('*/', i + 2);
+      i = end === -1 ? sql.length : end + 2;
+      out += ' ';
+    } else if (c === "'") {
+      let j = i + 1;
+      for (;;) {
+        if (j >= sql.length) break;
+        if (sql[j] === "'" && sql[j + 1] === "'") j += 2;
+        else if (sql[j] === "'") break;
+        else j += 1;
+      }
+      i = j + 1;
+      out += "''";
+    } else if (c === '"' || c === '`' || c === '[') {
+      const close = c === '[' ? ']' : c;
+      const end = sql.indexOf(close, i + 1);
+      const stop = end === -1 ? sql.length : end + 1;
+      out += sql.slice(i, stop);
+      i = stop;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
 }
 
 const NAME = String.raw`((?:"[^"]+"|\x60[^\x60]+\x60|\[[^\]]+\]|[\w$]+)(?:\s*\.\s*(?:"[^"]+"|\x60[^\x60]+\x60|\[[^\]]+\]|[\w$]+))?)`;
@@ -54,10 +89,11 @@ const TARGETS = [
   String.raw`\bRENAME\s+TO\s+${NAME}`,
   String.raw`\bDROP\s+(?:TABLE|VIEW|INDEX|TRIGGER)\s+(?:IF\s+EXISTS\s+)?${NAME}`,
   String.raw`\b(?:INSERT|REPLACE)\s+(?:OR\s+\w+\s+)?INTO\s+${NAME}`,
-  String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?${NAME}\s+SET\b`,
+  // Not the `DO UPDATE SET` of an upsert, whose target is its INSERT's.
+  String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?(?!SET\b)${NAME}`,
   String.raw`\bDELETE\s+FROM\s+${NAME}`,
   // The table an index or trigger is defined on.
-  String.raw`\bON\s+${NAME}\s*(?:\(|BEGIN\b|FOR\b|WHEN\b)`,
+  String.raw`\bON\s+(?!CONFLICT\b)${NAME}\s*(?:\(|BEGIN\b|FOR\b|WHEN\b)`,
 ].map((p) => new RegExp(p, 'gi'));
 
 const FORBIDDEN = /\b(ATTACH|DETACH|PRAGMA|VACUUM)\b/i;
