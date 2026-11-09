@@ -46,7 +46,7 @@ export interface CoreRecord {
 
 export class RecordError extends Error {
   constructor(
-    readonly code: 'invalid' | 'not_found' | 'identity_conflict',
+    readonly code: 'invalid' | 'not_found' | 'identity_conflict' | 'merged',
     message: string,
     readonly candidates?: CoreRecord[]
   ) {
@@ -449,17 +449,34 @@ export function mergeRecords(intoId: string, fromId: string, actor?: string): Co
   return requireRecord(into.id);
 }
 
+/**
+ * Delete a record, and the records merged into it. A merged-away id is
+ * refused: it answers as the record it was merged into, and deleting that by
+ * a stale id would be a surprise.
+ */
 export function deleteRecord(id: string, actor?: string): void {
   const rec = requireRecord(id);
+  if (rec.id !== id) {
+    throw new RecordError('merged', `${id} was merged into ${rec.id}; delete that one instead.`);
+  }
   const db = getStore();
+  const tenant = currentTenant();
+  // Everything merged into it, however many merges deep.
+  const merged: string[] = [];
+  const childrenOf = db.prepare('SELECT id FROM records WHERE tenant_id = ? AND merged_into = ?');
+  for (let i = -1; i < merged.length; i++) {
+    const parent = i < 0 ? rec.id : merged[i];
+    for (const row of childrenOf.all(tenant, parent)) merged.push(String(row.id));
+  }
   db.transaction(() => {
+    const del = db.prepare('DELETE FROM records WHERE tenant_id = ? AND id = ?');
+    for (const m of merged.reverse()) del.run(tenant, m);
     db.prepare('DELETE FROM record_links WHERE tenant_id = ? AND (from_ref = ? OR to_ref = ?)').run(
       currentTenant(),
       rec.ref,
       rec.ref
     );
-    db.prepare('UPDATE records SET merged_into = NULL WHERE merged_into = ?').run(rec.id);
-    db.prepare('DELETE FROM records WHERE id = ?').run(rec.id);
+    del.run(tenant, rec.id);
   });
   emit('record.deleted', { ref: rec.ref, by: actor });
 }

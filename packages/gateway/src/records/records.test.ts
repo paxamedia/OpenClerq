@@ -74,6 +74,23 @@ describe('records', () => {
     expect(listRecords({ q: 'merge.test' }).map((r) => r.id)).toEqual([a.id]);
   });
 
+  it('refuse a delete through a merged-away id, and take merged records along', () => {
+    const keep = createRecord({ type: 'person', identities: { emails: ['keep@del.test'] } });
+    const gone = createRecord({ type: 'person', identities: { emails: ['gone@del.test'] } });
+    const older = createRecord({ type: 'person', identities: { emails: ['older@del.test'] } });
+    mergeRecords(gone.id, older.id);
+    mergeRecords(keep.id, gone.id);
+    expect(() => deleteRecord(gone.id)).toThrow(/merged into/);
+    expect(getRecord(keep.id)?.emails).toEqual([
+      'gone@del.test',
+      'keep@del.test',
+      'older@del.test',
+    ]);
+    deleteRecord(keep.id);
+    for (const r of [keep, gone, older]) expect(getRecord(r.id)).toBeNull();
+    expect(findByIdentity('email', 'older@del.test')).toBeNull();
+  });
+
   it('keep an organisation and a person apart', () => {
     createRecord({ type: 'organisation', name: 'Acme', identities: { domains: ['acme.test'] } });
     expect(() => resolveRecord({ type: 'person', identities: { domains: ['acme.test'] } })).toThrow(

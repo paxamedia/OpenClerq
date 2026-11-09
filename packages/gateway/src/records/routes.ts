@@ -32,7 +32,7 @@ export function actorOf(res: Response): string {
 
 function fail(res: Response, e: unknown, code: string): Response {
   if (e instanceof RecordError) {
-    const status = { invalid: 400, not_found: 404, identity_conflict: 409 }[e.code];
+    const status = { invalid: 400, not_found: 404, identity_conflict: 409, merged: 409 }[e.code];
     return res.status(status).json({
       error: e.code,
       message: e.message,
