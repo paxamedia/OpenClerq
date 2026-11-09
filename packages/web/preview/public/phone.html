@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Phone frame</title>
+    <style>
+      body { margin: 0; background: #777; }
+      iframe { display: block; width: 390px; height: 844px; border: 0; }
+    </style>
+  </head>
+  <body>
+    <!-- Headless Chrome cannot make a window narrower than about 500 px, so
+         pnpm ui:shots draws the app at phone width inside this frame. -->
+    <iframe id="app" title="OpenClerq at phone width"></iframe>
+    <script>
+      document.getElementById('app').src = decodeURIComponent(location.hash.slice(1));
+    </script>
+  </body>
+</html>

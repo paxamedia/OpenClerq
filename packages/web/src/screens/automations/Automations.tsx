@@ -128,6 +128,7 @@ function AutomationList({ base }: { base: string }) {
     },
     {
       key: 'schedule',
+      hideOnPhone: true,
       header: 'Schedule',
       cell: scheduleWords,
       sortValue: scheduleWords,
@@ -149,6 +150,7 @@ function AutomationList({ base }: { base: string }) {
     },
     {
       key: 'runs',
+      hideOnPhone: true,
       header: 'Last 20 runs',
       width: 'md',
       cell: (a) => (
@@ -159,6 +161,7 @@ function AutomationList({ base }: { base: string }) {
     },
     {
       key: 'budget',
+      hideOnPhone: true,
       header: 'This month',
       width: 'md',
       sortValue: (a) => a.monthSpendUsd,

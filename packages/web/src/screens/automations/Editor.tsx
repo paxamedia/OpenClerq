@@ -206,7 +206,7 @@ function Summary({ source, preview }: { source: string; preview: AutomationPrevi
   ).slice(0, 5);
   const lines = [
     schedule
-      ? `Runs ${describeCron(schedule).replace(/^./, (c) => c.toLowerCase())}.`
+      ? `Runs ${describeCron(schedule).replace(/^(Every|On|Weekdays|Weekends)\b/, (w) => w.toLowerCase())}.`
       : 'Runs only when you start it.',
     s.repo ? `Works in a fresh worktree of ${s.repo}${s.driver ? ` with ${s.driver}` : ''}.` : null,
     s.gates.length

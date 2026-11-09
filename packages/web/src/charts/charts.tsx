@@ -649,10 +649,20 @@ export function CompareBars({ columns }: { columns: ComparisonColumn[] }) {
     { id: 'tokens', label: 'Tokens' },
     { id: 'cost', label: 'Cost' },
   ];
-  const width = 160;
+  /** Bar space; the value is written after the bar. */
+  const width = 120;
+  const row = 20;
   const bar = 8;
   return (
     <div className="chart-compare">
+      <figure className="chart-compare-group">
+        <figcaption className="chart-compare-title">Model</figcaption>
+        <ol className="chart-compare-models">
+          {columns.map((c, i) => (
+            <li key={i}>{c.model.split('/').pop()}</li>
+          ))}
+        </ol>
+      </figure>
       {metrics.map((m) => {
         const values = columns.map((c) => metricValue(c, m.id));
         const max = Math.max(1e-9, ...values.map((v) => v ?? 0));
@@ -662,31 +672,38 @@ export function CompareBars({ columns }: { columns: ComparisonColumn[] }) {
             <figcaption className="chart-compare-title">{m.label}</figcaption>
             <svg
               className="chart"
-              width={width}
-              height={columns.length * (bar + 6)}
+              width={width + 72}
+              height={columns.length * row}
               role="group"
               aria-label={`${m.label}: ${columns.map((c, i) => `${c.model} ${metricText(values[i], m.id)}`).join(', ')}.`}
             >
               {columns.map((c, i) => {
                 const v = values[i];
                 const w = v === null ? 0 : Math.max(2, (v / max) * width);
+                const y = i * row + (row - bar) / 2;
                 return (
-                  <rect
+                  <g
                     key={i}
                     {...markProps(
                       tip,
                       `${c.model}: ${metricText(v, m.id)}`,
                       <TipBody title={c.model} lines={[metricText(v, m.id)]} />
                     )}
-                    className={cx(
-                      'chart-mark chart-fill',
-                      v !== null && v === best ? 'tone-ok' : 'tone-muted'
-                    )}
-                    x={0}
-                    y={i * (bar + 6)}
-                    width={w}
-                    height={bar}
-                  />
+                  >
+                    <rect
+                      className={cx(
+                        'chart-fill',
+                        v !== null && v === best ? 'tone-ok' : 'tone-muted'
+                      )}
+                      x={0}
+                      y={y}
+                      width={w}
+                      height={bar}
+                    />
+                    <text className="chart-tick" x={w + 6} y={y + bar}>
+                      {metricText(v, m.id)}
+                    </text>
+                  </g>
                 );
               })}
             </svg>

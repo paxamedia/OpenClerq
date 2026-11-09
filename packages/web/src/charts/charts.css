@@ -352,3 +352,17 @@ button.chart-step-button:hover {
   letter-spacing: var(--tracking-label);
   text-transform: uppercase;
 }
+
+.chart-compare-models {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chart-compare-models li {
+  height: 20px;
+  color: var(--ink-2);
+  font: var(--type-code);
+  line-height: 20px;
+  white-space: nowrap;
+}

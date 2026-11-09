@@ -18,6 +18,14 @@ import { useResource } from '../../app/live';
 import { Loaded, Section } from '../../shell/layout';
 import { useNow, When } from '../common';
 
+const PLATFORMS: Record<string, string> = {
+  ios: 'iOS',
+  android: 'Android',
+  macos: 'macOS',
+  windows: 'Windows',
+  linux: 'Linux',
+};
+
 export function RemoteSection() {
   const client = useClient();
   const toast = useToast();
@@ -201,7 +209,13 @@ export function DevicesSection() {
             rowKey={(d) => d.id}
             columns={[
               { key: 'name', header: 'Device', cell: (d) => d.name, sortValue: (d) => d.name },
-              { key: 'platform', header: 'System', cell: (d) => d.platform, width: 'sm' },
+              {
+                key: 'platform',
+                header: 'System',
+                cell: (d) => PLATFORMS[d.platform] ?? d.platform,
+                width: 'sm',
+                hideOnPhone: true,
+              },
               {
                 key: 'seen',
                 header: 'Last seen',
@@ -211,6 +225,7 @@ export function DevicesSection() {
               },
               {
                 key: 'paired',
+                hideOnPhone: true,
                 header: 'Paired',
                 cell: (d) => <When at={d.createdAt} />,
                 sortValue: (d) => d.createdAt,

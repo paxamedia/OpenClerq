@@ -101,12 +101,14 @@ function RecordList() {
               },
               {
                 key: 'contact',
+                hideOnPhone: true,
                 header: 'Contact',
                 cell: (r) => [...r.emails, ...r.phones, ...r.domains][0] ?? '',
                 mono: true,
               },
               {
                 key: 'updated',
+                hideOnPhone: true,
                 header: 'Changed',
                 cell: (r) => <When at={r.updatedAt} />,
                 sortValue: (r) => Date.parse(r.updatedAt),

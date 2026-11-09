@@ -14,6 +14,8 @@ export interface Column<R> {
   /** Monospace with tabular figures, for numbers, IDs and times. */
   mono?: boolean;
   width?: 'xs' | 'sm' | 'md' | 'lg';
+  /** Left out at phone width, where only the essential columns fit. */
+  hideOnPhone?: boolean;
 }
 
 export interface SortState {
@@ -96,7 +98,11 @@ export function Table<R>({
                 <th
                   key={c.key}
                   scope="col"
-                  className={cx(c.align === 'end' && 'is-end', c.width && `ui-col--${c.width}`)}
+                  className={cx(
+                    c.align === 'end' && 'is-end',
+                    c.width && `ui-col--${c.width}`,
+                    c.hideOnPhone && 'ui-col-phone-hidden'
+                  )}
                   aria-sort={
                     c.sortValue
                       ? active === 'asc'
@@ -152,7 +158,11 @@ export function Table<R>({
                   {columns.map((c) => (
                     <td
                       key={c.key}
-                      className={cx(c.align === 'end' && 'is-end', c.mono && 'is-mono')}
+                      className={cx(
+                        c.align === 'end' && 'is-end',
+                        c.mono && 'is-mono',
+                        c.hideOnPhone && 'ui-col-phone-hidden'
+                      )}
                     >
                       {c.cell(row)}
                     </td>

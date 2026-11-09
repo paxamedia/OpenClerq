@@ -67,17 +67,28 @@ function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: 'ignore', ...opts });
     child.on('error', reject);
-    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited with ${code}`))));
+    child.on('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`${cmd} exited with ${code}`))
+    );
   });
 }
 
 /** A production build of the preview, served by Vite: one bundle loads fast, and no dev socket stays open. */
 async function startPreview() {
   const web = path.join(ROOT, 'packages', 'web');
-  await run('pnpm', ['exec', 'vite', 'build', '--logLevel', 'warn'], { cwd: web, stdio: 'inherit' });
-  const child = spawn('pnpm', ['exec', 'vite', 'preview'], { cwd: web, stdio: ['ignore', 'pipe', 'inherit'] });
+  await run('pnpm', ['exec', 'vite', 'build', '--logLevel', 'warn'], {
+    cwd: web,
+    stdio: 'inherit',
+  });
+  const child = spawn('pnpm', ['exec', 'vite', 'preview'], {
+    cwd: web,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('The preview server did not start within 90 s.')), 90_000);
+    const timer = setTimeout(
+      () => reject(new Error('The preview server did not start within 90 s.')),
+      90_000
+    );
     child.stdout.on('data', (chunk) => {
       if (String(chunk).includes(`:${PORT}`)) {
         clearTimeout(timer);
@@ -102,7 +113,12 @@ async function main() {
       for (const theme of THEMES) {
         for (const [w, h] of SIZES) {
           const query = new URLSearchParams({ theme, ...(fixture ? { fixture } : {}) });
-          const url = `http://127.0.0.1:${PORT}/?${query}#${route}`;
+          const app = `http://127.0.0.1:${PORT}/?${query}#${route}`;
+          // Narrower than Chrome's smallest window: draw it in a phone-sized frame.
+          const phone = w < 500;
+          const url = phone
+            ? `http://127.0.0.1:${PORT}/phone.html#${encodeURIComponent(app)}`
+            : app;
           const file = path.join(OUT, `${name}-${theme}-${w}x${h}.png`);
           await run(chrome, [
             '--headless=new',
@@ -110,7 +126,7 @@ async function main() {
             '--hide-scrollbars',
             '--no-first-run',
             `--user-data-dir=${profile}`,
-            `--window-size=${w},${h}`,
+            `--window-size=${phone ? 390 : w},${h}`,
             '--virtual-time-budget=6000',
             `--screenshot=${file}`,
             url,

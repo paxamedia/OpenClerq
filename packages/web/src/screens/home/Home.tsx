@@ -13,7 +13,6 @@ import {
   Plus,
   ShieldCheck,
   TriangleAlert,
-  Workflow,
 } from 'lucide-react';
 import type { RunSummary } from '@clerq/gateway-client';
 import { SegmentedControl } from '../../ui/Choice';
@@ -358,11 +357,6 @@ export function Home() {
             <NextRuns />
             <NeedsAttention runs={runs.data} />
           </div>
-          {runs.data.length === 0 && (
-            <EmptyState icon={Workflow} title="No runs yet">
-              Runs from automations and chats appear here as they start.
-            </EmptyState>
-          )}
         </>
       )}
     </Page>

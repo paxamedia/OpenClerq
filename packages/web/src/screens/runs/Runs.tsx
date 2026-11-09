@@ -107,6 +107,7 @@ function RunList() {
     },
     {
       key: 'trigger',
+      hideOnPhone: true,
       header: 'Trigger',
       cell: (r) => TRIGGERS[r.trigger] ?? r.trigger,
       sortValue: (r) => r.trigger,
@@ -121,6 +122,7 @@ function RunList() {
     },
     {
       key: 'duration',
+      hideOnPhone: true,
       header: 'Duration',
       cell: (r) => {
         const [a, b] = runSpan(r, now);
@@ -136,6 +138,7 @@ function RunList() {
     },
     {
       key: 'cost',
+      hideOnPhone: true,
       header: 'Cost',
       cell: (r) => money(r.costUsd, { atLeast: !r.costKnown && r.costUsd > 0 }),
       sortValue: (r) => r.costUsd,

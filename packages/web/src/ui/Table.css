@@ -119,3 +119,9 @@
 .ui-col--lg {
   width: 320px;
 }
+
+@media (max-width: 640px) {
+  .ui-table .ui-col-phone-hidden {
+    display: none;
+  }
+}

@@ -47,7 +47,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       {...rest}
     >
       {icon && <Icon glyph={icon} />}
-      {children}
+      {children !== undefined && children !== null && children !== false && (
+        <span className="ui-button-label">{children}</span>
+      )}
     </button>
   );
 });
