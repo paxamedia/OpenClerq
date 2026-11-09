@@ -17,7 +17,7 @@ import { logger } from '../logger.js';
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../secrets-vault.js';
 import { requestApproval, waitForDecision } from '../approvals.js';
 import { createRun, currentRunId, finishRun } from '../runs.js';
-import { subscribeEvents } from '../events.js';
+import { emit, subscribeEvents } from '../events.js';
 import type { LoadedModule, ModuleRouteHandler } from '../module-loader.js';
 
 /** What the host keeps per module beside the context it hands out. */
@@ -27,6 +27,7 @@ export interface ContextHandle {
 }
 
 const TABLE_NAME = /^[a-z0-9_]+$/;
+const EVENT_NAME = /^[a-z0-9][a-z0-9_.-]*$/;
 
 /** `~/.clerq/modules/<id>.json` over the manifest's `config` defaults. */
 function loadConfig(mod: LoadedModule): Record<string, unknown> {
@@ -113,6 +114,19 @@ export function createModuleContext(mod: LoadedModule): ContextHandle {
         const all = listSecrets();
         if (!Array.isArray(all)) throw new Error(all.error);
         return all.filter((n) => n.startsWith(`${id}/`)).map((n) => n.slice(id.length + 1));
+      },
+    },
+    events: {
+      emit(name, payload, context) {
+        if (!EVENT_NAME.test(name)) {
+          throw new Error(`Invalid event name "${name}". Use a-z, 0-9, ".", "_" and "-".`);
+        }
+        return emit(`module.${id}.${name}`, payload, { runId: context?.runId ?? currentRunId() });
+      },
+      subscribe(prefix, fn) {
+        return subscribeEvents((e) => {
+          if (prefix === '*' || e.name.startsWith(prefix)) fn(e);
+        });
       },
     },
     approvals: {

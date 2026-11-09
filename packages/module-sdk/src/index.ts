@@ -110,6 +110,27 @@ export interface ModuleAudit {
   append(action: string, subject?: string, detail?: unknown): void;
 }
 
+/** One event from the gateway's bus, as subscribers and GET /events/stream see it. */
+export interface ClerqEvent<T = unknown> {
+  id: string;
+  name: string;
+  at: string;
+  context: { requestId?: string; sessionId?: string; runId?: string; toolCallId?: string };
+  payload: T;
+}
+
+/**
+ * The typed event bus. A module emits under its own namespace: `emit('greeted')`
+ * puts `module.<id>.greeted` on the bus, where the UI stream and other modules
+ * see it. It can subscribe to any event.
+ */
+export interface ModuleEvents {
+  /** `name` is lower-case letters, digits, `.`, `_` and `-`. Returns the event as sent. */
+  emit<T>(name: string, payload: T, context?: { runId?: string }): ClerqEvent<T>;
+  /** Events whose name starts with `prefix` (`'*'` for all). Returns an unsubscribe function. */
+  subscribe(prefix: string, fn: (event: ClerqEvent) => void): () => void;
+}
+
 export interface ModuleLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
@@ -131,6 +152,7 @@ export interface ModuleContext {
   routes: ModuleRoutes;
   store: ModuleStore;
   secrets: ModuleSecrets;
+  events: ModuleEvents;
   approvals: ModuleApprovals;
   audit: ModuleAudit;
   logger: ModuleLogger;

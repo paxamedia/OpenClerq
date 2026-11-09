@@ -18,6 +18,8 @@ export default {
       ctx.store
         .prepare(`INSERT INTO ${greetings} (name, created_at) VALUES (?, ?)`)
         .run(name, new Date().toISOString());
+      // On the bus as module.hello-world.greeted, so GET /events/stream shows it.
+      ctx.events.emit('greeted', { name });
       res.status(201).json({ message: `${ctx.config.greeting}, ${name}` });
     });
     ctx.routes.get('/greetings', (_req, res) => {

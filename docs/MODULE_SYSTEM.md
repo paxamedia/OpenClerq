@@ -94,15 +94,16 @@ The entry exports `register(ctx)`, or a default `{ register }`. Types are in `@c
 [`packages/module-sdk/examples/hello-world`](../packages/module-sdk/examples/hello-world) is a
 complete example.
 
-| `ctx.`      | What it is                                                                       |
-| ----------- | -------------------------------------------------------------------------------- |
-| `routes`    | `get/post/put/patch/delete(path, handler)`, served at `/api/modules/<id>/<path>` |
-| `store`     | the gateway's SQLite store; `table('x')` is `mod_<id>_x`                         |
-| `secrets`   | vault entries named `<id>/<name>`                                                |
-| `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`           |
-| `audit`     | `append(action)`, recorded as `module.<id>.<action>`                             |
-| `logger`    | the gateway log, tagged with the module id                                       |
-| `config`    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                |
+| `ctx.`      | What it is                                                                                               |
+| ----------- | -------------------------------------------------------------------------------------------------------- |
+| `routes`    | `get/post/put/patch/delete(path, handler)`, served at `/api/modules/<id>/<path>`                         |
+| `store`     | the gateway's SQLite store; `table('x')` is `mod_<id>_x`                                                 |
+| `secrets`   | vault entries named `<id>/<name>`                                                                        |
+| `events`    | `emit('x', payload)` puts `module.<id>.x` on the bus (and `GET /events/stream`); `subscribe(prefix, fn)` |
+| `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                   |
+| `audit`     | `append(action)`, recorded as `module.<id>.<action>`                                                     |
+| `logger`    | the gateway log, tagged with the module id                                                               |
+| `config`    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                                        |
 
 **Tables.** SQL files in `<module>/migrations/`, named `0001_name.sql` and so on, run in order
 before `register`, each once and in its own transaction. They may create, change or write only

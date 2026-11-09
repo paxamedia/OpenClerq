@@ -123,6 +123,24 @@ describe('module context', () => {
     expect(greetings.map((g) => g.name)).toEqual(['Grace']);
   });
 
+  it('puts module events on the bus under module.<id>.', async () => {
+    const res = await api('/events/stream?names=module.hello-world.');
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    await api('/api/modules/hello-world/greetings', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Linus' }),
+    });
+    let text = '';
+    while (!text.includes('"name":"module.hello-world.greeted"')) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    await reader.cancel();
+    expect(text).toContain('"payload":{"name":"Linus"}');
+  });
+
   it('fails a module whose migration touches tables it does not own', async () => {
     const { modules } = (await (await api('/modules')).json()) as {
       modules: Array<{ id: string; status: string; error: string | null }>;

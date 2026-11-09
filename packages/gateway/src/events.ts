@@ -10,7 +10,10 @@
 
 import { logger } from './logger.js';
 
-export type EventName =
+/** Core events, plus `module.<id>.<name>` from modules (see ModuleContext.events). */
+export type EventName = CoreEventName | `module.${string}`;
+
+export type CoreEventName =
   | 'gateway.started'
   | 'gateway.stopped'
   | 'session.created'
