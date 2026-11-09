@@ -240,3 +240,48 @@ describe('module triggers', () => {
     ).toBe(202);
   });
 });
+
+describe('module tokens', () => {
+  async function mint(id = 'hello-world', ttlSeconds?: number) {
+    const res = await api(`/modules/${id}/token`, {
+      method: 'POST',
+      body: JSON.stringify({ ttlSeconds }),
+    });
+    return { status: res.status, body: (await res.json()) as { token: string; expiresAt: string } };
+  }
+  const as = (token: string, p: string, init: RequestInit = {}) =>
+    fetch(`${baseUrl}${p}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        ...init.headers,
+      },
+    });
+
+  it("reaches the module's routes and the core endpoints its manifest declares, nothing else", async () => {
+    const { status, body } = await mint();
+    expect(status).toBe(201);
+    expect(Date.parse(body.expiresAt) - Date.now()).toBeLessThanOrEqual(15 * 60_000);
+    const t = body.token;
+    expect((await as(t, '/api/modules/hello-world/hello')).status).toBe(200);
+    expect((await as(t, '/runs')).status).toBe(200);
+    expect((await as(t, '/approvals')).status).toBe(403);
+    expect((await as(t, '/api/modules/broken/x')).status).toBe(403);
+    expect((await as(t, '/secrets')).status).toBe(403);
+    expect((await as(t, '/modules/hello-world/token', { method: 'POST' })).status).toBe(403);
+    const stream = await fetch(`${baseUrl}/events/stream?token=${t}`);
+    expect(stream.status).toBe(200);
+    await stream.body?.cancel();
+  });
+
+  it('stops working once revoked', async () => {
+    const { body } = await mint();
+    await api('/modules/hello-world/tokens', { method: 'DELETE' });
+    expect((await as(body.token, '/api/modules/hello-world/hello')).status).toBe(401);
+  });
+
+  it('is only issued for a loaded module', async () => {
+    expect((await mint('broken')).status).toBe(404);
+  });
+});

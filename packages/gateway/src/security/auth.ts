@@ -17,6 +17,7 @@ import path from 'node:path';
 import { writePrivateFile } from '@clerq/store';
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
+import { principalAllows, resolveToken, type Principal } from './scoped-tokens.js';
 
 /** Endpoints reachable without a token. These must reveal no configuration. */
 export const PUBLIC_PATHS = new Set(['/health']);
@@ -102,16 +103,30 @@ function extractToken(req: Request): string | null {
   return null;
 }
 
+/** Whether a request needs no token at all. */
+function isPublic(req: Request): boolean {
+  return PUBLIC_PATHS.has(req.path);
+}
+
+/** Who made the request, once requireAuth has let it through. */
+export function principalOf(res: Response): Principal | undefined {
+  return res.locals.principal as Principal | undefined;
+}
+
 /**
- * Require a valid bearer token on every request except PUBLIC_PATHS.
+ * Require a valid token on every request except public ones: the gateway
+ * token, which reaches everything, or a scoped token (a module UI's or a
+ * device's), which reaches only what its scopes name. A valid scoped token
+ * outside its scopes gets 403.
  * CORS preflight is allowed through so the browser can read the real response.
  */
 export function requireAuth(
-  expectedToken: string
+  expectedToken: string,
+  resolveScoped: (token: string) => Principal | null = resolveToken
 ): (req: Request, res: Response, next: NextFunction) => void {
   return (req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'OPTIONS') return next();
-    if (PUBLIC_PATHS.has(req.path)) return next();
+    if (isPublic(req)) return next();
 
     const presented = extractToken(req);
     if (!presented) {
@@ -123,13 +138,25 @@ export function requireAuth(
       });
     }
 
-    if (!tokensMatch(presented, expectedToken)) {
+    if (tokensMatch(presented, expectedToken)) {
+      res.locals.principal = { kind: 'operator' } satisfies Principal;
+      return next();
+    }
+
+    const scoped = resolveScoped(presented);
+    if (!scoped) {
       return res.status(401).json({
         error: 'unauthorized',
         message: 'Invalid gateway token.',
       });
     }
-
+    if (!principalAllows(scoped, req.method, req.path)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: `This token is not valid for ${req.method} ${req.path}.`,
+      });
+    }
+    res.locals.principal = scoped;
     next();
   };
 }

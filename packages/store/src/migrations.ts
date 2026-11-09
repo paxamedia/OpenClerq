@@ -238,4 +238,25 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_runs_module ON runs(module_id, created_at DESC);
     `,
   },
+  {
+    id: 6,
+    name: 'scoped_tokens',
+    // Tokens narrower than the gateway token: a module UI's, or a paired
+    // device's. Only a hash is kept. `idle_ms` makes expiry slide with use.
+    sql: `
+      CREATE TABLE scoped_tokens (
+        id           TEXT PRIMARY KEY,
+        kind         TEXT NOT NULL CHECK (kind IN ('module','device')),
+        subject      TEXT NOT NULL,
+        token_hash   TEXT NOT NULL UNIQUE,
+        scopes       TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        expires_at   TEXT NOT NULL,
+        idle_ms      INTEGER,
+        revoked_at   TEXT,
+        last_seen_at TEXT
+      );
+      CREATE INDEX idx_scoped_tokens_subject ON scoped_tokens(kind, subject);
+    `,
+  },
 ];

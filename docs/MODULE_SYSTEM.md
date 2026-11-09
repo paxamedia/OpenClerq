@@ -111,6 +111,12 @@ value is stored on it, and a throw fails it. `POST /api/modules/<id>/triggers/<t
 any trigger (a webhook's JSON body becomes `payload`) and answers `202 { runId }`. A firing while
 the last one is still running is skipped (`409` over HTTP); the kill switch pauses them (`503`).
 
+**UI tokens.** `POST /modules/<id>/token` (gateway token only) issues a token for the module's UI:
+15 minutes by default (`ttlSeconds`, at most 24 h). It reaches `/api/modules/<id>/*` and the core
+endpoints the manifest lists in `coreEndpoints`, such as `"GET /runs/:id"`, and gets `403`
+elsewhere. Token, device, remote and vault endpoints are never reachable with it.
+`DELETE /modules/<id>/tokens` revokes them all.
+
 **Tables.** SQL files in `<module>/migrations/`, named `0001_name.sql` and so on, run in order
 before `register`, each once and in its own transaction. They may create, change or write only
 objects named `mod_<id>_*` (hyphens in the id become underscores); anything else fails the module.

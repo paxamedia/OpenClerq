@@ -4,5 +4,8 @@
   "name": "Hello world",
   "version": "0.1.0",
   "description": "The smallest module that uses the module platform: a route, a table, a secret, an event and a UI.",
-  "config": { "greeting": "Hello" }
+  "config": {
+    "greeting": "Hello"
+  },
+  "coreEndpoints": ["GET /runs", "GET /runs/:id", "GET /events/stream"]
 }

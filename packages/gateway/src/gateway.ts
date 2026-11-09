@@ -20,6 +20,7 @@ import { runTask } from './agent/task.js';
 import { selectSkill } from './agent/skill-selector.js';
 import { getModuleSkillsDirs } from './module-loader.js';
 import { ModuleHost } from './modules/host.js';
+import { mountModuleRoutes } from './modules/routes.js';
 import { createToolRegistry } from './tools.js';
 import {
   loadCapabilities,
@@ -862,20 +863,7 @@ export function createGateway(config: GatewayConfig = {}): {
     }
   });
 
-  /** Modules found at start, with whether each loaded. */
-  app.get('/modules', (_req: Request, res: Response) => {
-    res.json({
-      modules: modules.list().map((h) => ({
-        id: h.module.id,
-        name: h.module.manifest.name ?? h.module.id,
-        version: h.module.manifest.version ?? null,
-        dir: h.module.dir,
-        status: h.status,
-        error: h.error ?? null,
-        triggers: modules.triggers.list(h.module.id),
-      })),
-    });
-  });
+  mountModuleRoutes(app, modules);
 
   // Automations: scheduled agent runs that end in a draft pull request.
   // Their schedules pause with the triggers under the kill switch.
