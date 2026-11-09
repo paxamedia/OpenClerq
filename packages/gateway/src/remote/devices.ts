@@ -211,9 +211,14 @@ export function createPairingCode(): { code: string; url: string; expiresAt: str
   };
 }
 
-/** Failed attempts in the last minute, gateway-wide: a ceiling on guessing. */
+/**
+ * Failed attempts in the last minute, gateway-wide. Guessing is defeated by
+ * the code itself (50 random bits, five minutes, one use); this ceiling only
+ * stops a flood of wrong codes from costing work. A right code still pairs
+ * while it holds, so a flood cannot lock a real phone out.
+ */
 const failures: number[] = [];
-const MAX_FAILURES_PER_MINUTE = 10;
+const MAX_FAILURES_PER_MINUTE = 30;
 
 function noteFailure(): void {
   failures.push(Date.now());
@@ -264,8 +269,6 @@ export function pairDevice(input: { code?: unknown; deviceName?: unknown; platfo
   expiresAt: string;
   scopes: string[];
 } {
-  if (tooManyFailures())
-    throw new RemoteError('rate_limited', 'Too many attempts. Try again in a minute.');
   const remote = remoteSettings();
   if (!remote.enabled)
     throw new RemoteError('remote_disabled', 'Remote mode is off on this gateway.');
@@ -283,6 +286,9 @@ export function pairDevice(input: { code?: unknown; deviceName?: unknown; platfo
     )
     .run(now, hashCode(input.code), now).changes;
   if (claimed === 0) {
+    if (tooManyFailures()) {
+      throw new RemoteError('rate_limited', 'Too many attempts. Try again in a minute.');
+    }
     noteFailure();
     throw new RemoteError('bad_code', 'That code is wrong, used or expired.');
   }

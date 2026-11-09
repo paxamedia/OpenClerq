@@ -224,10 +224,15 @@ describe('pairing', () => {
 
   it('refuses wrong codes, and stops answering after too many', async () => {
     let last = 0;
-    for (let i = 0; i < 11; i++) {
+    for (let i = 0; i < 31; i++) {
       last = (await pair({ code: 'AAAAA-AAAAA', deviceName: 'x', platform: 'ios' })).status;
     }
     expect(last).toBe(429);
+    // The flood does not lock a real code out.
+    const { code } = (await (await api('/devices/pairing', { method: 'POST' })).json()) as {
+      code: string;
+    };
+    expect((await pair({ code, deviceName: 'Real', platform: 'ios' })).status).toBe(201);
     resetPairingLimiter();
   });
 });
