@@ -167,3 +167,76 @@ describe('module context', () => {
     expect(secrets).toContain('hello-world/token');
   });
 });
+
+describe('module triggers', () => {
+  async function waitForRun(id: string) {
+    for (let i = 0; i < 100; i++) {
+      const run = (await (await api(`/runs/${id}`)).json()) as {
+        status: string;
+        moduleId?: string;
+        triggerId?: string;
+        trigger: string;
+        exitReason?: string;
+        steps: Array<{ kind: string; output?: unknown }>;
+      };
+      if (['done', 'failed', 'cancelled'].includes(run.status)) return run;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error(`run ${id} did not finish`);
+  }
+
+  it('lists triggers with the next cron firing', async () => {
+    const { modules } = (await (await api('/modules')).json()) as {
+      modules: Array<{
+        id: string;
+        triggers: Array<{ id: string; kind: string; nextRunAt: string | null }>;
+      }>;
+    };
+    const triggers = modules.find((m) => m.id === 'hello-world')!.triggers;
+    expect(triggers.map((t) => t.id).sort()).toEqual(['count', 'nightly']);
+    expect(new Date(triggers.find((t) => t.id === 'nightly')!.nextRunAt!).getHours()).toBe(3);
+  });
+
+  it('records a webhook firing as a run of the module, with its result', async () => {
+    const res = await api('/api/modules/hello-world/triggers/count', {
+      method: 'POST',
+      body: '{}',
+    });
+    expect(res.status).toBe(202);
+    const { runId } = (await res.json()) as { runId: string };
+    const run = await waitForRun(runId);
+    expect(run).toMatchObject({
+      status: 'done',
+      trigger: 'webhook',
+      moduleId: 'hello-world',
+      triggerId: 'count',
+    });
+    expect(run.steps[0].output).toEqual({ greetings: 2 });
+  });
+
+  it('records a handler that throws as a failed run', async () => {
+    const res = await api('/api/modules/hello-world/triggers/count', {
+      method: 'POST',
+      body: JSON.stringify({ fail: true }),
+    });
+    const run = await waitForRun(((await res.json()) as { runId: string }).runId);
+    expect(run).toMatchObject({ status: 'failed', exitReason: 'Asked to fail.' });
+  });
+
+  it('fires a cron trigger by hand, 404s an unknown one, and pauses under the kill switch', async () => {
+    const manual = await api('/api/modules/hello-world/triggers/nightly', { method: 'POST' });
+    const run = await waitForRun(((await manual.json()) as { runId: string }).runId);
+    expect(run).toMatchObject({ status: 'done', trigger: 'manual' });
+    expect((await api('/api/modules/hello-world/triggers/nope', { method: 'POST' })).status).toBe(
+      404
+    );
+
+    await api('/kill', { method: 'POST', body: JSON.stringify({ approvals: false, runs: false }) });
+    const paused = await api('/api/modules/hello-world/triggers/count', { method: 'POST' });
+    expect(paused.status).toBe(503);
+    await api('/resume', { method: 'POST' });
+    expect(
+      (await api('/api/modules/hello-world/triggers/count', { method: 'POST', body: '{}' })).status
+    ).toBe(202);
+  });
+});

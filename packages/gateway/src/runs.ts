@@ -32,6 +32,10 @@ export interface RunRecord {
   trigger: RunTrigger;
   automationId?: string;
   automationName?: string;
+  /** The module whose trigger started the run. */
+  moduleId?: string;
+  /** Which of its triggers. */
+  triggerId?: string;
   repoId?: string;
   /** The branch an automation run committed to. */
   branch?: string;
@@ -65,6 +69,8 @@ function rowToRun(r: Record<string, unknown>): RunRecord {
     trigger: r.trigger as RunTrigger,
     automationId: r.automation_id ? String(r.automation_id) : undefined,
     automationName: r.automation_name ? String(r.automation_name) : undefined,
+    moduleId: r.module_id ? String(r.module_id) : undefined,
+    triggerId: r.trigger_ref ? String(r.trigger_ref) : undefined,
     repoId: r.repo_id ? String(r.repo_id) : undefined,
     branch: r.branch ? String(r.branch) : undefined,
     prUrl: r.pr_url ? String(r.pr_url) : undefined,
@@ -83,6 +89,8 @@ function rowToRun(r: Record<string, unknown>): RunRecord {
 export function createRun(input: {
   trigger: RunTrigger;
   automationId?: string;
+  moduleId?: string;
+  triggerId?: string;
   input?: string;
   status?: RunStatus;
 }): string {
@@ -90,12 +98,14 @@ export function createRun(input: {
   const now = new Date().toISOString();
   getStore()
     .prepare(
-      `INSERT INTO runs (id, automation_id, input, status, trigger, started_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO runs (id, automation_id, module_id, trigger_ref, input, status, trigger, started_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
       input.automationId ?? null,
+      input.moduleId ?? null,
+      input.triggerId ?? null,
       input.input ?? null,
       input.status ?? 'executing',
       input.trigger,
@@ -460,6 +470,8 @@ export async function recordRun<T>(
   input: {
     trigger: RunTrigger;
     automationId?: string;
+    moduleId?: string;
+    triggerId?: string;
     message?: string;
     signal?: AbortSignal;
     /** The state the run starts in. Default: executing. */
@@ -472,6 +484,8 @@ export async function recordRun<T>(
   const runId = createRun({
     trigger: input.trigger,
     automationId: input.automationId,
+    moduleId: input.moduleId,
+    triggerId: input.triggerId,
     input: input.message,
     status: input.status,
   });
@@ -479,7 +493,16 @@ export async function recordRun<T>(
   const controller = new AbortController();
   const detach = link(input.signal, controller);
   activeRuns.set(runId, controller);
-  emit('run.started', { trigger: input.trigger, automationId: input.automationId }, { runId });
+  emit(
+    'run.started',
+    {
+      trigger: input.trigger,
+      automationId: input.automationId,
+      moduleId: input.moduleId,
+      triggerId: input.triggerId,
+    },
+    { runId }
+  );
   try {
     const result = await runContext.run({ runId, controller }, fn);
     // A run whose work swallowed the cancellation still did not finish.

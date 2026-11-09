@@ -100,10 +100,16 @@ complete example.
 | `store`     | the gateway's SQLite store; `table('x')` is `mod_<id>_x`                                                 |
 | `secrets`   | vault entries named `<id>/<name>`                                                                        |
 | `events`    | `emit('x', payload)` puts `module.<id>.x` on the bus (and `GET /events/stream`); `subscribe(prefix, fn)` |
+| `triggers`  | `register({ id, kind: 'cron' \| 'file' \| 'webhook', handler })`; each firing is a run                   |
 | `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                   |
 | `audit`     | `append(action)`, recorded as `module.<id>.<action>`                                                     |
 | `logger`    | the gateway log, tagged with the module id                                                               |
 | `config`    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                                        |
+
+**Triggers.** A firing is recorded as a run with `moduleId` and `triggerId`; the handler's return
+value is stored on it, and a throw fails it. `POST /api/modules/<id>/triggers/<triggerId>` fires
+any trigger (a webhook's JSON body becomes `payload`) and answers `202 { runId }`. A firing while
+the last one is still running is skipped (`409` over HTTP); the kill switch pauses them (`503`).
 
 **Tables.** SQL files in `<module>/migrations/`, named `0001_name.sql` and so on, run in order
 before `register`, each once and in its own transaction. They may create, change or write only

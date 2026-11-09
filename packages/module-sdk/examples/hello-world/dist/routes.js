@@ -38,6 +38,26 @@ export default {
       res.json({ set: ctx.secrets.get('token') !== null, names: ctx.secrets.list() });
     });
 
+    // Each firing is a run in run history. Fire this one with
+    // POST /api/modules/hello-world/triggers/count; its JSON body is the payload.
+    ctx.triggers.register({
+      id: 'count',
+      kind: 'webhook',
+      description: 'Counts the greetings so far.',
+      handler(event) {
+        if (event.payload?.fail) throw new Error('Asked to fail.');
+        const row = ctx.store.prepare(`SELECT COUNT(*) AS n FROM ${greetings}`).get();
+        return { greetings: Number(row?.n ?? 0) };
+      },
+    });
+    ctx.triggers.register({
+      id: 'nightly',
+      kind: 'cron',
+      schedule: '0 3 * * *',
+      description: 'Logs a line at three every morning.',
+      handler: () => ctx.logger.info('hello-world nightly'),
+    });
+
     ctx.logger.info('hello-world registered');
   },
 };

@@ -131,6 +131,45 @@ export interface ModuleEvents {
   subscribe(prefix: string, fn: (event: ClerqEvent) => void): () => void;
 }
 
+export type TriggerSource = 'cron' | 'file' | 'webhook' | 'manual';
+
+/** What a trigger's handler is called with. */
+export interface TriggerEvent {
+  triggerId: string;
+  /** `manual` when fired by hand through its endpoint (cron and file triggers). */
+  source: TriggerSource;
+  /** The run this firing is recorded as. */
+  runId: string;
+  /** A webhook's JSON body. */
+  payload?: unknown;
+  /** The path that changed, for a file trigger. */
+  path?: string;
+  /** Aborts when the run is cancelled (the kill switch, or POST /runs/:id/cancel). */
+  signal: AbortSignal;
+}
+
+export interface ModuleTriggerDef {
+  /** a-z, 0-9, `_` and `-`; unique within the module. */
+  id: string;
+  kind: 'cron' | 'file' | 'webhook';
+  /** For `cron`: a cron expression, in the host's time zone. */
+  schedule?: string;
+  /** For `file`: a file or directory to watch. */
+  path?: string;
+  description?: string;
+  /** Its return value, if any, is recorded on the run as JSON. A throw fails the run. */
+  handler(event: TriggerEvent): unknown;
+}
+
+/**
+ * Handler triggers. Each firing is a run in run history. Any trigger can also
+ * be fired with `POST /api/modules/<id>/triggers/<triggerId>`, which is how a
+ * webhook trigger is called; the JSON body becomes `payload`.
+ */
+export interface ModuleTriggers {
+  register(def: ModuleTriggerDef): void;
+}
+
 export interface ModuleLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
@@ -153,6 +192,7 @@ export interface ModuleContext {
   store: ModuleStore;
   secrets: ModuleSecrets;
   events: ModuleEvents;
+  triggers: ModuleTriggers;
   approvals: ModuleApprovals;
   audit: ModuleAudit;
   logger: ModuleLogger;

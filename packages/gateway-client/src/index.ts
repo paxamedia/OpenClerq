@@ -140,6 +140,9 @@ export interface RunSummary {
   tokensIn: number;
   tokensOut: number;
   automationName?: string;
+  /** The module whose trigger started the run, and which trigger. */
+  moduleId?: string;
+  triggerId?: string;
   repoId?: string;
   /** The branch an automation run committed to. */
   branch?: string;

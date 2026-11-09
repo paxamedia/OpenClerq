@@ -606,6 +606,7 @@ export function createGateway(config: GatewayConfig = {}): {
       if (body.triggers !== false) {
         stopTriggers();
         stopAutomationSchedules();
+        modules.triggers.pause();
         triggersPausedAt ??= new Date().toISOString();
         triggersPaused = true;
       }
@@ -624,6 +625,7 @@ export function createGateway(config: GatewayConfig = {}): {
       triggersPausedAt = null;
       startTriggers(runTriggered);
       startAutomationSchedules(automationDeps);
+      modules.triggers.resume();
       emit('kill.released', { wasPaused });
       logger.info('Triggers resumed', { wasPaused });
       res.json({ ok: true, triggersResumed: true, wasPaused });
@@ -870,6 +872,7 @@ export function createGateway(config: GatewayConfig = {}): {
         dir: h.module.dir,
         status: h.status,
         error: h.error ?? null,
+        triggers: modules.triggers.list(h.module.id),
       })),
     });
   });

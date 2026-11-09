@@ -14,6 +14,7 @@ import { getStore } from '../store.js';
 import { logger } from '../logger.js';
 import { loadModulesFromDir, type LoadedModule } from '../module-loader.js';
 import { createModuleContext, type ContextHandle } from './context.js';
+import { ModuleTriggers, TriggerError } from './triggers.js';
 
 export type ModuleStatus = 'loaded' | 'failed';
 
@@ -26,6 +27,7 @@ export interface HostedModule {
 
 export class ModuleHost {
   private readonly hosted = new Map<string, HostedModule>();
+  readonly triggers = new ModuleTriggers();
 
   constructor(private readonly app: Express) {}
 
@@ -51,8 +53,21 @@ export class ModuleHost {
     const entry: HostedModule = { module: mod, status: 'loaded' };
     this.hosted.set(mod.id, entry);
     if (mod.error) return this.fail(entry, mod.error);
-    const handle = createModuleContext(mod);
+    const handle = createModuleContext(mod, { triggers: this.triggers });
     entry.handle = handle;
+    // Reserved below the module's own routes: fire a trigger by hand or by webhook.
+    handle.router.post('/triggers/:triggerId', async (req, res) => {
+      try {
+        const runId = await this.triggers.fireNow(mod.id, String(req.params.triggerId), req.body);
+        res.status(202).json({ runId });
+      } catch (e) {
+        if (!(e instanceof TriggerError)) throw e;
+        const status = { not_found: 404, busy: 409, paused: 503, invalid: 400 }[e.code];
+        res
+          .status(status)
+          .json({ error: e.code === 'paused' ? 'triggers_paused' : e.code, message: e.message });
+      }
+    });
     try {
       const ran = migrateModule(getStore(), mod.id, readMigrations(mod.dir));
       if (ran.length > 0) logger.info('Module migrated', { moduleId: mod.id, applied: ran });
@@ -66,6 +81,7 @@ export class ModuleHost {
   }
 
   private fail(entry: HostedModule, error: string): void {
+    this.triggers.remove(entry.module.id);
     entry.status = 'failed';
     entry.error = error;
     logger.error('Module failed to load', { moduleId: entry.module.id, err: error });

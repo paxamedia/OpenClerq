@@ -19,6 +19,12 @@ import { requestApproval, waitForDecision } from '../approvals.js';
 import { createRun, currentRunId, finishRun } from '../runs.js';
 import { emit, subscribeEvents } from '../events.js';
 import type { LoadedModule, ModuleRouteHandler } from '../module-loader.js';
+import type { ModuleTriggers } from './triggers.js';
+
+/** Gateway services a context is built over. */
+export interface ContextDeps {
+  triggers: ModuleTriggers;
+}
 
 /** What the host keeps per module beside the context it hands out. */
 export interface ContextHandle {
@@ -61,7 +67,7 @@ function wrap(moduleId: string, handler: RouteHandler) {
   };
 }
 
-export function createModuleContext(mod: LoadedModule): ContextHandle {
+export function createModuleContext(mod: LoadedModule, deps: ContextDeps): ContextHandle {
   const id = mod.id;
   const router = express.Router();
   const prefix = tablePrefix(id);
@@ -129,6 +135,9 @@ export function createModuleContext(mod: LoadedModule): ContextHandle {
         });
       },
     },
+    triggers: {
+      register: (def) => deps.triggers.register(id, def),
+    },
     approvals: {
       async request(input) {
         // An approval belongs to a run. Outside one, the request gets a run of
@@ -138,6 +147,7 @@ export function createModuleContext(mod: LoadedModule): ContextHandle {
         if (!runId) {
           runId = createRun({
             trigger: 'manual',
+            moduleId: id,
             input: `${id}: ${input.action}`,
             status: 'awaiting_approval',
           });

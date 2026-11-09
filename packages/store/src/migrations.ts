@@ -228,4 +228,14 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: 5,
+    name: 'run_module',
+    // A run started by a module's trigger names the module and the trigger.
+    sql: `
+      ALTER TABLE runs ADD COLUMN module_id TEXT;
+      ALTER TABLE runs ADD COLUMN trigger_ref TEXT;
+      CREATE INDEX idx_runs_module ON runs(module_id, created_at DESC);
+    `,
+  },
 ];
