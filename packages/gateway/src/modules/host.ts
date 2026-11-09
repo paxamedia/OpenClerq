@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Express } from 'express';
+import express, { type Express } from 'express';
 import { migrateModule, type Migration } from '@clerq/store';
 import { getStore } from '../store.js';
 import { logger } from '../logger.js';
@@ -76,6 +76,25 @@ export class ModuleHost {
     } catch (e) {
       return this.fail(entry, e instanceof Error ? e.message : String(e));
     }
+    // Mounted first, and answering every path under /ui itself: those paths
+    // are public (see security/auth.ts), so none may fall through to the
+    // module's own routes.
+    const ui = uiDir(mod.dir);
+    this.app.use(`/api/modules/${mod.id}/ui`, (req, res, next) => {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return res.status(405).json({ error: 'method_not_allowed' });
+      }
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'no-cache');
+      if (!ui) return res.status(404).json({ error: 'module_has_no_ui' });
+      next();
+    });
+    if (ui) {
+      this.app.use(
+        `/api/modules/${mod.id}/ui`,
+        express.static(ui, { fallthrough: false, dotfiles: 'deny' })
+      );
+    }
     this.app.use(`/api/modules/${mod.id}`, handle.router);
     logger.info('Module loaded', { moduleId: mod.id, version: mod.manifest.version });
   }
@@ -86,6 +105,12 @@ export class ModuleHost {
     entry.error = error;
     logger.error('Module failed to load', { moduleId: entry.module.id, err: error });
   }
+}
+
+/** `<module>/dist/ui`, when the module ships a UI. */
+export function uiDir(moduleDir: string): string | null {
+  const dir = path.join(moduleDir, 'dist', 'ui');
+  return fs.existsSync(path.join(dir, 'index.html')) ? dir : null;
 }
 
 const MIGRATION_FILE = /^(\d+)[_-]([\w-]+)\.sql$/;

@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Module events: `ctx.events.emit('x')` puts `module.<id>.x` on the event bus.
 - Module handler triggers (cron, file, webhook), each firing recorded as a run with `moduleId` and `triggerId`, and paused by the kill switch.
 - Scoped module tokens: `POST /modules/:id/token` issues a short-lived token valid for `/api/modules/:id/*` plus the manifest's `coreEndpoints`; `DELETE /modules/:id/tokens` revokes them.
+- Module UIs: the gateway serves `<module>/dist/ui` at `/api/modules/:id/ui/`.
 - Automation summaries carry `monthBudgetUsd` and `nextFirings` (the next ten); `GET /runs` takes `since`.
 - Component kit in `packages/web` for the new interface: buttons, fields, checkbox, switch, segmented control, tabs, a sortable table, run status tags, key–value lists, code blocks, skeletons, empty states, tooltips, popovers, menus, dialogs, a drawer and toasts. All keyboard-operable; the Foundations page shows each one in both themes.
 

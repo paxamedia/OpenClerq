@@ -103,9 +103,19 @@ function extractToken(req: Request): string | null {
   return null;
 }
 
+/**
+ * A module's UI files. They are static code with no data in them, and an
+ * iframe cannot send a header with them; the UI gets its token over the
+ * desktop's postMessage bridge and sends it on its API calls. The gateway
+ * answers every path under `/ui` from the files, so no module route there
+ * can be reached without a token.
+ */
+const MODULE_UI = /^\/api\/modules\/[a-z][a-z0-9-]*\/ui(\/|$)/;
+
 /** Whether a request needs no token at all. */
 function isPublic(req: Request): boolean {
-  return PUBLIC_PATHS.has(req.path);
+  if (PUBLIC_PATHS.has(req.path)) return true;
+  return (req.method === 'GET' || req.method === 'HEAD') && MODULE_UI.test(req.path);
 }
 
 /** Who made the request, once requireAuth has let it through. */

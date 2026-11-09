@@ -285,3 +285,32 @@ describe('module tokens', () => {
     expect((await mint('broken')).status).toBe(404);
   });
 });
+
+describe('module UI', () => {
+  it('serves dist/ui without a token, and nothing else under /ui', async () => {
+    const index = await fetch(`${baseUrl}/api/modules/hello-world/ui/`);
+    expect(index.status).toBe(200);
+    expect(index.headers.get('content-type')).toContain('text/html');
+    expect(index.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await index.text()).toContain('<h1>Hello world</h1>');
+    const js = await fetch(`${baseUrl}/api/modules/hello-world/ui/app.js`);
+    expect(js.headers.get('content-type')).toContain('javascript');
+    expect((await fetch(`${baseUrl}/api/modules/hello-world/ui/missing.js`)).status).toBe(404);
+    expect((await fetch(`${baseUrl}/api/modules/hello-world/ui/../greetings`)).status).toBe(401);
+    expect((await fetch(`${baseUrl}/api/modules/hello-world/ui/%2e%2e/greetings`)).status).not.toBe(
+      200
+    );
+    expect((await fetch(`${baseUrl}/api/modules/hello-world/ui/`, { method: 'POST' })).status).toBe(
+      401
+    );
+    expect((await fetch(`${baseUrl}/api/modules/broken/ui/`)).status).toBe(404);
+  });
+
+  it('lists where a module UI is', async () => {
+    const { modules } = (await (await api('/modules')).json()) as {
+      modules: Array<{ id: string; ui: string | null }>;
+    };
+    expect(modules.find((m) => m.id === 'hello-world')?.ui).toBe('/api/modules/hello-world/ui/');
+    expect(modules.find((m) => m.id === 'broken')?.ui).toBeNull();
+  });
+});

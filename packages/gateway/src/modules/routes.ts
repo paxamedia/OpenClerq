@@ -4,7 +4,7 @@
 
 import type { Express, Request, Response } from 'express';
 import { issueToken, revokeTokens, SCOPE } from '../security/scoped-tokens.js';
-import type { ModuleHost } from './host.js';
+import { uiDir, type ModuleHost } from './host.js';
 
 const DEFAULT_TTL_S = 15 * 60;
 const MAX_TTL_S = 24 * 60 * 60;
@@ -33,6 +33,7 @@ export function mountModuleRoutes(app: Express, host: ModuleHost): void {
         status: h.status,
         error: h.error ?? null,
         coreEndpoints: coreEndpointsOf(h.module.manifest),
+        ui: h.status === 'loaded' && uiDir(h.module.dir) ? `/api/modules/${h.module.id}/ui/` : null,
         triggers: host.triggers.list(h.module.id),
       })),
     });

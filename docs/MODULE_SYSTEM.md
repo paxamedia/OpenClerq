@@ -111,6 +111,11 @@ value is stored on it, and a throw fails it. `POST /api/modules/<id>/triggers/<t
 any trigger (a webhook's JSON body becomes `payload`) and answers `202 { runId }`. A firing while
 the last one is still running is skipped (`409` over HTTP); the kill switch pauses them (`503`).
 
+**UI.** A module that ships `dist/ui/index.html` has it served at `/api/modules/<id>/ui/`, without
+a token: these are static files with no data in them, and an iframe cannot send a header. The UI
+gets a token from the desktop (below) and sends it on its API calls. Every path under `/ui` is
+answered from the files, so a module cannot put a route there. `GET /modules` gives each `ui` URL.
+
 **UI tokens.** `POST /modules/<id>/token` (gateway token only) issues a token for the module's UI:
 15 minutes by default (`ttlSeconds`, at most 24 h). It reaches `/api/modules/<id>/*` and the core
 endpoints the manifest lists in `coreEndpoints`, such as `"GET /runs/:id"`, and gets `403`
