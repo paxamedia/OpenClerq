@@ -1,25 +1,20 @@
 /**
- * Automations as a module registration, bundled through the same contract as
- * the chat console. Disabling it hides the screens; the gateway keeps running
- * the automations that are switched on.
+ * Automations, bundled through the slot contract. Leave it out of
+ * BUNDLED_MODULES and its pages go; the gateway keeps running the
+ * automations that are switched on.
  */
 
 import type { ModuleManifest } from '@clerq/module-schema';
-import type { ModuleUIComponent } from '../../moduleSlots';
-import { Automations } from './Automations';
-
-export const AUTOMATIONS_ID = 'automations';
+import { AUTOMATIONS_ID, automationsModule } from '@clerq/web';
+import type { BundledModule } from '../../moduleSlots';
 
 export const automationsManifest: ModuleManifest = {
   id: AUTOMATIONS_ID,
   slug: AUTOMATIONS_ID,
   name: 'Automations',
   version: '0.6.0',
-  description:
-    'Scheduled agent runs that end in a draft pull request, with their runs and approvals.',
-  entryPoints: { ui: 'Automations' },
+  description: 'Scheduled agent runs that end in a draft pull request.',
+  entryPoints: { ui: 'automationsModule' },
 };
 
-export const automationsComponent: ModuleUIComponent = Automations as ModuleUIComponent;
-
-export { Automations };
+export const automations: BundledModule = { manifest: automationsManifest, ui: automationsModule };

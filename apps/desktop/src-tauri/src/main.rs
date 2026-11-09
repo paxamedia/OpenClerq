@@ -214,6 +214,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // In release builds with sidecars, auto-start the gateway if not already running.
             // cfg! rather than #[cfg], so debug and release compile and lint the same code.

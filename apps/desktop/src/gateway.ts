@@ -1,20 +1,10 @@
 /**
- * Gateway API client — delegates to @clerq/gateway-client.
- * Applies VITE_GATEWAY_URL from Vite env when available.
+ * The gateway client the desktop uses, from @clerq/gateway-client, pointed at
+ * VITE_GATEWAY_URL in development and authenticated with the local token.
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import {
-  setGatewayBaseUrl,
-  setGatewayToken,
-  hasGatewayToken,
-  gateway,
-  type HealthResponse,
-  type SkillMeta,
-  type SkillsResponse,
-  type ExplainResponse,
-  type TaskResponse,
-} from '@clerq/gateway-client';
+import { setGatewayBaseUrl, setGatewayToken, gateway } from '@clerq/gateway-client';
 
 const viteUrl = (import.meta as unknown as { env?: { VITE_GATEWAY_URL?: string } }).env
   ?.VITE_GATEWAY_URL;
@@ -44,5 +34,4 @@ export async function initGatewayAuth(retries = 10, delayMs = 500): Promise<bool
   return false;
 }
 
-export { setGatewayBaseUrl, setGatewayToken, hasGatewayToken, gateway };
-export type { HealthResponse, SkillMeta, SkillsResponse, ExplainResponse, TaskResponse };
+export { setGatewayBaseUrl, setGatewayToken, gateway };

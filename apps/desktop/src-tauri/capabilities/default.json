@@ -6,7 +6,6 @@
   "permissions": [
     "process:allow-restart",
     "core:default",
-    "core:webview:allow-create-webview-window",
     "shell:allow-open",
     {
       "identifier": "shell:allow-execute",

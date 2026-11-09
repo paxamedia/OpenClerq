@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Clerq",
+        "title": "OpenClerq",
         "width": 1024,
         "height": 768,
         "minWidth": 800,
@@ -23,7 +23,18 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self'",
+        "img-src": "'self' data:",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:*",
+        "frame-src": "http://127.0.0.1:* http://localhost:*",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      }
     }
   },
   "bundle": {
@@ -41,8 +52,8 @@
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
     },
-    "longDescription": "OpenClerq — local administrative agent. USE AT YOUR OWN RISK. No warranty. This app reads and writes config and API keys under ~/.clerq, may read paths you choose for modules, and if you configure an API key it will send requests to your chosen LLM provider. Calculations run locally. See the app About for full permissions and disclaimer.",
-    "shortDescription": "OpenClerq — local clerical agent (use at your own risk)",
+    "longDescription": "OpenClerq \u2014 local administrative agent. USE AT YOUR OWN RISK. No warranty. This app reads and writes config and API keys under ~/.clerq, may read paths you choose for modules, and if you configure an API key it will send requests to your chosen LLM provider. Calculations run locally. See the app About for full permissions and disclaimer.",
+    "shortDescription": "OpenClerq \u2014 local clerical agent (use at your own risk)",
     "macOS": {
       "entitlements": "Entitlements.plist",
       "exceptionDomain": "",
