@@ -376,6 +376,25 @@ export interface InboxItem {
   resolvedBy: string | null;
 }
 
+export interface RemoteSettings {
+  enabled: boolean;
+  /** The HTTPS address of the user's tunnel or reverse proxy. */
+  publicUrl: string | null;
+  ntfyServer: string;
+}
+
+export interface Device {
+  id: string;
+  tenantId: string;
+  name: string;
+  platform: string;
+  createdAt: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+  /** Where the gateway publishes this device's pushes (ntfy). */
+  push: { server: string; topic: string } | null;
+}
+
 export interface Approval {
   id: number;
   runId: string;
@@ -903,6 +922,43 @@ export const gateway = {
       method: 'POST',
       body: JSON.stringify(response),
     });
+  },
+
+  // --- Remote mode and devices ----------------------------------------
+
+  remote(): Promise<RemoteSettings> {
+    return fetchJson('/remote');
+  },
+
+  setRemote(patch: Partial<RemoteSettings>): Promise<RemoteSettings> {
+    return fetchJson('/remote', { method: 'PUT', body: JSON.stringify(patch) });
+  },
+
+  /** A single-use code (five minutes) and the QR payload `{ url, code, expires }`. */
+  createPairingCode(): Promise<{ code: string; url: string; expiresAt: string; qr: string }> {
+    return fetchJson('/devices/pairing', { method: 'POST', body: '{}' });
+  },
+
+  /** Used by the phone: needs no token, returns its device token. */
+  pairDevice(input: {
+    code: string;
+    deviceName: string;
+    platform: string;
+  }): Promise<{ device: Device; token: string; expiresAt: string; scopes: string[] }> {
+    return fetchJson('/devices/pair', { method: 'POST', body: JSON.stringify(input) });
+  },
+
+  devices(): Promise<{ devices: Device[] }> {
+    return fetchJson('/devices');
+  },
+
+  /** The calling device itself (device token only). */
+  thisDevice(): Promise<Device> {
+    return fetchJson('/devices/me');
+  },
+
+  revokeDevice(id: string): Promise<Device> {
+    return fetchJson(`/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
 
   approvals(): Promise<{ approvals: Approval[] }> {

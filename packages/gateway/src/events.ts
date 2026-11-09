@@ -55,7 +55,9 @@ export type CoreEventName =
   | 'activity.added'
   | 'inbox.item.created'
   | 'inbox.item.updated'
-  | 'inbox.item.responded';
+  | 'inbox.item.responded'
+  | 'device.paired'
+  | 'device.revoked';
 
 /** Correlation ids, so autonomous behaviour can be traced after the fact. */
 export interface EventContext {

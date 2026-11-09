@@ -23,6 +23,7 @@ import { ModuleHost } from './modules/host.js';
 import { mountModuleRoutes } from './modules/routes.js';
 import { mountRecordRoutes } from './records/routes.js';
 import { mountInboxRoutes } from './inbox/routes.js';
+import { mountRemoteRoutes, refuseDevicesWhenRemoteOff } from './remote/routes.js';
 import { createToolRegistry } from './tools.js';
 import {
   loadCapabilities,
@@ -209,6 +210,7 @@ export function createGateway(config: GatewayConfig = {}): {
   // Body limit: an unbounded JSON parser is a trivial memory exhaustion vector.
   app.use(express.json({ limit: process.env.CLERQ_MAX_BODY ?? '1mb' }));
   app.use(requireAuth(auth.token));
+  app.use(refuseDevicesWhenRemoteOff);
   app.use(licenseCheck(devMode));
 
   app.get('/health', (_req, res) => {
@@ -871,6 +873,7 @@ export function createGateway(config: GatewayConfig = {}): {
   mountModuleRoutes(app, modules);
   mountRecordRoutes(app);
   mountInboxRoutes(app);
+  mountRemoteRoutes(app);
 
   // Automations: scheduled agent runs that end in a draft pull request.
   // Their schedules pause with the triggers under the kill switch.

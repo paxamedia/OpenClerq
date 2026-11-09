@@ -349,4 +349,36 @@ export const MIGRATIONS: Migration[] = [
         WHERE external_id IS NOT NULL;
     `,
   },
+  {
+    id: 10,
+    name: 'remote_devices',
+    // Remote mode: gateway settings, paired devices and the single-use codes
+    // that pair them. A device's token lives in scoped_tokens.
+    sql: `
+      CREATE TABLE settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE devices (
+        id          TEXT PRIMARY KEY,
+        tenant_id   TEXT NOT NULL DEFAULT 'default',
+        name        TEXT NOT NULL,
+        platform    TEXT NOT NULL,
+        push_server TEXT,
+        push_topic  TEXT,
+        created_at  TEXT NOT NULL,
+        revoked_at  TEXT
+      );
+
+      CREATE TABLE pairing_codes (
+        code_hash  TEXT PRIMARY KEY,
+        tenant_id  TEXT NOT NULL DEFAULT 'default',
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at    TEXT
+      );
+    `,
+  },
 ];

@@ -202,6 +202,7 @@ The gateway is the control plane. Endpoints:
 | Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                                        |
 | Records     | `GET \| POST /records`, `POST /records/resolve`, `GET \| PATCH \| DELETE /records/:id`, `POST /records/:id/merge`, `GET /records/:id/activities`, `POST \| DELETE /records/links`, `GET /links`, `POST /activities` |
 | Inbox       | `GET /inbox`, `POST /inbox/items`, `GET \| PATCH /inbox/items/:id`, `POST /inbox/items/:id/respond`                                                                                                                 |
+| Remote      | `GET \| PUT /remote`, `POST /devices/pairing`, `POST /devices/pair` (no token), `GET /devices`, `DELETE /devices/:id`, `GET \| DELETE /devices/me`                                                                  |
 | Search      | `GET /search`, `GET /extensions`                                                                                                                                                                                    |
 | Modules     | `GET /modules`, `POST /modules/:id/token`, `DELETE /modules/:id/tokens`; module routes at `/api/modules/:id/*`, with `ui/`, `triggers/:id` and `services` reserved (see [MODULE_SYSTEM.md](MODULE_SYSTEM.md))       |
 
@@ -235,7 +236,8 @@ Licensing is a separate concern: `middleware/license.ts` attaches entitlement in
 never rejects in the OSS build. Conflating the two was the pre-0.4 design and is what left the
 gateway open.
 
-The listener binds `127.0.0.1` unless `CLERQ_HOST` says otherwise. See [SECURITY.md](SECURITY.md).
+The listener binds `127.0.0.1` unless `CLERQ_HOST` says otherwise. Remote access (a phone) goes
+through the user's own tunnel; see Remote mode in SECURITY.md. See [SECURITY.md](SECURITY.md).
 
 ### Error response shape
 
