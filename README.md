@@ -138,8 +138,8 @@ pnpm build:core
 ┌─────────────────────────────────────────────────────────┐
 │           Tauri Desktop (Windows + Mac)                 │
 │  ┌─────────────────────────────────────────────────┐   │
-│  │  Control Tower — Builder | Operator mode        │   │
-│  │  Gateway | Skills | Tools | Memory | Ask (explain/task) │
+│  │  Home | Inbox | Automations | Runs | Records     │   │
+│  │  Chat | module pages | Developer | Settings     │   │
 │  └──────────────────────┬──────────────────────────┘   │
 │                          │                                │
 │  ┌──────────────────────▼──────────────────────────┐   │
@@ -160,7 +160,7 @@ pnpm build:core
 └─────────────────────────────────────────────────────────┘
 ```
 
-_Desktop UI (Control Tower):_ Gateway health, skills (with schema/dependency editing), tools, calculator, memory, Ask (explain/task) with context preview and dry-run, observability metrics including model spend. Builder mode for configuration; Operator mode for day-to-day use. The **Chat console** module talks to any configured model, raw or through the full pipeline, and compares models side by side. The **Automations** module runs Claude Code on a schedule in a git worktree of a local repository, checks the result with your gates, and opens a draft pull request once you approve the push.
+_Desktop UI:_ a rail of pages, a ⌘K palette that searches every module, and a status bar with connection, running runs and month spend. **Home** charts runs, success rate and spend, and lists next runs and what needs you. **Inbox** holds approvals and module items in one list. **Automations** run Claude Code on a schedule in a git worktree, check the result with your gates, and open a draft pull request once you approve the push. **Runs** shows each run's pipeline, steps and diff. **Records** are the people and organisations modules share. **Chat** talks to any configured model, raw or managed, and compares models side by side. Modules add pages, Home tiles and record panels. At phone width the same screens use bottom tabs.
 
 ## Quick Start
 
@@ -171,9 +171,9 @@ After [Installing](#installing) (macOS or Windows), from the repo root:
 3. **Start gateway:** `pnpm gateway` (leave running). It prints where to find the bearer token.
 4. **Start desktop:** `pnpm desktop` in a second terminal.
 
-The desktop **Control Tower** lets you check gateway health, load and edit skills (schemas, dependencies), run tools, manage memory, and **Ask** (explain or task). Task mode supports dry-run (no LLM call) and context preview. Builder/Operator modes toggle between full configuration and streamlined use. Full steps: **[Developer setup](docs/DEVELOPER_SETUP.md)**.
+Settings holds models and keys, secrets, skills, memory, triggers, remote access and paired phones. **Developer** has the tool runner, calculator, task runner with context preview, and the live log. Full steps: **[Developer setup](docs/DEVELOPER_SETUP.md)**.
 
-**Settings:** In the app you can save your API key to `~/.clerq/.env` (optional); the gateway loads it when it starts.
+**Settings → Models & keys:** save your Anthropic key to `~/.clerq/.env` (optional); the gateway loads it when it starts.
 
 For one-click run after building the app, see [Installing](#installing) (macOS: `scripts/Start-Clerq-Mac.command`; Windows: `scripts/Start-Clerq-Win.bat`).
 

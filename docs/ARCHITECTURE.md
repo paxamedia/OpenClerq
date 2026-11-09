@@ -16,7 +16,7 @@ For where this architecture is going, see [ROADMAP.md](ROADMAP.md).
 | Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration |
 | Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration           |
 | Agent drivers    | `packages/drivers`  | Run a coding agent's CLI (Claude Code) in a workspace   |
-| Interface kit    | `packages/web`      | Tokens, icons and components for the next desktop UI    |
+| Interface        | `packages/web`      | Shell, screens, charts and components, for any host app |
 | Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                            |
 | Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets               |
 
@@ -275,19 +275,22 @@ All errors use one shape, and carry no PII:
 
 ## 5. Desktop app
 
-A control tower for configuring and running the agent, in Builder or Operator mode.
+The interface lives in `packages/web` as `<OpenClerqApp client host modules />`. The desktop
+(`apps/desktop`) passes the gateway client and a Tauri host: config file, API key, updater,
+notifications and the dock badge. Another app can mount the same screens with its own client
+and host.
 
-- **Agent core** — gateway health, system prompt editor, reasoning controls (temperature, max tokens)
-- **Skills** — list, edit input/output schemas and dependencies
-- **Tools** — inspect and run tools; capabilities restrict filesystem and network reach
-- **Memory** — list, add, delete entries
-- **Ask** — Explain or Task mode, with context preview (no API call) and dry run
-- **Triggers** — cron, file watchers, webhooks
-- **Secrets** — vault entries by name
-- **Observability** — metrics, live log stream, step traces
-- **Automations** (module) — spec editor that checks a spec against this machine, runs with their steps and diff, and the approvals inbox
+- **Shell** — rail (bottom tabs at phone width), top bar with breadcrumb and actions, status bar,
+  ⌘K palette over `/search`, and a hash router: every page is a route such as `#/runs/<id>`.
+- **Core pages** — Home, Inbox (approvals and module items), Runs, Records, Developer, Settings.
+- **Modules** — pages under `#/m/<id>/…`. Bundled modules (Automations, Chat) register through
+  the slot contract; modules the gateway runs appear from `GET /modules` and their `nav`
+  extensions, with their UI in a frame.
+- **Live data** — one cache over the client, refetched from `GET /events/stream`, polled when the
+  stream is down.
 
-The desktop stores only local configuration and talks to `http://127.0.0.1:18790` by default.
+The desktop talks to `http://127.0.0.1:18790` by default. Its content security policy allows
+connections and frames from the loopback gateway only.
 It launches the gateway and calculation engine as Tauri sidecars; the Tauri capability
 manifest permits executing exactly those two binaries and nothing else.
 

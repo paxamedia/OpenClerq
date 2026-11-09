@@ -197,6 +197,7 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [x] One run per automation, and a global cap
 - [x] Runs interrupted by a restart are marked failed and their worktrees removed
 - [x] Desktop Automations module over the module slot contract: spec editor with a check, runs with steps and diff, approvals inbox
+- [x] Interface rebuilt in `packages/web` with routing, a Providers screen and Settings in the main window; the 0.5 UI removed
 
 ### 0.6b — Agents and automations
 
@@ -213,7 +214,7 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [ ] Model routing and fallback chains with strictness rules (explicit user selection is strict; defaults and scheduled jobs may fall back)
 - [ ] Memory 2.0 — typed records, SQLite FTS search, summarisation, policy-controlled retrieval
 - [ ] Sub-agents — `sessions.spawn`, isolated policy, `maxConcurrent = 4`, `maxDepth = 1`
-- [ ] `packages/web` extracted from `App.tsx` with routing; Repos and Providers screens
+- [ ] Repos screen
 - [ ] **Chat console — managed mode.** System prompt, skills, memory, policy-filtered tools, inline approvals, mode diff against raw
 - [ ] **Conversational automation authoring.** Draft → preview → dry run → save disabled, with `approvals.push` forced to manual on first run
 - [x] Console registered through the existing module slot contract rather than extending `App.tsx`

@@ -185,6 +185,14 @@ loaded module's, each item tagged with `moduleId`; malformed items are left out 
 A `path` is inside the module's UI; the shell opens it at `#/m/<module>/<path>`, and `{ref}`
 stands for the record's ref. `types` are `<module>:<type>`.
 
+**In the shell.** `nav` items become rail entries, `home.tile` cards sit on Home, `record.panel`
+items are tabs on a record's page and `record.action` items its buttons (a `trigger` fires with
+`{ ref }`, asking first when `confirm` is set), `settings.page` items join Settings, and
+`inbox.item` paths draw an item in the inbox. Each is the module's UI in a frame. The frame
+receives `{ type: 'clerq:token', token, expiresAt }` (renewed before it expires) and
+`{ type: 'clerq:theme', theme }`, and may post `{ type: 'clerq:token-request' }`,
+`{ type: 'clerq:navigate', path }` or `{ type: 'clerq:height', height }`.
+
 **Search.** `GET /search?q=&types=&limit=` returns core people and organisations plus every module's
 `ctx.search` results as `{ ref, moduleId, type, title, subtitle?, path?, score }`, best first. A
 module that fails or takes over 1.5 s is listed under `errors`.

@@ -92,7 +92,9 @@ cd OpenClerq
 pnpm desktop
 ```
 
-This builds and launches the Tauri desktop shell (Control Tower UI), which talks to `http://127.0.0.1:18790` by default. The desktop offers Builder/Operator mode, skills schema editing, file-backed memory, context preview, dry-run for tasks, and observability metrics.
+This builds and launches the Tauri desktop app, which talks to `http://127.0.0.1:18790` by default.
+
+To work on the screens without a gateway, `pnpm --filter @clerq/web preview` serves them over made-up data at `http://127.0.0.1:1430` (`?theme=dark`, `?fixture=empty` or `?fixture=offline`). `pnpm ui:shots` saves every page in both themes at three sizes to `ui-shots/`, using the installed Chrome.
 
 After you have a built desktop bundle, you can also use the launcher scripts:
 

@@ -32,9 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Manifest `permissions` are parsed, listed at `GET /modules`, stored, and audited when they change. Not enforced.
 - Automation summaries carry `monthBudgetUsd` and `nextFirings` (the next ten); `GET /runs` takes `since`.
 - Component kit in `packages/web` for the new interface: buttons, fields, checkbox, switch, segmented control, tabs, a sortable table, run status tags, key–value lists, code blocks, skeletons, empty states, tooltips, popovers, menus, dialogs, a drawer and toasts. All keyboard-operable; the Foundations page shows each one in both themes.
+- **New interface** in `packages/web`, mounted by the desktop: a rail (bottom tabs at phone width), a top bar, a status bar with connection, running runs and month spend, a ⌘K palette that searches records and every module, and routes for every page (`#/runs/<id>`, `#/m/<module>/<path>`) with Back across modules. Pages follow `/events/stream` live.
+- Home with tiles and 14-day sparklines, an activity timeline, next runs, what needs you, a first-run checklist and module tiles. Automations with run strips, budget meters, a schedule heatmap, cost per run and an editor that checks the spec as you type. Runs with filters, a pipeline stepper, a step waterfall and a diff viewer. One inbox for approvals and module items, with J/K/A/D keys. Records with module panels and actions. Chat with an inspector and comparison bars.
+- Settings in the main window: General (theme, start page, emergency stop), Models & keys with a **Test** per provider, Secrets, Skills, Memory, Triggers, Remote, Devices (pairing QR, last seen, revoke), Advanced, and modules' own settings pages. Developer: tool runner, calculator, task runner with context preview, live log, service figures.
+- Module UIs in a frame with a token bridge; module notifications as native notifications; the inbox count on the app icon; a content security policy that allows only the loopback gateway.
+- `pnpm ui:shots`: every page in both themes at three sizes, over fixture data.
+
+### Removed
+
+- The 0.5 interface: the entry screen, mode picker, Builder/Operator toggle and the separate settings window. Their features are in the new pages.
 
 ### Changed
 
+- The module manifest schema accepts `config`, `coreEndpoints`, `services`, `permissions` and `extensions`.
 - `packages/sandbox` gives a command a minimal environment unless `inheritEnv` is set, streams output line by line, and stops on an abort signal.
 - In this release automations run without isolation, and a spec must say `sandbox: { profile: native }` to run.
 
