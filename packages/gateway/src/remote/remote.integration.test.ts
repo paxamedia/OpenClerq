@@ -6,7 +6,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
+import http from 'node:http';
 import path from 'node:path';
+import { pushFor } from './push.js';
+import { resetPairingLimiter } from './devices.js';
 import { createGateway } from '../gateway.js';
 
 const TOKEN = 'remote-test-token-0123456789';
@@ -153,5 +156,82 @@ describe('pairing', () => {
       last = (await pair({ code: 'AAAAA-AAAAA', deviceName: 'x', platform: 'ios' })).status;
     }
     expect(last).toBe(429);
+    resetPairingLimiter();
+  });
+});
+
+describe('push', () => {
+  it('maps events to generic titles and an id only', () => {
+    const base = { id: 'e-1', at: 't', context: {} };
+    expect(
+      pushFor({ ...base, name: 'approval.requested', payload: { id: 7, reason: 'secret stuff' } })
+    ).toEqual({
+      title: 'Approval needed',
+      id: 'approval:7',
+      priority: 4,
+    });
+    expect(
+      pushFor({
+        ...base,
+        name: 'notify.posted',
+        payload: { id: 'ntf_1', moduleId: 'crm', title: 'Call Ada' },
+      })
+    ).toEqual({ title: 'Notification from crm', id: 'notify:ntf_1', priority: 3 });
+    expect(pushFor({ ...base, name: 'run.started', payload: {} })).toBeNull();
+  });
+
+  it('publishes to each paired device on its ntfy topic, and stops once revoked', async () => {
+    const received: Array<{ auth?: string; body: Record<string, unknown> }> = [];
+    const ntfy = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => (raw += c));
+      req.on('end', () => {
+        received.push({ auth: req.headers.authorization, body: JSON.parse(raw) });
+        res.end('{}');
+      });
+    });
+    await new Promise<void>((resolve) => ntfy.listen(0, '127.0.0.1', () => resolve()));
+    const ntfyUrl = `http://127.0.0.1:${(ntfy.address() as { port: number }).port}`;
+    try {
+      await api('/remote', { method: 'PUT', body: JSON.stringify({ ntfyServer: ntfyUrl }) });
+      const { code } = (await (await api('/devices/pairing', { method: 'POST' })).json()) as {
+        code: string;
+      };
+      const { device } = (await (
+        await pair({ code, deviceName: 'Pushy', platform: 'android' })
+      ).json()) as { device: { id: string; push: { server: string; topic: string } } };
+      expect(device.push.server).toBe(ntfyUrl);
+
+      const item = (await (
+        await api('/inbox/items', {
+          method: 'POST',
+          body: JSON.stringify({ kind: 'alert', title: 'Ada Lovelace owes 300 EUR' }),
+        })
+      ).json()) as { id: string };
+      for (let i = 0; i < 50 && received.length === 0; i++)
+        await new Promise((r) => setTimeout(r, 20));
+      expect(received).toEqual([
+        {
+          auth: undefined,
+          body: {
+            topic: device.push.topic,
+            title: 'New alert',
+            message: `inbox:${item.id}`,
+            priority: 4,
+          },
+        },
+      ]);
+      expect(JSON.stringify(received)).not.toContain('Ada');
+
+      await api(`/devices/${device.id}`, { method: 'DELETE' });
+      await api('/inbox/items', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'task', title: 'x' }),
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(received).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve) => ntfy.close(() => resolve()));
+    }
   });
 });

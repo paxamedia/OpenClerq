@@ -24,6 +24,7 @@ import { mountModuleRoutes } from './modules/routes.js';
 import { mountRecordRoutes } from './records/routes.js';
 import { mountInboxRoutes } from './inbox/routes.js';
 import { mountRemoteRoutes, refuseDevicesWhenRemoteOff } from './remote/routes.js';
+import { startPushPublisher } from './remote/push.js';
 import { createToolRegistry } from './tools.js';
 import {
   loadCapabilities,
@@ -1182,6 +1183,7 @@ export function createGateway(config: GatewayConfig = {}): {
       logger.info('Generated a new gateway token at ~/.clerq/gateway-token (mode 0600).');
     }
     startTriggers(runTriggered);
+    startPushPublisher();
     try {
       await recoverAfterRestart();
       startAutomationSchedules(automationDeps);
