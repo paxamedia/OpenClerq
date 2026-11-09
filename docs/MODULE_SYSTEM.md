@@ -210,7 +210,9 @@ A single-tenant install only ever sees the tenant `default` and needs to do noth
   `ctx.withTenant(id, fn)` runs work as another tenant.
 - Events from a tenant other than `default` carry `context.tenantId`; a scoped token's event stream
   shows only its tenant's.
-- Not per tenant yet: runs, approvals, automations, secrets and module config.
+- Not per tenant yet: runs, approvals, automations, secrets and module config. A scoped token of a
+  tenant other than `default` therefore reaches only module routes, records, links, activities,
+  the inbox, search, extensions, its event stream and `/devices/me`.
 
 ---
 

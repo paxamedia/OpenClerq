@@ -15,7 +15,7 @@ import crypto from 'node:crypto';
 import { audit } from '@clerq/store';
 import { getStore } from '../store.js';
 import { emit } from '../events.js';
-import { currentTenant } from '../tenant.js';
+import { currentTenant, runInTenant } from '../tenant.js';
 import { issueToken, lastSeen, revokeTokens } from '../security/scoped-tokens.js';
 import { notifyTokensChanged } from '../security/token-watch.js';
 
@@ -24,7 +24,11 @@ export const PAIRING_TTL_MS = 5 * 60_000;
 export const DEVICE_IDLE_MS = 30 * 24 * 60 * 60_000;
 export const DEFAULT_NTFY_SERVER = 'https://ntfy.sh';
 
-/** What a paired phone may do: read status, decide approvals, pause and resume, answer the inbox. */
+/**
+ * What a paired phone may do: read status, decide approvals, pause and resume,
+ * answer the inbox. A phone paired to a tenant other than `default` reaches
+ * only the per-tenant part (see TENANT_AWARE in security/scoped-tokens.ts).
+ */
 export const MOBILE_SCOPES = [
   'GET /kill',
   'POST /kill',
@@ -313,7 +317,8 @@ export function pairDevice(input: { code?: unknown; deviceName?: unknown; platfo
     subject: id,
     detail: { name, platform },
   });
-  emit('device.paired', { id, name, platform });
+  // Pairing is a public request in no tenant: the event belongs to the code's.
+  runInTenant(tenant, () => emit('device.paired', { id, name, platform }));
   return { device: getDevice(id) as Device, token, expiresAt, scopes: MOBILE_SCOPES };
 }
 

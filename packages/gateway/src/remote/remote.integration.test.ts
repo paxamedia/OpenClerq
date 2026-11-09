@@ -194,6 +194,34 @@ describe('pairing', () => {
     await api('/remote', { method: 'PUT', body: JSON.stringify({ enabled: true }) });
   });
 
+  it("keeps another tenant's phone to that tenant, and tags its pairing", async () => {
+    const watch = await api('/events/stream?names=device.');
+    const reader = watch.body!.getReader();
+    const created = await api('/devices/pairing', {
+      method: 'POST',
+      headers: { 'X-Clerq-Tenant': 'acme' },
+    });
+    const { code } = (await created.json()) as { code: string };
+    const { token, device } = (await (
+      await pair({ code, deviceName: 'Acme phone', platform: 'ios' })
+    ).json()) as { token: string; device: { tenantId: string } };
+    expect(device.tenantId).toBe('acme');
+    expect((await api('/inbox', {}, token)).status).toBe(200);
+    for (const p of ['/approvals', '/runs', '/kill']) {
+      expect((await api(p, {}, token)).status, p).toBe(403);
+    }
+    expect((await api('/approvals/1/approve', { method: 'POST' }, token)).status).toBe(403);
+    let text = '';
+    const decoder = new TextDecoder();
+    while (!text.includes('device.paired')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    await reader.cancel();
+    expect(text).toContain('"tenantId":"acme"');
+  });
+
   it('refuses wrong codes, and stops answering after too many', async () => {
     let last = 0;
     for (let i = 0; i < 11; i++) {

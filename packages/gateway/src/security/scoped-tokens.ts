@@ -38,6 +38,26 @@ const OPERATOR_ONLY = [
   /^\/devices(?!\/me(\/|$))(\/|$)/,
   /^\/remote(\/|$)/,
   /^\/secrets(\/|$)/,
+  // Every event and log line, of every tenant: /events/stream is the filtered form.
+  /^\/events$/,
+  /^\/logs(\/|$)/,
+];
+
+/**
+ * What a token bound to a tenant other than `default` may reach: only what
+ * is kept per tenant. Runs, approvals, automations and the kill switch are
+ * not per tenant yet, so they stay with the `default` tenant.
+ */
+const TENANT_AWARE = [
+  /^\/api\/modules\/[^/]+(\/|$)/,
+  /^\/records(\/|$)/,
+  /^\/links$/,
+  /^\/activities$/,
+  /^\/inbox(\/|$)/,
+  /^\/search$/,
+  /^\/extensions$/,
+  /^\/events\/stream$/,
+  /^\/devices\/me$/,
 ];
 
 export const SCOPE = /^(GET|POST|PUT|PATCH|DELETE|\*) (\/[^\s]*)$/;
@@ -103,6 +123,10 @@ export function declarableScope(scope: string): boolean {
 export function principalAllows(p: Principal, method: string, path: string): boolean {
   if (p.kind === 'operator') return true;
   if (operatorOnly(path)) return false;
+  if ((p.tenantId ?? DEFAULT_TENANT) !== DEFAULT_TENANT) {
+    const n = normalisePath(path) as string;
+    if (!TENANT_AWARE.some((re) => re.test(n))) return false;
+  }
   // HEAD reads what GET reads.
   const m = method.toUpperCase() === 'HEAD' ? 'GET' : method;
   return (p.scopes ?? []).some((s) => scopeAllows(s, m, path));

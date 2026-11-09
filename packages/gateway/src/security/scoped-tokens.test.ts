@@ -57,6 +57,27 @@ describe('scopes', () => {
     expect(principalAllows(p, 'GET', '/a/%E0%A4%A')).toBe(false);
   });
 
+  it('keep a token of another tenant to what is kept per tenant', () => {
+    const p = { kind: 'device' as const, tenantId: 'acme', scopes: ['* /*'] };
+    expect(principalAllows(p, 'GET', '/inbox')).toBe(true);
+    expect(principalAllows(p, 'GET', '/records/per_1')).toBe(true);
+    expect(principalAllows(p, 'GET', '/events/stream')).toBe(true);
+    for (const path of [
+      '/runs',
+      '/approvals',
+      '/approvals/1/approve',
+      '/kill',
+      '/automations',
+      '/events',
+    ]) {
+      expect(principalAllows(p, 'GET', path), path).toBe(false);
+    }
+    const home = { kind: 'device' as const, tenantId: 'default', scopes: ['* /*'] };
+    expect(principalAllows(home, 'POST', '/approvals/1/approve')).toBe(true);
+    expect(principalAllows(home, 'GET', '/events')).toBe(false);
+    expect(principalAllows(home, 'GET', '/logs/stream')).toBe(false);
+  });
+
   it('let a manifest declare only scopes with a fixed first segment', () => {
     expect(declarableScope('GET /runs/:id')).toBe(true);
     expect(declarableScope('* /*')).toBe(false);
