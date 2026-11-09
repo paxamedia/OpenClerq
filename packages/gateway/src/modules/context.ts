@@ -20,6 +20,7 @@ import { createRun, currentRunId, finishRun } from '../runs.js';
 import { emit, subscribeEvents } from '../events.js';
 import type { LoadedModule, ModuleRouteHandler } from '../module-loader.js';
 import type { ModuleTriggers } from './triggers.js';
+import { createNotify } from './notify.js';
 
 /** Gateway services a context is built over. */
 export interface ContextDeps {
@@ -138,6 +139,7 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
     triggers: {
       register: (def) => deps.triggers.register(id, def),
     },
+    notify: createNotify(id),
     approvals: {
       async request(input) {
         // An approval belongs to a run. Outside one, the request gets a run of

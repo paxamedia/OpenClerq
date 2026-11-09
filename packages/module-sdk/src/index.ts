@@ -170,6 +170,26 @@ export interface ModuleTriggers {
   register(def: ModuleTriggerDef): void;
 }
 
+export interface ModuleNotification {
+  title: string;
+  body?: string;
+  /** Default `info`. */
+  level?: 'info' | 'success' | 'warning' | 'error';
+  /** A path in the module's UI to open, e.g. `/campaigns/42`. */
+  link?: string;
+}
+
+/**
+ * Tell the person. The gateway puts a `notify.posted` event on the bus; the
+ * desktop shows it as a native notification and paired devices get a push.
+ * At most 30 a minute per module; more are dropped with a warning.
+ */
+export interface ModuleNotify {
+  (notification: ModuleNotification): { id: string } | null;
+  /** A short badge for the module, e.g. `671/1000`; null clears it. Sent as `notify.badge`. */
+  badge(text: string | null): void;
+}
+
 export interface ModuleLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
@@ -193,6 +213,7 @@ export interface ModuleContext {
   secrets: ModuleSecrets;
   events: ModuleEvents;
   triggers: ModuleTriggers;
+  notify: ModuleNotify;
   approvals: ModuleApprovals;
   audit: ModuleAudit;
   logger: ModuleLogger;

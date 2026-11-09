@@ -20,6 +20,9 @@ export default {
         .run(name, new Date().toISOString());
       // On the bus as module.hello-world.greeted, so GET /events/stream shows it.
       ctx.events.emit('greeted', { name });
+      const { n } = ctx.store.prepare(`SELECT COUNT(*) AS n FROM ${greetings}`).get();
+      ctx.notify.badge(String(n));
+      ctx.notify({ title: `Greeted ${name}`, link: '/' });
       res.status(201).json({ message: `${ctx.config.greeting}, ${name}` });
     });
     ctx.routes.get('/greetings', (_req, res) => {

@@ -141,6 +141,29 @@ describe('module context', () => {
     expect(text).toContain('"payload":{"name":"Linus"}');
   });
 
+  it('notifies through the bus and keeps the badge', async () => {
+    const res = await api('/events/stream?names=notify.');
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    await api('/api/modules/hello-world/greetings', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Ken' }),
+    });
+    let text = '';
+    while (!(text.includes('notify.posted') && text.includes('notify.badge'))) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    await reader.cancel();
+    expect(text).toMatch(/"name":"notify.posted".*"moduleId":"hello-world","title":"Greeted Ken"/);
+    expect(text).toContain('"badge":"3"');
+    const { modules } = (await (await api('/modules')).json()) as {
+      modules: Array<{ id: string; badge: string | null }>;
+    };
+    expect(modules.find((m) => m.id === 'hello-world')?.badge).toBe('3');
+  });
+
   it('fails a module whose migration touches tables it does not own', async () => {
     const { modules } = (await (await api('/modules')).json()) as {
       modules: Array<{ id: string; status: string; error: string | null }>;
@@ -211,7 +234,7 @@ describe('module triggers', () => {
       moduleId: 'hello-world',
       triggerId: 'count',
     });
-    expect(run.steps[0].output).toEqual({ greetings: 2 });
+    expect(run.steps[0].output).toEqual({ greetings: 3 });
   });
 
   it('records a handler that throws as a failed run', async () => {

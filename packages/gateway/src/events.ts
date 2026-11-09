@@ -41,7 +41,9 @@ export type CoreEventName =
   | 'approval.requested'
   | 'approval.decided'
   | 'kill.engaged'
-  | 'kill.released';
+  | 'kill.released'
+  | 'notify.posted'
+  | 'notify.badge';
 
 /** Correlation ids, so autonomous behaviour can be traced after the fact. */
 export interface EventContext {

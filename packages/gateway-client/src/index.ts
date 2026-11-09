@@ -236,6 +236,42 @@ export interface EventStreamOptions {
   retryMs?: number;
 }
 
+/** A module the gateway found, as GET /modules lists it. */
+export interface ModuleInfo {
+  id: string;
+  name: string;
+  version: string | null;
+  dir: string;
+  status: 'loaded' | 'failed';
+  error: string | null;
+  /** Core endpoints its UI token may call, e.g. `GET /runs/:id`. */
+  coreEndpoints: string[];
+  /** Where its UI is served, e.g. `/api/modules/<id>/ui/`; null without one. */
+  ui: string | null;
+  badge: string | null;
+  triggers: Array<{
+    id: string;
+    kind: 'cron' | 'file' | 'webhook';
+    schedule?: string;
+    path?: string;
+    description?: string;
+    nextRunAt: string | null;
+    running: boolean;
+    lastFiredAt: string | null;
+  }>;
+}
+
+/** The payload of a `notify.posted` event. */
+export interface ModuleNotification {
+  id: string;
+  moduleId: string;
+  title: string;
+  body?: string;
+  level: 'info' | 'success' | 'warning' | 'error';
+  /** A path in the module's UI. */
+  link?: string;
+}
+
 export interface Approval {
   id: number;
   runId: string;
@@ -658,6 +694,37 @@ export const gateway = {
   /** Start a run now. Resolves once the run exists; follow it with run(). */
   runAutomation(id: string): Promise<{ runId: string }> {
     return fetchJson(`/automations/${encodeURIComponent(id)}/run`, { method: 'POST', body: '{}' });
+  },
+
+  modules(): Promise<{ modules: ModuleInfo[] }> {
+    return fetchJson('/modules');
+  },
+
+  /** A short-lived token for a module's UI (default 15 minutes). Needs the gateway token. */
+  moduleToken(
+    id: string,
+    ttlSeconds?: number
+  ): Promise<{ token: string; expiresAt: string; scopes: string[] }> {
+    return fetchJson(`/modules/${encodeURIComponent(id)}/token`, {
+      method: 'POST',
+      body: JSON.stringify({ ttlSeconds }),
+    });
+  },
+
+  revokeModuleTokens(id: string): Promise<{ ok: boolean; revoked: number }> {
+    return fetchJson(`/modules/${encodeURIComponent(id)}/tokens`, { method: 'DELETE' });
+  },
+
+  /** Fire a module's trigger now. Resolves once its run exists. */
+  fireModuleTrigger(
+    id: string,
+    triggerId: string,
+    payload: unknown = {}
+  ): Promise<{ runId: string }> {
+    return fetchJson(
+      `/api/modules/${encodeURIComponent(id)}/triggers/${encodeURIComponent(triggerId)}`,
+      { method: 'POST', body: JSON.stringify(payload) }
+    );
   },
 
   approvals(): Promise<{ approvals: Approval[] }> {

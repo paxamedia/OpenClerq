@@ -94,17 +94,18 @@ The entry exports `register(ctx)`, or a default `{ register }`. Types are in `@c
 [`packages/module-sdk/examples/hello-world`](../packages/module-sdk/examples/hello-world) is a
 complete example.
 
-| `ctx.`      | What it is                                                                                               |
-| ----------- | -------------------------------------------------------------------------------------------------------- |
-| `routes`    | `get/post/put/patch/delete(path, handler)`, served at `/api/modules/<id>/<path>`                         |
-| `store`     | the gateway's SQLite store; `table('x')` is `mod_<id>_x`                                                 |
-| `secrets`   | vault entries named `<id>/<name>`                                                                        |
-| `events`    | `emit('x', payload)` puts `module.<id>.x` on the bus (and `GET /events/stream`); `subscribe(prefix, fn)` |
-| `triggers`  | `register({ id, kind: 'cron' \| 'file' \| 'webhook', handler })`; each firing is a run                   |
-| `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                   |
-| `audit`     | `append(action)`, recorded as `module.<id>.<action>`                                                     |
-| `logger`    | the gateway log, tagged with the module id                                                               |
-| `config`    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                                        |
+| `ctx.`      | What it is                                                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------------------------ |
+| `routes`    | `get/post/put/patch/delete(path, handler)`, served at `/api/modules/<id>/<path>`                             |
+| `store`     | the gateway's SQLite store; `table('x')` is `mod_<id>_x`                                                     |
+| `secrets`   | vault entries named `<id>/<name>`                                                                            |
+| `events`    | `emit('x', payload)` puts `module.<id>.x` on the bus (and `GET /events/stream`); `subscribe(prefix, fn)`     |
+| `triggers`  | `register({ id, kind: 'cron' \| 'file' \| 'webhook', handler })`; each firing is a run                       |
+| `notify`    | `notify({ title, body, level, link })` and `notify.badge('3/10')`: `notify.posted` and `notify.badge` events |
+| `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                       |
+| `audit`     | `append(action)`, recorded as `module.<id>.<action>`                                                         |
+| `logger`    | the gateway log, tagged with the module id                                                                   |
+| `config`    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                                            |
 
 **Triggers.** A firing is recorded as a run with `moduleId` and `triggerId`; the handler's return
 value is stored on it, and a throw fails it. `POST /api/modules/<id>/triggers/<triggerId>` fires
