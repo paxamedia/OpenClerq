@@ -104,6 +104,8 @@ complete example.
 | `notify`    | `notify({ title, body, level, link })` and `notify.badge('3/10')`: `notify.posted` and `notify.badge` events |
 | `services`  | `status/start/stop(label)` for the launchd agents the manifest lists under `services` (macOS)                |
 | `records`   | shared people, organisations and activities: `resolve`, `link`, `addActivity`, `ref(type, id)`               |
+| `search`    | `register((q, { limit, types }) => results)` for global search                                               |
+| `inbox`     | `add({ kind, title, ref, externalId })`, `resolve(id)`, `onRespond(handler)`                                 |
 | `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                       |
 | `audit`     | `append(action)`, recorded as `module.<id>.<action>`                                                         |
 | `logger`    | the gateway log, tagged with the module id                                                                   |
@@ -163,9 +165,37 @@ core records (`crm:deal:42` → `core:person:per_…`, kind `contact`).
   `GET /links?ref=`, `POST /activities { kind, summary, refs }`.
 - **Events.** `record.created|updated|merged|deleted|linked|unlinked`, `activity.added`.
 
+## 7. Extension points, search and the inbox
+
+A manifest's `extensions` say what the module adds to the shell. `GET /extensions` lists every
+loaded module's, each item tagged with `moduleId`; malformed items are left out and named in
+`GET /modules` (`extensionWarnings`).
+
+| Point           | Item                                                              |
+| --------------- | ----------------------------------------------------------------- |
+| `nav`           | `{ id, title, path, icon?, order? }`                              |
+| `home.tile`     | `{ id, title, path, size?: 's' \| 'm' \| 'l' }`                   |
+| `record.panel`  | `{ id, title, types: ['core:person'], path }`                     |
+| `record.action` | `{ id, title, types, path? \| trigger?, confirm? }`               |
+| `search`        | `{ id, title?, types? }`                                          |
+| `inbox.item`    | `{ id, kind: 'approval' \| 'reply' \| 'task' \| 'alert', title }` |
+| `settings.page` | `{ id, title, path }`                                             |
+
+A `path` is inside the module's UI; the shell opens it at `#/m/<module>/<path>`, and `{ref}`
+stands for the record's ref. `types` are `<module>:<type>`.
+
+**Search.** `GET /search?q=&types=&limit=` returns core people and organisations plus every module's
+`ctx.search` results as `{ ref, moduleId, type, title, subtitle?, path?, score }`, best first. A
+module that fails or takes over 1.5 s is listed under `errors`.
+
+**Inbox.** `GET /inbox?status=&kind=&module=` lists pending approvals (`apr_<n>`, decided at
+`/approvals/:id/approve|deny`) with every module's items. `POST /inbox/items`,
+`PATCH /inbox/items/:id { status }` and `POST /inbox/items/:id/respond { text, data }`, which calls
+the module's `onRespond` and closes the item. Events `inbox.item.created|updated|responded`.
+
 ---
 
-## 7. Safety expectations
+## 8. Safety expectations
 
 Modules and skills must respect the **safety guarantees** of the OSS core:
 

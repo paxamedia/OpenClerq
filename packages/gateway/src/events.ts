@@ -51,7 +51,10 @@ export type CoreEventName =
   | 'record.deleted'
   | 'record.linked'
   | 'record.unlinked'
-  | 'activity.added';
+  | 'activity.added'
+  | 'inbox.item.created'
+  | 'inbox.item.updated'
+  | 'inbox.item.responded';
 
 /** Correlation ids, so autonomous behaviour can be traced after the fact. */
 export interface EventContext {

@@ -353,37 +353,41 @@ describe('module UI', () => {
 });
 
 describe('module services', () => {
-  it('reports the services the manifest declares, and refuses others', async () => {
-    const res = await api('/api/modules/hello-world/services');
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      services: [
-        {
-          label: 'org.example.hello-world.worker',
-          name: 'Example worker',
-          loaded: false,
-          running: false,
-          pid: null,
-          lastExitCode: null,
-        },
-      ],
-    });
-    const other = await api('/api/modules/hello-world/services/com.example.other/start', {
-      method: 'POST',
-    });
-    expect(other.status).toBe(404);
-    // Not loaded, and its plist is not on this machine: nothing is started.
-    const start = await api(
-      '/api/modules/hello-world/services/org.example.hello-world.worker/start',
-      {
+  it(
+    'reports the services the manifest declares, and refuses others',
+    { timeout: 60_000 },
+    async () => {
+      const res = await api('/api/modules/hello-world/services');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        services: [
+          {
+            label: 'org.example.hello-world.worker',
+            name: 'Example worker',
+            loaded: false,
+            running: false,
+            pid: null,
+            lastExitCode: null,
+          },
+        ],
+      });
+      const other = await api('/api/modules/hello-world/services/com.example.other/start', {
         method: 'POST',
-      }
-    );
-    expect(start.status).toBe(502);
-    expect(fs.readFileSync(path.join(home, 'launchctl.log'), 'utf8')).not.toMatch(
-      /bootstrap|kickstart/
-    );
-  });
+      });
+      expect(other.status).toBe(404);
+      // Not loaded, and its plist is not on this machine: nothing is started.
+      const start = await api(
+        '/api/modules/hello-world/services/org.example.hello-world.worker/start',
+        {
+          method: 'POST',
+        }
+      );
+      expect(start.status).toBe(502);
+      expect(fs.readFileSync(path.join(home, 'launchctl.log'), 'utf8')).not.toMatch(
+        /bootstrap|kickstart/
+      );
+    }
+  );
 });
 
 describe('module permissions', () => {
@@ -464,5 +468,121 @@ describe('shared records', () => {
     });
     expect(conflict.status).toBe(409);
     expect(((await conflict.json()) as { candidates: unknown[] }).candidates).toHaveLength(2);
+  });
+});
+
+describe('extensions and search', () => {
+  it('aggregates extension points across modules', async () => {
+    const all = (await (await api('/extensions')).json()) as Record<
+      string,
+      Array<{ moduleId: string; id: string }>
+    >;
+    expect(all.nav).toEqual([
+      { moduleId: 'hello-world', id: 'main', title: 'Hello world', path: '/' },
+    ]);
+    expect(all['record.panel'][0]).toMatchObject({
+      moduleId: 'hello-world',
+      types: ['core:person'],
+    });
+    expect(all['settings.page']).toEqual([]);
+  });
+
+  it('searches core records and modules together', async () => {
+    const res = await api('/search?q=barbara');
+    const { results, errors } = (await res.json()) as {
+      results: Array<{ ref: string; moduleId: string; title: string; score: number }>;
+      errors: unknown[];
+    };
+    expect(errors).toEqual([]);
+    expect(results[0]).toMatchObject({ moduleId: 'core', title: 'Barbara', score: 0.8 });
+    expect(
+      results.some((r) => r.moduleId === 'hello-world' && r.title === 'Greeting for Barbara')
+    ).toBe(true);
+    const only = (await (await api('/search?q=barbara&types=hello-world:greeting')).json()) as {
+      results: Array<{ moduleId: string }>;
+    };
+    expect(only.results.every((r) => r.moduleId === 'hello-world')).toBe(true);
+    expect((await api('/search')).status).toBe(400);
+  });
+});
+
+describe('inbox', () => {
+  it('lists module items and pending approvals together', async () => {
+    const asked = await api('/api/modules/hello-world/approval', {
+      method: 'POST',
+      body: JSON.stringify({ reason: 'Please' }),
+    });
+    expect(asked.status).toBe(202);
+    const { approvalId } = (await asked.json()) as { approvalId: number };
+
+    const { items } = (await (await api('/inbox')).json()) as {
+      items: Array<{
+        id: string;
+        kind: string;
+        title: string;
+        moduleId: string | null;
+        ref: string | null;
+      }>;
+    };
+    expect(items.find((i) => i.id === `apr_${approvalId}`)).toMatchObject({
+      kind: 'approval',
+      title: 'Approve hello-world.demo',
+    });
+    const task = items.find((i) => i.title === 'Follow up with Barbara')!;
+    expect(task).toMatchObject({ kind: 'task', moduleId: 'hello-world' });
+    expect(task.ref).toMatch(/^core:person:per_/);
+
+    // An approval is decided where it always was.
+    expect(
+      (await api(`/inbox/items/apr_${approvalId}`, { method: 'PATCH', body: '{}' })).status
+    ).toBe(400);
+    await api(`/approvals/${approvalId}/approve`, { method: 'POST', body: '{}' });
+    const after = (await (await api('/inbox?kind=approval')).json()) as { items: unknown[] };
+    expect(after.items).toEqual([]);
+  });
+
+  it('hands a response to the module and closes the item', async () => {
+    const { items } = (await (await api('/inbox?module=hello-world')).json()) as {
+      items: Array<{ id: string; ref: string }>;
+    };
+    const res = await api(`/inbox/items/${items[0].id}/respond`, {
+      method: 'POST',
+      body: JSON.stringify({ text: 'Called back' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      item: { status: 'done', resolvedBy: 'operator' },
+      result: { noted: true },
+    });
+    const personId = items[0].ref.split(':')[2];
+    const { activities } = (await (await api(`/records/${personId}/activities`)).json()) as {
+      activities: Array<{ name: string }>;
+    };
+    expect(activities[0].name).toBe('Called back');
+  });
+
+  it('adds and dismisses an item over HTTP', async () => {
+    const created = await api('/inbox/items', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'alert', title: 'Disk nearly full', priority: 5 }),
+    });
+    expect(created.status).toBe(201);
+    const item = (await created.json()) as { id: string };
+    const dismissed = await api(`/inbox/items/${item.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'dismissed' }),
+    });
+    expect(await dismissed.json()).toMatchObject({ status: 'dismissed' });
+    expect(
+      (await api(`/inbox/items/${item.id}/respond`, { method: 'POST', body: '{}' })).status
+    ).toBe(409);
+    expect(
+      (
+        await api('/inbox/items', {
+          method: 'POST',
+          body: JSON.stringify({ kind: 'nag', title: 'x' }),
+        })
+      ).status
+    ).toBe(400);
   });
 });

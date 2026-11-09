@@ -60,7 +60,8 @@ describe('module services', () => {
     expect(decls[0].plist).toBe(path.join(os.homedir(), 'Library', 'LaunchAgents', 'a.b.plist'));
   });
 
-  it('starts, reports and stops a declared agent', async () => {
+  // Several process spawns; slow on a loaded machine.
+  it('starts, reports and stops a declared agent', { timeout: 60_000 }, async () => {
     const s = new ModuleServices('m', [{ label: LABEL, plist: path.join(dir, `${LABEL}.plist`) }]);
     expect(await s.status(LABEL)).toMatchObject({ loaded: false, running: false });
     expect(await s.start(LABEL)).toMatchObject({

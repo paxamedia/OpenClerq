@@ -6,6 +6,8 @@ import type { Express, Request, Response } from 'express';
 import { issueToken, revokeTokens, SCOPE } from '../security/scoped-tokens.js';
 import { uiDir, type ModuleHost } from './host.js';
 import { badgeOf } from './notify.js';
+import { EXTENSION_POINTS, emptyExtensions } from './extensions.js';
+import { search } from './search.js';
 
 const DEFAULT_TTL_S = 15 * 60;
 const MAX_TTL_S = 24 * 60 * 60;
@@ -39,8 +41,37 @@ export function mountModuleRoutes(app: Express, host: ModuleHost): void {
         badge: badgeOf(h.module.id),
         permissions: h.permissions,
         permissionWarnings: h.permissionWarnings,
+        extensions: h.extensions,
+        extensionWarnings: h.extensionWarnings,
       })),
     });
+  });
+
+  /** Every loaded module's extension points, each item tagged with its module. */
+  app.get('/extensions', (_req: Request, res: Response) => {
+    const all = emptyExtensions() as unknown as Record<string, Array<Record<string, unknown>>>;
+    for (const h of host.list()) {
+      if (h.status !== 'loaded') continue;
+      for (const point of EXTENSION_POINTS) {
+        for (const item of h.extensions[point]) all[point].push({ moduleId: h.module.id, ...item });
+      }
+    }
+    for (const point of EXTENSION_POINTS) {
+      all[point].sort(
+        (a, b) =>
+          Number(a.order ?? 0) - Number(b.order ?? 0) ||
+          String(a.title ?? a.id).localeCompare(String(b.title ?? b.id))
+      );
+    }
+    res.json(all);
+  });
+
+  /** Core records and every module's search handler at once. */
+  app.get('/search', async (req: Request, res: Response) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!q) return res.status(400).json({ error: 'q_required', message: 'Pass ?q=.' });
+    const types = typeof req.query.types === 'string' ? req.query.types.split(',') : undefined;
+    res.json(await search(q, { limit: Number(req.query.limit) || undefined, types }));
   });
 
   /**

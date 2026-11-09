@@ -283,6 +283,86 @@ export interface ModuleNotification {
   link?: string;
 }
 
+export type CoreRecordType = 'person' | 'organisation' | 'activity';
+
+/** A shared record; `ref` is `core:<type>:<id>`. */
+export interface CoreRecord {
+  id: string;
+  ref: string;
+  type: CoreRecordType;
+  name: string | null;
+  data: Record<string, unknown>;
+  emails: string[];
+  phones: string[];
+  domains: string[];
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RecordLink {
+  from: string;
+  to: string;
+  kind: string;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+export type ExtensionPoint =
+  | 'nav'
+  | 'home.tile'
+  | 'record.panel'
+  | 'record.action'
+  | 'search'
+  | 'inbox.item'
+  | 'settings.page';
+
+export interface ExtensionItem {
+  moduleId: string;
+  id: string;
+  title?: string;
+  /** A path in the module's UI; the shell opens `#/m/<module>/<path>`. `{ref}` stands for a record's ref. */
+  path?: string;
+  icon?: string;
+  order?: number;
+  size?: 's' | 'm' | 'l';
+  /** `<module>:<type>`, e.g. `core:person`. */
+  types?: string[];
+  trigger?: string;
+  confirm?: boolean;
+  kind?: 'approval' | 'reply' | 'task' | 'alert';
+}
+
+export interface SearchHit {
+  ref: string;
+  moduleId: string;
+  type?: string;
+  title: string;
+  subtitle?: string;
+  path?: string;
+  score: number;
+}
+
+export interface InboxItem {
+  /** `apr_<n>` for a pending approval, `inb_…` otherwise. */
+  id: string;
+  moduleId: string | null;
+  externalId: string | null;
+  kind: 'approval' | 'reply' | 'task' | 'alert';
+  title: string;
+  body: string | null;
+  ref: string | null;
+  link: string | null;
+  status: 'open' | 'done' | 'dismissed';
+  priority: number;
+  dueAt: string | null;
+  runId?: string;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+}
+
 export interface Approval {
   id: number;
   runId: string;
@@ -736,6 +816,80 @@ export const gateway = {
       `/api/modules/${encodeURIComponent(id)}/triggers/${encodeURIComponent(triggerId)}`,
       { method: 'POST', body: JSON.stringify(payload) }
     );
+  },
+
+  // --- Shared records, extensions, search, inbox ----------------------
+
+  records(
+    opts: { type?: CoreRecordType; q?: string; limit?: number } = {}
+  ): Promise<{ records: CoreRecord[] }> {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(opts)) if (v !== undefined) params.set(k, String(v));
+    return fetchJson(`/records${params.size ? `?${params}` : ''}`);
+  },
+
+  record(id: string): Promise<CoreRecord & { links: RecordLink[] }> {
+    return fetchJson(`/records/${encodeURIComponent(id)}`);
+  },
+
+  /** Find a person or organisation by email, phone or domain; created unless `create: false`. */
+  resolveRecord(input: {
+    type: 'person' | 'organisation';
+    name?: string;
+    emails?: string[];
+    phones?: string[];
+    domains?: string[];
+    create?: boolean;
+  }): Promise<{ record: CoreRecord; created: boolean; matchedBy: string[] }> {
+    return fetchJson('/records/resolve', { method: 'POST', body: JSON.stringify(input) });
+  },
+
+  links(ref: string): Promise<{ links: RecordLink[] }> {
+    return fetchJson(`/links?ref=${encodeURIComponent(ref)}`);
+  },
+
+  activities(recordId: string, limit = 50): Promise<{ activities: CoreRecord[] }> {
+    return fetchJson(`/records/${encodeURIComponent(recordId)}/activities?limit=${limit}`);
+  },
+
+  extensions(): Promise<Record<ExtensionPoint, ExtensionItem[]>> {
+    return fetchJson('/extensions');
+  },
+
+  search(
+    q: string,
+    opts: { types?: string[]; limit?: number } = {}
+  ): Promise<{ results: SearchHit[]; errors: Array<{ moduleId: string; error: string }> }> {
+    const params = new URLSearchParams({ q });
+    if (opts.types?.length) params.set('types', opts.types.join(','));
+    if (opts.limit) params.set('limit', String(opts.limit));
+    return fetchJson(`/search?${params}`);
+  },
+
+  inbox(
+    opts: { status?: InboxItem['status']; kind?: InboxItem['kind']; module?: string } = {}
+  ): Promise<{ items: InboxItem[] }> {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(opts)) if (v !== undefined) params.set(k, String(v));
+    return fetchJson(`/inbox${params.size ? `?${params}` : ''}`);
+  },
+
+  setInboxStatus(id: string, status: InboxItem['status']): Promise<InboxItem> {
+    return fetchJson(`/inbox/items/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+  },
+
+  /** Answer an item; its module acts on it and the item is closed. */
+  respondInboxItem(
+    id: string,
+    response: { text?: string; data?: unknown }
+  ): Promise<{ item: InboxItem; result: unknown }> {
+    return fetchJson(`/inbox/items/${encodeURIComponent(id)}/respond`, {
+      method: 'POST',
+      body: JSON.stringify(response),
+    });
   },
 
   approvals(): Promise<{ approvals: Approval[] }> {

@@ -29,6 +29,14 @@ export default {
           summary: `Greeted ${name}`,
           refs: [record.ref],
         });
+        // Something for a person to do, in the one inbox.
+        ctx.inbox.add({
+          kind: 'task',
+          title: `Follow up with ${name}`,
+          ref: record.ref,
+          link: `/?greeting=${lastInsertRowid}`,
+          externalId: `greeting-${lastInsertRowid}`,
+        });
       }
       // On the bus as module.hello-world.greeted, so GET /events/stream shows it.
       ctx.events.emit('greeted', { name });
@@ -72,6 +80,39 @@ export default {
       description: 'Logs a line at three every morning.',
       handler: () => ctx.logger.info('hello-world nightly'),
     });
+
+    ctx.inbox.onRespond((item, response) => {
+      if (item.ref) {
+        ctx.records.addActivity({
+          kind: 'note',
+          summary: response.text ?? 'Followed up',
+          refs: [item.ref],
+        });
+      }
+      return { noted: true };
+    });
+
+    // Asks the person first; the request waits in the approvals inbox.
+    ctx.routes.post('/approval', async (req, res) => {
+      const { id } = await ctx.approvals.request({
+        action: 'demo',
+        reason: String(req.body?.reason ?? 'A demonstration approval.'),
+        tier: 'low',
+      });
+      res.status(202).json({ approvalId: id });
+    });
+
+    // Global search: greetings by name.
+    ctx.search.register((q, { limit }) =>
+      ctx.store
+        .prepare(`SELECT id, name FROM ${greetings} WHERE name LIKE ? ORDER BY id DESC LIMIT ?`)
+        .all(`%${q}%`, limit)
+        .map((g) => ({
+          ref: ctx.records.ref('greeting', String(g.id)),
+          title: `Greeting for ${g.name}`,
+          path: `/?greeting=${g.id}`,
+        }))
+    );
 
     ctx.logger.info('hello-world registered');
   },

@@ -284,6 +284,77 @@ export interface ModuleRecords {
   activities(ref: string, limit?: number): CoreRecord[];
 }
 
+export interface SearchResult {
+  /** `<module>:<type>:<id>`. */
+  ref: string;
+  title: string;
+  subtitle?: string;
+  /** `<module>:<type>`; taken from the ref when absent. */
+  type?: string;
+  /** A path in the module's UI that opens it. */
+  path?: string;
+  /** 0 to 1; default 0.5. */
+  score?: number;
+}
+
+export type SearchHandler = (
+  q: string,
+  opts: { limit: number; types?: string[]; signal: AbortSignal }
+) => SearchResult[] | Promise<SearchResult[]>;
+
+/** Global search. A handler gets 1.5 seconds; after that its results are left out. */
+export interface ModuleSearch {
+  register(handler: SearchHandler): void;
+}
+
+export type InboxKind = 'approval' | 'reply' | 'task' | 'alert';
+
+export interface InboxItem {
+  id: string;
+  moduleId: string | null;
+  externalId: string | null;
+  kind: InboxKind;
+  title: string;
+  body: string | null;
+  ref: string | null;
+  link: string | null;
+  status: 'open' | 'done' | 'dismissed';
+  priority: number;
+  dueAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+}
+
+/**
+ * The one inbox: what is waiting for a person. Adding an item with the same
+ * `externalId` again updates and reopens it.
+ */
+export interface ModuleInbox {
+  add(item: {
+    kind: InboxKind;
+    title: string;
+    body?: string;
+    /** The record it is about. */
+    ref?: string;
+    /** A path in this module's UI. */
+    link?: string;
+    priority?: number;
+    dueAt?: string;
+    externalId?: string;
+  }): InboxItem;
+  /** Close (or reopen) one of this module's items, by its inbox id or externalId. */
+  resolve(idOrExternalId: string, status?: 'done' | 'dismissed' | 'open'): InboxItem;
+  /**
+   * A person answered one of this module's items (POST /inbox/items/:id/respond).
+   * Unless the handler throws, the item is then done.
+   */
+  onRespond(
+    handler: (item: InboxItem, response: { text?: string; data?: unknown; by: string }) => unknown
+  ): void;
+}
+
 export interface ModuleLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
@@ -326,6 +397,8 @@ export interface ModuleContext {
   notify: ModuleNotify;
   services: ModuleServices;
   records: ModuleRecords;
+  search: ModuleSearch;
+  inbox: ModuleInbox;
   approvals: ModuleApprovals;
   audit: ModuleAudit;
   logger: ModuleLogger;

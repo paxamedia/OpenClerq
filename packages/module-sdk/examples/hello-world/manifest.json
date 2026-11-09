@@ -18,5 +18,37 @@
     "secrets": ["token"],
     "services": ["org.example.hello-world.worker"],
     "llm": false
+  },
+  "extensions": {
+    "nav": [
+      {
+        "id": "main",
+        "title": "Hello world",
+        "path": "/"
+      }
+    ],
+    "record.panel": [
+      {
+        "id": "greetings",
+        "title": "Greetings",
+        "types": ["core:person"],
+        "path": "/?ref={ref}"
+      }
+    ],
+    "record.action": [
+      {
+        "id": "count",
+        "title": "Count greetings",
+        "types": ["core:person"],
+        "trigger": "count"
+      }
+    ],
+    "search": [
+      {
+        "id": "greetings",
+        "title": "Greetings",
+        "types": ["hello-world:greeting"]
+      }
+    ]
   }
 }

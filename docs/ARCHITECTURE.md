@@ -201,7 +201,9 @@ The gateway is the control plane. Endpoints:
 | Automations | `GET \| POST /automations`, `POST /automations/preview`, `GET \| PUT \| DELETE /automations/:id`, `POST /automations/:id/run\|enable\|disable`, `GET /drivers`, `GET /runs/:id/artifacts/:id`                       |
 | Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                                        |
 | Records     | `GET \| POST /records`, `POST /records/resolve`, `GET \| PATCH \| DELETE /records/:id`, `POST /records/:id/merge`, `GET /records/:id/activities`, `POST \| DELETE /records/links`, `GET /links`, `POST /activities` |
-| Modules     | mounted at `/api/modules/:moduleId/*`                                                                                                                                                                               |
+| Inbox       | `GET /inbox`, `POST /inbox/items`, `GET \| PATCH /inbox/items/:id`, `POST /inbox/items/:id/respond`                                                                                                                 |
+| Search      | `GET /search`, `GET /extensions`                                                                                                                                                                                    |
+| Modules     | `GET /modules`, `POST /modules/:id/token`, `DELETE /modules/:id/tokens`; module routes at `/api/modules/:id/*`, with `ui/`, `triggers/:id` and `services` reserved (see [MODULE_SYSTEM.md](MODULE_SYSTEM.md))       |
 
 Responsibilities: loading skills from disk and normalising metadata (`inputSchema`,
 `outputSchema`, `dependsOn`); hosting tools under capability restrictions; store-backed memory,

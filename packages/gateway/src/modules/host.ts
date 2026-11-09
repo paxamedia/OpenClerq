@@ -17,6 +17,8 @@ import { createModuleContext, type ContextHandle } from './context.js';
 import { ModuleTriggers, TriggerError } from './triggers.js';
 import { ServiceError } from './services.js';
 import { parsePermissions, recordModule, type ModulePermissions } from './permissions.js';
+import { parseExtensions, type Extensions } from './extensions.js';
+import { unregisterSearch } from './search.js';
 
 export type ModuleStatus = 'loaded' | 'failed';
 
@@ -28,6 +30,8 @@ export interface HostedModule {
   /** Declared in the manifest; not enforced. */
   permissions: ModulePermissions;
   permissionWarnings: string[];
+  extensions: Extensions;
+  extensionWarnings: string[];
 }
 
 export class ModuleHost {
@@ -56,12 +60,16 @@ export class ModuleHost {
   private async start(mod: LoadedModule): Promise<void> {
     if (this.hosted.has(mod.id)) return;
     const { permissions, warnings } = parsePermissions(mod.manifest);
+    const ext = parseExtensions(mod.manifest);
     const entry: HostedModule = {
       module: mod,
       status: 'loaded',
       permissions,
       permissionWarnings: warnings,
+      extensions: ext.extensions,
+      extensionWarnings: ext.warnings,
     };
+    for (const w of ext.warnings) logger.warn('Module manifest', { moduleId: mod.id, problem: w });
     this.hosted.set(mod.id, entry);
     for (const w of warnings) logger.warn('Module manifest', { moduleId: mod.id, problem: w });
     if (mod.error) return this.fail(entry, mod.error);
@@ -159,6 +167,7 @@ export class ModuleHost {
 
   private fail(entry: HostedModule, error: string): void {
     this.triggers.remove(entry.module.id);
+    unregisterSearch(entry.module.id);
     entry.status = 'failed';
     entry.error = error;
     this.record(entry);

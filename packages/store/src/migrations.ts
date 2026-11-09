@@ -315,4 +315,32 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_record_links_to ON record_links(to_ref);
     `,
   },
+  {
+    id: 9,
+    name: 'inbox_items',
+    // Everything waiting for a person, from every module. Pending approvals
+    // join these when the inbox is read; they keep their own table.
+    sql: `
+      CREATE TABLE inbox_items (
+        id          TEXT PRIMARY KEY,
+        module_id   TEXT,
+        external_id TEXT,
+        kind        TEXT NOT NULL CHECK (kind IN ('approval','reply','task','alert')),
+        title       TEXT NOT NULL,
+        body        TEXT,
+        ref         TEXT,
+        link        TEXT,
+        status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done','dismissed')),
+        priority    INTEGER NOT NULL DEFAULT 0,
+        due_at      TEXT,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        resolved_at TEXT,
+        resolved_by TEXT
+      );
+      CREATE INDEX idx_inbox_open ON inbox_items(status, priority DESC, created_at DESC);
+      CREATE UNIQUE INDEX idx_inbox_external ON inbox_items(module_id, external_id)
+        WHERE external_id IS NOT NULL;
+    `,
+  },
 ];

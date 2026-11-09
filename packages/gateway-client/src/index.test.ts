@@ -323,3 +323,20 @@ describe('run history', () => {
     );
   });
 });
+
+describe('records, search and inbox', () => {
+  it('build their queries', async () => {
+    stubFetch(() => Response.json({}));
+    await gateway.records({ type: 'person', q: 'ada' });
+    await gateway.search('ada', { types: ['core:person', 'crm:deal'] });
+    await gateway.inbox({ status: 'open' });
+    await gateway.setInboxStatus('inb_1', 'done');
+    expect(calls.map((c) => c[0].replace('http://127.0.0.1:18790', ''))).toEqual([
+      '/records?type=person&q=ada',
+      '/search?q=ada&types=core%3Aperson%2Ccrm%3Adeal',
+      '/inbox?status=open',
+      '/inbox/items/inb_1',
+    ]);
+    expect(calls[3][1]?.method).toBe('PATCH');
+  });
+});

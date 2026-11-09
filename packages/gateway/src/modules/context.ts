@@ -24,6 +24,8 @@ import { createNotify } from './notify.js';
 import { ModuleServices, servicesOf } from './services.js';
 import { parsePermissions } from './permissions.js';
 import * as records from '../records/records.js';
+import { registerSearch } from './search.js';
+import * as inbox from '../inbox/inbox.js';
 
 /** Gateway services a context is built over. */
 export interface ContextDeps {
@@ -176,6 +178,18 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
       links: (ref) => records.linksOf(ref),
       addActivity: (input) => records.addActivity({ ...input, actor }),
       activities: (ref, limit) => records.activitiesOf(ref, limit),
+    },
+    search: {
+      register: (handler) => registerSearch(id, handler),
+    },
+    inbox: {
+      add: (item) => inbox.addItem(id, item),
+      resolve(key, status = 'done') {
+        const item = inbox.findExternal(id, key) ?? inbox.getItem(key);
+        if (!item || item.moduleId !== id) throw new Error(`No inbox item ${key} in ${id}.`);
+        return inbox.setStatus(item.id, status, actor);
+      },
+      onRespond: (handler) => inbox.onRespond(id, handler),
     },
     approvals: {
       async request(input) {

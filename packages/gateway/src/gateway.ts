@@ -22,6 +22,7 @@ import { getModuleSkillsDirs } from './module-loader.js';
 import { ModuleHost } from './modules/host.js';
 import { mountModuleRoutes } from './modules/routes.js';
 import { mountRecordRoutes } from './records/routes.js';
+import { mountInboxRoutes } from './inbox/routes.js';
 import { createToolRegistry } from './tools.js';
 import {
   loadCapabilities,
@@ -866,6 +867,7 @@ export function createGateway(config: GatewayConfig = {}): {
 
   mountModuleRoutes(app, modules);
   mountRecordRoutes(app);
+  mountInboxRoutes(app);
 
   // Automations: scheduled agent runs that end in a draft pull request.
   // Their schedules pause with the triggers under the kill switch.
