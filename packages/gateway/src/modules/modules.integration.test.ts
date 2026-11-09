@@ -413,3 +413,56 @@ describe('module permissions', () => {
     expect(JSON.parse(String(row?.detail)).permissions.secrets).toEqual(['token']);
   });
 });
+
+describe('shared records', () => {
+  it('resolves a person once, whoever asks, and refuses a conflict', async () => {
+    const first = await api('/records/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'person', name: 'Barbara', emails: ['barbara@example.org'] }),
+    });
+    expect(first.status).toBe(201);
+    const { record } = (await first.json()) as { record: { id: string; ref: string } };
+
+    // A module greets the same person by email: same record, linked from the module's own ref.
+    await api('/api/modules/hello-world/greetings', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Barbara', email: 'BARBARA@example.org' }),
+    });
+    const got = (await (await api(`/records/${record.id}`)).json()) as {
+      links: Array<{ from: string; kind: string }>;
+    };
+    expect(got.links).toHaveLength(2);
+    expect(got.links).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          from: expect.stringMatching(/^hello-world:greeting:\d+$/),
+          kind: 'greeted',
+        }),
+        expect.objectContaining({
+          from: expect.stringMatching(/^core:activity:act_/),
+          kind: 'about',
+        }),
+      ])
+    );
+    const { activities } = (await (await api(`/records/${record.id}/activities`)).json()) as {
+      activities: Array<{ name: string; createdBy: string }>;
+    };
+    expect(activities).toMatchObject([
+      { name: 'Greeted Barbara', createdBy: 'module:hello-world' },
+    ]);
+
+    await api('/records', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'person', emails: ['other@example.org'] }),
+    });
+    const conflict = await api('/records/resolve', {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'person',
+        emails: ['barbara@example.org', 'other@example.org'],
+      }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(((await conflict.json()) as { candidates: unknown[] }).candidates).toHaveLength(2);
+  });
+});

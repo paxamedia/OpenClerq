@@ -211,6 +211,79 @@ export interface ModuleServices {
   stop(label: string): Promise<ServiceStatus>;
 }
 
+export type CoreRecordType = 'person' | 'organisation' | 'activity';
+
+/** A shared record. Its ref is `core:<type>:<id>`. */
+export interface CoreRecord {
+  id: string;
+  ref: string;
+  type: CoreRecordType;
+  name: string | null;
+  data: Record<string, unknown>;
+  emails: string[];
+  phones: string[];
+  domains: string[];
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RecordLink {
+  from: string;
+  to: string;
+  kind: string;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+export interface Identities {
+  emails?: string[];
+  phones?: string[];
+  domains?: string[];
+}
+
+/**
+ * Shared records: people, organisations and activities every module points
+ * at, so a contact exists once. A module keeps its own types in its own
+ * tables and links them to core records by ref (`<module>:<type>:<id>`).
+ * Writes are recorded as made by `module:<id>`.
+ */
+export interface ModuleRecords {
+  /** `<this module>:<type>:<id>`, the ref of one of this module's own records. */
+  ref(type: string, id: string | number): string;
+  /**
+   * The person or organisation these identities belong to, created unless
+   * `create` is false. Throws when they belong to two different records.
+   */
+  resolve(
+    type: 'person' | 'organisation',
+    input: Identities & { name?: string; data?: Record<string, unknown>; create?: boolean }
+  ): { record: CoreRecord | null; created: boolean; matchedBy: string[] };
+  get(id: string): CoreRecord | null;
+  list(opts?: { type?: CoreRecordType; q?: string; limit?: number }): CoreRecord[];
+  update(
+    id: string,
+    patch: {
+      name?: string | null;
+      data?: Record<string, unknown>;
+      add?: Identities;
+      remove?: Identities;
+    }
+  ): CoreRecord;
+  link(from: string, to: string, kind: string): RecordLink;
+  unlink(from: string, to: string, kind: string): boolean;
+  links(ref: string): RecordLink[];
+  /** Something that happened about one or more refs: `{ kind: 'email.sent', summary, refs }`. */
+  addActivity(input: {
+    kind: string;
+    summary: string;
+    refs: string[];
+    at?: string;
+    data?: Record<string, unknown>;
+  }): CoreRecord;
+  activities(ref: string, limit?: number): CoreRecord[];
+}
+
 export interface ModuleLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
@@ -252,6 +325,7 @@ export interface ModuleContext {
   triggers: ModuleTriggers;
   notify: ModuleNotify;
   services: ModuleServices;
+  records: ModuleRecords;
   approvals: ModuleApprovals;
   audit: ModuleAudit;
   logger: ModuleLogger;

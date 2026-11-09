@@ -103,6 +103,7 @@ complete example.
 | `triggers`  | `register({ id, kind: 'cron' \| 'file' \| 'webhook', handler })`; each firing is a run                       |
 | `notify`    | `notify({ title, body, level, link })` and `notify.badge('3/10')`: `notify.posted` and `notify.badge` events |
 | `services`  | `status/start/stop(label)` for the launchd agents the manifest lists under `services` (macOS)                |
+| `records`   | shared people, organisations and activities: `resolve`, `link`, `addActivity`, `ref(type, id)`               |
 | `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                       |
 | `audit`     | `append(action)`, recorded as `module.<id>.<action>`                                                         |
 | `logger`    | the gateway log, tagged with the module id                                                                   |
@@ -146,7 +147,25 @@ export a `routes` array (the earlier contract) still load.
 
 ---
 
-## 6. Safety expectations
+## 6. Shared records
+
+People, organisations and activities live in the core, so a contact exists once however many
+modules know it. Everything is addressed by a ref, `<module>:<type>:<id>`; core records use
+`core` (`core:person:per_…`). A module keeps its own types in its own tables and links them to
+core records (`crm:deal:42` → `core:person:per_…`, kind `contact`).
+
+- **Identity.** A person or organisation is found by email, phone or domain
+  (`POST /records/resolve`). Emails are lower-cased, phones become `+digits`, domains lose their
+  scheme, `www.` and path. One identity belongs to one record; identities that point at two
+  answer `409 identity_conflict` with both, and `POST /records/:id/merge { from }` joins them.
+- **Endpoints.** `GET|POST /records`, `POST /records/resolve`, `GET|PATCH|DELETE /records/:id`,
+  `POST /records/:id/merge`, `GET /records/:id/activities`, `POST|DELETE /records/links`,
+  `GET /links?ref=`, `POST /activities { kind, summary, refs }`.
+- **Events.** `record.created|updated|merged|deleted|linked|unlinked`, `activity.added`.
+
+---
+
+## 7. Safety expectations
 
 Modules and skills must respect the **safety guarantees** of the OSS core:
 

@@ -44,7 +44,14 @@ export type CoreEventName =
   | 'kill.released'
   | 'notify.posted'
   | 'notify.badge'
-  | 'service.changed';
+  | 'service.changed'
+  | 'record.created'
+  | 'record.updated'
+  | 'record.merged'
+  | 'record.deleted'
+  | 'record.linked'
+  | 'record.unlinked'
+  | 'activity.added';
 
 /** Correlation ids, so autonomous behaviour can be traced after the fact. */
 export interface EventContext {

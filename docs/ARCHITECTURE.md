@@ -182,25 +182,26 @@ spec must say so to run. See [SECURITY.md](SECURITY.md).
 
 The gateway is the control plane. Endpoints:
 
-| Group       | Endpoints                                                                                                                                                                                     |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                                                                                                                       |
-| Models      | `GET /models`, `GET /providers`                                                                                                                                                               |
-| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                                                                                                                        |
-| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                                                                                                                       |
-| Tools       | `GET /tools`, `POST /tools/run`                                                                                                                                                               |
-| Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                                                                                   |
-| Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                                                                                             |
-| Runs        | `GET /runs?since=&limit=`, `GET /runs/:id`, `POST /runs/:id/cancel`                                                                                                                           |
-| Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update`                                                                    |
-| Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                                                                                   |
-| Events      | `GET /events` (SSE), `GET /events/stream` (SSE, resumable)                                                                                                                                    |
-| Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                                                                                           |
-| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`                                                                                                           |
-| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                                                                                      |
-| Automations | `GET \| POST /automations`, `POST /automations/preview`, `GET \| PUT \| DELETE /automations/:id`, `POST /automations/:id/run\|enable\|disable`, `GET /drivers`, `GET /runs/:id/artifacts/:id` |
-| Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                  |
-| Modules     | mounted at `/api/modules/:moduleId/*`                                                                                                                                                         |
+| Group       | Endpoints                                                                                                                                                                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                                                                                                                                             |
+| Models      | `GET /models`, `GET /providers`                                                                                                                                                                                     |
+| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                                                                                                                                              |
+| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                                                                                                                                             |
+| Tools       | `GET /tools`, `POST /tools/run`                                                                                                                                                                                     |
+| Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                                                                                                         |
+| Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                                                                                                                   |
+| Runs        | `GET /runs?since=&limit=`, `GET /runs/:id`, `POST /runs/:id/cancel`                                                                                                                                                 |
+| Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update`                                                                                          |
+| Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                                                                                                         |
+| Events      | `GET /events` (SSE), `GET /events/stream` (SSE, resumable)                                                                                                                                                          |
+| Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                                                                                                                 |
+| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`                                                                                                                                 |
+| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                                                                                                            |
+| Automations | `GET \| POST /automations`, `POST /automations/preview`, `GET \| PUT \| DELETE /automations/:id`, `POST /automations/:id/run\|enable\|disable`, `GET /drivers`, `GET /runs/:id/artifacts/:id`                       |
+| Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                                        |
+| Records     | `GET \| POST /records`, `POST /records/resolve`, `GET \| PATCH \| DELETE /records/:id`, `POST /records/:id/merge`, `GET /records/:id/activities`, `POST \| DELETE /records/links`, `GET /links`, `POST /activities` |
+| Modules     | mounted at `/api/modules/:moduleId/*`                                                                                                                                                                               |
 
 Responsibilities: loading skills from disk and normalising metadata (`inputSchema`,
 `outputSchema`, `dependsOn`); hosting tools under capability restrictions; store-backed memory,

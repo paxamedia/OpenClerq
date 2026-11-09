@@ -277,4 +277,42 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: 8,
+    name: 'records',
+    // Shared records every module can point at: people, organisations and
+    // activities, found again by email, phone or domain. Modules keep their
+    // own types and link to these by ref (<module>:<type>:<id>).
+    sql: `
+      CREATE TABLE records (
+        id           TEXT PRIMARY KEY,
+        type         TEXT NOT NULL CHECK (type IN ('person','organisation','activity')),
+        name         TEXT,
+        data         TEXT NOT NULL DEFAULT '{}',
+        merged_into  TEXT REFERENCES records(id) ON DELETE SET NULL,
+        created_by   TEXT,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+      );
+      CREATE INDEX idx_records_type ON records(type, updated_at DESC);
+
+      CREATE TABLE record_identities (
+        kind      TEXT NOT NULL CHECK (kind IN ('email','phone','domain')),
+        value     TEXT NOT NULL,
+        record_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+        PRIMARY KEY (kind, value)
+      );
+      CREATE INDEX idx_record_identities_record ON record_identities(record_id);
+
+      CREATE TABLE record_links (
+        from_ref   TEXT NOT NULL,
+        to_ref     TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (from_ref, to_ref, kind)
+      );
+      CREATE INDEX idx_record_links_to ON record_links(to_ref);
+    `,
+  },
 ];

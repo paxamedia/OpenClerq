@@ -15,9 +15,21 @@ export default {
     // Remembers who was greeted, in the module's own table (migrations/0001_greetings.sql).
     ctx.routes.post('/greetings', (req, res) => {
       const name = String(req.body?.name ?? 'world');
-      ctx.store
+      const { lastInsertRowid } = ctx.store
         .prepare(`INSERT INTO ${greetings} (name, created_at) VALUES (?, ?)`)
         .run(name, new Date().toISOString());
+      // With an email, the greeting attaches to the shared person record that
+      // every module sees, and shows on that person's activity timeline.
+      if (typeof req.body?.email === 'string') {
+        const { record } = ctx.records.resolve('person', { name, emails: [req.body.email] });
+        const greeting = ctx.records.ref('greeting', String(lastInsertRowid));
+        ctx.records.link(greeting, record.ref, 'greeted');
+        ctx.records.addActivity({
+          kind: 'greeting',
+          summary: `Greeted ${name}`,
+          refs: [record.ref],
+        });
+      }
       // On the bus as module.hello-world.greeted, so GET /events/stream shows it.
       ctx.events.emit('greeted', { name });
       const { n } = ctx.store.prepare(`SELECT COUNT(*) AS n FROM ${greetings}`).get();

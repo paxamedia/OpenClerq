@@ -23,6 +23,7 @@ import type { ModuleTriggers } from './triggers.js';
 import { createNotify } from './notify.js';
 import { ModuleServices, servicesOf } from './services.js';
 import { parsePermissions } from './permissions.js';
+import * as records from '../records/records.js';
 
 /** Gateway services a context is built over. */
 export interface ContextDeps {
@@ -90,6 +91,7 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
       logger[level](message, { moduleId: id, ...meta });
 
   const services = new ModuleServices(id, servicesOf(mod.manifest));
+  const actor = `module:${id}`;
 
   const ctx: ContextHandle['ctx'] = {
     id,
@@ -151,6 +153,29 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
       status: (label) => services.status(label),
       start: (label) => services.start(label, `module:${id}`),
       stop: (label) => services.stop(label, `module:${id}`),
+    },
+    records: {
+      ref(type, recordId) {
+        if (!/^[a-z][a-z0-9_-]*$/.test(type)) throw new Error(`Invalid record type "${type}".`);
+        return `${id}:${type}:${recordId}`;
+      },
+      resolve: (type, input) =>
+        records.resolveRecord({
+          type,
+          name: input.name,
+          data: input.data,
+          identities: input,
+          create: input.create,
+          actor,
+        }),
+      get: (recordId) => records.getRecord(recordId),
+      list: (opts) => records.listRecords(opts),
+      update: (recordId, patch) => records.updateRecord(recordId, patch, actor),
+      link: (from, to, kind) => records.link(from, to, kind, actor),
+      unlink: (from, to, kind) => records.unlink(from, to, kind, actor),
+      links: (ref) => records.linksOf(ref),
+      addActivity: (input) => records.addActivity({ ...input, actor }),
+      activities: (ref, limit) => records.activitiesOf(ref, limit),
     },
     approvals: {
       async request(input) {
