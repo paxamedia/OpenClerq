@@ -36,9 +36,72 @@ function resolvedTheme(theme: string): 'light' | 'dark' {
     : 'light';
 }
 
-export function moduleUiUrl(base: string, moduleId: string, path: string): string {
+/** True when a path (before any query or fragment) has a `.` or `..` segment, however encoded. */
+export function hasDotSegment(path: string): boolean {
+  const pathOnly = path.split(/[?#]/)[0];
+  return pathOnly.split(/[/\\]/).some((seg) => {
+    let decoded = seg;
+    try {
+      decoded = decodeURIComponent(seg);
+    } catch {
+      return true;
+    }
+    return decoded.split(/[/\\]/).some((d) => d === '.' || d === '..');
+  });
+}
+
+/**
+ * Where a module's UI is served, or null when the path would leave it: a `.` or
+ * `..` segment would load another module's UI from this module's frame.
+ */
+export function moduleUiUrl(base: string, moduleId: string, path: string): string | null {
   const inner = path.replace(/^\/+/, '');
-  return `${base.replace(/\/$/, '')}/api/modules/${encodeURIComponent(moduleId)}/ui/${inner}`;
+  if (hasDotSegment(inner)) return null;
+  const prefix = `/api/modules/${encodeURIComponent(moduleId)}/ui/`;
+  const url = `${base.replace(/\/$/, '')}${prefix}${inner}`;
+  try {
+    return new URL(url).pathname.startsWith(prefix) ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+interface Minted {
+  token: string;
+  expiresAt: string;
+}
+const minted = new Map<string, Promise<Minted>>();
+
+/**
+ * A module token for a frame. A token that is not near expiry is reused, so a
+ * page of frames, or one frame reloading, does not mint one per load.
+ */
+export async function reusableToken(
+  key: string,
+  mint: () => Promise<Minted>,
+  now = Date.now()
+): Promise<Minted> {
+  const held = minted.get(key);
+  if (held) {
+    try {
+      const t = await held;
+      if (Date.parse(t.expiresAt) - now > RENEW_EARLY_MS) return t;
+    } catch {
+      /* mint a new one below */
+    }
+    if (minted.get(key) !== held) return reusableToken(key, mint, now);
+  }
+  const fresh = mint();
+  minted.set(key, fresh);
+  fresh.catch(() => {
+    if (minted.get(key) === fresh) minted.delete(key);
+  });
+  return fresh;
+}
+
+/** For tests. */
+export function forgetTokens(): void {
+  minted.clear();
 }
 
 export interface ModuleFrameProps {
@@ -71,6 +134,8 @@ export function ModuleFrame({
   const base = client.getUrl();
   const origin = new URL(base).origin;
   const src = moduleUiUrl(base, moduleId, path);
+  const alive = useRef(true);
+  const generation = useRef(0);
 
   const post = useCallback(
     (message: Record<string, unknown>) =>
@@ -78,21 +143,32 @@ export function ModuleFrame({
     [origin]
   );
 
+  // One renewal timer per frame. A call that finishes after a newer one started,
+  // or after the frame is gone, does nothing.
   const sendToken = useCallback(async () => {
+    const mine = ++generation.current;
     clearTimeout(renew.current);
     try {
-      const t = await client.moduleToken(moduleId);
+      const t = await reusableToken(`${base}|${moduleId}`, () => client.moduleToken(moduleId));
+      if (!alive.current || mine !== generation.current) return;
       token.current = t;
       post({ type: 'clerq:token', token: t.token, expiresAt: t.expiresAt });
       const wait = Date.parse(t.expiresAt) - Date.now() - RENEW_EARLY_MS;
       renew.current = setTimeout(() => void sendToken(), Math.max(10_000, wait));
       setError(null);
     } catch (e) {
-      setError(e);
+      if (alive.current && mine === generation.current) setError(e);
     }
-  }, [client, moduleId, post]);
+  }, [client, base, moduleId, post]);
 
-  useEffect(() => () => clearTimeout(renew.current), []);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      generation.current++;
+      clearTimeout(renew.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (loaded) post({ type: 'clerq:theme', theme: resolvedTheme(theme) });
@@ -124,6 +200,9 @@ export function ModuleFrame({
   return (
     <div className={cx('module-frame', `module-frame--${layout}`, className)}>
       {!loaded && <ProgressLine label={`Loading ${title}`} />}
+      {src === null ? (
+        <ErrorState error={new Error(`${title} has an invalid address.`)} compact />
+      ) : null}
       {error ? (
         <ErrorState
           error={new Error(`${title} couldn’t sign in. ${errorMessage(error)}`)}
@@ -134,21 +213,23 @@ export function ModuleFrame({
           compact
         />
       ) : null}
-      <iframe
-        key={`${src}#${attempt}`}
-        ref={frame}
-        src={src}
-        title={title}
-        className="module-frame-iframe"
-        // Its own origin (the gateway), scripts and forms; no top navigation.
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
-        referrerPolicy="no-referrer"
-        onLoad={() => {
-          setLoaded(true);
-          post({ type: 'clerq:theme', theme: resolvedTheme(theme) });
-          void sendToken();
-        }}
-      />
+      {src !== null && (
+        <iframe
+          key={`${src}#${attempt}`}
+          ref={frame}
+          src={src}
+          title={title}
+          className="module-frame-iframe"
+          // Its own origin (the gateway), scripts and forms; no top navigation.
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
+          referrerPolicy="no-referrer"
+          onLoad={() => {
+            setLoaded(true);
+            post({ type: 'clerq:theme', theme: resolvedTheme(theme) });
+            void sendToken();
+          }}
+        />
+      )}
     </div>
   );
 }

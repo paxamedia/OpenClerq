@@ -11,6 +11,7 @@ import type { Approval, InboxItem } from '@clerq/gateway-client';
 import { actionLabel, keyAction, type KeyState } from './inbox/Inbox';
 import { gatewayModule, innerPath } from './InstalledModule';
 import { parseHash } from '../app/router';
+import { forgetTokens, hasDotSegment, moduleUiUrl, reusableToken } from '../shell/ModuleFrame';
 
 describe('the app', () => {
   it('draws the rail with core pages and the modules it is given', () => {
@@ -198,5 +199,49 @@ describe('inbox keys', () => {
     expect(keyAction(base({ opened: plain, approval: undefined, key: 'd' })).kind).toBe(
       'dismissed'
     );
+  });
+});
+
+describe('module frames', () => {
+  const base = 'http://127.0.0.1:7777';
+
+  it('serves a path under the module and nowhere else', () => {
+    expect(moduleUiUrl(base, 'crm', '/deals/7?tab=notes')).toBe(
+      `${base}/api/modules/crm/ui/deals/7?tab=notes`
+    );
+    expect(moduleUiUrl(base, 'crm', '/')).toBe(`${base}/api/modules/crm/ui/`);
+    expect(moduleUiUrl(base, 'crm', '/../other/')).toBeNull();
+    expect(moduleUiUrl(base, 'crm', '/a/%2e%2e/%2E%2e/other/')).toBeNull();
+    expect(moduleUiUrl(base, 'crm', '/a/..%2fother')).toBeNull();
+    expect(moduleUiUrl(base, 'crm', '/a/./b')).toBeNull();
+    expect(moduleUiUrl(base, 'crm', '/a/b%2Fc')).not.toBeNull();
+    expect(hasDotSegment('/files/v1.2/..x')).toBe(false);
+  });
+
+  it('refuses dot segments in a route into a module', () => {
+    const route = parseHash('/m/crm/%2e%2e/other');
+    expect(innerPath({ parts: route.segments.slice(2), route })).toBe('/');
+  });
+
+  it('reuses a token that is not near expiry', async () => {
+    forgetTokens();
+    let minted = 0;
+    const mint = async () => ({
+      token: `t${++minted}`,
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+    const [a, b] = await Promise.all([reusableToken('k', mint), reusableToken('k', mint)]);
+    expect(a.token).toBe('t1');
+    expect(b.token).toBe('t1');
+    expect((await reusableToken('k', mint)).token).toBe('t1');
+    expect((await reusableToken('k', mint, Date.now() + 580_000)).token).toBe('t2');
+    expect(minted).toBe(2);
+  });
+
+  it('does not keep a failed mint', async () => {
+    forgetTokens();
+    await expect(reusableToken('f', () => Promise.reject(new Error('no')))).rejects.toThrow('no');
+    const t = await reusableToken('f', async () => ({ token: 'ok', expiresAt: '2999-01-01' }));
+    expect(t.token).toBe('ok');
   });
 });

@@ -39,6 +39,7 @@ export function installedModule(m: {
 /** The path inside the module's UI that a shell route points at. */
 export function innerPath({ parts, route }: Pick<ModuleProps, 'parts' | 'route'>): string {
   const q = route.query.toString();
+  if (parts.some((p) => p === '.' || p === '..' || p === '')) return '/';
   return `/${parts.map(encodeURIComponent).join('/')}${q ? `?${q}` : ''}`;
 }
 
