@@ -3,7 +3,7 @@ import type { RunDetail, RunStep } from '@clerq/gateway-client';
 import { cronFromSimple, describeCron, nextFirings, parseCron, simpleSchedule } from './cron';
 import { fillRef, forRecord, hitRoute, moduleRoute, refId } from './extensions';
 import { duration, money, relativeTime } from './format';
-import { areaOf } from './history';
+import { areaOf, nameCurrent, resetHistory, visit, backTargetOf, type Nav } from './history';
 import { familiesOf } from './live';
 import { href, isUnder, parseHash, withQuery } from './router';
 import { daily, monthSpend, pipeline, successRate } from './stats';
@@ -206,5 +206,83 @@ describe('format', () => {
     expect(money(3, { atLeast: true })).toBe('≥ $3.00');
     expect(duration(850)).toBe('850 ms');
     expect(duration(250_000)).toBe('4 min 10 s');
+  });
+});
+
+/** A browser history in miniature: entries with state, and a position. */
+function fakeBrowser() {
+  const entries: Array<{ path: string; state: unknown }> = [{ path: '/', state: null }];
+  let at = 0;
+  const nav: Nav = {
+    get state() {
+      return entries[at].state;
+    },
+    replaceState(state) {
+      entries[at].state = state;
+    },
+  };
+  return {
+    nav,
+    push(path: string) {
+      entries.splice(at + 1);
+      entries.push({ path, state: null });
+      at += 1;
+      visit(path, nav);
+    },
+    replace(path: string) {
+      entries[at].path = path;
+      visit(path, nav);
+    },
+    move(by: number) {
+      at += by;
+      visit(entries[at].path, nav);
+    },
+    start() {
+      visit(entries[at].path, nav);
+    },
+    name(title: string) {
+      nameCurrent(entries[at].path, title);
+    },
+    here: () => entries[at].path,
+  };
+}
+
+describe('back stack', () => {
+  it('names the page Back will reach, even when paths repeat', () => {
+    resetHistory();
+    const b = fakeBrowser();
+    b.start();
+    b.name('Home');
+    b.push('/runs');
+    b.name('Runs');
+    b.push('/inbox');
+    b.name('Inbox');
+    b.push('/runs');
+    b.name('Runs');
+    // Two entries back is Runs; one back is Inbox, not the older Runs.
+    expect(backTargetOf('/runs')?.title).toBe('Inbox');
+    b.move(-1);
+    expect(backTargetOf('/inbox')?.title).toBe('Runs');
+    b.move(-1);
+    expect(backTargetOf('/runs')?.title).toBe('Home');
+    b.move(1);
+    expect(backTargetOf('/inbox')?.title).toBe('Runs');
+  });
+
+  it('keeps the place through a replace and drops forward entries on a new page', () => {
+    resetHistory();
+    const b = fakeBrowser();
+    b.start();
+    b.name('Home');
+    b.push('/runs');
+    b.name('Runs');
+    b.push('/runs/a');
+    b.replace('/runs/b');
+    b.name('Run b');
+    expect(backTargetOf('/runs/b')).toBeNull();
+    b.move(-1);
+    b.push('/inbox');
+    b.name('Inbox');
+    expect(backTargetOf('/inbox')?.title).toBe('Runs');
   });
 });

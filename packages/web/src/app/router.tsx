@@ -46,7 +46,7 @@ export function navigate(to: string, opts: { replace?: boolean } = {}): void {
   const hash = `#${to.startsWith('/') ? to : `/${to}`}`;
   if (window.location.hash === hash) return;
   if (opts.replace) {
-    window.history.replaceState(null, '', hash);
+    window.history.replaceState(window.history.state, '', hash);
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   } else {
     window.location.hash = hash;
