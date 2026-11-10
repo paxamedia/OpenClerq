@@ -5,7 +5,7 @@
  * J and K move; A approves or marks done; D denies or dismisses.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ExternalLink,
@@ -217,6 +217,55 @@ const KIND: Record<InboxItem['kind'], { label: string; icon: LucideIcon; tone: T
   alert: { label: 'Alert', icon: TriangleAlert, tone: 'err' },
 };
 
+/** Keys are ignored this long after a decision, so a held key cannot decide the next item. */
+export const DECISION_COOLDOWN_MS = 400;
+/** A high-risk approval by key needs the same key again within this long. */
+export const CONFIRM_WINDOW_MS = 4000;
+
+export interface KeyState {
+  key: string;
+  repeat: boolean;
+  now: number;
+  /** When the last decision was made by key, or 0. */
+  lastDecisionAt: number;
+  /** The item the address names. Never the implicit first one. */
+  opened: InboxItem | undefined;
+  approval: Approval | undefined;
+  /** The approval's run (change and gates) has loaded. */
+  runLoaded: boolean;
+  /** An armed high-risk approve: the approval id and when it was armed. */
+  armed: { id: number; at: number } | null;
+}
+
+export type KeyAction =
+  | { kind: 'none' }
+  | { kind: 'move'; by: 1 | -1 }
+  | { kind: 'arm'; approval: Approval }
+  | { kind: 'approve' | 'deny'; approval: Approval }
+  | { kind: 'done' | 'dismissed'; item: InboxItem };
+
+/** What a key press does. Decisions need an opened item, loaded run data, and no repeat. */
+export function keyAction(s: KeyState): KeyAction {
+  const none: KeyAction = { kind: 'none' };
+  const key = s.key.toLowerCase();
+  if (key === 'j') return s.repeat ? none : { kind: 'move', by: 1 };
+  if (key === 'k') return s.repeat ? none : { kind: 'move', by: -1 };
+  if (key !== 'a' && key !== 'd') return none;
+  if (s.repeat || !s.opened) return none;
+  if (s.now - s.lastDecisionAt < DECISION_COOLDOWN_MS) return none;
+  if (s.approval) {
+    if (!s.runLoaded) return none;
+    if (key === 'd') return { kind: 'deny', approval: s.approval };
+    const confirmed =
+      s.armed && s.armed.id === s.approval.id && s.now - s.armed.at <= CONFIRM_WINDOW_MS;
+    return s.approval.tier === 'high' && !confirmed
+      ? { kind: 'arm', approval: s.approval }
+      : { kind: 'approve', approval: s.approval };
+  }
+  if (approvalId(s.opened) !== null) return none;
+  return { kind: key === 'a' ? 'done' : 'dismissed', item: s.opened };
+}
+
 const approvalId = (item: InboxItem): number | null =>
   item.id.startsWith('apr_') ? Number(item.id.slice(4)) : null;
 
@@ -400,21 +449,54 @@ export function Inbox({ id }: { id: string | null }) {
     [remove, client, toast, live]
   );
 
+  // Keys act only on the item the address opens, once its run has loaded.
+  const opened = id ? list.find((x) => x.id === id) : undefined;
+  const openedApproval = approvalOf(opened);
+  const openedRun = useRun(openedApproval?.runId ?? null);
+  const lastDecisionAt = useRef(0);
+  const armed = useRef<{ id: number; at: number } | null>(null);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest('input, textarea, select, dialog[open], [role="menu"], iframe')) return;
+      const now = Date.now();
+      const act = keyAction({
+        key: e.key,
+        repeat: e.repeat,
+        now,
+        lastDecisionAt: lastDecisionAt.current,
+        opened,
+        approval: openedApproval,
+        runLoaded: Boolean(openedRun.data),
+        armed: armed.current,
+      });
       const i = selected ? list.indexOf(selected) : -1;
-      const key = e.key.toLowerCase();
-      const approval = approvalOf(selected);
-      if (key === 'j') select(list[Math.min(list.length - 1, i + 1)]);
-      else if (key === 'k') select(list[Math.max(0, i - 1)]);
-      else if (key === 'a' && selected)
-        void (approval ? decide(approval, 'approve') : close(selected, 'done'));
-      else if (key === 'd' && selected)
-        void (approval ? decide(approval, 'deny') : close(selected, 'dismissed'));
-      else return;
+      if (act.kind === 'none') {
+        // Swallow held or early A and D so the page does not react to them either.
+        if (
+          /^[ad]$/i.test(e.key) &&
+          (e.repeat || now - lastDecisionAt.current < DECISION_COOLDOWN_MS)
+        )
+          e.preventDefault();
+        return;
+      }
+      if (act.kind === 'move') {
+        select(list[Math.max(0, Math.min(list.length - 1, i + act.by))]);
+      } else if (act.kind === 'arm') {
+        armed.current = { id: act.approval.id, at: now };
+        toast({
+          message: `High risk. Press A again to approve ${actionLabel(act.approval.tool)}.`,
+          tone: 'neutral',
+        });
+      } else {
+        lastDecisionAt.current = now;
+        armed.current = null;
+        if ('approval' in act)
+          void decide(act.approval, act.kind === 'approve' ? 'approve' : 'deny');
+        else void close(act.item, act.kind);
+      }
       e.preventDefault();
     };
     window.addEventListener('keydown', onKey);

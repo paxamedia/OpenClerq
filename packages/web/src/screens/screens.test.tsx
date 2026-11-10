@@ -7,7 +7,8 @@ import { automationsModule } from './automations';
 import { gatesOf, lineOf, scheduleOf, summarize, TEMPLATE, withSchedule } from './automations/spec';
 import { chatModule } from './chat';
 import { parseDiff, splitRows } from './runs/Diff';
-import { actionLabel } from './inbox/Inbox';
+import type { Approval, InboxItem } from '@clerq/gateway-client';
+import { actionLabel, keyAction, type KeyState } from './inbox/Inbox';
 import { gatewayModule, innerPath } from './InstalledModule';
 import { parseHash } from '../app/router';
 
@@ -148,5 +149,54 @@ describe('inbox', () => {
   it('names actions in plain words', () => {
     expect(actionLabel('git.push')).toBe('push');
     expect(actionLabel('custom.tool')).toBe('custom.tool');
+  });
+});
+
+describe('inbox keys', () => {
+  const item = { id: 'apr_7', kind: 'approval', title: 't' } as InboxItem;
+  const plain = { id: 'tsk_1', kind: 'task', title: 't' } as InboxItem;
+  const approval = (tier: Approval['tier']) => ({ id: 7, tier, tool: 'git.push' }) as Approval;
+  const base = (over: Partial<KeyState> = {}): KeyState => ({
+    key: 'a',
+    repeat: false,
+    now: 10_000,
+    lastDecisionAt: 0,
+    opened: item,
+    approval: approval('low'),
+    runLoaded: true,
+    armed: null,
+    ...over,
+  });
+
+  it('decides an opened, loaded approval', () => {
+    expect(keyAction(base()).kind).toBe('approve');
+    expect(keyAction(base({ key: 'D' })).kind).toBe('deny');
+  });
+
+  it('ignores a held key and keys just after a decision', () => {
+    expect(keyAction(base({ repeat: true })).kind).toBe('none');
+    expect(keyAction(base({ lastDecisionAt: 9_800 })).kind).toBe('none');
+    expect(keyAction(base({ lastDecisionAt: 9_000 })).kind).toBe('approve');
+  });
+
+  it('does nothing when no item is open or the run has not loaded', () => {
+    expect(keyAction(base({ opened: undefined, approval: undefined })).kind).toBe('none');
+    expect(keyAction(base({ runLoaded: false })).kind).toBe('none');
+  });
+
+  it('asks for a second press to approve high risk, and never to deny', () => {
+    const high = approval('high');
+    expect(keyAction(base({ approval: high })).kind).toBe('arm');
+    expect(keyAction(base({ approval: high, armed: { id: 7, at: 8_000 } })).kind).toBe('approve');
+    expect(keyAction(base({ approval: high, armed: { id: 7, at: 1_000 } })).kind).toBe('arm');
+    expect(keyAction(base({ approval: high, armed: { id: 8, at: 9_000 } })).kind).toBe('arm');
+    expect(keyAction(base({ approval: high, key: 'd' })).kind).toBe('deny');
+  });
+
+  it('marks other items done or dismissed', () => {
+    expect(keyAction(base({ opened: plain, approval: undefined })).kind).toBe('done');
+    expect(keyAction(base({ opened: plain, approval: undefined, key: 'd' })).kind).toBe(
+      'dismissed'
+    );
   });
 });
