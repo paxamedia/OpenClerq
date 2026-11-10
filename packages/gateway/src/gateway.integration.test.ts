@@ -1165,4 +1165,21 @@ describe('gateway integration', () => {
     const res = await fetch(`${baseUrl}/health`, { headers: { Origin: 'http://localhost:1420' } });
     expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:1420');
   });
+
+  it('answers a PATCH preflight from the desktop webview', async () => {
+    const res = await fetch(`${baseUrl}/inbox/items/x`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'tauri://localhost',
+        'Access-Control-Request-Method': 'PATCH',
+        'Access-Control-Request-Headers': 'authorization,content-type,x-clerq-tenant,last-event-id',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('tauri://localhost');
+    expect(res.headers.get('access-control-allow-methods')).toContain('PATCH');
+    const allowed = (res.headers.get('access-control-allow-headers') ?? '').toLowerCase();
+    expect(allowed).toContain('last-event-id');
+    expect(allowed).toContain('x-clerq-tenant');
+  });
 });
