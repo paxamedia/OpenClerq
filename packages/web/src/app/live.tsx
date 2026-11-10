@@ -6,8 +6,9 @@
  * follow what happens without a refresh button. When the stream is down the
  * same resources are polled instead.
  *
- * The stream is tried in order: GET /events/stream, then the older GET /events
- * (same frames), then polling, retried every 30 s.
+ * The stream is tried in order: GET /events/stream through the client (the token
+ * and tenant travel as headers, and a drop resumes from the last event id), then
+ * the older GET /events, then polling, retried every 30 s.
  */
 
 import {
@@ -36,6 +37,8 @@ export type Family =
   | 'devices';
 
 export interface GatewayEvent {
+  /** Set by /events/stream; the older /events has none. */
+  id?: string;
   name: string;
   at: string;
   context: { runId?: string; sessionId?: string; [key: string]: unknown };
@@ -204,7 +207,15 @@ export class LiveStore {
     }
   }
 
+  private seen = new Set<string>();
+
   dispatch(event: GatewayEvent): void {
+    // A reconnect can replay what was already delivered.
+    if (event.id) {
+      if (this.seen.has(event.id)) return;
+      this.seen.add(event.id);
+      if (this.seen.size > 1000) this.seen.delete(this.seen.values().next().value as string);
+    }
     this.eventListeners.forEach((fn) => fn(event));
     const families = familiesOf(event.name);
     if (families.length) this.invalidate(families, event.context?.runId);
@@ -227,71 +238,66 @@ export class LiveStore {
   };
 }
 
-/** Candidate stream URLs: the client's own, then the paths derived from the log stream's. */
+/** Candidate EventSource URLs for the older gateways: GET /events, derived from the log stream's. */
 export function streamUrls(client: GatewayClient): string[] {
   const out: string[] = [];
   try {
-    if (client.eventsStreamUrl) out.push(client.eventsStreamUrl());
-  } catch {
-    /* an older client */
-  }
-  try {
-    const logs = client.logsStreamUrl();
-    out.push(
-      logs.replace('/logs/stream', '/events/stream'),
-      logs.replace('/logs/stream', '/events')
-    );
+    out.push(client.logsStreamUrl().replace('/logs/stream', '/events'));
   } catch {
     /* no log stream either: poll */
   }
   return [...new Set(out)].filter((u) => /^https?:/.test(u));
 }
 
-/** Opens the first stream that answers and feeds its events to the store. Returns a closer. */
+/** How long GET /events/stream has to open before the older stream is tried. */
+const OPEN_WAIT_MS = 8000;
+
+/**
+ * Opens the event stream and feeds its events to the store. Returns a closer.
+ * GET /events/stream goes through the client, so the token is a header; only a
+ * gateway without it falls back to an EventSource on GET /events.
+ */
 export function connectStream(store: LiveStore, client: GatewayClient): () => void {
-  if (typeof EventSource === 'undefined') {
-    store.setStream('polling');
-    return () => {};
-  }
   let closed = false;
   let source: EventSource | null = null;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  let giveUp: ReturnType<typeof setTimeout> | undefined;
+  const abort = new AbortController();
 
-  const attempt = (urls: string[], index: number) => {
+  const poll = (again: () => void) => {
+    store.setStream('polling');
+    retry = setTimeout(again, RETRY_MS);
+  };
+
+  /** The older GET /events: it replays recent events on connect, which are history, not news. */
+  const legacy = () => {
     if (closed) return;
-    if (index >= urls.length) {
-      store.setStream('polling');
-      retry = setTimeout(() => attempt(streamUrls(client), 0), RETRY_MS);
-      return;
-    }
+    const urls = streamUrls(client);
+    if (typeof EventSource === 'undefined' || !urls.length) return poll(start);
     const openedAt = Date.now();
     let opened = false;
-    const es = new EventSource(urls[index]);
+    const es = new EventSource(urls[0]);
     source = es;
     es.onopen = () => {
       opened = true;
       store.setStream('live');
-      // Catch up on whatever changed while the stream was down.
       store.refreshLive();
     };
     es.onmessage = (msg) => {
       try {
         const event = JSON.parse(msg.data) as GatewayEvent;
         if (!event?.name) return;
-        // The older stream replays recent events on connect; they are history, not news.
         if (event.at && Date.parse(event.at) < openedAt - 1000) return;
         store.dispatch(event);
       } catch {
         /* not an event frame */
       }
     };
-    // The gateway could not replay what was missed: refetch everything.
-    es.addEventListener('reset', () => store.refreshLive());
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED) {
         es.close();
-        if (opened) attempt(urls, 0);
-        else attempt(urls, index + 1);
+        if (opened) legacy();
+        else poll(start);
       } else {
         // The browser reconnects by itself; poll until it does.
         store.setStream('polling');
@@ -299,10 +305,43 @@ export function connectStream(store: LiveStore, client: GatewayClient): () => vo
     };
   };
 
-  attempt(streamUrls(client), 0);
+  function start() {
+    if (closed) return;
+    if (typeof client.streamEvents !== 'function' || typeof fetch === 'undefined') return legacy();
+    let opened = false;
+    const run = new AbortController();
+    abort.signal.addEventListener('abort', () => run.abort(), { once: true });
+    // No answer from /events/stream: an older gateway, so use /events.
+    giveUp = setTimeout(() => {
+      if (opened || closed) return;
+      run.abort();
+      legacy();
+    }, OPEN_WAIT_MS);
+    client
+      .streamEvents((event) => store.dispatch(event as unknown as GatewayEvent), {
+        signal: run.signal,
+        onOpen: () => {
+          opened = true;
+          clearTimeout(giveUp);
+          store.setStream('live');
+          // Catch up on whatever changed while the stream was down.
+          store.refreshLive();
+        },
+        onReset: () => store.refreshLive(),
+      })
+      .catch(() => {
+        // A refused token will not get better by retrying quickly.
+        clearTimeout(giveUp);
+        if (!closed && !run.signal.aborted) poll(start);
+      });
+  }
+
+  start();
   return () => {
     closed = true;
+    abort.abort();
     clearTimeout(retry);
+    clearTimeout(giveUp);
     source?.close();
   };
 }

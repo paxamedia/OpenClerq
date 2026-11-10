@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { RunDetail, RunStep } from '@clerq/gateway-client';
 import { cronFromSimple, describeCron, nextFirings, parseCron, simpleSchedule } from './cron';
 import { fillRef, forRecord, hitRoute, moduleRoute, refId } from './extensions';
 import { duration, money, relativeTime } from './format';
 import { areaOf, nameCurrent, resetHistory, visit, backTargetOf, type Nav } from './history';
-import { familiesOf } from './live';
+import { connectStream, familiesOf, LiveStore, streamUrls } from './live';
+import type { GatewayClient } from './client';
 import { href, isUnder, parseHash, withQuery } from './router';
 import { daily, monthSpend, pipeline, successRate } from './stats';
 
@@ -284,5 +285,57 @@ describe('back stack', () => {
     b.push('/inbox');
     b.name('Inbox');
     expect(backTargetOf('/inbox')?.title).toBe('Runs');
+  });
+});
+
+describe('event stream', () => {
+  const event = (id: string, name = 'notify.posted') => ({
+    id,
+    name,
+    at: new Date().toISOString(),
+    context: {},
+    payload: null,
+  });
+
+  it('delivers an event once, even if a reconnect replays it', () => {
+    const store = new LiveStore();
+    const seen: string[] = [];
+    store.onEvent((e) => seen.push(e.id ?? ''));
+    store.dispatch(event('a-1'));
+    store.dispatch(event('a-2'));
+    store.dispatch(event('a-1'));
+    expect(seen).toEqual(['a-1', 'a-2']);
+  });
+
+  it('reads /events/stream through the client, with no token in a URL', async () => {
+    const store = new LiveStore();
+    let opts: Parameters<GatewayClient['streamEvents']>[1];
+    let push: (e: unknown) => void = () => {};
+    const client = {
+      logsStreamUrl: () => 'http://127.0.0.1:1/logs/stream?token=secret',
+      streamEvents: vi.fn((on: (e: unknown) => void, o: typeof opts) => {
+        push = on;
+        opts = o;
+        return new Promise<void>(() => {});
+      }),
+    } as unknown as GatewayClient;
+    const seen: string[] = [];
+    store.onEvent((e) => seen.push(e.name));
+    const close = connectStream(store, client);
+    expect(client.streamEvents).toHaveBeenCalledOnce();
+    opts?.onOpen?.();
+    expect(store.stream).toBe('live');
+    // Recent events from before the stream opened are still delivered: only /events is filtered by time.
+    push({ ...event('x-1', 'run.started'), at: '2000-01-01T00:00:00Z' });
+    expect(seen).toEqual(['run.started']);
+    close();
+    expect(opts?.signal?.aborted).toBe(true);
+  });
+
+  it('keeps the token out of the URL the older stream uses', () => {
+    const client = {
+      logsStreamUrl: () => 'http://127.0.0.1:1/logs/stream',
+    } as unknown as GatewayClient;
+    expect(streamUrls(client)).toEqual(['http://127.0.0.1:1/events']);
   });
 });
