@@ -137,7 +137,9 @@ answered from the files, so a module cannot put a route there. `GET /modules` gi
 15 minutes by default (`ttlSeconds`, at most 24 h). It reaches `/api/modules/<id>/*` and the core
 endpoints the manifest lists in `coreEndpoints`, such as `"GET /runs/:id"`, and gets `403`
 elsewhere. Token, device, remote and vault endpoints are never reachable with it.
-`DELETE /modules/<id>/tokens` revokes them all.
+`DELETE /modules/<id>/tokens` revokes them all. Module UI tokens are not isolated from each other:
+all module frames share the gateway's origin, so one module's UI can read another's token, in line
+with modules running with the owner's full trust.
 
 **Tables.** SQL files in `<module>/migrations/`, named `0001_name.sql` and so on, run in order
 before `register`, each once and in its own transaction. They may create, change or write only
