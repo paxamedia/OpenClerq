@@ -141,14 +141,16 @@ export function createSubagentSession(input: {
 }
 
 export function listSessions(limit = 50): Session[] {
-  return getStore()
-    // A sub-agent's transcript is reached from its run, not listed among the chats.
-    .prepare(
-      `SELECT ${SESSION_COLUMNS} FROM sessions WHERE agent_id IS NOT 'subagent'
+  return (
+    getStore()
+      // A sub-agent's transcript is reached from its run, not listed among the chats.
+      .prepare(
+        `SELECT ${SESSION_COLUMNS} FROM sessions WHERE agent_id IS NOT 'subagent'
        ORDER BY updated_at DESC LIMIT ?`
-    )
-    .all(limit)
-    .map(rowToSession);
+      )
+      .all(limit)
+      .map(rowToSession)
+  );
 }
 
 export function getSession(id: string): Session | null {

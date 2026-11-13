@@ -312,7 +312,8 @@ function parentSpawning(spawnInput: Record<string, unknown>, ask: Ask): Reply {
 describe('a sub-agent run', () => {
   it('is its own run and session, linked to the parent, recorded like a builtin run', async () => {
     respond = (ask) => {
-      if (ask.role === 'parent') return parentSpawning({ task: 'CHILD-A: what is the answer?' }, ask);
+      if (ask.role === 'parent')
+        return parentSpawning({ task: 'CHILD-A: what is the answer?' }, ask);
       if (ask.turn === 1) return { content: [use('r1', 'read_file', { path: 'README.md' })] };
       return { content: [text('The answer is 42, in README.md.')] };
     };
@@ -371,10 +372,11 @@ describe('a sub-agent run', () => {
     // Its run events carry the parent's id.
     const childEvents = events.filter((e) => e.context.runId === child.id);
     for (const name of ['run.started', 'run.completed', 'model.called', 'tool.started']) {
-      expect(
-        childEvents.find((e) => e.name === name)?.context,
-        name
-      ).toMatchObject({ runId: child.id, parentRunId: parentId, sessionId: child.sessionId });
+      expect(childEvents.find((e) => e.name === name)?.context, name).toMatchObject({
+        runId: child.id,
+        parentRunId: parentId,
+        sessionId: child.sessionId,
+      });
     }
   });
 
@@ -443,9 +445,7 @@ describe("a sub-agent's policy", () => {
       return { content: [text('Wrote it.')] };
     };
     // The parent may not run commands: its tools are the file tools and spawning.
-    const parent = await waitFor(
-      enqueue(automation({ tools: '[group:fs, sessions.spawn]' }))
-    );
+    const parent = await waitFor(enqueue(automation({ tools: '[group:fs, sessions.spawn]' })));
     expect(parent.status).toBe('done');
     const childAsk = asks.find((a) => a.role === 'child');
     expect(childAsk?.tools).toEqual(['read_file', 'write_file']);
@@ -518,7 +518,8 @@ describe('budget', () => {
     // and costs $0.50 (500 tokens out).
     respond = (ask) => {
       if (ask.role === 'parent') {
-        if (ask.turn === 1) return { content: [spawn('s1', { task: 'CHILD-B: spend' })], outputTokens: 500 };
+        if (ask.turn === 1)
+          return { content: [spawn('s1', { task: 'CHILD-B: spend' })], outputTokens: 500 };
         return { content: [text('Parent done.')], outputTokens: 500 };
       }
       // The child keeps working until it is stopped.
@@ -565,7 +566,12 @@ describe('stopping', () => {
     const never = new Promise<void>(() => undefined);
     respond = (ask) => {
       if (ask.role === 'parent') {
-        return { content: [spawn('s1', { task: 'CHILD-C1: wait' }), spawn('s2', { task: 'CHILD-C2: wait' })] };
+        return {
+          content: [
+            spawn('s1', { task: 'CHILD-C1: wait' }),
+            spawn('s2', { task: 'CHILD-C2: wait' }),
+          ],
+        };
       }
       return { content: [text('never')], wait: never };
     };
@@ -616,9 +622,10 @@ describe('approvals', () => {
     expect(pending.reason).toContain(`A sub-agent of run ${parentId}`);
     expect(getRun(parentId)?.status).toBe('awaiting_approval');
     expect(getRun(child?.id as string)?.status).toBe('awaiting_approval');
-    expect(
-      events.find((e) => e.name === 'approval.requested')?.context
-    ).toMatchObject({ runId: child?.id, parentRunId: parentId });
+    expect(events.find((e) => e.name === 'approval.requested')?.context).toMatchObject({
+      runId: child?.id,
+      parentRunId: parentId,
+    });
 
     decide(pending.id, { decision: 'denied' });
     const parent = await waitFor(parentId);
@@ -700,9 +707,7 @@ describe('memory', () => {
       ask.role === 'parent'
         ? parentSpawning({ task: 'CHILD-N notes on the linter' }, ask)
         : { content: [text('ok')] };
-    const parent = await waitFor(
-      enqueue(automation({ extra: 'memory:\n  read: [procedure]' }))
-    );
+    const parent = await waitFor(enqueue(automation({ extra: 'memory:\n  read: [procedure]' })));
     const child = getRun(parent.children[0].id) as RunView;
     const prompt = JSON.stringify(asks.find((a) => a.role === 'child')?.body.messages);
     expect(prompt).toContain('run the linter first');

@@ -111,11 +111,7 @@ export const SUBAGENT_DEFAULT_TOOLS = ['risk:read'];
  */
 export function subagentPolicy(parent: PolicyRules, requested?: string[]): PolicyRules {
   const asked = requested && requested.length > 0 ? requested : SUBAGENT_DEFAULT_TOOLS;
-  const rules = narrowRules(
-    parent,
-    { allow: asked, deny: [SPAWN_TOOL.name] },
-    BUILTIN_UNIVERSE
-  );
+  const rules = narrowRules(parent, { allow: asked, deny: [SPAWN_TOOL.name] }, BUILTIN_UNIVERSE);
   return { ...rules, deny: [...(rules.deny ?? []), SPAWN_TOOL.name] };
 }
 

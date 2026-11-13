@@ -136,8 +136,9 @@ export function createRun(input: {
   const stored =
     input.trigger === 'subagent'
       ? String(
-          getStore().prepare('SELECT trigger FROM runs WHERE id = ?').get(input.parentRunId as string)
-            ?.trigger ?? 'event'
+          getStore()
+            .prepare('SELECT trigger FROM runs WHERE id = ?')
+            .get(input.parentRunId as string)?.trigger ?? 'event'
         )
       : input.trigger;
   const now = new Date().toISOString();
@@ -622,9 +623,7 @@ export function listRuns(limit = 50, opts: { since?: string } = {}): RunRecord[]
     .map(rowToRun);
 }
 
-export function getRun(
-  id: string
-):
+export function getRun(id: string):
   | (RunRecord & {
       steps: unknown[];
       artifacts: ArtifactInfo[];
@@ -669,9 +668,7 @@ export function getRun(
 /** The sub-agents a run started, oldest first. */
 export function listChildRuns(parentRunId: string): ChildRun[] {
   return getStore()
-    .prepare(
-      `SELECT ${RUN_COLUMNS} FROM runs WHERE parent_run_id = ? ORDER BY created_at, rowid`
-    )
+    .prepare(`SELECT ${RUN_COLUMNS} FROM runs WHERE parent_run_id = ? ORDER BY created_at, rowid`)
     .all(parentRunId)
     .map((r) => {
       const run = rowToRun(r);

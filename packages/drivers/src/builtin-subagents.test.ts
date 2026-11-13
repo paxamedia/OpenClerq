@@ -329,7 +329,10 @@ describe('spawn calls', () => {
       },
     });
     expect(asked).toBe(0);
-    const out = events.find((e) => e.type === 'tool_result') as { output: string; isError: boolean };
+    const out = events.find((e) => e.type === 'tool_result') as {
+      output: string;
+      isError: boolean;
+    };
     expect(out.isError).toBe(true);
     expect(out.output).toContain('There is no tool "spawn_agent"');
   });

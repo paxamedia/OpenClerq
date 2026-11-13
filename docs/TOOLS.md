@@ -167,17 +167,17 @@ only in the automation run's worktree and are not reachable over HTTP. The model
 the second column; policy rules, run steps, `tool_calls` rows and `agent.allowed_tools` use the
 first.
 
-| Policy name     | Model sees     | Risk      | Does                                                                                       |
-| --------------- | -------------- | --------- | ------------------------------------------------------------------------------------------ |
-| `fs.read`       | `read_file`    | `read`    | A text file with line numbers, 400 lines at a time; `offset` and `limit` page through it   |
-| `fs.list`       | `list_files`   | `read`    | A directory, up to four levels deep, without `.git`; at most 1,000 entries                 |
-| `fs.search`     | `search_files` | `read`    | `git grep -E` over tracked and untracked files, skipping ignored ones                      |
-| `fs.write`      | `write_file`   | `write`   | Creates or replaces a file, with its directories                                           |
-| `fs.edit`       | `edit_file`    | `write`   | Replaces exact text, once unless `replace_all`                                             |
-| `runtime.shell` | `run_shell`    | `execute` | `/bin/sh -c` in the worktree; 120 s by default, up to 30 min; exit code, stdout and stderr |
-| `git.status`    | `git_status`   | `read`    | `git status --short --branch`                                                              |
-| `git.diff`      | `git_diff`     | `read`    | `git diff HEAD`, for one path or as a `--stat` summary                                     |
-| `sessions.spawn` | `spawn_agent` | `write`   | Starts a sub-agent on a task and returns its final answer; see below                      |
+| Policy name      | Model sees     | Risk      | Does                                                                                       |
+| ---------------- | -------------- | --------- | ------------------------------------------------------------------------------------------ |
+| `fs.read`        | `read_file`    | `read`    | A text file with line numbers, 400 lines at a time; `offset` and `limit` page through it   |
+| `fs.list`        | `list_files`   | `read`    | A directory, up to four levels deep, without `.git`; at most 1,000 entries                 |
+| `fs.search`      | `search_files` | `read`    | `git grep -E` over tracked and untracked files, skipping ignored ones                      |
+| `fs.write`       | `write_file`   | `write`   | Creates or replaces a file, with its directories                                           |
+| `fs.edit`        | `edit_file`    | `write`   | Replaces exact text, once unless `replace_all`                                             |
+| `runtime.shell`  | `run_shell`    | `execute` | `/bin/sh -c` in the worktree; 120 s by default, up to 30 min; exit code, stdout and stderr |
+| `git.status`     | `git_status`   | `read`    | `git status --short --branch`                                                              |
+| `git.diff`       | `git_diff`     | `read`    | `git diff HEAD`, for one path or as a `--stat` summary                                     |
+| `sessions.spawn` | `spawn_agent`  | `write`   | Starts a sub-agent on a task and returns its final answer; see below                       |
 
 - Every path is resolved inside the worktree by the same check as `fs.read` above: no absolute
   paths, no `..` out of it, no symlink that leads outside, including one whose target does not
