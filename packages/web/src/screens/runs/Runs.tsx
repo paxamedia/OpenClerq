@@ -18,7 +18,7 @@ import { useClient, useHost } from '../../app/client';
 import { loadRunsSince, useAutomations, useRun } from '../../app/data';
 import { duration, errorMessage, money, tokens } from '../../app/format';
 import { useLive, useResource } from '../../app/live';
-import { navigate, useQueryParam } from '../../app/router';
+import { Link, navigate, useQueryParam } from '../../app/router';
 import { ACTIVE, isFinished, pipeline, runSpan } from '../../app/stats';
 import {
   EmptyState,
@@ -38,6 +38,7 @@ const TRIGGERS: Record<string, string> = {
   manual: 'By hand',
   event: 'Event',
   webhook: 'Webhook',
+  subagent: 'Sub-agent',
 };
 
 const STATUS_FILTERS = [
@@ -304,6 +305,30 @@ function Artifacts({ run }: { run: RunDetail }) {
   );
 }
 
+/** The sub-agents a run started, each a link to its own run. */
+function SubAgents({ run }: { run: RunDetail }) {
+  const children = run.children ?? [];
+  return (
+    <Section title={`Sub-agents (${children.length})`}>
+      <KeyValue
+        items={children.map((c) => ({
+          label: <RunStatus state={c.status} />,
+          value: (
+            <Link className="page-link" to={`/runs/${encodeURIComponent(c.id)}`}>
+              {c.input ? (c.input.length > 80 ? `${c.input.slice(0, 80)}…` : c.input) : c.id}
+            </Link>
+          ),
+        }))}
+      />
+      {run.childCostUsd ? (
+        <p className="page-hint">
+          They cost {money(run.childCostUsd)} on top of this run’s own cost.
+        </p>
+      ) : null}
+    </Section>
+  );
+}
+
 function stepDetail(step: RunStep): string {
   const parts: Record<string, unknown> = {};
   if (step.input !== undefined) parts.input = step.input;
@@ -396,6 +421,22 @@ function RunView({ id }: { id: string }) {
               { label: 'Started', value: <When at={r.startedAt ?? r.createdAt} /> },
               { label: 'Duration', value: r.startedAt ? duration(end - start) : '', mono: true },
               { label: 'Trigger', value: TRIGGERS[r.trigger] ?? r.trigger },
+              ...(r.parentRunId
+                ? [
+                    {
+                      label: 'Started by',
+                      value: (
+                        <Link
+                          className="page-link"
+                          to={`/runs/${encodeURIComponent(r.parentRunId)}`}
+                        >
+                          {r.parentRunId}
+                        </Link>
+                      ),
+                      mono: true,
+                    },
+                  ]
+                : []),
               {
                 label: 'Automation',
                 value: r.automationId ? (
@@ -441,6 +482,7 @@ function RunView({ id }: { id: string }) {
           )}
         </Section>
       </Split>
+      {r.children?.length ? <SubAgents run={r} /> : null}
       <Artifacts run={r} />
       {r.input && !r.automationId && (
         <Section title="Message">

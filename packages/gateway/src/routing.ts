@@ -17,7 +17,7 @@ import { findProvider } from '@clerq/providers';
 import { emit } from './events.js';
 import { logger } from './logger.js';
 import { recordLLMFallback } from './observability.js';
-import { addRunStep, currentRunId, currentSessionId } from './runs.js';
+import { addRunStep, currentRunId, currentSessionId, runEventContext } from './runs.js';
 import { getStore, isStoreOpen } from './store.js';
 
 /** What `model.fallback` says. */
@@ -58,7 +58,10 @@ export function recordFallback(
   };
   try {
     recordLLMFallback();
-    emit('model.fallback', payload, { runId, sessionId });
+    emit('model.fallback', payload, {
+      ...runEventContext(runId),
+      ...(sessionId ? { sessionId } : {}),
+    });
     if (runId && isStoreOpen()) {
       addRunStep(runId, {
         kind: 'tool',

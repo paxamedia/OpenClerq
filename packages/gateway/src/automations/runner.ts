@@ -17,6 +17,7 @@ import {
   type DriverEvent,
   type DriverResult,
   type DriverRunInput,
+  type SharedBudget,
   type ToolApprovalRequest,
 } from '@clerq/drivers';
 import {
@@ -53,6 +54,8 @@ import {
   completeToolCall,
   getRun,
   RunCancelled,
+  runCostWithChildren,
+  runEventContext,
 } from '../runs.js';
 import { requestApproval, waitForDecision, decide, tierFor } from '../approvals.js';
 import { agentRegistry } from '../agent/llm-provider.js';
@@ -65,6 +68,7 @@ import { retryPlan, transientCause, TransientFailure } from './retry.js';
 import { checkModels, isSpecFault, judgeChain, keyAppliesTo, planModels } from './model-chain.js';
 import { recordFallback } from '../routing.js';
 import { memoryBlock } from '../memory-context.js';
+import { SpendPool, subagentSpawner } from './subagents.js';
 import {
   ensureLocalRepo,
   expandHome,
@@ -167,7 +171,7 @@ function firstLine(text: string, max = 72): string {
 }
 
 /** The model doing a run's work, and the models found unavailable so far. */
-interface ModelInUse {
+export interface ModelInUse {
   model?: string;
   unavailable: Set<string>;
 }
@@ -192,10 +196,9 @@ function attemptOf(runId: string): number {
   return Number(row?.attempt ?? 1);
 }
 
-/** What the run has cost so far, across its attempts. */
+/** What the run has cost so far, across its attempts, with its sub-agents. */
 function runCostUsd(runId: string): number {
-  const row = getStore().prepare('SELECT cost_usd FROM runs WHERE id = ?').get(runId);
-  return Number(row?.cost_usd ?? 0);
+  return runCostWithChildren(runId);
 }
 
 /**
@@ -284,7 +287,7 @@ async function execute(
   const budget = new RunBudget(rules);
   // Saved notes the spec lets this run read, found once against the task and added to
   // the prompt of every attempt. Read under the run's own policy.
-  const notes = readNotes(runId, spec, rules);
+  const notes = readNotes(runId, spec, rules, spec.prompt);
 
   const driver = (deps.driverFor ?? defaultDriver)(spec.agent.driver);
   // The models of this run: the spec's, or the one a person named for it (which
@@ -442,6 +445,38 @@ async function execute(
         };
         // A key from the vault is for the provider of the model it was given for.
         const secrets = keyAppliesTo(spec, model) ? apiKey : undefined;
+        // Sub-agents (builtin only): what is left of the run's budget is shared
+        // by the agent and every sub-agent it starts in this attempt.
+        const pool = new SpendPool(maxBudgetUsd);
+        const subagents = DRIVER_CAPABILITIES[spec.agent.driver].subagents
+          ? {
+              sharedBudget: pool.member(runId),
+              onSubagent: subagentSpawner({
+                parentRunId: runId,
+                automation,
+                spec,
+                driver,
+                ws,
+                deps,
+                pool,
+                apiKey,
+                inUse,
+                memoryRules: rules,
+                // A sub-agent that names no model takes the one this attempt is
+                // on now, and the fallbacks it has left.
+                inherited: () => {
+                  const current = used.model ?? model;
+                  return {
+                    model: current,
+                    fallbackModels: switchesModels
+                      ? after.filter((m) => m !== current && !unavailable.has(m))
+                      : [],
+                  };
+                },
+                unavailable,
+              }),
+            }
+          : {};
         try {
           result = await guard(rules, TOOLS.agent, budget, () =>
             runAgent(
@@ -455,7 +490,8 @@ async function execute(
               secrets,
               agentProcess.onSpawn,
               inUse,
-              used
+              used,
+              subagents
             ).finally(agentProcess.done)
           );
           break;
@@ -629,7 +665,20 @@ async function execute(
   }
 }
 
-async function runAgent(
+/** What a run of the builtin agent gets beyond the spec: sub-agents, or being one. */
+export interface AgentExtras {
+  onSubagent?: DriverRunInput['onSubagent'];
+  sharedBudget?: SharedBudget;
+  /** A sub-agent's rules, in place of those from the spec's permission mode and tools. */
+  policy?: PolicyRules;
+  system?: string;
+  /** In place of the spec's `sandbox.timeout`. */
+  timeoutMs?: number;
+  /** In place of asking in the inbox as the run itself. */
+  approve?: (request: ToolApprovalRequest) => Promise<boolean>;
+}
+
+export async function runAgent(
   driver: Driver,
   spec: AutomationSpec,
   attempt: { model?: string; prompt: string; maxBudgetUsd?: number; fallbackModels?: string[] },
@@ -642,8 +691,10 @@ async function runAgent(
   /** Vault values this run uses, taken out of everything it stores. */
   inUse: Record<string, string>,
   /** The model doing the work, kept current as the driver moves between models. */
-  used: ModelInUse
+  used: ModelInUse,
+  extras: AgentExtras = {}
 ): Promise<DriverResult> {
+  const ctx = runEventContext(runId);
   const pending = new Map<string, { seq: number; row: number; started: number }>();
   const log: string[] = [];
   let model: string | undefined;
@@ -661,7 +712,7 @@ async function runAgent(
     permissionMode: spec.agent.permissionMode,
     allowedTools: spec.agent.allowedTools,
     maxBudgetUsd: attempt.maxBudgetUsd,
-    timeoutMs: spec.sandbox.timeoutMs,
+    timeoutMs: extras.timeoutMs ?? spec.sandbox.timeoutMs,
     sandbox: { profile: spec.sandbox.profile },
     env: { PATH: deps.path() },
     secrets,
@@ -673,13 +724,17 @@ async function runAgent(
       watch.onSpawn(spawned);
       return watch.done;
     },
-    onApproval: (request) => approveToolCall(request, spec, runId, signal),
+    onApproval: extras.approve ?? ((request) => approveToolCall(request, spec, runId, signal)),
+    ...(extras.onSubagent ? { onSubagent: extras.onSubagent } : {}),
+    ...(extras.sharedBudget ? { sharedBudget: extras.sharedBudget } : {}),
+    ...(extras.policy ? { policy: extras.policy } : {}),
+    ...(extras.system ? { system: extras.system } : {}),
   })) {
     const event = scrub(raw, inUse);
     switch (event.type) {
       case 'started':
         model = event.model;
-        emit('agent.turn.started', { driver: driver.id, model }, { runId });
+        emit('agent.turn.started', { driver: driver.id, model }, ctx);
         break;
       case 'text':
         // Narration, not a model call: status "text" keeps it out of cost accounting.
@@ -698,7 +753,7 @@ async function runAgent(
           input: event.input,
         });
         pending.set(event.id, { seq, row, started: Date.now() });
-        emit('tool.started', { name: event.name }, { runId, toolCallId: event.id });
+        emit('tool.started', { name: event.name }, { ...ctx, toolCallId: event.id });
         break;
       }
       case 'tool_result': {
@@ -711,7 +766,11 @@ async function runAgent(
           completeToolCall(call.row, { output, status, durationMs, approval: event.approval });
           pending.delete(event.id);
         }
-        emit(event.isError ? 'tool.failed' : 'tool.completed', {}, { runId, toolCallId: event.id });
+        emit(
+          event.isError ? 'tool.failed' : 'tool.completed',
+          {},
+          { ...ctx, toolCallId: event.id }
+        );
         break;
       }
       case 'log':
@@ -755,7 +814,7 @@ async function runAgent(
             scope: 'automation',
             skipped: event.skipped,
           },
-          { runId }
+          ctx
         );
         break;
       case 'context': {
@@ -818,7 +877,7 @@ async function runAgent(
     });
   }
   if (log.length > 0) addArtifact(runId, 'log', log.join('\n'), 'agent.log');
-  emit('agent.turn.completed', { ok: result.ok }, { runId });
+  emit('agent.turn.completed', { ok: result.ok }, ctx);
   if (!result.ok) {
     const cause = transientCause(result, lastModelError);
     throw cause ? new TransientFailure(result.summary, cause) : new Error(result.summary);
@@ -838,23 +897,38 @@ function scrub(event: DriverEvent, inUse: Record<string, string>): DriverEvent {
  * awaiting approval meanwhile. Unanswered by the spec's approval timeout, or
  * cancelled, it is refused.
  */
-async function approveToolCall(
+export async function approveToolCall(
   request: ToolApprovalRequest,
   spec: AutomationSpec,
   runId: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  /** Asked by a sub-agent: the run that started it, and when the wait starts and ends. */
+  parent?: { runId: string; waiting(on: boolean): void }
 ): Promise<boolean> {
   // The run's signal (cancel, kill switch) and the agent's own (its time limit).
   const stopped = AbortSignal.any([signal, request.signal]);
   if (stopped.aborted) return false;
   setRunStatus(runId, 'awaiting_approval');
-  emit('tool.approval_required', { name: request.tool }, { runId, toolCallId: request.toolCallId });
+  parent?.waiting(true);
+  emit(
+    'tool.approval_required',
+    { name: request.tool },
+    { ...runEventContext(runId), toolCallId: request.toolCallId }
+  );
   const pending = requestApproval({
     runId,
     tool: request.tool,
     tier: tierFor(request.risk),
-    reason: `The agent wants to run ${request.tool}. ${request.reason}`,
-    arguments: { automation: spec.name, toolCallId: request.toolCallId, input: request.input },
+    reason: parent
+      ? `A sub-agent of run ${parent.runId} wants to run ${request.tool}. ${request.reason}`
+      : `The agent wants to run ${request.tool}. ${request.reason}`,
+    arguments: {
+      automation: spec.name,
+      toolCallId: request.toolCallId,
+      input: request.input,
+      ...(parent ? { parentRunId: parent.runId } : {}),
+    },
+    ...(parent ? { parentRunId: parent.runId } : {}),
   });
   // Nobody can approve a call after the agent has run out of time.
   const waitMs = Math.max(0, Math.min(spec.approvals.timeoutMs, request.deadline - Date.now()));
@@ -882,6 +956,7 @@ async function approveToolCall(
   }
   // Only a run still waiting goes back to work; a finished one keeps its state.
   setRunStatusIf(runId, 'awaiting_approval', 'executing');
+  parent?.waiting(false);
   return approved;
 }
 
@@ -990,10 +1065,16 @@ async function runGate(
  * allowed nothing is read. What was read is a step on the run. Memory that
  * cannot be read is left out, never a failed run.
  */
-function readNotes(runId: string, spec: AutomationSpec, rules: PolicyRules): string | undefined {
+export function readNotes(
+  runId: string,
+  spec: AutomationSpec,
+  rules: PolicyRules,
+  /** What the notes are matched against: the run's task. */
+  query: string
+): string | undefined {
   if (spec.memory.read.length === 0) return undefined;
   try {
-    const block = memoryBlock(spec.prompt, rules);
+    const block = memoryBlock(query, rules);
     addRunStep(runId, {
       kind: 'tool',
       input: { name: 'memory.read', types: spec.memory.read },
@@ -1152,7 +1233,10 @@ function pullRequestBody(
   const via =
     (route.escalatedTo ? ` · escalated to \`${route.escalatedTo}\`` : '') +
     (route.usedModel ? ` · fell back to \`${route.usedModel}\`` : '');
-  const cost = !run || !run.costKnown ? 'unknown' : `$${run.costUsd.toFixed(2)}`;
+  const cost =
+    !run || !run.costKnown || run.children.some((c) => !c.costKnown)
+      ? 'unknown'
+      : `$${(run.costUsd + run.childCostUsd).toFixed(2)}`;
   return [
     summary,
     '',

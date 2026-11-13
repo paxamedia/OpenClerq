@@ -26,6 +26,8 @@ export interface ApprovalRequest {
   reason: string;
   arguments?: unknown;
   requestedAt: string;
+  /** Asked by a sub-agent: the run that started it, which the request is shown under. */
+  parentRunId?: string;
 }
 
 export interface ApprovalDecision {
@@ -59,6 +61,8 @@ export function requestApproval(input: {
   tier: RiskTier;
   reason: string;
   arguments?: unknown;
+  /** Asked by a sub-agent: the run that started it. */
+  parentRunId?: string;
 }): ApprovalRequest {
   const now = new Date().toISOString();
   const res = getStore()
@@ -79,9 +83,13 @@ export function requestApproval(input: {
     reason: input.reason,
     arguments: input.arguments,
     requestedAt: now,
+    ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
   };
 
-  emit('approval.requested', request, { runId: input.runId });
+  emit('approval.requested', request, {
+    runId: input.runId,
+    ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
+  });
   logger.info('Approval requested', { id, tool: input.tool, tier: input.tier });
   return request;
 }
@@ -120,7 +128,9 @@ export function decide(id: number, decision: ApprovalDecision): boolean {
 export function listPending(): ApprovalRequest[] {
   return getStore()
     .prepare(
-      'SELECT id, run_id, requested_at, reason FROM approvals WHERE decision IS NULL ORDER BY id'
+      `SELECT a.id, a.run_id, a.requested_at, a.reason, r.parent_run_id
+       FROM approvals a LEFT JOIN runs r ON r.id = a.run_id
+       WHERE a.decision IS NULL ORDER BY a.id`
     )
     .all()
     .map((r) => {
@@ -137,6 +147,7 @@ export function listPending(): ApprovalRequest[] {
         tier: meta.tier ?? 'high',
         reason: meta.reason ?? '',
         requestedAt: String(r.requested_at),
+        ...(r.parent_run_id ? { parentRunId: String(r.parent_run_id) } : {}),
       };
     });
 }

@@ -104,9 +104,49 @@ export function createSession(
   return getSession(id)!;
 }
 
+/** The agent id of a session that holds a sub-agent's transcript. */
+export const SUBAGENT_AGENT_ID = 'subagent';
+
+/**
+ * A session for a sub-agent's run: its task and, when it ends, its answer.
+ * Not listed with the chats; the run links to it.
+ */
+export function createSubagentSession(input: {
+  title: string;
+  model?: string;
+  parentRunId: string;
+  parentSessionId?: string;
+}): string {
+  const id = `ses_${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  getStore()
+    .prepare(
+      `INSERT INTO sessions (id, title, agent_id, status, model, metadata, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+    )
+    .run(
+      id,
+      input.title,
+      SUBAGENT_AGENT_ID,
+      input.model ?? null,
+      JSON.stringify({
+        mode: 'managed',
+        parentRunId: input.parentRunId,
+        ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+      }),
+      now,
+      now
+    );
+  return id;
+}
+
 export function listSessions(limit = 50): Session[] {
   return getStore()
-    .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions ORDER BY updated_at DESC LIMIT ?`)
+    // A sub-agent's transcript is reached from its run, not listed among the chats.
+    .prepare(
+      `SELECT ${SESSION_COLUMNS} FROM sessions WHERE agent_id IS NOT 'subagent'
+       ORDER BY updated_at DESC LIMIT ?`
+    )
     .all(limit)
     .map(rowToSession);
 }

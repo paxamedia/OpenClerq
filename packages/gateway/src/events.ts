@@ -67,6 +67,8 @@ export interface EventContext {
   requestId?: string;
   sessionId?: string;
   runId?: string;
+  /** For a sub-agent's run: the run that started it. */
+  parentRunId?: string;
   toolCallId?: string;
   /** Set when the event happened in a tenant other than `default`. */
   tenantId?: string;

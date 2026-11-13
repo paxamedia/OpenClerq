@@ -108,6 +108,22 @@ export function ApprovalDetail({
               </Link>
             ),
           },
+          ...(approval.parentRunId
+            ? [
+                {
+                  label: 'Sub-agent of',
+                  value: (
+                    <Link
+                      className="page-link"
+                      to={`/runs/${encodeURIComponent(approval.parentRunId)}`}
+                    >
+                      {approval.parentRunId}
+                    </Link>
+                  ),
+                  mono: true,
+                },
+              ]
+            : []),
           { label: 'Asked', value: <When at={approval.requestedAt} /> },
           { label: 'Branch', value: run.data?.branch, mono: true },
         ]}

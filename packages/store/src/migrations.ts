@@ -530,4 +530,19 @@ export const MIGRATIONS: Migration[] = [
       UPDATE memory SET agent_derived = 1 WHERE origin = 'agent';
     `,
   },
+  {
+    id: 18,
+    name: 'run_parent',
+    // A sub-agent's run names the run that started it. The child is a run of
+    // its own (steps, tool calls, cost), with a session for its transcript;
+    // the API reports its trigger as `subagent`. The trigger column keeps the
+    // parent's value: its CHECK predates sub-agents, and SQLite can change a
+    // CHECK only by rebuilding the table, which would cascade through every
+    // table that references runs. Children have no automation_id, so the
+    // queue, leases and one-run-per-automation never see them.
+    sql: `
+      ALTER TABLE runs ADD COLUMN parent_run_id TEXT REFERENCES runs(id) ON DELETE SET NULL;
+      CREATE INDEX idx_runs_parent ON runs(parent_run_id) WHERE parent_run_id IS NOT NULL;
+    `,
+  },
 ];

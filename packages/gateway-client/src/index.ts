@@ -149,7 +149,8 @@ export interface RunStep {
 export interface RunSummary {
   id: string;
   status: string;
-  trigger: 'schedule' | 'event' | 'manual' | 'webhook';
+  /** `subagent`: started by another run's agent (`sessions.spawn`); see `parentRunId`. */
+  trigger: 'schedule' | 'event' | 'manual' | 'webhook' | 'subagent';
   automationId?: string;
   input?: string;
   exitReason?: string;
@@ -171,6 +172,24 @@ export interface RunSummary {
   prUrl?: string;
   /** A model a person named for this run, used as chosen: it never fell back to another. */
   modelOverride?: string;
+  /** A sub-agent's run: the run whose agent started it. */
+  parentRunId?: string;
+  /** The session holding the run's transcript (a sub-agent's task and answer). */
+  sessionId?: string;
+}
+
+/** A sub-agent a run started, as the run's detail lists it. */
+export interface ChildRunSummary {
+  id: string;
+  status: string;
+  /** Its task. */
+  input?: string;
+  exitReason?: string;
+  costUsd: number;
+  costKnown: boolean;
+  sessionId?: string;
+  createdAt: string;
+  finishedAt?: string;
 }
 
 export interface ArtifactInfo {
@@ -222,6 +241,10 @@ export interface MemoryHit extends MemoryRecord {
 export interface RunDetail extends RunSummary {
   steps: RunStep[];
   artifacts: ArtifactInfo[];
+  /** The sub-agents it started, oldest first. Absent from an older gateway. */
+  children?: ChildRunSummary[];
+  /** What they cost, on top of `costUsd`. */
+  childCostUsd?: number;
 }
 
 export interface DriverInfo {
@@ -469,6 +492,8 @@ export interface Approval {
   tier: 'low' | 'medium' | 'high';
   reason: string;
   requestedAt: string;
+  /** Asked by a sub-agent: the run that started it. */
+  parentRunId?: string;
 }
 
 export type PipelineMode = 'raw' | 'managed';

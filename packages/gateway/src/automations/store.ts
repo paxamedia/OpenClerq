@@ -245,13 +245,15 @@ function monthStart(now: Date): Date {
   return new Date(now.getFullYear(), now.getMonth(), 1);
 }
 
-/** What an automation's runs have cost so far this month. */
+/** What an automation's runs, and the sub-agents they started, have cost so far this month. */
 export function monthSpendUsd(automationId: string, now = new Date()): number {
   const row = getStore()
     .prepare(
-      'SELECT COALESCE(SUM(cost_usd), 0) AS total FROM runs WHERE automation_id = ? AND created_at >= ?'
+      `SELECT COALESCE(SUM(cost_usd), 0) AS total FROM runs
+       WHERE created_at >= ?
+         AND (automation_id = ? OR parent_run_id IN (SELECT id FROM runs WHERE automation_id = ?))`
     )
-    .get(automationId, monthStart(now).toISOString());
+    .get(monthStart(now).toISOString(), automationId, automationId);
   return Number(row?.total ?? 0);
 }
 

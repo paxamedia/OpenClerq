@@ -9,7 +9,7 @@
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { getStore, isStoreOpen } from './store.js';
-import { emit } from './events.js';
+import { emit, type EventContext } from './events.js';
 import { logger } from './logger.js';
 import { gatewayOwner } from './agent-processes.js';
 
@@ -25,7 +25,11 @@ export type RunStatus =
   | 'failed'
   | 'cancelled';
 
-export type RunTrigger = 'schedule' | 'event' | 'manual' | 'webhook';
+/**
+ * What started a run. `subagent`: another run's agent (`sessions.spawn`); such
+ * a run has `parentRunId`. Stored as the parent's trigger (see migration 18).
+ */
+export type RunTrigger = 'schedule' | 'event' | 'manual' | 'webhook' | 'subagent';
 
 export interface RunRecord {
   id: string;
@@ -55,6 +59,23 @@ export interface RunRecord {
   tokensOut: number;
   /** A model a person named for this run, which it used as chosen. */
   modelOverride?: string;
+  /** A sub-agent's run: the run whose agent started it. */
+  parentRunId?: string;
+  /** The session the run belongs to (a sub-agent's own transcript). */
+  sessionId?: string;
+}
+
+/** A sub-agent a run started, as the parent's detail lists it. */
+export interface ChildRun {
+  id: string;
+  status: RunStatus;
+  input?: string;
+  exitReason?: string;
+  costUsd: number;
+  costKnown: boolean;
+  sessionId?: string;
+  createdAt: string;
+  finishedAt?: string;
 }
 
 /** Selects a run with `unpriced_calls`, the input `costKnown` is derived from. */
@@ -69,7 +90,7 @@ function rowToRun(r: Record<string, unknown>): RunRecord {
   return {
     id: String(r.id),
     status: r.status as RunStatus,
-    trigger: r.trigger as RunTrigger,
+    trigger: r.parent_run_id ? 'subagent' : (r.trigger as RunTrigger),
     automationId: r.automation_id ? String(r.automation_id) : undefined,
     automationName: r.automation_name ? String(r.automation_name) : undefined,
     moduleId: r.module_id ? String(r.module_id) : undefined,
@@ -87,6 +108,8 @@ function rowToRun(r: Record<string, unknown>): RunRecord {
     tokensIn: Number(r.tokens_in ?? 0),
     tokensOut: Number(r.tokens_out ?? 0),
     modelOverride: r.model_override ? String(r.model_override) : undefined,
+    parentRunId: r.parent_run_id ? String(r.parent_run_id) : undefined,
+    sessionId: r.session_id ? String(r.session_id) : undefined,
   };
 }
 
@@ -100,8 +123,23 @@ export function createRun(input: {
   repoId?: string;
   /** A model a person named for this run; it is used as chosen, with no fallback. */
   modelOverride?: string;
+  /** A sub-agent's run: the run that started it. Required with trigger `subagent`. */
+  parentRunId?: string;
+  sessionId?: string;
 }): string {
   const id = `run_${crypto.randomUUID()}`;
+  if (input.trigger === 'subagent' && !input.parentRunId) {
+    throw new Error('A sub-agent run needs the run that started it.');
+  }
+  // The column's CHECK predates sub-agents: a child is stored with its
+  // parent's trigger and reported as `subagent` (it has a parent).
+  const stored =
+    input.trigger === 'subagent'
+      ? String(
+          getStore().prepare('SELECT trigger FROM runs WHERE id = ?').get(input.parentRunId as string)
+            ?.trigger ?? 'event'
+        )
+      : input.trigger;
   const now = new Date().toISOString();
   const status = input.status ?? 'executing';
   // Who started it, so a later gateway can tell a run still being worked on
@@ -111,8 +149,8 @@ export function createRun(input: {
   const owner = queued ? { pid: null, start: null } : gatewayOwner();
   getStore()
     .prepare(
-      `INSERT INTO runs (id, automation_id, module_id, trigger_ref, input, status, trigger, repo_id, started_at, created_at, owner_pid, owner_start, model_override)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO runs (id, automation_id, module_id, trigger_ref, input, status, trigger, repo_id, started_at, created_at, owner_pid, owner_start, model_override, parent_run_id, session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -121,13 +159,15 @@ export function createRun(input: {
       input.triggerId ?? null,
       input.input ?? null,
       status,
-      input.trigger,
+      stored,
       input.repoId ?? null,
       queued ? null : now,
       now,
       owner.pid,
       owner.start,
-      input.modelOverride ?? null
+      input.modelOverride ?? null,
+      input.parentRunId ?? null,
+      input.sessionId ?? null
     );
   return id;
 }
@@ -153,7 +193,7 @@ export function finishRun(
 /** Move a run to its next state, before the work of that state starts. */
 export function setRunStatus(id: string, status: RunStatus): void {
   getStore().prepare('UPDATE runs SET status = ? WHERE id = ?').run(status, id);
-  emit('run.status', { status }, { runId: id });
+  emit('run.status', { status }, runEventContext(id));
 }
 
 /**
@@ -165,7 +205,7 @@ export function setRunStatusIf(id: string, from: RunStatus, to: RunStatus): bool
     .prepare('UPDATE runs SET status = ? WHERE id = ? AND status = ?')
     .run(to, id, from);
   if (Number(res.changes) === 0) return false;
-  emit('run.status', { status: to }, { runId: id });
+  emit('run.status', { status: to }, runEventContext(id));
   return true;
 }
 
@@ -584,7 +624,16 @@ export function listRuns(limit = 50, opts: { since?: string } = {}): RunRecord[]
 
 export function getRun(
   id: string
-): (RunRecord & { steps: unknown[]; artifacts: ArtifactInfo[] }) | null {
+):
+  | (RunRecord & {
+      steps: unknown[];
+      artifacts: ArtifactInfo[];
+      /** The sub-agents it started. */
+      children: ChildRun[];
+      /** What they cost, on top of the run's own `costUsd`. */
+      childCostUsd: number;
+    })
+  | null {
   const db = getStore();
   const row = db.prepare(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`).get(id);
   if (!row) return null;
@@ -607,7 +656,50 @@ export function getRun(
       costUsd: s.cost_usd === null ? null : Number(s.cost_usd),
       createdAt: String(s.created_at),
     }));
-  return { ...rowToRun(row), steps, artifacts: listArtifacts(id) };
+  const children = listChildRuns(id);
+  return {
+    ...rowToRun(row),
+    steps,
+    artifacts: listArtifacts(id),
+    children,
+    childCostUsd: Math.round(children.reduce((sum, c) => sum + c.costUsd, 0) * 1e6) / 1e6,
+  };
+}
+
+/** The sub-agents a run started, oldest first. */
+export function listChildRuns(parentRunId: string): ChildRun[] {
+  return getStore()
+    .prepare(
+      `SELECT ${RUN_COLUMNS} FROM runs WHERE parent_run_id = ? ORDER BY created_at, rowid`
+    )
+    .all(parentRunId)
+    .map((r) => {
+      const run = rowToRun(r);
+      return {
+        id: run.id,
+        status: run.status,
+        input: run.input,
+        exitReason: run.exitReason,
+        costUsd: run.costUsd,
+        costKnown: run.costKnown,
+        sessionId: run.sessionId,
+        createdAt: run.createdAt,
+        finishedAt: run.finishedAt,
+      };
+    });
+}
+
+/**
+ * What a run has cost, with what its sub-agents cost: the measure its own
+ * budget is held to.
+ */
+export function runCostWithChildren(runId: string): number {
+  const row = getStore()
+    .prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS total FROM runs WHERE id = ? OR parent_run_id = ?`
+    )
+    .get(runId, runId);
+  return Number(row?.total ?? 0);
 }
 
 /** The run the current async call chain belongs to, if any. */
@@ -615,6 +707,7 @@ const runContext = new AsyncLocalStorage<{
   runId: string;
   controller: AbortController;
   sessionId?: string;
+  parentRunId?: string;
 }>();
 
 /** Runs still executing, so the kill switch can reach every one of them. */
@@ -633,6 +726,25 @@ export function currentSessionId(): string | undefined {
  * The current run's cancellation signal. A model call inside a run listens to
  * it, so cancelling the run stops the call — and the spend — mid-flight.
  */
+/** The run that started the current one, when it is a sub-agent's. */
+export function currentParentRunId(): string | undefined {
+  return runContext.getStore()?.parentRunId;
+}
+
+/**
+ * The correlation ids of an event about `runId`: with its parent run and its
+ * session when it is the run in progress here.
+ */
+export function runEventContext(runId: string | undefined): EventContext {
+  const here = runContext.getStore();
+  if (!runId || here?.runId !== runId) return { runId };
+  return {
+    runId,
+    ...(here.parentRunId ? { parentRunId: here.parentRunId } : {}),
+    ...(here.sessionId ? { sessionId: here.sessionId } : {}),
+  };
+}
+
 export function currentRunSignal(): AbortSignal | undefined {
   return runContext.getStore()?.controller.signal;
 }
@@ -707,7 +819,7 @@ export function recordModelCall(call: ModelCallRecord): void {
       costUsd: call.costUsd,
       latencyMs: call.latencyMs,
     },
-    { runId }
+    runEventContext(runId)
   );
   if (!runId || !isStoreOpen()) return;
 
@@ -799,14 +911,23 @@ export async function executeRun<T>(
     triggerId?: string;
     signal?: AbortSignal;
     sessionId?: string;
+    /** A sub-agent's run: the run that started it, carried on its events. */
+    parentRunId?: string;
+    /** Why the run is cancelled when `signal` aborts. Default: the client disconnected. */
+    cancelReason?: string;
     /** A requeue; null to fail as is; `{ failure }` to fail with that reason instead. */
     retry?: (e: unknown) => Requeue | { failure: string } | null;
   },
   fn: () => Promise<T>
 ): Promise<T> {
   const controller = new AbortController();
-  const detach = link(input.signal, controller);
+  const detach = link(input.signal, controller, input.cancelReason);
   activeRuns.set(runId, controller);
+  const ctx: EventContext = {
+    runId,
+    ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+  };
   emit(
     'run.started',
     {
@@ -814,15 +935,19 @@ export async function executeRun<T>(
       automationId: input.automationId,
       moduleId: input.moduleId,
       triggerId: input.triggerId,
+      ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
     },
-    { runId }
+    ctx
   );
   try {
-    const result = await runContext.run({ runId, controller, sessionId: input.sessionId }, fn);
+    const result = await runContext.run(
+      { runId, controller, sessionId: input.sessionId, parentRunId: input.parentRunId },
+      fn
+    );
     // A run whose work swallowed the cancellation still did not finish.
     if (controller.signal.aborted) throw reasonOf(controller.signal);
     finishRun(runId, 'done');
-    emit('run.completed', {}, { runId });
+    emit('run.completed', {}, ctx);
     return result;
   } catch (e) {
     if (isCancellation(e, controller.signal)) {
@@ -834,7 +959,7 @@ export async function executeRun<T>(
           ? e.message
           : 'Cancelled';
       finishRun(runId, 'cancelled', reason);
-      emit('run.cancelled', { reason }, { runId });
+      emit('run.cancelled', { reason }, ctx);
       throw e;
     }
     let message = e instanceof Error ? e.message : String(e);
@@ -842,7 +967,7 @@ export async function executeRun<T>(
     if (again && 'failure' in again) message = again.failure;
     else if (again && requeueRun(runId, again)) return undefined as T;
     finishRun(runId, 'failed', message);
-    emit('run.failed', { error: message }, { runId });
+    emit('run.failed', { error: message }, ctx);
     throw e;
   } finally {
     activeRuns.delete(runId);
@@ -851,9 +976,13 @@ export async function executeRun<T>(
 }
 
 /** Abort `controller` when `signal` aborts. Returns a function that unlinks them. */
-function link(signal: AbortSignal | undefined, controller: AbortController): () => void {
+function link(
+  signal: AbortSignal | undefined,
+  controller: AbortController,
+  reason = 'The client disconnected.'
+): () => void {
   if (!signal) return () => undefined;
-  const onAbort = () => controller.abort(new RunCancelled('The client disconnected.'));
+  const onAbort = () => controller.abort(new RunCancelled(reason));
   if (signal.aborted) onAbort();
   else signal.addEventListener('abort', onAbort, { once: true });
   return () => signal.removeEventListener('abort', onAbort);

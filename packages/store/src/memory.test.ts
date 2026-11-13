@@ -88,7 +88,7 @@ describe('migration 16: memory records', () => {
     // The old table had no checks: a type nobody defined and a confidence out of range.
     insert.run('odd', 'null', 'weird', null, 5, '2026-03-01', '2026-03-01', null);
 
-    expect(migrate(old).slice(-2)).toEqual([16, 17]);
+    expect(migrate(old)).toEqual(expect.arrayContaining([16, 17]));
 
     const rows = old.prepare('SELECT * FROM memory ORDER BY created_at').all();
     expect(rows).toHaveLength(3);
