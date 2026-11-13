@@ -4,7 +4,7 @@
  * secret value anywhere in an answer.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,6 +28,8 @@ let server: {
   address(): unknown;
 };
 const secrets: Record<string, string> = { ACME_TOKEN: SECRET_VALUE };
+/** Every time something asked the vault to open a secret. The Repos routes should never. */
+let opened: string[] = [];
 
 const api = (p: string, init: RequestInit = {}) =>
   fetch(`${baseUrl}${p}`, {
@@ -42,7 +44,12 @@ interface Repo {
   url: string | null;
   path: { value: string; exists: boolean; role: string } | null;
   credential: { secret: string; present: boolean } | null;
-  automations: Array<{ id: string; name: string; enabled: boolean }>;
+  automations: Array<{
+    id: string;
+    name: string;
+    enabled: boolean;
+    credential: { secret: string; present: boolean } | null;
+  }>;
   runs: { queued: number; running: number };
   lastRun: { id: string; status: string; createdAt: string; finishedAt?: string } | null;
   recentRuns?: Array<{ id: string; childCostUsd?: number }>;
@@ -82,7 +89,12 @@ beforeAll(async () => {
     dbPath: ':memory:',
     modulesDir: '/nonexistent-modules-dir-xyz',
     automations: {
-      getSecret: (name) => secrets[name],
+      getSecret: (name) => {
+        opened.push(name);
+        return secrets[name];
+      },
+      // Names only, as the real vault lists them: no secret is opened to say it exists.
+      secretNames: () => Object.keys(secrets),
       workspaceCacheDir: path.join(root, 'cache'),
       path: () => process.env.PATH ?? '',
     },
@@ -213,6 +225,84 @@ describe('the list', () => {
   it('never carries a secret value', async () => {
     const res = await api('/repos');
     expect(await res.text()).not.toContain(SECRET_VALUE);
+  });
+
+  it('says whether a secret exists from the vault’s names, without opening one', async () => {
+    opened = [];
+    const repos = await list();
+    const [first] = repos;
+    await api(`/repos/${first.id}`);
+    expect(repos.some((r) => r.credential?.present)).toBe(true);
+    expect(opened).toEqual([]);
+  });
+});
+
+describe('the secret each automation reaches a repository with', () => {
+  it('reads it from each automation’s own spec, so two on one remote can differ', async () => {
+    repoFor('pair-a', 'github:acme/pair', 'publish:\n  token_secret: ACME_TOKEN');
+    const { repoId } = repoFor(
+      'pair-b',
+      'github:acme/pair',
+      'publish:\n  token_secret: OTHER_TOKEN'
+    );
+    const repo = (await list()).find((r) => r.id === repoId) as Repo;
+    const byName = Object.fromEntries(repo.automations.map((a) => [a.name, a.credential]));
+    expect(byName).toEqual({
+      'pair-a': { secret: 'ACME_TOKEN', present: true },
+      'pair-b': { secret: 'OTHER_TOKEN', present: false },
+    });
+    // The detail gives the same, and neither answer holds a value.
+    const detail = await api(`/repos/${repoId}`);
+    const text = await detail.text();
+    expect(text).not.toContain(SECRET_VALUE);
+    expect((JSON.parse(text) as Repo).automations).toEqual(repo.automations);
+  });
+
+  it('uses the forge’s default secret name when the spec names none', async () => {
+    const { repoId } = repoFor('default-name', 'gitlab:lab/default-name');
+    const repo = (await list()).find((r) => r.id === repoId) as Repo;
+    expect(repo.automations[0].credential).toEqual({ secret: 'GITLAB_TOKEN', present: false });
+  });
+
+  it('gives a local repository a secret only when the automation pushes or opens a pull request', async () => {
+    const dir = path.join(root, 'local-token');
+    fs.mkdirSync(dir);
+    repoFor('local-quiet', `local:${dir}`, 'publish:\n  push: false\n  pull_request: none');
+    let repo = (await list()).find((r) => r.path?.value === dir) as Repo;
+    expect(repo.automations.find((a) => a.name === 'local-quiet')?.credential).toBeNull();
+    repoFor('local-pushes', `local:${dir}`, 'publish:\n  push: true\n  token_secret: ACME_TOKEN');
+    repo = (await list()).find((r) => r.path?.value === dir) as Repo;
+    expect(repo.automations.find((a) => a.name === 'local-pushes')?.credential).toEqual({
+      secret: 'ACME_TOKEN',
+      present: true,
+    });
+  });
+});
+
+describe('what a request costs', () => {
+  it('reads the runs table once for the whole list, however many repositories there are', async () => {
+    for (let i = 0; i < 6; i++) {
+      const dir = path.join(root, `scan-${i}`);
+      fs.mkdirSync(dir);
+      repoFor(`scan-${i}`, `local:${dir}`);
+    }
+    const store = getStore();
+    const seen: string[] = [];
+    const prepare = store.prepare.bind(store);
+    const spy = vi.spyOn(store, 'prepare').mockImplementation(((sql: string) => {
+      seen.push(sql);
+      return prepare(sql);
+    }) as typeof store.prepare);
+    try {
+      const repos = await list();
+      expect(repos.length).toBeGreaterThan(6);
+      const scans = seen.filter((q) => /\bFROM\s+runs\b/i.test(q));
+      expect(scans).toHaveLength(1);
+      // And the automations are read once, not once per repository.
+      expect(seen.filter((q) => /\bFROM\s+automations\b/i.test(q))).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

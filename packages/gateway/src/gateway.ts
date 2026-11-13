@@ -195,6 +195,14 @@ export function createGateway(config: GatewayConfig = {}): {
 
   const automationDeps: RunnerDeps = {
     getSecret: config.automations?.getSecret ?? ((name) => getSecret(name) ?? undefined),
+    secretNames:
+      config.automations?.secretNames ??
+      (config.automations?.getSecret
+        ? undefined
+        : () => {
+            const names = listSecrets();
+            return Array.isArray(names) ? names : [];
+          }),
     path: config.automations?.path ?? userShellPath,
     driverFor: config.automations?.driverFor,
     fetcher: config.automations?.fetcher,

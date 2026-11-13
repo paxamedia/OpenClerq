@@ -106,6 +106,12 @@ import {
 export interface RunnerDeps {
   /** A secret from the vault, by name. */
   getSecret(name: string): string | undefined;
+  /**
+   * The names of the secrets in the vault, without opening any of them. Used to
+   * say whether a secret exists where its value is not needed (the Repos page).
+   * When a caller gives none, `getSecret` is asked instead.
+   */
+  secretNames?(): string[];
   /** The PATH for the agent and gates. */
   path(): string;
   driverFor?(id: string): Driver;

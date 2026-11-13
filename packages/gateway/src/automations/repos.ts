@@ -7,8 +7,12 @@
  * one by its URL, with the clone in the workspace cache once a run has made it
  * and the name of the vault secret it is reached with. Nothing here writes.
  *
- * The vault is only asked whether a secret exists. A secret's value is never
- * read into an answer.
+ * The vault is only asked which secrets exist (`secretNames`, names without
+ * opening any); a secret's value is never read into an answer.
+ *
+ * Each request makes one pass over `runs` (counts and the last run for every
+ * repository together), reads the automations once, and asks the vault once.
+ * `runs` has no `repo_id` index, so a query per repository would scan it each.
  */
 
 import fs from 'node:fs';
@@ -28,6 +32,13 @@ const QUEUED = ['queued', 'leased'];
 /** Holding the repository: its worktree is in use, or its owner has been asked something. */
 const RUNNING = ['preparing', 'executing', 'verifying', 'publishing', 'awaiting_approval'];
 
+export interface RepoAutomation {
+  id: string;
+  name: string;
+  enabled: boolean;
+  credential: { secret: string; present: boolean } | null;
+}
+
 export interface RepoView {
   id: string;
   kind: 'local' | 'github' | 'gitlab';
@@ -41,10 +52,20 @@ export interface RepoView {
    * has cloned yet. `exists: false` is a folder that has gone since.
    */
   path: { value: string; exists: boolean; role: 'repository' | 'clone' } | null;
-  /** The vault secret it is reached with: its name, never its value. */
+  /**
+   * The vault secret named by the last run queued for it: a name, never a
+   * value. Automations can differ, so read `automations[].credential` first;
+   * this is what is left when none targets it now.
+   */
   credential: { secret: string; present: boolean } | null;
-  /** The automations whose spec targets it now. */
-  automations: Array<{ id: string; name: string; enabled: boolean }>;
+  /**
+   * The automations whose spec targets it now, each with the secret its own
+   * spec reaches the forge with (`publish.token_secret`, or the forge's default
+   * name), since two automations can name different ones. `credential` is null
+   * for a local repository the automation neither pushes nor opens a pull
+   * request on.
+   */
+  automations: RepoAutomation[];
   runs: { queued: number; running: number };
   lastRun: {
     id: string;
@@ -79,71 +100,127 @@ function projectOf(url: string): string {
   }
 }
 
-/** The automations whose spec targets this repository now, by path or URL. */
-function targeting(
-  row: Record<string, unknown>,
-  automations: Automation[]
-): RepoView['automations'] {
-  const url = row.url ? String(row.url) : null;
-  const local = row.kind === 'local' && row.local_path ? String(row.local_path) : null;
-  return automations
-    .filter((a) => {
-      const repo = a.spec?.repo;
-      if (!repo) return false;
-      return repo.kind === 'local' ? local === expandHome(repo.path) : url === repo.url;
-    })
-    .map((a) => ({ id: a.id, name: a.name, enabled: a.enabled }));
-}
-
-function counts(repoId: string): RepoView['runs'] {
-  const marks = (list: string[]) => list.map(() => '?').join(',');
-  const row = getStore()
-    .prepare(
-      `SELECT
-         COALESCE(SUM(status IN (${marks(QUEUED)})), 0) AS queued,
-         COALESCE(SUM(status IN (${marks(RUNNING)})), 0) AS running
-       FROM runs WHERE repo_id = ? AND parent_run_id IS NULL`
-    )
-    .get(...QUEUED, ...RUNNING, repoId);
-  return { queued: Number(row?.queued ?? 0), running: Number(row?.running ?? 0) };
-}
-
-function lastRunOf(repoId: string): RepoView['lastRun'] {
-  const r = getStore()
-    .prepare(
-      `SELECT id, status, created_at, started_at, finished_at FROM runs
-       WHERE repo_id = ? AND parent_run_id IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1`
-    )
-    .get(repoId);
-  if (!r) return null;
-  return {
-    id: String(r.id),
-    status: String(r.status),
-    createdAt: String(r.created_at),
-    ...(r.started_at ? { startedAt: String(r.started_at) } : {}),
-    ...(r.finished_at ? { finishedAt: String(r.finished_at) } : {}),
+/** Which vault secrets exist, asked once per request. */
+function vaultCheck(
+  deps: Pick<RunnerDeps, 'getSecret' | 'secretNames'>
+): (name: string) => boolean {
+  let names: Set<string> | null = null;
+  if (deps.secretNames) {
+    try {
+      names = new Set(deps.secretNames());
+    } catch {
+      names = new Set();
+    }
+  }
+  return (name) => {
+    if (names) return names.has(name);
+    try {
+      // No list to ask (a caller that only gave getSecret): the value goes no further than this test.
+      return Boolean(deps.getSecret(name));
+    } catch {
+      return false;
+    }
   };
 }
 
-function view(
-  row: Record<string, unknown>,
-  deps: Pick<RunnerDeps, 'getSecret'>,
-  automations: Automation[]
-): RepoView {
+/**
+ * The automations by the repository their spec targets now: a local path
+ * (resolved, as `ensureLocalRepo` keeps it) or a remote's URL. Built once per
+ * request, so no spec is read twice.
+ */
+function targetIndex(
+  automations: Automation[],
+  inVault: (name: string) => boolean
+): Map<string, RepoAutomation[]> {
+  const index = new Map<string, RepoAutomation[]>();
+  for (const a of automations) {
+    const spec = a.spec;
+    if (!spec) continue;
+    const local = spec.repo.kind === 'local';
+    const key = local
+      ? `local:${expandHome((spec.repo as { path: string }).path)}`
+      : `url:${(spec.repo as { url: string }).url}`;
+    // A remote is always reached with the token (clone, fetch); a local repository
+    // only when the run pushes or opens a pull request.
+    const needsToken = !local || spec.publish.push || spec.publish.pullRequest === 'draft';
+    const secret = spec.publish.tokenSecret;
+    const entry: RepoAutomation = {
+      id: a.id,
+      name: a.name,
+      enabled: a.enabled,
+      credential: needsToken ? { secret, present: inVault(secret) } : null,
+    };
+    index.set(key, [...(index.get(key) ?? []), entry]);
+  }
+  return index;
+}
+
+interface RunFigures {
+  runs: RepoView['runs'];
+  lastRun: RepoView['lastRun'];
+}
+
+/**
+ * Queued and running counts and the last run for every repository (or one), in
+ * one query: sub-agent runs are left out, as they belong under their parent.
+ */
+function runFigures(repoId?: string): Map<string, RunFigures> {
+  const marks = (list: string[]) => list.map(() => '?').join(',');
+  const rows = getStore()
+    .prepare(
+      `SELECT repo_id, id, status, created_at, started_at, finished_at, queued, running FROM (
+         SELECT repo_id, id, status, created_at, started_at, finished_at,
+                ROW_NUMBER() OVER (PARTITION BY repo_id ORDER BY created_at DESC, rowid DESC) AS n,
+                SUM(status IN (${marks(QUEUED)})) OVER (PARTITION BY repo_id) AS queued,
+                SUM(status IN (${marks(RUNNING)})) OVER (PARTITION BY repo_id) AS running
+         FROM runs
+         WHERE repo_id IS NOT NULL AND parent_run_id IS NULL ${repoId ? 'AND repo_id = ?' : ''}
+       ) WHERE n = 1`
+    )
+    .all(...QUEUED, ...RUNNING, ...(repoId ? [repoId] : []));
+  const out = new Map<string, RunFigures>();
+  for (const r of rows) {
+    out.set(String(r.repo_id), {
+      runs: { queued: Number(r.queued ?? 0), running: Number(r.running ?? 0) },
+      lastRun: {
+        id: String(r.id),
+        status: String(r.status),
+        createdAt: String(r.created_at),
+        ...(r.started_at ? { startedAt: String(r.started_at) } : {}),
+        ...(r.finished_at ? { finishedAt: String(r.finished_at) } : {}),
+      },
+    });
+  }
+  return out;
+}
+
+const NO_RUNS: RunFigures = { runs: { queued: 0, running: 0 }, lastRun: null };
+
+interface Context {
+  targets: Map<string, RepoAutomation[]>;
+  figures: Map<string, RunFigures>;
+  inVault: (name: string) => boolean;
+}
+
+function context(deps: Pick<RunnerDeps, 'getSecret' | 'secretNames'>, repoId?: string): Context {
+  const inVault = vaultCheck(deps);
+  return {
+    targets: targetIndex(listAutomations(), inVault),
+    figures: runFigures(repoId),
+    inVault,
+  };
+}
+
+function view(row: Record<string, unknown>, ctx: Context): RepoView {
+  const id = String(row.id);
   const kind = String(row.kind) as RepoView['kind'];
   const localPath = row.local_path ? String(row.local_path) : null;
   const secret = row.credential_ref ? String(row.credential_ref) : null;
-  let present = false;
-  if (secret) {
-    try {
-      // Only whether there is one: the value goes no further than this test.
-      present = Boolean(deps.getSecret(secret));
-    } catch {
-      present = false;
-    }
-  }
+  const key =
+    kind === 'local' && localPath ? `local:${localPath}` : row.url ? `url:${String(row.url)}` : '';
+  const figures = ctx.figures.get(id) ?? NO_RUNS;
   return {
-    id: String(row.id),
+    id,
     kind,
     name:
       kind === 'local' && localPath
@@ -159,32 +236,29 @@ function view(
           role: kind === 'local' ? 'repository' : 'clone',
         }
       : null,
-    credential: secret ? { secret, present } : null,
-    automations: targeting(row, automations),
-    runs: counts(String(row.id)),
-    lastRun: lastRunOf(String(row.id)),
+    credential: secret ? { secret, present: ctx.inVault(secret) } : null,
+    automations: ctx.targets.get(key) ?? [],
+    runs: figures.runs,
+    lastRun: figures.lastRun,
     createdAt: String(row.created_at),
   };
 }
 
-export function listRepos(deps: Pick<RunnerDeps, 'getSecret'>): RepoView[] {
-  const automations = listAutomations();
+export function listRepos(deps: Pick<RunnerDeps, 'getSecret' | 'secretNames'>): RepoView[] {
+  const ctx = context(deps);
   return getStore()
     .prepare('SELECT * FROM repos ORDER BY name')
     .all()
-    .map((row) => view(row, deps, automations));
+    .map((row) => view(row, ctx));
 }
 
 export function getRepoDetail(
   id: string,
-  deps: Pick<RunnerDeps, 'getSecret'>
+  deps: Pick<RunnerDeps, 'getSecret' | 'secretNames'>
 ): RepoDetailView | null {
   const row = getStore().prepare('SELECT * FROM repos WHERE id = ?').get(id);
   if (!row) return null;
-  return {
-    ...view(row, deps, listAutomations()),
-    recentRuns: listRepoRuns(id, REPO_RECENT_RUNS),
-  };
+  return { ...view(row, context(deps, id)), recentRuns: listRepoRuns(id, REPO_RECENT_RUNS) };
 }
 
 /**
