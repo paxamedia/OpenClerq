@@ -200,10 +200,37 @@ export function enqueueAutomationRun(
   d: RunnerDeps,
   opts: EnqueueOptions
 ): { runId: string; queued: boolean; done: Promise<void> } | null {
+  if (!deps) startAutomationQueue(d);
+  const runId = queueRunRow(automation, trigger, opts);
+  if (!runId) return null;
+  const done = new Promise<void>((resolve) => {
+    const list = waiters.get(runId) ?? [];
+    list.push(resolve);
+    waiters.set(runId, list);
+  });
+  pumpQueue();
+  return { runId, queued: statusOf(runId) === 'queued', done };
+}
+
+/** Start the queue with these deps if it is not running, else look at it again. */
+export function nudgeAutomationQueue(d: RunnerDeps): void {
+  if (!deps) startAutomationQueue(d);
+  else pumpQueue();
+}
+
+/**
+ * The store writes of queueing a run, and nothing else: no run is started, so
+ * a caller can make them part of its own transaction (the scheduler claims
+ * its slot in the same one) and nudge the queue after it commits. Returns the
+ * run's id, or null when `ifBusy: 'once'` finds one already waiting.
+ */
+export function queueRunRow(
+  automation: Automation,
+  trigger: 'schedule' | 'manual',
+  opts: EnqueueOptions
+): string | null {
   const spec = automation.spec;
   if (!spec) throw new SpecError(`Fix the spec before running it: ${automation.problem}`);
-  if (!deps) startAutomationQueue(d);
-
   const { queued, going } = runsOf(automation.id);
   if (opts.ifBusy === 'refuse' && (queued || going)) {
     throw new AutomationBusy(
@@ -226,13 +253,7 @@ export function enqueueAutomationRun(
     addRunStep(runId, { kind: 'tool', input: { name }, output: rest, status: 'ok' });
   }
   emit('run.queued', { automationId: automation.id, trigger }, { runId });
-  const done = new Promise<void>((resolve) => {
-    const list = waiters.get(runId) ?? [];
-    list.push(resolve);
-    waiters.set(runId, list);
-  });
-  pumpQueue();
-  return { runId, queued: statusOf(runId) === 'queued', done };
+  return runId;
 }
 
 /**

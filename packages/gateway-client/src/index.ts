@@ -207,7 +207,8 @@ export interface AutomationSummary {
     capped: boolean;
     first: string;
     last: string | null;
-    reason: 'catch_up_off' | 'paused';
+    reason: 'catch_up_off' | 'paused' | 'already_queued' | 'enqueue_failed';
+    error?: string;
     noticed: string;
     at: string;
   } | null;

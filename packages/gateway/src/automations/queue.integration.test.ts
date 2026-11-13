@@ -53,6 +53,7 @@ import {
   lastMissedSlots,
   startAutomationSchedules,
   stopAutomationSchedules,
+  takeDueSlots,
 } from './scheduler.js';
 import type { RunnerDeps } from './runner.js';
 
@@ -673,6 +674,68 @@ describe('missed schedule slots', () => {
     expect(named(caught, 'schedule.catch_up')[0]?.output).toMatchObject({
       missedSlots: 3,
       noticed: 'wake',
+    });
+    setAutomationEnabled(a.id, false);
+  });
+
+  it('lets only one of two gateways that read the same slot queue its run', async () => {
+    const a = scheduled(false);
+    wall = at(7, 20);
+    startAutomationSchedules(deps, { clock, timers: false });
+    expect(runsOf(a.id)).toHaveLength(0);
+    // Both gateways read last_slot_at as 07:15, then both find 08:00 due.
+    const read = new Date(at(7, 15)).toISOString();
+    takeDueSlots(getAutomation(a.id)!, read, new Date(at(8, 0)), 'tick');
+    takeDueSlots(getAutomation(a.id)!, read, new Date(at(8, 0)), 'tick');
+    const ids = runsOf(a.id);
+    expect(ids).toHaveLength(1);
+    expect(lastMissedSlots(a.id)).toBeNull();
+    expect(
+      getStore().prepare('SELECT last_slot_at FROM automations WHERE id = ?').get(a.id)
+        ?.last_slot_at
+    ).toBe(new Date(at(8)).toISOString());
+    await waitFor(ids[0], finished);
+    setAutomationEnabled(a.id, false);
+  });
+
+  it('records a slot as missed when its run cannot be queued, and does not try it again', () => {
+    const a = scheduled(true);
+    // The store refuses the run, as a full disk would.
+    getStore().exec(
+      `CREATE TEMP TRIGGER refuse_run BEFORE INSERT ON runs WHEN NEW.automation_id = '${a.id}'
+       BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`
+    );
+    try {
+      wall = at(10, 30);
+      startAutomationSchedules(deps, { clock, timers: false });
+    } finally {
+      getStore().exec('DROP TRIGGER refuse_run');
+    }
+    expect(runsOf(a.id)).toHaveLength(0);
+    expect(lastMissedSlots(a.id)).toMatchObject({
+      count: 3,
+      reason: 'enqueue_failed',
+      error: expect.stringMatching(/disk I\/O error/),
+      last: new Date(at(10)).toISOString(),
+    });
+    // The slots are used up: the next check does not queue them after all.
+    checkSchedules();
+    expect(runsOf(a.id)).toHaveLength(0);
+    setAutomationEnabled(a.id, false);
+  });
+
+  it('records a slot as missed when a run of the automation is still waiting', () => {
+    const a = scheduled(false);
+    pauseAutomationQueue();
+    enqueue(a);
+    wall = at(8, 0);
+    setLastSlotAt(a.id, new Date(at(7, 15)));
+    startAutomationSchedules(deps, { clock, timers: false });
+    expect(runsOf(a.id)).toHaveLength(1);
+    expect(lastMissedSlots(a.id)).toMatchObject({
+      count: 1,
+      reason: 'already_queued',
+      last: new Date(at(8)).toISOString(),
     });
     setAutomationEnabled(a.id, false);
   });

@@ -28,14 +28,8 @@ import { audit } from '@clerq/store';
 import { getStore, isStoreOpen } from '../store.js';
 import { emit } from '../events.js';
 import { logger } from '../logger.js';
-import {
-  getLastSlotAt,
-  listAutomations,
-  setLastSlotAt,
-  setNextRunAt,
-  type Automation,
-} from './store.js';
-import { enqueueAutomationRun } from './queue.js';
+import { listAutomations, setNextRunAt, type Automation } from './store.js';
+import { nudgeAutomationQueue, queueRunRow } from './queue.js';
 import type { RunnerDeps } from './runner.js';
 
 /** A slot noticed later than this was missed rather than run late. */
@@ -157,7 +151,7 @@ const systemClock: ScheduleClock = {
   mono: () => performance.now(),
 };
 
-type CheckReason = 'start' | 'resume' | 'tick' | 'wake';
+export type CheckReason = 'start' | 'resume' | 'tick' | 'wake';
 
 let state:
   | {
@@ -260,24 +254,107 @@ export function checkSchedules(reason: CheckReason = 'tick'): void {
 function checkOne(automation: Automation, now: Date, reason: CheckReason): void {
   const spec = automation.spec;
   if (!automation.enabled || !spec?.schedule || !state) return;
-  const last = getLastSlotAt(automation.id);
+  const last = rawLastSlotAt(automation.id);
   if (!last) {
     // A schedule counts from when it is first seen, never from before.
-    setLastSlotAt(automation.id, now);
+    claimSlot(automation.id, null, now);
     return;
   }
-  const due = dueSlots(spec.schedule, last, now);
+  takeDueSlots(automation, last, now, reason);
+}
+
+/** The stored `last_slot_at`, exactly as written, for a compare-and-set. */
+function rawLastSlotAt(id: string): string | null {
+  const row = getStore().prepare('SELECT last_slot_at FROM automations WHERE id = ?').get(id);
+  return row?.last_slot_at ? String(row.last_slot_at) : null;
+}
+
+/** Move `last_slot_at` from `expected` to `to`, only if it is still `expected`. */
+function claimSlot(id: string, expected: string | null, to: Date): boolean {
+  const res = getStore()
+    .prepare('UPDATE automations SET last_slot_at = ? WHERE id = ? AND last_slot_at IS ?')
+    .run(to.toISOString(), id, expected);
+  return Number(res.changes) === 1;
+}
+
+/**
+ * Deal with the slots after `expectedLast` (the `last_slot_at` this gateway
+ * read): claim them by moving `last_slot_at` on, and queue their run, in one
+ * transaction. When another gateway sharing the store moved it first, they
+ * are its, and nothing happens here. A run that cannot be queued (one is
+ * already waiting, or the write failed) still uses up its slots, which are
+ * recorded as missed, so no slot is ever silently lost or run twice.
+ */
+export function takeDueSlots(
+  automation: Automation,
+  expectedLast: string,
+  now: Date,
+  reason: CheckReason
+): void {
+  const spec = automation.spec;
+  if (!spec?.schedule || !state) return;
+  const due = dueSlots(spec.schedule, new Date(expectedLast), now);
   if (!due) return;
 
   const onTime = now.getTime() - due.latest.getTime() <= ON_TIME_MS;
   const missed = onTime ? due.count - 1 : due.count;
   const catchUp = spec.catchUp && reason !== 'resume';
-  // Dealt with before anything is queued, so no slot is dealt with twice.
-  setLastSlotAt(automation.id, due.latest);
+  const runIt = onTime || (catchUp && missed > 0);
+  const caughtUp = runIt && catchUp && missed > 0;
+
+  let claimed = false;
+  let runId: string | null = null;
+  let failure: string | undefined;
+  const queue = () =>
+    queueRunRow(automation, 'schedule', {
+      ifBusy: 'once',
+      note: caughtUp
+        ? {
+            name: 'schedule.catch_up',
+            missedSlots: due.count,
+            countCapped: due.capped,
+            firstMissed: due.first.toISOString(),
+            slot: due.latest.toISOString(),
+            noticed: reason,
+          }
+        : undefined,
+    });
+  try {
+    getStore().transaction(() => {
+      if (!claimSlot(automation.id, expectedLast, due.latest)) return;
+      claimed = true;
+      if (runIt) runId = queue();
+    });
+  } catch (e) {
+    // The run could not be written, so nothing was: claim the slots alone.
+    failure = e instanceof Error ? e.message : String(e);
+    claimed = claimSlot(automation.id, expectedLast, due.latest);
+  }
+  if (!claimed) return;
   setNextRunAt(automation.id, nextRunOf(spec.schedule));
 
-  if (onTime || (catchUp && missed > 0)) {
-    fire(automation, due.latest, missed > 0 && catchUp ? due : null, reason);
+  if (runId) {
+    nudgeAutomationQueue(state.deps);
+    logger.info(
+      caughtUp ? 'Missed automation slots caught up' : 'Scheduled automation run queued',
+      {
+        automation: automation.name,
+        runId,
+        slot: due.latest.toISOString(),
+        ...(caughtUp ? { missedSlots: due.count } : {}),
+      }
+    );
+  } else if (runIt) {
+    // The slots this run was for: all of them when catching up, else the latest.
+    recordMissed(automation, {
+      count: caughtUp ? due.count : 1,
+      capped: caughtUp && due.capped,
+      first: caughtUp ? due.first : due.latest,
+      last: due.latest,
+      reason: failure ? 'enqueue_failed' : 'already_queued',
+      noticed: reason,
+      ...(failure ? { error: failure } : {}),
+    });
   }
   if (missed > 0 && !catchUp) {
     recordMissed(automation, {
@@ -292,59 +369,19 @@ function checkOne(automation: Automation, now: Date, reason: CheckReason): void 
   }
 }
 
-function fire(
-  automation: Automation,
-  slot: Date,
-  caughtUp: DueSlots | null,
-  reason: CheckReason
-): void {
-  if (!state) return;
-  try {
-    const queued = enqueueAutomationRun(automation, 'schedule', state.deps, {
-      ifBusy: 'once',
-      note: caughtUp
-        ? {
-            name: 'schedule.catch_up',
-            missedSlots: caughtUp.count,
-            countCapped: caughtUp.capped,
-            firstMissed: caughtUp.first.toISOString(),
-            slot: slot.toISOString(),
-            noticed: reason,
-          }
-        : undefined,
-    });
-    if (!queued) {
-      logger.warn('Scheduled automation run skipped: one is already waiting', {
-        automation: automation.name,
-        slot: slot.toISOString(),
-      });
-      return;
-    }
-    logger.info(
-      caughtUp ? 'Missed automation slots caught up' : 'Scheduled automation run queued',
-      {
-        automation: automation.name,
-        runId: queued.runId,
-        slot: slot.toISOString(),
-        ...(caughtUp ? { missedSlots: caughtUp.count } : {}),
-      }
-    );
-  } catch (e) {
-    logger.error('Scheduled automation run failed to start', {
-      automation: automation.name,
-      err: e instanceof Error ? e.message : String(e),
-    });
-  }
-}
-
 /** What a skipped run of slots is recorded as. */
 export interface MissedSlots {
   count: number;
   capped: boolean;
   first: string;
   last: string | null;
-  /** `catch_up_off`: the spec does not catch up. `paused`: the kill switch held schedules. */
-  reason: 'catch_up_off' | 'paused';
+  /**
+   * `catch_up_off`: the spec does not catch up. `paused`: the kill switch held
+   * schedules. `already_queued`: a run of the automation was still waiting.
+   * `enqueue_failed`: the run could not be written (`error` says why).
+   */
+  reason: 'catch_up_off' | 'paused' | 'already_queued' | 'enqueue_failed';
+  error?: string;
   noticed: CheckReason;
   at: string;
 }
@@ -358,6 +395,7 @@ function recordMissed(
     last: Date | null;
     reason: MissedSlots['reason'];
     noticed: CheckReason;
+    error?: string;
   }
 ): void {
   const detail = {
@@ -367,6 +405,7 @@ function recordMissed(
     last: m.last ? m.last.toISOString() : null,
     reason: m.reason,
     noticed: m.noticed,
+    ...(m.error ? { error: m.error.slice(0, 500) } : {}),
   };
   audit(getStore(), {
     actor: 'scheduler',
