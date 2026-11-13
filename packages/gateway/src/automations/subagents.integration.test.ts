@@ -7,18 +7,27 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn as spawnProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { builtin } from '@clerq/drivers';
 import { parseRegistry } from '@clerq/providers';
 import { closeStore, getStore, initStore } from '../store.js';
-import { cancelRun, createRun, getRun, listRuns, reapInterruptedRuns } from '../runs.js';
+import {
+  cancelAllRuns,
+  cancelRun,
+  createRun,
+  getRun,
+  INTERRUPTED,
+  listRuns,
+  reapInterruptedRuns,
+} from '../runs.js';
 import { subscribeEvents, type ClerqEvent } from '../events.js';
 import { warmGatewayIdentity } from '../agent-processes.js';
-import { decide, listPending } from '../approvals.js';
-import { getSession, listMessages, listSessions } from '../chat/sessions.js';
+import { decide, denyAllPending, listPending, requestApproval } from '../approvals.js';
+import { recoverAfterRestart } from './recovery.js';
+import { createSubagentSession, getSession, listMessages, listSessions } from '../chat/sessions.js';
 import { addRecord, clearMemory } from '../memory-layer.js';
 import { createAutomation, getAutomation, monthSpendUsd, setAutomationEnabled } from './store.js';
 import {
@@ -30,6 +39,7 @@ import {
 } from './queue.js';
 import type { RunnerDeps } from './runner.js';
 import { SpendPool, spawnRefusal } from './subagents.js';
+import { parseSpec } from './spec.js';
 
 // ---------------------------------------------------------------------------
 // A model API that answers from a script, by who is asking
@@ -55,6 +65,18 @@ providers:
         context: 8000
         inputPerM: 1
         outputPerM: 1000
+      - id: unpriced
+        context: 200000
+  - id: elsewhere
+    label: Elsewhere
+    adapter: anthropic
+    baseUrl: https://elsewhere.invalid/v1
+    authEnv: FAKE_SUBAGENT_KEY
+    models:
+      - id: m
+        context: 200000
+        inputPerM: 1
+        outputPerM: 2
 `;
 const REGISTRY = parseRegistry(REGISTRY_YAML);
 
@@ -182,6 +204,8 @@ function automation(
     timeout?: string;
     mode?: string;
     tools?: string;
+    /** The `agent.subagents` lines, under it; default `enabled: true`. Empty: no key. */
+    subagents?: string[];
   } = {}
 ) {
   counter += 1;
@@ -196,6 +220,9 @@ function automation(
     ...(opts.fallback ? [`    fallback: ${opts.fallback}`] : []),
     ...(opts.mode ? [`  permission_mode: ${opts.mode}`] : []),
     ...(opts.tools ? [`  allowed_tools: ${opts.tools}`] : []),
+    ...((opts.subagents ?? ['enabled: true']).length > 0
+      ? ['  subagents:', ...(opts.subagents ?? ['enabled: true']).map((l) => `    ${l}`)]
+      : []),
     `prompt: parent task ${counter}`,
     'sandbox:',
     '  profile: native',
@@ -645,7 +672,13 @@ describe('the model', () => {
     };
     // The parent's chain has a fallback; a model named for the sub-agent does not use it.
     const parent = await waitFor(
-      enqueue(automation({ model: 'fake/priced', fallback: '[fake/dear]' }))
+      enqueue(
+        automation({
+          model: 'fake/priced',
+          fallback: '[fake/dear]',
+          subagents: ['enabled: true', 'models: [fake/second]'],
+        })
+      )
     );
     const child = getRun(parent.children[0].id) as RunView;
     expect(child.status).toBe('failed');
@@ -680,17 +713,152 @@ describe('the model', () => {
     expect(fallback?.context.parentRunId).toBe(parent.id);
   });
 
-  it('refuses a named model that cannot be used, before any run starts', async () => {
+  it('refuses a model outside the spec’s chain and agent.subagents.models, before any run starts', async () => {
+    // elsewhere/m is in the registry and has a key: only the spec stands in the way.
+    for (const wanted of ['elsewhere/m', 'nowhere/model', 'fake/second']) {
+      asks.length = 0;
+      respond = (ask) =>
+        ask.role === 'parent'
+          ? parentSpawning({ task: `CHILD-X: ${wanted}`, model: wanted }, ask)
+          : { content: [text('no')] };
+      const parent = await waitFor(
+        enqueue(automation({ fallback: '[fake/dear]', subagents: ['enabled: true'] }))
+      );
+      expect(parent.status, wanted).toBe('done');
+      expect(parent.children, wanted).toHaveLength(0);
+      expect(
+        asks.filter((a) => a.role === 'child'),
+        wanted
+      ).toHaveLength(0);
+      const spawnStep = named(parent, 'sessions.spawn')[0];
+      expect(spawnStep.status, wanted).toBe('error');
+      expect(String(spawnStep.output?.text), wanted).toContain(
+        `${wanted} is not one of the models this automation may use (fake/priced, fake/dear)`
+      );
+    }
+  });
+
+  it('accepts a model of the spec’s own chain by name', async () => {
+    respond = (ask) => {
+      if (ask.role === 'parent') {
+        return parentSpawning({ task: 'CHILD-E: chain', model: 'fake/dear' }, ask);
+      }
+      return { content: [text('ok')] };
+    };
+    const parent = await waitFor(enqueue(automation({ fallback: '[fake/dear]' })));
+    expect(parent.children[0].status).toBe('done');
+    expect(asks.filter((a) => a.role === 'child').map((a) => a.model)).toEqual(['dear']);
+  });
+
+  it('refuses a listed model that cannot be used now, before any run starts', async () => {
     respond = (ask) =>
       ask.role === 'parent'
-        ? parentSpawning({ task: 'CHILD-X: bad', model: 'nowhere/model' }, ask)
+        ? parentSpawning({ task: 'CHILD-U: unpriced', model: 'fake/unpriced' }, ask)
         : { content: [text('no')] };
-    const parent = await waitFor(enqueue(automation()));
-    expect(parent.status).toBe('done');
+    const parent = await waitFor(
+      enqueue(
+        automation({
+          subagents: ['enabled: true', 'models: [fake/unpriced]'],
+          extra: 'budget:\n  max_usd_per_run: 5',
+        })
+      )
+    );
     expect(parent.children).toHaveLength(0);
-    const spawnStep = named(parent, 'sessions.spawn')[0];
-    expect(spawnStep.status).toBe('error');
-    expect(String(spawnStep.output?.text)).toMatch(/nowhere\/model cannot be used/);
+    expect(String(named(parent, 'sessions.spawn')[0].output?.text)).toMatch(
+      /fake\/unpriced cannot be used.*no price/
+    );
+  });
+});
+
+describe('turning sub-agents on', () => {
+  it('is off for a builtin spec that does not ask, even with every tool allowed', async () => {
+    respond = () => ({ content: [text('Done.')] });
+    for (const opts of [{ subagents: [] }, { subagents: [], tools: '["*"]' }]) {
+      asks.length = 0;
+      const parent = await waitFor(enqueue(automation(opts)));
+      expect(parent.status).toBe('done');
+      expect(asks[0].tools).not.toContain('spawn_agent');
+    }
+  });
+
+  it('is on when allowed_tools names sessions.spawn itself', async () => {
+    respond = () => ({ content: [text('Done.')] });
+    await waitFor(enqueue(automation({ subagents: [], tools: '[group:fs, sessions.spawn]' })));
+    expect(asks[0].tools).toContain('spawn_agent');
+  });
+
+  it('is checked when the spec is saved', () => {
+    const spec = (agent: string[]) =>
+      [
+        'name: check',
+        'targets:',
+        `  repos: [local:${repo}]`,
+        'agent:',
+        ...agent.map((l) => `  ${l}`),
+        'prompt: x',
+        'sandbox:',
+        '  profile: native',
+      ].join('\n');
+    const builtinAgent = ['driver: builtin', 'model: fake/priced'];
+    expect(parseSpec(spec([...builtinAgent])).agent.subagents).toEqual({
+      enabled: false,
+      maxConcurrent: 4,
+      models: [],
+    });
+    expect(
+      parseSpec(
+        spec([
+          ...builtinAgent,
+          'subagents:',
+          '  enabled: true',
+          '  max_concurrent: 2',
+          '  models: [fake/second]',
+        ])
+      ).agent.subagents
+    ).toEqual({ enabled: true, maxConcurrent: 2, models: ['fake/second'] });
+    expect(() => parseSpec(spec([...builtinAgent, 'subagents:', '  max_concurrent: 5']))).toThrow(
+      /from 1 to 4/
+    );
+    expect(() => parseSpec(spec([...builtinAgent, 'subagents:', '  models: [second]']))).toThrow(
+      /as provider\/model/
+    );
+    expect(() =>
+      parseSpec(spec([...builtinAgent, 'subagents:', '  models: [nowhere/m]']), {
+        registry: REGISTRY,
+      })
+    ).toThrow(/Unknown provider "nowhere"/);
+    expect(() =>
+      parseSpec(
+        spec([...builtinAgent, 'allowed_tools: [group:fs]', 'subagents:', '  enabled: true'])
+      )
+    ).toThrow(/leaves "sessions.spawn" out/);
+    expect(() => parseSpec(spec(['driver: claude-code', 'subagents:', '  enabled: true']))).toThrow(
+      /only the builtin agent/
+    );
+  });
+
+  it('honours agent.subagents.max_concurrent', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    respond = (ask) => {
+      if (ask.role === 'parent') {
+        if (ask.turn === 1) {
+          return { content: [1, 2, 3].map((n) => spawn(`s${n}`, { task: `CHILD-K${n}: go` })) };
+        }
+        return { content: [text('done')] };
+      }
+      return { content: [text('ok')], wait: gate };
+    };
+    const id = enqueue(automation({ subagents: ['enabled: true', 'max_concurrent: 2'] }));
+    await until(() => inFlight.child === 2);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(inFlight.child).toBe(2);
+    open();
+    const parent = await waitFor(id);
+    expect(parent.children).toHaveLength(3);
+    expect(inFlight.mostChildren).toBe(2);
   });
 });
 
@@ -725,5 +893,193 @@ describe('memory', () => {
     const prompt = JSON.stringify(asks.find((a) => a.role === 'child')?.body.messages);
     expect(prompt).not.toContain('linter first');
     expect(named(child, 'memory.read')).toHaveLength(0);
+  });
+});
+
+describe('overlapping approvals', () => {
+  /** A parent in default mode: both spawns of its first reply wait for a person at once. */
+  async function twoSpawnsWaiting() {
+    respond = (ask) => {
+      if (ask.role === 'parent') {
+        if (ask.turn === 1) {
+          return {
+            content: [
+              spawn('s1', { task: 'CHILD-O1: look' }),
+              spawn('s2', { task: 'CHILD-O2: look' }),
+            ],
+          };
+        }
+        return { content: [text('Both looked.')] };
+      }
+      return { content: [text(`seen by ${ask.task}`)] };
+    };
+    const id = enqueue(automation({ mode: 'default' }));
+    const pending = await until(() => (listPending().length === 2 ? listPending() : undefined));
+    expect(pending.every((p) => p.runId === id && p.tool === 'sessions.spawn')).toBe(true);
+    expect(getRun(id)?.status).toBe('awaiting_approval');
+    return { id, pending };
+  }
+
+  for (const [scenario, order] of [
+    ['A: the first asked is answered first', [0, 1]],
+    ['B: the second asked is answered first', [1, 0]],
+  ] as const) {
+    it(`keep the parent waiting until the last is answered (${scenario})`, async () => {
+      const { id, pending } = await twoSpawnsWaiting();
+      decide(pending[order[0]].id, { decision: 'approved' });
+      // That sub-agent runs and ends while the other spawn still waits.
+      const first = await until(() => getRun(id)?.children.find((c) => c.status === 'done'));
+      expect(first).toBeTruthy();
+      expect(listPending()).toHaveLength(1);
+      expect(getRun(id)?.status).toBe('awaiting_approval');
+
+      decide(pending[order[1]].id, { decision: 'approved' });
+      const parent = await waitFor(id);
+      expect(parent.status).toBe('done');
+      expect(parent.children.map((c) => c.status)).toEqual(['done', 'done']);
+    });
+  }
+
+  it('keep the parent waiting while a sub-agent waits and the parent asks too', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    respond = (ask) => {
+      if (ask.role === 'parent') {
+        if (ask.turn === 1)
+          return { content: [spawn('s1', { task: 'CHILD-Q: push', tools: ['*'] })] };
+        return { content: [text('done')] };
+      }
+      if (ask.turn === 1) {
+        return { content: [use('p1', 'run_shell', { command: 'git push origin HEAD' })] };
+      }
+      return { content: [text('refused')], wait: gate };
+    };
+    const id = enqueue(automation());
+    const pending = await until(() => listPending()[0]);
+    const child = getRun(id)?.children[0].id as string;
+    // The parent asked for nothing itself; it waits because its sub-agent does.
+    expect(getRun(id)?.status).toBe('awaiting_approval');
+    decide(pending.id, { decision: 'denied' });
+    await until(() => getRun(child)?.status === 'executing');
+    expect(getRun(id)?.status).toBe('executing');
+    release();
+    expect((await waitFor(id)).status).toBe('done');
+  });
+});
+
+describe('budget, more', () => {
+  it('with only a monthly budget, the pool is what is left of the month, checked before every call', async () => {
+    respond = (ask) => {
+      if (ask.role === 'parent') {
+        if (ask.turn === 1) {
+          return { content: [spawn('s1', { task: 'CHILD-MB: spend' })], outputTokens: 500 };
+        }
+        return { content: [text('Parent done.')], outputTokens: 500 };
+      }
+      return { content: [use(`r${ask.turn}`, 'list_files', {})], outputTokens: 500 };
+    };
+    const a = automation({ model: 'fake/dear', extra: 'budget:\n  max_usd_per_month: 4' });
+    const parent = await waitFor(enqueue(a));
+    const child = getRun(parent.children[0].id) as RunView;
+    expect(child.status).toBe('failed');
+    expect(child.exitReason).toMatch(/would pass the run's budget of \$4\.00/);
+    expect(parent.status).toBe('failed');
+    expect(parent.costUsd + parent.childCostUsd).toBeLessThanOrEqual(4);
+    expect(monthSpendUsd(a.id)).toBeCloseTo(parent.costUsd + parent.childCostUsd, 6);
+  });
+
+  it('counts a run’s sub-agents in its automation’s month, and nobody else’s', async () => {
+    respond = (ask) =>
+      ask.role === 'parent'
+        ? parentSpawning({ task: 'CHILD-S: spend' }, ask)
+        : { content: [text('ok')], outputTokens: 1_000 };
+    const a = automation();
+    const other = automation();
+    const parent = await waitFor(enqueue(a));
+    expect(parent.childCostUsd).toBeGreaterThan(0);
+    expect(monthSpendUsd(a.id)).toBeCloseTo(parent.costUsd + parent.childCostUsd, 9);
+    expect(monthSpendUsd(other.id)).toBe(0);
+    // A month that has not started yet has nothing in it.
+    const next = new Date();
+    next.setMonth(next.getMonth() + 1);
+    expect(monthSpendUsd(a.id, next)).toBe(0);
+  });
+});
+
+describe('stopping, more', () => {
+  it('the kill switch reaches sub-agents and their approvals', async () => {
+    const never = new Promise<void>(() => undefined);
+    respond = (ask) => {
+      if (ask.role === 'parent') {
+        return {
+          content: [
+            spawn('s1', { task: 'CHILD-K1: wait' }),
+            spawn('s2', { task: 'CHILD-K2: push', tools: ['*'] }),
+          ],
+        };
+      }
+      if (ask.task.startsWith('CHILD-K2') && ask.turn === 1) {
+        return { content: [use('p1', 'run_shell', { command: 'git push origin HEAD' })] };
+      }
+      return { content: [text('never')], wait: never };
+    };
+    const id = enqueue(automation());
+    await until(() => inFlight.child === 1 && listPending().length === 1);
+    // What the kill switch does (POST /kill).
+    denyAllPending('Kill switch engaged');
+    expect(cancelAllRuns('Kill switch engaged')).toBeGreaterThanOrEqual(3);
+    const parent = await waitFor(id);
+    expect(parent.status).toBe('cancelled');
+    for (const c of parent.children) {
+      expect((await waitFor(c.id)).status).toBe('cancelled');
+    }
+  });
+});
+
+describe('restart recovery', () => {
+  it('fails an unfinished sub-agent, refuses its approval, and says whose it was', async () => {
+    const dead = await new Promise<number>((resolve) => {
+      const p = spawnProcess('true', [], { stdio: 'ignore' });
+      p.once('exit', () => resolve(p.pid as number));
+    });
+    const a = automation();
+    const parentId = createRun({ trigger: 'manual', automationId: a.id, status: 'executing' });
+    const sessionId = createSubagentSession({ title: 'left behind', parentRunId: parentId });
+    const childId = createRun({
+      trigger: 'subagent',
+      parentRunId: parentId,
+      sessionId,
+      input: 'left behind',
+    });
+    const approval = requestApproval({
+      runId: childId,
+      tool: 'git.push',
+      tier: 'high',
+      reason: 'push',
+      parentRunId: parentId,
+    });
+    getStore()
+      .prepare('UPDATE runs SET status = ?, owner_pid = ?, owner_start = NULL WHERE id IN (?, ?)')
+      .run('awaiting_approval', dead, parentId, childId);
+    events = [];
+
+    await recoverAfterRestart();
+
+    const child = getRun(childId) as RunView;
+    expect(child.status).toBe('failed');
+    expect(child.exitReason).toBe(INTERRUPTED);
+    expect(child.parentRunId).toBe(parentId);
+    expect(getRun(parentId)?.status).toBe('failed');
+    expect(
+      getStore().prepare('SELECT decision, decided_by FROM approvals WHERE id = ?').get(approval.id)
+    ).toEqual({ decision: 'denied', decided_by: 'restart' });
+    expect(
+      events.find((e) => e.name === 'run.failed' && e.context.runId === childId)?.context
+    ).toEqual({ runId: childId, parentRunId: parentId, sessionId });
+    expect(
+      events.find((e) => e.name === 'approval.decided' && e.context.runId === childId)?.context
+    ).toMatchObject({ runId: childId, parentRunId: parentId });
   });
 });
