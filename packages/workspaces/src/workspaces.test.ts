@@ -96,6 +96,53 @@ describe('ensureRepo', () => {
     const second = await ensureRepo({ kind: 'remote', location: origin }, { cacheDir });
     expect(second).toBe(first);
   });
+
+  it('clones without a checkout: runs work in worktrees of their own', async () => {
+    const clone = await ensureRepo({ kind: 'remote', location: origin }, { cacheDir });
+    expect(fs.existsSync(path.join(clone, 'README.md'))).toBe(false);
+    const ws = await openWorkspace({ kind: 'remote', location: origin }, { cacheDir, branch: 'b' });
+    try {
+      expect(fs.readFileSync(path.join(ws.path, 'README.md'), 'utf8')).toBe('# fixture\n');
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it('clones once when two runs ask for the same remote at the same time', async () => {
+    const [a, b] = await Promise.all([
+      ensureRepo({ kind: 'remote', location: origin }, { cacheDir, fetch: false }),
+      ensureRepo({ kind: 'remote', location: origin }, { cacheDir, fetch: false }),
+    ]);
+    expect(a).toBe(b);
+    expect(await isRepo(a)).toBe(true);
+    // Nothing half-made is left beside it.
+    expect(fs.readdirSync(cacheDir).filter((n) => n.includes('.partial-'))).toEqual([]);
+  });
+
+  it('does not take a half-made clone for a finished one', async () => {
+    const target = path.join(cacheDir, cacheKey(origin));
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, 'junk'), 'left by a crash');
+    const clone = await ensureRepo({ kind: 'remote', location: origin }, { cacheDir });
+    expect(clone).toBe(target);
+    expect(await isRepo(clone)).toBe(true);
+    expect(fs.existsSync(path.join(clone, 'junk'))).toBe(false);
+  });
+});
+
+describe('gitDirs', () => {
+  it("names the repository's git directory and the worktree's own part of it", async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'g' });
+    try {
+      const dirs = await ws.gitDirs();
+      expect(dirs.commonDir).toBe(fs.realpathSync(path.join(local, '.git')));
+      expect(dirs.adminDir.startsWith(path.join(dirs.commonDir, 'worktrees'))).toBe(true);
+      expect(dirs.gitFile).toBe(path.join(ws.path, '.git'));
+      expect(fs.readFileSync(dirs.gitFile, 'utf8')).toContain(dirs.adminDir);
+    } finally {
+      await ws.dispose();
+    }
+  });
 });
 
 describe('openWorkspace', () => {

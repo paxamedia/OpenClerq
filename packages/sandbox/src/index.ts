@@ -21,7 +21,8 @@
  *
  *   container  Docker or Podman: separate filesystem, PID and network
  *              namespaces, with memory, CPU and process caps enforced by the
- *              kernel rather than by us. The server default.
+ *              kernel rather than by us. An egress allowlist is enforced per
+ *              host by a proxy container on an internal network.
  *
  * Every profile enforces a wall-clock timeout by killing the process group, and
  * redacts secret values from captured output.
@@ -31,8 +32,34 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { startEgressProxy, type DeniedAttempt, type EgressProxy } from './egress.js';
+import {
+  parseAllowlist,
+  startEgressProxy,
+  type DeniedAttempt,
+  type EgressProxy,
+} from './egress.js';
+import {
+  buildContainerArgs,
+  containerName,
+  removeContainer,
+  resolveRuntime,
+  runtimeCall,
+  startEgressSidecar,
+  type EgressSidecar,
+} from './container.js';
+import { SandboxError } from './errors.js';
 export { resolveWithinRoot, PathContainmentError } from './paths.js';
+export { SandboxError } from './errors.js';
+export {
+  buildContainerArgs,
+  containerName,
+  removeContainer,
+  resolveRuntime,
+  parseEgressLog,
+  EGRESS_SIDECAR_SCRIPT,
+  DEFAULT_EGRESS_IMAGE,
+  EGRESS_PORT,
+} from './container.js';
 
 export {
   startEgressProxy,
@@ -63,8 +90,35 @@ export interface SandboxSpec {
   profile: SandboxProfile;
   /** Working directory. The only writable location under seatbelt/container. */
   cwd: string;
+  /** The working directory is read-only as well (seatbelt, container). */
+  readOnlyCwd?: boolean;
   /** Additional writable paths. Use sparingly. */
   allowWrite?: string[];
+  /**
+   * Seatbelt: files the command may create or write whose path starts with one
+   * of these, such as a config file an agent CLI rewrites through a temporary
+   * sibling (`~/.claude.json`, `~/.claude.json.tmp.123`). Ignored elsewhere.
+   */
+  allowWritePrefix?: string[];
+  /**
+   * Paths the command may read. Under container, the only host paths it sees
+   * besides the working directory and `allowWrite`, mounted read-only at the
+   * same path. Under seatbelt they are readable even inside `denyRead`.
+   */
+  readOnly?: string[];
+  /**
+   * Paths inside a writable one that must stay read-only: a file or a
+   * directory. Seatbelt denies writing them; container mounts each that
+   * exists read-only over the writable mount.
+   */
+  protect?: string[];
+  /**
+   * Seatbelt: paths the command may neither read nor write (credential
+   * stores, the gateway's own state), except what `cwd`, `allowWrite` and
+   * `readOnly` name below them. The container profile sees nothing it is not
+   * given, so it ignores this.
+   */
+  denyRead?: string[];
   /**
    * Egress.
    *
@@ -98,6 +152,24 @@ export interface SandboxSpec {
   secrets?: Record<string, string>;
   /** Container image. Container profile only. */
   image?: string;
+  /** Container: a prefix for the container's name; a random suffix is added. */
+  containerName?: string;
+  /** Container: labels on the container, its egress proxy and network. */
+  labels?: Record<string, string>;
+  /**
+   * Container: `docker`, `podman`, or a path to one. Default: the
+   * CLERQ_CONTAINER_RUNTIME variable, then docker, then podman on PATH.
+   */
+  runtime?: string;
+  /** Container: the egress proxy's image, which needs `node`. Default node:24-alpine. */
+  egressImage?: string;
+}
+
+/** The container a command ran in, by name: what stops it is the runtime, not a signal. */
+export interface ContainerRef {
+  /** The runtime CLI, as a path. */
+  runtime: string;
+  name: string;
 }
 
 export interface ExecResult {
@@ -119,14 +191,6 @@ export interface ExecResult {
   egress?: { allowed: number; denied: DeniedAttempt[] };
 }
 
-export class SandboxError extends Error {
-  readonly code = 'sandbox_error';
-  constructor(message: string) {
-    super(message);
-    this.name = 'SandboxError';
-  }
-}
-
 export interface ExecOptions {
   /** Kills the process group when it aborts. The result then has `cancelled: true`. */
   signal?: AbortSignal;
@@ -141,13 +205,18 @@ export interface ExecOptions {
    * group, so `pgid` is the same number; a caller that records them can find
    * and stop the group later, even if this process has died. Errors thrown
    * here are swallowed: bookkeeping must not stop the command it describes.
+   *
+   * Under the container profile the process is the runtime CLI, and
+   * `container` names the container: stopping the CLI does not stop it, so a
+   * caller that cleans up later removes it by name (`removeContainer`).
    */
-  onSpawn?: (process: { pid: number; pgid: number }) => void;
+  onSpawn?: (process: { pid: number; pgid: number; container?: ContainerRef }) => void;
   /**
    * When the process exits, stop whatever it left running in its process
    * group: a dev server an agent started, a daemon a gate forked. They are
    * asked to stop, then killed after a short grace. Off by default, because a
    * command run on a user's behalf may be meant to leave something running.
+   * Under the container profile the container is removed whatever this says.
    */
   reapGroup?: boolean;
 }
@@ -215,13 +284,41 @@ export function redact(text: string, secrets: Record<string, string> | undefined
   return out;
 }
 
-/** Resolve symlinks where possible; fall back to a lexical resolve. */
+/**
+ * Resolve symlinks where possible. A path that does not exist yet is resolved
+ * through its nearest existing ancestor, so a rule for `~/.aws` written before
+ * that directory exists still matches it once it does.
+ */
 function canonical(p: string): string {
-  try {
-    return fs.realpathSync.native(path.resolve(p));
-  } catch {
-    return path.resolve(p);
+  const abs = path.resolve(p);
+  const rest: string[] = [];
+  let at = abs;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(at), ...rest);
+    } catch {
+      const parent = path.dirname(at);
+      if (parent === at) return abs;
+      rest.unshift(path.basename(at));
+      at = parent;
+    }
   }
+}
+
+/** A path as an SBPL string. Quotes and line breaks have no place in one. */
+function sbplPath(p: string): string {
+  if (/["\n\r\\]/.test(p)) {
+    throw new SandboxError(
+      `Cannot write a sandbox rule for a path with a quote or line break: ${p}`
+    );
+  }
+  return JSON.stringify(p);
+}
+
+/** A path prefix as an SBPL regular expression, matching it and anything longer. */
+function sbplPrefix(p: string): string {
+  sbplPath(p);
+  return `#"^${p.replace(/[.*+?^${}()|[\]]/g, '\\$&')}"`;
 }
 
 /** Reject paths that would let a caller escape the workspace by construction. */
@@ -235,8 +332,10 @@ function assertAbsolute(p: string, label: string): void {
  * Build a macOS seatbelt profile.
  *
  * Deny by default, then permit: reading the filesystem (so tooling can find
- * interpreters and libraries), writing only inside the workspace, and process
- * execution. Network is denied unless explicitly requested.
+ * interpreters and libraries) except `denyRead`, writing only inside the
+ * workspace and `allowWrite`, and process execution. Network is denied
+ * unless explicitly requested. Rules are matched last to first, so a later
+ * rule carves an exception out of an earlier one.
  */
 export function buildSeatbeltProfile(
   spec: SandboxSpec,
@@ -250,7 +349,12 @@ export function buildSeatbeltProfile(
   // let a sandboxed command write into every other process's temp files. exec()
   // instead creates a private temp directory per run and passes it in
   // allowWrite, with TMPDIR pointed at it.
-  const writable = [spec.cwd, ...(spec.allowWrite ?? [])].map(canonical);
+  const writable = [...(spec.readOnlyCwd ? [] : [spec.cwd]), ...(spec.allowWrite ?? [])].map(
+    canonical
+  );
+  const readable = [spec.cwd, ...(spec.allowWrite ?? []), ...(spec.readOnly ?? [])].map(canonical);
+  const denied = (spec.denyRead ?? []).map(canonical);
+  const protectedPaths = (spec.protect ?? []).map(canonical);
 
   const lines = [
     '(version 1)',
@@ -263,9 +367,20 @@ export function buildSeatbeltProfile(
     '(allow sysctl-read)',
     '(allow signal (target same-sandbox))',
     '(allow mach-lookup)',
+    // Except what must stay unread: credentials, the gateway's own state.
+    ...denied.map((d) => `(deny file-read* file-write* (subpath ${sbplPath(d)}))`),
+    // What the command is given stays readable, wherever it lives.
+    ...(denied.length > 0
+      ? readable.map((r) => `(allow file-read* (subpath ${sbplPath(r)}))`)
+      : []),
     // Writes: workspace and temp only.
-    ...writable.map((w) => `(allow file-write* (subpath ${JSON.stringify(path.resolve(w))}))`),
+    ...writable.map((w) => `(allow file-write* (subpath ${sbplPath(w)}))`),
+    ...(spec.allowWritePrefix ?? [])
+      .map(canonical)
+      .map((p) => `(allow file-write* (regex ${sbplPrefix(p)}))`),
     '(allow file-write-data (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr"))',
+    // Last, so nothing above re-opens them.
+    ...protectedPaths.map((p) => `(deny file-write* (subpath ${sbplPath(p)}))`),
   ];
 
   if (spec.network === 'all') {
@@ -284,77 +399,6 @@ export function buildSeatbeltProfile(
   }
 
   return lines.join('\n');
-}
-
-/** Build the docker/podman argument list. */
-export function buildContainerArgs(spec: SandboxSpec, command: string, args: string[]): string[] {
-  const limits = spec.limits ?? {};
-  const image = spec.image ?? 'docker.io/library/alpine:3.20';
-
-  const out = [
-    'run',
-    '--rm',
-    '-i',
-    // No new privileges, and drop every capability we are not using.
-    '--security-opt',
-    'no-new-privileges',
-    '--cap-drop',
-    'ALL',
-    // Root filesystem read-only; the workspace mount and /tmp are the exceptions.
-    '--read-only',
-    '--tmpfs',
-    '/tmp:rw,exec,nosuid,size=64m',
-    '-v',
-    `${path.resolve(spec.cwd)}:/workspace:rw`,
-    '-w',
-    '/workspace',
-  ];
-
-  if (spec.network !== 'all') {
-    // An allowlist never reaches here: exec() refuses it for this profile.
-    out.push('--network', 'none');
-  }
-
-  if (limits.memoryMb) out.push('--memory', `${limits.memoryMb}m`);
-  if (limits.cpus) out.push('--cpus', String(limits.cpus));
-  if (limits.processes) out.push('--pids-limit', String(limits.processes));
-
-  for (const [k, v] of Object.entries({ ...spec.env, ...spec.secrets })) {
-    // Passed by name; the value comes from the parent environment we set on the
-    // spawn, so it never appears in the process listing of the host.
-    out.push('-e', k);
-    void v;
-  }
-
-  out.push(image, command, ...args);
-  return out;
-}
-
-function detectContainerRuntime(): string | null {
-  for (const candidate of ['docker', 'podman']) {
-    const probe = spawnSyncQuiet(candidate, ['--version']);
-    if (probe) return candidate;
-  }
-  return null;
-}
-
-function spawnSyncQuiet(cmd: string, args: string[]): boolean {
-  try {
-    // Using the async spawn API synchronously is not possible; this is a cheap
-    // existence probe via PATH resolution instead.
-    const dirs = (process.env.PATH ?? '').split(path.delimiter);
-    return dirs.some((d) => {
-      try {
-        fs.accessSync(path.join(d, cmd), fs.constants.X_OK);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return false;
-  }
-  void args;
 }
 
 /** Whether any process is left in the group. */
@@ -437,6 +481,9 @@ export async function exec(
   let argv = args;
   let cleanup: (() => void) | undefined;
   let privateTmp: string | undefined;
+  /** The container, when the profile runs one: removed by name when the command ends. */
+  let container: ContainerRef | undefined;
+  let sidecar: EgressSidecar | undefined;
 
   // An empty allowlist allows nothing, which is what 'none' already means.
   const allowlist =
@@ -444,83 +491,132 @@ export async function exec(
   let proxy: EgressProxy | undefined;
   let proxyEnv: Record<string, string> = {};
 
-  if (allowlist && spec.profile !== 'seatbelt') {
+  if (allowlist && spec.profile === 'native') {
     throw new SandboxError(
-      `The "${spec.profile}" profile cannot enforce an egress allowlist. ` +
-        "Use network: 'none', or network: 'all' if unrestricted access is intended. " +
-        'Per-host egress needs a container on an internal network with an egress proxy, ' +
-        'which the operator configures outside the sandbox.'
+      'The "native" profile cannot enforce an egress allowlist. ' +
+        "Use network: 'none', or network: 'all' if unrestricted access is intended, " +
+        'or the seatbelt or container profile, which enforce one.'
     );
   }
 
-  if (spec.profile === 'native') {
-    warnings.push(
-      'Running without isolation (profile "native"). The command has this account\'s full filesystem and network reach.'
-    );
-  } else if (spec.profile === 'seatbelt') {
-    if (process.platform !== 'darwin') {
-      throw new SandboxError('The "seatbelt" profile requires macOS. Use "container" elsewhere.');
-    }
-    // A private temp directory, writable by this run alone, so commands that
-    // need scratch space work without opening the shared temp directory.
-    privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-run-'));
-
-    if (allowlist) {
-      proxy = await startEgressProxy(allowlist);
-      const url = proxy.url;
-      // Set both cases: tooling is split on which it reads.
-      proxyEnv = {
-        HTTP_PROXY: url,
-        HTTPS_PROXY: url,
-        ALL_PROXY: url,
-        http_proxy: url,
-        https_proxy: url,
-        all_proxy: url,
-        NO_PROXY: '',
-        no_proxy: '',
-      };
+  try {
+    if (spec.profile === 'native') {
       warnings.push(
-        'Egress is restricted to the allowlist through a local proxy. macOS can only filter by ' +
-          'port, so a command that connects to an outside host on the proxy port is not stopped; ' +
-          'and a client that ignores the proxy variables reaches nothing at all.'
+        'Running without isolation (profile "native"). The command has this account\'s full filesystem and network reach.'
       );
-    }
-
-    const profileText = buildSeatbeltProfile(
-      {
-        ...spec,
-        allowWrite: [...(spec.allowWrite ?? []), privateTmp],
-      },
-      { egressProxyPort: proxy?.port }
-    );
-    const sbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-sb-'));
-    const profilePath = path.join(sbDir, 'profile.sb');
-    fs.writeFileSync(profilePath, profileText, 'utf8');
-    cleanup = () => {
-      for (const d of [sbDir, privateTmp]) {
-        try {
-          if (d) fs.rmSync(d, { recursive: true, force: true });
-        } catch {
-          /* best effort */
-        }
+    } else if (spec.profile === 'seatbelt') {
+      if (process.platform !== 'darwin') {
+        throw new SandboxError('The "seatbelt" profile requires macOS. Use "container" elsewhere.');
       }
-    };
-    file = 'sandbox-exec';
-    argv = ['-f', profilePath, command, ...args];
-  } else if (spec.profile === 'container') {
-    const runtime = detectContainerRuntime();
-    if (!runtime) {
-      throw new SandboxError(
-        'The "container" profile needs docker or podman on PATH, and neither was found.'
+      // A private temp directory, writable by this run alone, so commands that
+      // need scratch space work without opening the shared temp directory.
+      privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-run-'));
+
+      if (allowlist) {
+        proxy = await startEgressProxy(allowlist);
+        const url = proxy.url;
+        // Set both cases: tooling is split on which it reads.
+        proxyEnv = {
+          HTTP_PROXY: url,
+          HTTPS_PROXY: url,
+          ALL_PROXY: url,
+          http_proxy: url,
+          https_proxy: url,
+          all_proxy: url,
+          NO_PROXY: '',
+          no_proxy: '',
+        };
+        warnings.push(
+          'Egress is restricted to the allowlist through a local proxy. macOS can only filter by ' +
+            'port, so a command that connects to an outside host on the proxy port is not stopped; ' +
+            'and a client that ignores the proxy variables reaches nothing at all.'
+        );
+      }
+
+      const profileText = buildSeatbeltProfile(
+        {
+          ...spec,
+          allowWrite: [...(spec.allowWrite ?? []), privateTmp],
+        },
+        { egressProxyPort: proxy?.port }
       );
+      const sbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-sb-'));
+      const profilePath = path.join(sbDir, 'profile.sb');
+      fs.writeFileSync(profilePath, profileText, 'utf8');
+      cleanup = () => {
+        for (const d of [sbDir, privateTmp]) {
+          try {
+            if (d) fs.rmSync(d, { recursive: true, force: true });
+          } catch {
+            /* best effort */
+          }
+        }
+      };
+      file = 'sandbox-exec';
+      argv = ['-f', profilePath, command, ...args];
+    } else if (spec.profile === 'container') {
+      const runtime = resolveRuntime(spec.runtime);
+      if (!runtime) {
+        throw new SandboxError(
+          spec.runtime || process.env.CLERQ_CONTAINER_RUNTIME
+            ? `The "container" profile was told to use ${spec.runtime ?? process.env.CLERQ_CONTAINER_RUNTIME}, which was not found.`
+            : 'The "container" profile needs docker or podman on PATH, and neither was found.'
+        );
+      }
+      container = { runtime, name: containerName(spec.containerName) };
+      if (allowlist) {
+        sidecar = await startEgressSidecar(runtime, container.name, parseAllowlist(allowlist), {
+          image: spec.egressImage,
+          labels: spec.labels,
+        });
+        proxyEnv = sidecar.proxyEnv;
+        warnings.push(
+          'Egress is restricted to the allowlist by a proxy container: the command is on an ' +
+            'internal network whose only way out is the proxy. A client that ignores the proxy ' +
+            'variables reaches nothing at all.'
+        );
+      }
+      const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+      const gid = typeof process.getgid === 'function' ? process.getgid() : undefined;
+      file = runtime;
+      argv = buildContainerArgs(spec, command, args, {
+        name: container.name,
+        network: sidecar?.network,
+        proxyEnv,
+        ...(uid !== undefined && gid !== undefined ? { user: `${uid}:${gid}` } : {}),
+      });
+    } else {
+      throw new SandboxError(`Unknown sandbox profile "${String(spec.profile)}".`);
     }
-    file = runtime;
-    argv = buildContainerArgs(spec, command, args);
-  } else {
-    throw new SandboxError(`Unknown sandbox profile "${String(spec.profile)}".`);
+  } catch (e) {
+    // Nothing of a sandbox that could not be set up is left behind.
+    if (privateTmp) fs.rmSync(privateTmp, { recursive: true, force: true });
+    cleanup?.();
+    await proxy?.close();
+    if (container) await removeContainer(container.runtime, container.name);
+    throw e;
   }
 
   const started = Date.now();
+
+  /**
+   * Remove what the profile created for this command: the container (which
+   * outlives a killed runtime CLI), its egress proxy and network, the
+   * seatbelt profile and private temp directory. Resolves with what the
+   * container's egress proxy recorded. Never rejects.
+   */
+  let egressSeen: ExecResult['egress'];
+  const teardown = async (): Promise<void> => {
+    cleanup?.();
+    if (sidecar) {
+      try {
+        egressSeen = await sidecar.finish();
+      } catch {
+        /* nothing recorded */
+      }
+    }
+    if (container) await removeContainer(container.runtime, container.name);
+  };
 
   return new Promise<ExecResult>((resolve, reject) => {
     let child;
@@ -540,14 +636,19 @@ export async function exec(
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (e) {
-      cleanup?.();
-      reject(new SandboxError(`Could not start sandbox: ${e instanceof Error ? e.message : e}`));
+      void teardown().then(() =>
+        reject(new SandboxError(`Could not start sandbox: ${e instanceof Error ? e.message : e}`))
+      );
       return;
     }
 
     if (child.pid !== undefined) {
       try {
-        options.onSpawn?.({ pid: child.pid, pgid: child.pid });
+        options.onSpawn?.({
+          pid: child.pid,
+          pgid: child.pid,
+          ...(container ? { container } : {}),
+        });
       } catch {
         /* bookkeeping must not stop the command */
       }
@@ -620,6 +721,8 @@ export async function exec(
     };
 
     const stop = () => {
+      // The container is not in the process group: the runtime stops it.
+      if (container) void runtimeCall(container.runtime, ['kill', container.name]);
       killTree('SIGTERM');
       // Escalate if it ignores the polite request.
       setTimeout(() => killTree('SIGKILL'), 2000).unref?.();
@@ -644,15 +747,19 @@ export async function exec(
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
-    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+    const finish = async (code: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
       emitLines('out', '', true);
       emitLines('err', '', true);
-      cleanup?.();
-      const egress = proxy ? { allowed: proxy.allowed, denied: [...proxy.denied] } : undefined;
+      // Before resolving, so nothing of the command is left when the caller
+      // goes on to remove its worktree.
+      await teardown();
+      const egress = proxy
+        ? { allowed: proxy.allowed, denied: [...proxy.denied] }
+        : (egressSeen ?? undefined);
       // The proxy outlives nothing: the run is over, so its only route out closes.
       void proxy?.close();
       resolve({
@@ -675,12 +782,13 @@ export async function exec(
       settled = true;
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
-      cleanup?.();
       void proxy?.close();
-      reject(new SandboxError(`Sandbox failed to run "${file}": ${e.message}`));
+      void teardown().then(() =>
+        reject(new SandboxError(`Sandbox failed to run "${file}": ${e.message}`))
+      );
     });
 
-    child.on('close', (code, signal) => finish(code, signal));
+    child.on('close', (code, signal) => void finish(code, signal));
   });
 }
 
@@ -688,7 +796,7 @@ export async function exec(
 export function availableProfiles(): SandboxProfile[] {
   const out: SandboxProfile[] = ['native'];
   if (process.platform === 'darwin') out.push('seatbelt');
-  if (detectContainerRuntime()) out.push('container');
+  if (resolveRuntime()) out.push('container');
   return out;
 }
 

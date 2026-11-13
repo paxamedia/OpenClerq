@@ -20,6 +20,7 @@ import { git, isRepo, currentBranch, headSha, defaultBranch, GitError } from './
 
 export { git, isRepo, currentBranch, headSha, defaultBranch, GitError } from './git.js';
 export * from './publish.js';
+export * from './forge.js';
 
 export type RepoKind = 'local' | 'remote';
 
@@ -38,6 +39,21 @@ export interface WorkspaceOptions {
   branch?: string;
   /** Credentials for cloning or fetching a private remote. */
   env?: Record<string, string>;
+  /**
+   * Fetch a remote that is already in the cache. Default true; a caller that
+   * fetches what it needs itself (one branch) turns it off.
+   */
+  fetch?: boolean;
+}
+
+/** Where a worktree's git data lives. */
+export interface GitDirs {
+  /** The repository's git directory: objects, refs, config, hooks. */
+  commonDir: string;
+  /** This worktree's own directory inside it: its HEAD and index. */
+  adminDir: string;
+  /** The `.git` file in the worktree that points at `adminDir`. */
+  gitFile: string;
 }
 
 export interface DiffStat {
@@ -183,6 +199,21 @@ export class Workspace {
     await git(args, this.opts());
   }
 
+  /**
+   * Where this worktree's git data is: the repository's git directory, and the
+   * worktree's own part of it. A sandbox needs them to let the agent read the
+   * history while keeping it from rewriting what the gateway's own git
+   * commands will later trust (config, hooks, the pointer files).
+   */
+  async gitDirs(): Promise<GitDirs> {
+    const r = await git(
+      ['rev-parse', '--path-format=absolute', '--git-common-dir', '--git-dir'],
+      this.opts()
+    );
+    const [commonDir, adminDir] = r.stdout.trim().split('\n');
+    return { commonDir, adminDir, gitFile: path.join(this.path, '.git') };
+  }
+
   /** Remove the worktree. Safe to call twice. */
   async dispose(): Promise<void> {
     if (!this.isWorktree) return;
@@ -224,14 +255,47 @@ export async function ensureRepo(repo: RepoRef, options?: WorkspaceOptions): Pro
   fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
   const target = path.join(cacheDir, cacheKey(repo.location));
 
-  if (fs.existsSync(target) && (await isRepo(target))) {
-    await git(['fetch', '--all', '--prune'], { cwd: target, env: options?.env });
-    return target;
-  }
+  // One clone per cache entry at a time: two runs of the same remote must not
+  // both clone into it, or one remove the other's half-made clone.
+  return once(target, async () => {
+    if (fs.existsSync(target) && (await isRepo(target))) {
+      if (options?.fetch !== false) {
+        await git(['fetch', '--all', '--prune'], { cwd: target, env: options?.env });
+      }
+      return target;
+    }
 
-  fs.rmSync(target, { recursive: true, force: true });
-  await git(['clone', repo.location, target], { cwd: cacheDir, env: options?.env });
-  return target;
+    fs.rmSync(target, { recursive: true, force: true });
+    // Into a temporary name, then moved: an interrupted clone is never taken
+    // for a finished one. No checkout: runs work in worktrees of their own.
+    const partial = `${target}.partial-${crypto.randomBytes(4).toString('hex')}`;
+    try {
+      await git(['clone', '--no-checkout', repo.location, partial], {
+        cwd: cacheDir,
+        env: options?.env,
+        timeoutMs: 600_000,
+      });
+      fs.renameSync(partial, target);
+    } finally {
+      fs.rmSync(partial, { recursive: true, force: true });
+    }
+    return target;
+  });
+}
+
+const inFlight = new Map<string, Promise<unknown>>();
+
+/** Run `work` for `key` after any earlier work for the same key has ended. */
+function once<T>(key: string, work: () => Promise<T>): Promise<T> {
+  const before = inFlight.get(key) ?? Promise.resolve();
+  const next = before.catch(() => undefined).then(work);
+  inFlight.set(key, next);
+  void next
+    .catch(() => undefined)
+    .finally(() => {
+      if (inFlight.get(key) === next) inFlight.delete(key);
+    });
+  return next;
 }
 
 /**

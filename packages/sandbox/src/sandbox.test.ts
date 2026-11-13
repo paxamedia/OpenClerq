@@ -88,7 +88,15 @@ describe('profile construction', () => {
     expect(a).toEqual(expect.arrayContaining(['--cap-drop', 'ALL']));
     expect(a).toEqual(expect.arrayContaining(['--security-opt', 'no-new-privileges']));
     expect(a).toEqual(expect.arrayContaining(['--network', 'none']));
-    expect(a).toEqual(expect.arrayContaining(['-w', '/workspace']));
+    // Mounted at the path it has on the host: a git worktree names its git
+    // directory by absolute path, so the paths must agree inside.
+    expect(a).toEqual(expect.arrayContaining(['-w', path.resolve(work)]));
+    expect(a).toEqual(
+      expect.arrayContaining([
+        '--mount',
+        `type=bind,source=${path.resolve(work)},target=${path.resolve(work)}`,
+      ])
+    );
     expect(a[a.length - 2]).toBe('echo');
     expect(a[a.length - 1]).toBe('x');
   });
@@ -140,9 +148,6 @@ describe('validation', () => {
     // caller believes egress is restricted when nothing restricts it.
     await expect(
       exec({ profile: 'native', cwd: work, network: ['example.com'] }, 'true')
-    ).rejects.toThrow(/cannot enforce an egress allowlist/);
-    await expect(
-      exec({ profile: 'container', cwd: work, network: ['example.com'] }, 'true')
     ).rejects.toThrow(/cannot enforce an egress allowlist/);
   });
 
