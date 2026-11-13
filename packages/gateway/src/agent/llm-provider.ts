@@ -23,6 +23,7 @@ import {
   overrideProvider,
   userRegistryPath,
   ProviderError,
+  isUnavailable,
   type CallResult,
   type ChatMessage,
   type ProviderSpec,
@@ -31,6 +32,7 @@ import {
 import { loadReasoning } from '../reasoning-config.js';
 import { recordLLMSuccess, recordLLMFailure } from '../observability.js';
 import { recordModelCall, currentRunSignal } from '../runs.js';
+import { getDefaultFallback, recordFallback } from '../routing.js';
 
 export interface LLMCallResult {
   text: string;
@@ -168,8 +170,19 @@ export interface ChatCallOptions {
   messages: ChatMessage[];
   /** Omitted in the console's raw mode: nothing is added to the conversation. */
   system?: string;
-  /** A bare model for the configured provider, or "provider/model". */
+  /**
+   * A bare model for the configured provider, or "provider/model". A model
+   * named here was chosen by a person (or a client acting for one), and is used
+   * as chosen: it never falls back to another. Without one the call goes to
+   * the configured default, which may.
+   */
   model?: string;
+  /**
+   * Use the default model as it is, without the default fallback chain. The
+   * console's raw mode sets it: a raw call is one transparent request to one
+   * model, and moving the conversation to another vendor is not that.
+   */
+  strict?: boolean;
   maxTokens?: number;
   temperature?: number;
   /** Called with each delta when the answer should stream. */
@@ -184,6 +197,50 @@ export interface ChatCallOptions {
  * comparison — so tokens and cost are recorded in exactly one place.
  */
 export async function chat(opts: ChatCallOptions): Promise<CallResult> {
+  // A model a person chose is used as chosen. The default may be replaced by
+  // the next model of the default chain when it is unavailable.
+  const asChosen = opts.strict || Boolean(opts.model?.trim());
+  const candidates = (asChosen ? [opts.model] : [undefined, ...getDefaultFallback()])
+    .map((model) => ({ model, ref: describeModel(model) }))
+    // The same model twice (the default listed in the chain) is tried once.
+    .filter((c, i, all) => c.ref === undefined || all.findIndex((x) => x.ref === c.ref) === i);
+  let streamed = false;
+  const onDelta = opts.onDelta
+    ? (text: string) => {
+        streamed = true;
+        opts.onDelta?.(text);
+      }
+    : undefined;
+  for (let i = 0; ; i++) {
+    const { model, ref } = candidates[i];
+    try {
+      return await chatOnce({ ...opts, model, onDelta });
+    } catch (e) {
+      // Another model only when this one cannot be used, and nothing of its
+      // answer has been sent on yet.
+      const next = candidates[i + 1];
+      if (!isUnavailable(e) || streamed || !next) throw e;
+      recordFallback({
+        from: ref ?? model,
+        to: next.ref ?? (next.model as string),
+        reason: e instanceof Error ? e.message : String(e),
+        scope: 'chat',
+      });
+    }
+  }
+}
+
+/** The `provider/model` a model reference resolves to, or undefined when it does not. */
+function describeModel(model: string | undefined): string | undefined {
+  try {
+    const t = resolveTarget(model);
+    return `${t.provider.id}/${t.model}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function chatOnce(opts: ChatCallOptions): Promise<CallResult> {
   const started = Date.now();
   const promptForRecord = opts.messages.at(-1)?.content ?? '';
   let target: Target | undefined;

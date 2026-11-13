@@ -97,7 +97,7 @@ export async function sendMessage(input: SendInput): Promise<SendResult> {
 
   let runId = '';
   const message = await recordRun(
-    { trigger: 'manual', message: text, signal: input.signal },
+    { trigger: 'manual', message: text, signal: input.signal, sessionId: session.id },
     async () => {
       runId = currentRunId() as string;
       input.onStart?.(runId);
@@ -112,10 +112,12 @@ export async function sendMessage(input: SendInput): Promise<SendResult> {
         });
       }
 
-      // Raw: the conversation as it stands, and nothing else. No system prompt.
+      // Raw: the conversation as it stands, and nothing else. No system prompt,
+      // and no moving it to another model if this one is unavailable.
       const res = await chat({
         messages: conversation(session.id),
         model,
+        strict: true,
         onDelta: input.onDelta,
       });
       return addMessage(session.id, {
@@ -184,7 +186,7 @@ export async function compare(input: {
 
   let runId = '';
   const columns = await recordRun(
-    { trigger: 'manual', message: text, signal: input.signal },
+    { trigger: 'manual', message: text, signal: input.signal, sessionId: session.id },
     async () => {
       runId = currentRunId() as string;
       return Promise.all(

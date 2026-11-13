@@ -785,6 +785,13 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
       ok({ models: ['claude-sonnet-5-5', 'claude-haiku-5-5'], current: 'claude-sonnet-5-5' }),
     providers: () =>
       ok({ providers, current: { provider: 'anthropic', model: 'claude-sonnet-5-5' } }),
+    routing: () =>
+      ok({
+        default: { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+        fallback: [] as string[],
+        maxFallback: 5,
+      }),
+    setRouting: (fallback: string[]) => ok({ fallback }),
     automations: () => ok({ automations: automations.map(({ source: _s, ...a }) => a) }),
     automation: (id: string) => {
       const a = automations.find((x) => x.id === id);

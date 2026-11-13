@@ -12,10 +12,13 @@
  * a model of their own.
  */
 
+import { audit } from '@clerq/store';
+import { findProvider } from '@clerq/providers';
 import { emit } from './events.js';
 import { logger } from './logger.js';
+import { recordLLMFallback } from './observability.js';
 import { addRunStep, currentRunId, currentSessionId } from './runs.js';
-import { isStoreOpen } from './store.js';
+import { getStore, isStoreOpen } from './store.js';
 
 /** What `model.fallback` says. */
 export interface FallbackInfo {
@@ -54,6 +57,7 @@ export function recordFallback(
     ...(info.skipped?.length ? { skipped: info.skipped } : {}),
   };
   try {
+    recordLLMFallback();
     emit('model.fallback', payload, { runId, sessionId });
     if (runId && isStoreOpen()) {
       addRunStep(runId, {
@@ -71,4 +75,83 @@ export function recordFallback(
       err: e instanceof Error ? e.message : String(e),
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// The default chain for chat and tasks
+// ---------------------------------------------------------------------------
+
+/** The most models the default chain may list. */
+export const MAX_DEFAULT_FALLBACK = 5;
+const SETTING = 'routing.fallback';
+
+export class RoutingError extends Error {
+  readonly code = 'invalid_routing';
+  constructor(message: string) {
+    super(message);
+    this.name = 'RoutingError';
+  }
+}
+
+/**
+ * The models managed chat, `/task`, `/explain` and the gateway's own triggers
+ * use, in order, when the default model is unavailable. Empty when none is set,
+ * which is the default: nothing is sent to a provider the user did not name.
+ * A call that names a model of its own never uses it.
+ */
+export function getDefaultFallback(): string[] {
+  if (!isStoreOpen()) return [];
+  try {
+    const row = getStore().prepare('SELECT value FROM settings WHERE key = ?').get(SETTING);
+    if (!row) return [];
+    const parsed = JSON.parse(String(row.value)) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((m): m is string => typeof m === 'string') : [];
+  } catch {
+    // A damaged setting is no chain, never a failed call.
+    return [];
+  }
+}
+
+/**
+ * Set the default chain. Each entry is `provider/model` with a provider the
+ * registry knows: a bare model id would mean "of the configured provider",
+ * which is the one a fallback is for when it is down.
+ */
+export function setDefaultFallback(
+  models: unknown,
+  registry: Parameters<typeof findProvider>[0],
+  actor = 'operator'
+): string[] {
+  if (!Array.isArray(models)) {
+    throw new RoutingError('fallback must be a list of models, e.g. ["openai/gpt-5-mini"].');
+  }
+  if (models.length > MAX_DEFAULT_FALLBACK) {
+    throw new RoutingError(`fallback may list at most ${MAX_DEFAULT_FALLBACK} models.`);
+  }
+  const list = models.map((m, i) => {
+    if (typeof m !== 'string' || !m.trim()) {
+      throw new RoutingError(`fallback entry ${i + 1} must be a model name.`);
+    }
+    const ref = m.trim();
+    const slash = ref.indexOf('/');
+    if (slash <= 0 || slash === ref.length - 1) {
+      throw new RoutingError(`"${ref}" must name the provider too, as provider/model.`);
+    }
+    try {
+      findProvider(registry, ref.slice(0, slash));
+    } catch (e) {
+      throw new RoutingError(e instanceof Error ? e.message : String(e));
+    }
+    return ref;
+  });
+  const dup = list.find((m, i) => list.indexOf(m) !== i);
+  if (dup) throw new RoutingError(`"${dup}" is listed twice.`);
+  const db = getStore();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(SETTING, JSON.stringify(list), now);
+  audit(db, { actor, action: 'routing.updated', detail: { fallback: list } });
+  return list;
 }

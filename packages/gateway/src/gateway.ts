@@ -86,6 +86,7 @@ import {
 } from './chat/console.js';
 
 import { mountAutomationRoutes, recoverAfterRestart } from './automations/routes.js';
+import { mountRoutingRoutes } from './routing-routes.js';
 import { startAutomationSchedules, stopAutomationSchedules } from './automations/scheduler.js';
 import { readKillPause, writeKillPause } from './kill-state.js';
 import {
@@ -897,6 +898,7 @@ export function createGateway(config: GatewayConfig = {}): {
   // Automations: scheduled agent runs that end in a draft pull request.
   // Their schedules pause with the triggers under the kill switch.
   mountAutomationRoutes(app, automationDeps, () => triggersPausedAt === null);
+  mountRoutingRoutes(app);
 
   app.post('/calculate/eval', async (req: Request, res: Response) => {
     if (!fssync.existsSync(calcPath)) {

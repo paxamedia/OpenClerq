@@ -10,6 +10,7 @@ let llmInputTokens = 0;
 let llmOutputTokens = 0;
 let llmCostUsd = 0;
 let llmUnpricedCalls = 0;
+let llmFallbacks = 0;
 const MAX_SAMPLES = 100;
 
 export function recordLLMSuccess(
@@ -32,6 +33,11 @@ export function recordLLMFailure(): void {
   llmCallsFailed += 1;
 }
 
+/** A call moved to another model because the first was unavailable. */
+export function recordLLMFallback(): void {
+  llmFallbacks += 1;
+}
+
 export function getObservability() {
   const avgLatency =
     llmLatencyMs.length > 0
@@ -48,5 +54,7 @@ export function getObservability() {
     llm_cost_usd_total: Math.round(llmCostUsd * 1e6) / 1e6,
     /** Calls whose model has no registry price; when non-zero the cost total is a lower bound. */
     llm_unpriced_calls_total: llmUnpricedCalls,
+    /** Times a call or a run moved to a fallback model because the one in use was unavailable. */
+    llm_fallbacks_total: llmFallbacks,
   };
 }

@@ -159,6 +159,8 @@ export interface RunSummary {
   /** The branch an automation run committed to. */
   branch?: string;
   prUrl?: string;
+  /** A model a person named for this run, used as chosen: it never fell back to another. */
+  modelOverride?: string;
 }
 
 export interface ArtifactInfo {
@@ -528,6 +530,8 @@ export const gateway = {
     service: string;
     llm_cost_usd_total?: number;
     llm_unpriced_calls_total?: number;
+    /** Times a call or a run moved to a fallback model because the one in use was unavailable. */
+    llm_fallbacks_total?: number;
   }> {
     return fetchJson('/metrics');
   },
@@ -621,6 +625,22 @@ export const gateway = {
     current: { provider: string; model: string };
   }> {
     return fetchJson('/providers');
+  },
+
+  /**
+   * The default model, and the models chat and tasks use, in order, when it is
+   * unavailable. A call that names a model of its own never falls back.
+   */
+  routing(): Promise<{
+    default: { provider: string; model: string };
+    fallback: string[];
+    maxFallback: number;
+  }> {
+    return fetchJson('/routing');
+  },
+
+  setRouting(fallback: string[]): Promise<{ fallback: string[] }> {
+    return fetchJson('/routing', { method: 'PUT', body: JSON.stringify({ fallback }) });
   },
 
   // --- Chat console -----------------------------------------------------
@@ -831,10 +851,17 @@ export const gateway = {
     });
   },
 
-  /** Start a run now. Resolves once the run exists; follow it with run(). */
-  /** `queued` is true when the run waits for a place under the limit on runs at once. */
-  runAutomation(id: string): Promise<{ runId: string; queued?: boolean }> {
-    return fetchJson(`/automations/${encodeURIComponent(id)}/run`, { method: 'POST', body: '{}' });
+  /**
+   * Start a run now. Resolves once the run exists; follow it with run().
+   * `queued` is true when the run waits for a place under the limit on runs at once.
+   * `model` runs it with that model instead of the spec's primary, used as chosen:
+   * if it is unavailable the run fails, and does not fall back to another.
+   */
+  runAutomation(id: string, model?: string): Promise<{ runId: string; queued?: boolean }> {
+    return fetchJson(`/automations/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      body: JSON.stringify(model ? { model } : {}),
+    });
   },
 
   modules(): Promise<{ modules: ModuleInfo[] }> {
