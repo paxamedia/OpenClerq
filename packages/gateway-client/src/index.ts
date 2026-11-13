@@ -303,7 +303,21 @@ export interface AutomationSummary {
 export interface AutomationPreview {
   nextRunAt: string | null;
   nextFirings: string[];
-  repo: { path: string; origin?: string | null; project?: string | null; base?: string };
+  /**
+   * The repository as the spec names it (`target`): a local `path` with its
+   * `origin`, or a remote's `url`, with the forge and project either way.
+   * `cache` is a remote's clone, once a run has made it.
+   */
+  repo: {
+    target: string;
+    path?: string;
+    origin?: string | null;
+    url?: string;
+    forge?: 'github' | 'gitlab' | null;
+    project?: string | null;
+    base?: string;
+    cache?: string;
+  };
   driver: DriverInfo;
   checks: Array<{ level: 'ok' | 'warning' | 'error'; message: string }>;
   ready: boolean;
