@@ -93,8 +93,10 @@ Both adapters take tool definitions and return the model's tool calls in one sha
 `@clerq/providers`), buffered or streamed: Anthropic's `tool_use` / `tool_result` blocks and
 `input_json_delta` fragments, and the chat-completions `tools` / `tool_calls` / `role: "tool"`
 messages and indexed argument fragments. Tool input that is not valid JSON is flagged, never
-guessed at. A model's own reasoning (Anthropic `thinking` blocks, `reasoning_content`) is kept
-opaque and handed back unchanged to the adapter that produced it. Each call still carries its
+guessed at. Anthropic `thinking` blocks are kept opaque and handed back unchanged, as the API
+requires in a tool round. An OpenAI-compatible server's `reasoning_content` is sent back only when
+its registry entry sets `replayReasoning: true`; some servers need it, and DeepSeek's reasoner
+refuses a request that carries it. Each call still carries its
 tokens and cost, and an unpriced cloud model's cost is unknown, not zero. A server that refuses
 `max_tokens` and names `max_completion_tokens` (OpenAI's reasoning models) is retried once with it.
 
@@ -238,11 +240,14 @@ cannot be read is not held against the CLI.
 `builtin` runs the agent loop in the gateway's own process, over any model in the provider
 registry: `agent.model` names it as `provider/model` (`anthropic/claude-sonnet-4-5`,
 `deepseek/deepseek-chat`, `ollama/llama3.2`). Its key is the provider's usual variable, or
-`agent.api_key_secret` from the vault; the key is used for the model call only, and the commands
-the agent runs never see it. Its tools work in the run's worktree: read, list and search files,
+`agent.api_key_secret` from the vault. The key is used for the model call and is not put in any
+command's environment; under full access, though, a command runs as the gateway's user and can
+read what that user can. Tool inputs and outputs are redacted of the vault values the run uses
+before they are stored or shown to the model. Its tools work in the run's worktree: read, list and search files,
 write and edit them, run a shell command, and `git status` / `git diff`; see
 [TOOLS.md](TOOLS.md#5-agent-tools-builtin-driver). Every path goes through the same canonical
-containment check as the gateway's `fs.read`, and each command runs through `@clerq/sandbox` as a
+containment check as the gateway's `fs.read`, which follows links whose target does not exist yet,
+files are written without following a link at the last step, and each command runs through `@clerq/sandbox` as a
 process group that is stopped when it exits, with a time limit and an output cap.
 
 Every tool call is decided by `packages/policy` first. Full access is the default: in
@@ -251,17 +256,21 @@ that publishes (`git push`, `gh pr create`) is judged as `git.push` and waits in
 inbox in every mode, as the run's own push does; this reads the command's words, so a script that
 pushes without saying so is not caught. In `default` mode, writes and commands wait in the inbox,
 the run shows `awaiting_approval` meanwhile, and a request nobody answers within
-`approvals.timeout` is refused. `agent.allowed_tools` takes policy rules (`fs.read`, `fs.*`,
+`approvals.timeout`, or before the agent's own time limit runs out, is refused and closed. `agent.allowed_tools` takes policy rules (`fs.read`, `fs.*`,
 `group:fs`, `risk:read`) and narrows the tool set to what they name; a run makes at most 400 tool
 calls.
 
-The loop stops after 60 model turns, at `sandbox.timeout`, or when the next call would pass
-`budget.max_usd_per_run`, measured from each call's recorded cost. A spec that sets a dollar
+The loop stops after 60 model turns, at `sandbox.timeout`, or when the next call, counted at its
+full output limit, would pass `budget.max_usd_per_run`, measured from each call's recorded cost; a
+summary call is checked the same way. When a reply stops at the output limit, its last tool call
+is not run, and the model is asked to send it again. A turn that ends with no answer (only
+reasoning, or a stop reason other than finishing) fails the run. A spec that sets a dollar
 budget for a cloud model with no price in `providers.yaml` fails the spec check, saying so. Each
 model call is a run step with its tokens and cost, and each tool call a step and a row in
 `tool_calls` (name, input, output, status, duration and whether a person was asked). When the
-conversation nears the model's context window, older turns are summarised by the model; the task
-stays pinned, and the compaction is recorded as a `context.compact` step.
+conversation nears the model's context window, older turns are summarised by the model, unless
+that would free too little to be worth it; the task stays pinned, a later drop never discards an
+earlier summary, and each compaction is recorded as a `context.compact` step.
 
 `GET /drivers` lists `builtin` with each provider and whether it has a key; with a model, `detect`
 checks that model's key, its price when the spec sets a budget, and that a local server answers.

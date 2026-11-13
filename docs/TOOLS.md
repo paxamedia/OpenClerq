@@ -179,9 +179,14 @@ first.
 | `git.diff`      | `git_diff`     | `read`    | `git diff HEAD`, for one path or as a `--stat` summary                                     |
 
 - Every path is resolved inside the worktree by the same check as `fs.read` above: no absolute
-  paths, no `..` out of it, no symlink that leads outside.
-- Commands get the sandbox's minimal environment (`PATH`, `HOME`, the user and locale), never the
-  gateway token or the model's API key. Anything a command leaves running in its process group is stopped when it exits.
+  paths, no `..` out of it, no symlink that leads outside, including one whose target does not
+  exist yet. Files are written without following a link at the last step, and a new file is
+  created exclusively.
+- Commands get the sandbox's minimal environment (`PATH`, `HOME`, the user and locale), without the
+  gateway token or the model's API key. Under full access a command runs as the gateway's user and
+  can read what that user can; inputs and outputs are redacted of the vault values the run uses
+  before they are stored or returned to the model. Anything a command leaves running in its process group is stopped when it exits.
+- `read_file` pages by whole lines, up to 30,000 characters, and says which offset to read on from.
 - A result longer than 30,000 characters keeps its start and end, with a marker in the middle
   saying how much was cut and how to get the rest (read with `offset`, narrow the search).
 - A `run_shell` command that publishes (`git push`, `gh pr create|merge`, `gh release create`,
