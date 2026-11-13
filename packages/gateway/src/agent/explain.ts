@@ -82,6 +82,17 @@ function buildPrompt(req: PromptInput): { systemPrompt: string; userContent: str
 }
 
 /**
+ * The system prompt a managed request is sent with: the configured prompt,
+ * the selected skill's instructions and the memory block. A managed chat
+ * message adds its tool instructions after it.
+ */
+export function managedSystemPrompt(
+  req: Pick<PromptInput, 'skillSlug' | 'skillName' | 'skillInstructions' | 'memory'>
+): string {
+  return buildPrompt({ ...req, question: '' }).systemPrompt;
+}
+
+/**
  * Build the context that would be sent to the LLM, without making a call.
  */
 export function buildContextPreview(req: PromptInput): ContextPreview {

@@ -117,6 +117,8 @@ function summary(a: Automation) {
     monthSpendUsd: monthSpendUsd(a.id),
     monthBudgetUsd: a.spec?.budget.maxUsdPerMonth ?? null,
     lastRun: lastRun(a.id),
+    // `chat <session id>` for one saved from a chat draft.
+    authoredBy: a.authoredBy ?? null,
     updatedAt: a.updatedAt,
   };
 }
@@ -126,7 +128,7 @@ function summary(a: Automation) {
  * repository, the driver, the next scheduled time, and what will need a token
  * or an approval.
  */
-async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: string) {
+export async function previewSpec(spec: AutomationSpec, deps: RunnerDeps, automationId?: string) {
   const checks: Array<{ level: 'ok' | 'warning' | 'error'; message: string }> = [];
   const repo: Record<string, unknown> = { target: spec.repo.target };
   let forge: { forge: 'github' | 'gitlab'; project: string } | null = null;
@@ -354,7 +356,7 @@ export function mountAutomationRoutes(
     try {
       const body = (req.body ?? {}) as { id?: unknown };
       res.json(
-        await preview(
+        await previewSpec(
           parseSpec(specText(req), { registry: specRegistry() }),
           deps,
           typeof body.id === 'string' ? body.id : undefined

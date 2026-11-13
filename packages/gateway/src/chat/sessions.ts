@@ -15,15 +15,37 @@
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { getStore } from '../store.js';
 
 export type PipelineMode = 'raw' | 'managed';
+
+/**
+ * How a managed conversation's agent treats the folder attached to it, as
+ * the builtin agent's permission modes say: `acceptEdits` (the default, full
+ * access) works without asking; `default` asks before writes and commands;
+ * `plan` only reads. A push always waits.
+ */
+export type ChatPermissionMode = 'acceptEdits' | 'default' | 'plan';
+export const CHAT_PERMISSION_MODES: readonly ChatPermissionMode[] = [
+  'acceptEdits',
+  'default',
+  'plan',
+];
 
 export interface Session {
   id: string;
   title: string | null;
   mode: PipelineMode;
   model: string | null;
+  /**
+   * A folder attached to a managed conversation: its agent reads, writes and
+   * runs commands there. Without one the agent has no file or shell tools.
+   */
+  workspace: string | null;
+  permissionMode: ChatPermissionMode;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -55,19 +77,35 @@ export function parseMode(value: unknown, fallback: PipelineMode = 'raw'): Pipel
   return value;
 }
 
-function rowToSession(r: Record<string, unknown>): Session {
-  let mode: PipelineMode = 'raw';
+interface SessionMeta {
+  mode?: PipelineMode;
+  workspace?: string;
+  permissionMode?: ChatPermissionMode;
+  [key: string]: unknown;
+}
+
+function metaOf(r: Record<string, unknown>): SessionMeta {
   try {
-    const meta = JSON.parse(String(r.metadata ?? '{}')) as { mode?: PipelineMode };
-    if (meta.mode === 'managed') mode = 'managed';
+    const parsed = JSON.parse(String(r.metadata ?? '{}')) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as SessionMeta) : {};
   } catch {
     /* a malformed row still lists, in the safer mode */
+    return {};
   }
+}
+
+function rowToSession(r: Record<string, unknown>): Session {
+  const meta = metaOf(r);
+  const mode: PipelineMode = meta.mode === 'managed' ? 'managed' : 'raw';
   return {
     id: String(r.id),
     title: r.title === null || r.title === undefined ? null : String(r.title),
     mode,
     model: r.model === null || r.model === undefined ? null : String(r.model),
+    workspace: typeof meta.workspace === 'string' ? meta.workspace : null,
+    permissionMode: CHAT_PERMISSION_MODES.includes(meta.permissionMode as ChatPermissionMode)
+      ? (meta.permissionMode as ChatPermissionMode)
+      : 'acceptEdits',
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
     messageCount: Number(r.message_count ?? 0),
@@ -83,9 +121,14 @@ export function createSession(
     title?: string;
     mode?: unknown;
     model?: string;
+    workspace?: unknown;
+    permissionMode?: unknown;
   } = {}
 ): Session {
   const mode = parseMode(input.mode);
+  const workspace = input.workspace === undefined ? null : parseWorkspace(input.workspace);
+  const permissionMode =
+    input.permissionMode === undefined ? undefined : parsePermissionMode(input.permissionMode);
   const id = `ses_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
   getStore()
@@ -97,7 +140,11 @@ export function createSession(
       id,
       input.title?.trim() || null,
       input.model?.trim() || null,
-      JSON.stringify({ mode }),
+      JSON.stringify({
+        mode,
+        ...(workspace ? { workspace } : {}),
+        ...(permissionMode ? { permissionMode } : {}),
+      }),
       now,
       now
     );
@@ -158,19 +205,68 @@ export function getSession(id: string): Session | null {
   return row ? rowToSession(row) : null;
 }
 
+/**
+ * A folder to attach to a conversation: an existing directory, by its real
+ * path (`~` expanded). Null or "" detaches. The file system root is refused.
+ */
+export function parseWorkspace(value: unknown): string | null {
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string') throw new SessionError('workspace must be a folder path or null.');
+  const expanded = value.trim().replace(/^~(?=$|[\\/])/, os.homedir());
+  if (!path.isAbsolute(expanded)) {
+    throw new SessionError('workspace must be an absolute path (or start with ~).');
+  }
+  let real: string;
+  try {
+    real = fs.realpathSync.native(expanded);
+  } catch {
+    throw new SessionError(`${expanded} does not exist.`);
+  }
+  if (!fs.statSync(real).isDirectory()) throw new SessionError(`${real} is not a folder.`);
+  if (path.dirname(real) === real) {
+    throw new SessionError('Attach a project folder, not the root of the disk.');
+  }
+  return real;
+}
+
+export function parsePermissionMode(value: unknown): ChatPermissionMode {
+  if (!CHAT_PERMISSION_MODES.includes(value as ChatPermissionMode)) {
+    throw new SessionError(`permissionMode must be one of ${CHAT_PERMISSION_MODES.join(', ')}.`);
+  }
+  return value as ChatPermissionMode;
+}
+
 export function updateSession(
   id: string,
-  patch: { title?: string; mode?: unknown; model?: string | null }
+  patch: {
+    title?: string;
+    mode?: unknown;
+    model?: string | null;
+    workspace?: unknown;
+    permissionMode?: unknown;
+  }
 ): Session | null {
-  const current = getSession(id);
-  if (!current) return null;
+  const row = getStore().prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+  if (!row) return null;
+  const current = rowToSession(row);
+  const meta = metaOf(row);
   const mode = patch.mode === undefined ? current.mode : parseMode(patch.mode);
   const title = patch.title === undefined ? current.title : patch.title.trim() || null;
   const model = patch.model === undefined ? current.model : (patch.model?.trim() ?? null) || null;
+  const workspace =
+    patch.workspace === undefined ? current.workspace : parseWorkspace(patch.workspace);
+  const permissionMode =
+    patch.permissionMode === undefined
+      ? current.permissionMode
+      : parsePermissionMode(patch.permissionMode);
 
+  // Other keys (a sub-agent's parent) are kept as they are.
+  const next: SessionMeta = { ...meta, mode, permissionMode };
+  if (workspace) next.workspace = workspace;
+  else delete next.workspace;
   getStore()
     .prepare('UPDATE sessions SET title = ?, model = ?, metadata = ?, updated_at = ? WHERE id = ?')
-    .run(title, model, JSON.stringify({ mode }), new Date().toISOString(), id);
+    .run(title, model, JSON.stringify(next), new Date().toISOString(), id);
   return getSession(id);
 }
 

@@ -590,13 +590,24 @@ export interface ToolCallRecord {
   status: ToolCallStatus;
   durationMs?: number;
   approvalState: ApprovalState | null;
+  createdAt: string;
+  finishedAt?: string;
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 /** A run's tool calls, in the order they were made. */
 export function listToolCalls(runId: string): ToolCallRecord[] {
   return getStore()
     .prepare(
-      `SELECT id, step_seq, call_id, name, input, output, status, duration_ms, approval_state
+      `SELECT id, step_seq, call_id, name, input, output, status, duration_ms, approval_state,
+              created_at, finished_at
        FROM tool_calls WHERE run_id = ? ORDER BY id`
     )
     .all(runId)
@@ -605,11 +616,13 @@ export function listToolCalls(runId: string): ToolCallRecord[] {
       stepSeq: r.step_seq === null ? undefined : Number(r.step_seq),
       callId: r.call_id === null ? undefined : String(r.call_id),
       name: String(r.name),
-      input: r.input ? JSON.parse(String(r.input)) : undefined,
+      input: r.input ? parseJson(String(r.input)) : undefined,
       output: r.output === null ? undefined : String(r.output),
       status: String(r.status) as ToolCallStatus,
       durationMs: r.duration_ms === null ? undefined : Number(r.duration_ms),
       approvalState: r.approval_state === null ? null : (String(r.approval_state) as ApprovalState),
+      createdAt: String(r.created_at),
+      finishedAt: r.finished_at === null ? undefined : String(r.finished_at),
     }));
 }
 
@@ -631,6 +644,8 @@ export function getRun(id: string):
       children: ChildRun[];
       /** What they cost, on top of the run's own `costUsd`. */
       childCostUsd: number;
+      /** The tool calls its agent made, in order (builtin agent and chat; CLI drivers' as reported). */
+      toolCalls: ToolCallRecord[];
     })
   | null {
   const db = getStore();
@@ -662,6 +677,7 @@ export function getRun(id: string):
     artifacts: listArtifacts(id),
     children,
     childCostUsd: Math.round(children.reduce((sum, c) => sum + c.costUsd, 0) * 1e6) / 1e6,
+    toolCalls: listToolCalls(id),
   };
 }
 
@@ -893,6 +909,12 @@ export async function recordRun<T>(
     triggerId: input.triggerId,
     input: input.message,
     status: input.status,
+    // Kept on the row when the conversation exists (a chat message's run).
+    sessionId:
+      input.sessionId &&
+      getStore().prepare('SELECT 1 AS hit FROM sessions WHERE id = ?').get(input.sessionId)
+        ? input.sessionId
+        : undefined,
   });
   input.onCreated?.(runId);
   return executeRun(runId, input, fn);

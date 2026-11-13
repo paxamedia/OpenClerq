@@ -2,9 +2,11 @@
  * The chat console's two jobs: talk to a model, and compare several.
  *
  * Every message is a run, so a conversation leaves the same durable trace an
- * automation does — including what each model call cost. Nothing here reaches
- * the filesystem or a tool: a raw conversation is a text channel, and the
- * policy engine has nothing to decide about it.
+ * automation does — including what each model call cost. A raw message (and a
+ * comparison) is a text channel: one call with the conversation as it is, no
+ * system prompt, no memory, no tools, so the policy engine has nothing to
+ * decide. A managed message runs the agent loop the gateway injects
+ * (`ManagedPipeline`, see managed.ts); nothing in this file reaches a tool.
  */
 
 import { chat } from '../agent/llm-provider.js';
@@ -26,13 +28,19 @@ import { logger } from '../logger.js';
 
 /**
  * The managed pipeline, injected so this module stays free of the agent wiring.
- * It is given the conversation before this message, so a turn sees the ones before it.
+ * It is given the conversation before this message, so a turn sees the ones
+ * before it, and runs as the message's run.
  */
-export type ManagedPipeline = (
-  message: string,
-  model: string | undefined,
-  history: Array<{ role: 'user' | 'assistant'; content: string }>
-) => Promise<{ explanation: string; model?: string; skillSlug?: string }>;
+export type ManagedPipeline = (input: {
+  session: Session;
+  runId: string;
+  text: string;
+  /** A model a person chose (this message's, or the conversation's). */
+  model: string | undefined;
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  onDelta?: (text: string) => void;
+  onEvent?: (event: Record<string, unknown> & { type: string }) => void;
+}) => Promise<{ text: string; meta: Record<string, unknown> }>;
 
 export interface SendInput {
   sessionId: string;
@@ -41,6 +49,8 @@ export interface SendInput {
   mode?: unknown;
   model?: string;
   onDelta?: (text: string) => void;
+  /** Managed mode: tool activity, approvals and drafts as they happen. */
+  onEvent?: (event: Record<string, unknown> & { type: string }) => void;
   /** Called once the run exists, with its id — before any model call. */
   onStart?: (runId: string) => void;
   managed?: ManagedPipeline;
@@ -104,11 +114,19 @@ export async function sendMessage(input: SendInput): Promise<SendResult> {
 
       if (mode === 'managed') {
         if (!input.managed) throw new SessionError('The managed pipeline is not available here.');
-        const result = await input.managed(text, model, history);
+        const result = await input.managed({
+          session,
+          runId,
+          text,
+          model,
+          history,
+          onDelta: input.onDelta,
+          onEvent: input.onEvent,
+        });
         return addMessage(session.id, {
           role: 'assistant',
-          content: result.explanation,
-          meta: { mode, model: result.model, skillSlug: result.skillSlug, runId },
+          content: result.text,
+          meta: { ...result.meta, mode, runId },
         });
       }
 

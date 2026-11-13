@@ -19,6 +19,11 @@ export interface GatewayConfig {
   toolsConfig?: import('./tools.js').ToolConfig;
   /** Automation runner overrides; tests pass a fake driver, forge and vault. */
   automations?: Partial<import('./automations/runner.js').RunnerDeps>;
+  /**
+   * The agent a managed chat message runs. Default: the builtin driver over the
+   * gateway's model registry. Tests pass one with a scripted model.
+   */
+  chatDriver?: import('@clerq/drivers').Driver;
 }
 
 export interface GatewayContext {

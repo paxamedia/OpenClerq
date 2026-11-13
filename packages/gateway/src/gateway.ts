@@ -61,6 +61,7 @@ import {
   recordRun,
   listRuns,
   getRun,
+  listToolCalls,
   currentRunId,
   cancelRun,
   cancelAllRuns,
@@ -86,6 +87,12 @@ import {
   promote,
   type ManagedPipeline,
 } from './chat/console.js';
+import { managedContext, runManagedTurn, toolPrompt, type ManagedDeps } from './chat/managed.js';
+import { dryRunDraft, getDraft, listDrafts, saveDraft } from './chat/drafts.js';
+import { SpecError } from './automations/spec.js';
+import { AutomationError } from './automations/store.js';
+import { defaultDriver } from './automations/runner.js';
+import { resolveTarget } from './agent/llm-provider.js';
 
 import { mountAutomationRoutes, recoverAfterRestart } from './automations/routes.js';
 import { mountRoutingRoutes } from './routing-routes.js';
@@ -724,12 +731,28 @@ export function createGateway(config: GatewayConfig = {}): {
     }
     const signal = disconnectSignal(res, body.continueOnDisconnect);
 
-    const managed: ManagedPipeline = async (message, model, history) => {
-      const result = await runTaskFromContext(message, { model, history });
+    const managed: ManagedPipeline = async ({ onDelta, onEvent, ...turn }) => {
+      const result = await runManagedTurn(managedDeps, {
+        ...turn,
+        onEvent: (e) => (e.type === 'delta' ? onDelta?.(e.text) : onEvent?.(e)),
+      });
+      const slash = result.model.indexOf('/');
       return {
-        explanation: result.explanation,
-        model: result.model,
-        skillSlug: result.skillSlug,
+        text: result.text,
+        meta: {
+          provider: result.model.slice(0, slash),
+          model: result.model.slice(slash + 1),
+          tokensIn: result.result.tokensIn,
+          tokensOut: result.result.tokensOut,
+          costUsd: result.result.costUsd,
+          latencyMs: result.result.durationMs,
+          turns: result.result.turns,
+          toolCalls: result.toolCalls,
+          ...(result.context.skill ? { skillSlug: result.context.skill.slug } : {}),
+          ...(result.context.memory ? { memoryCount: result.context.memory.count } : {}),
+          ...(result.drafts.length ? { drafts: result.drafts } : {}),
+          ...(result.context.workspace ? { workspace: result.context.workspace } : {}),
+        },
       };
     };
 
@@ -759,6 +782,8 @@ export function createGateway(config: GatewayConfig = {}): {
         // The run id comes first, so the client can cancel by id.
         onStart: (runId) => send({ type: 'start', runId }),
         onDelta: (text) => send({ type: 'delta', text }),
+        // Managed: tool activity, approvals to answer, drafts.
+        onEvent: (event) => send(event),
       });
       send({ type: 'done', ...result });
     } catch (e) {
@@ -800,6 +825,126 @@ export function createGateway(config: GatewayConfig = {}): {
     }
   });
 
+  /**
+   * What managed mode adds to a message, beside what raw sends: the system
+   * prompt (configured prompt, skill, memory block, tool instructions), the
+   * tools offered and how policy decides each, the model and its fallback
+   * chain. Nothing is sent to a model.
+   */
+  app.post('/sessions/:id/mode-diff', async (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    const body = (req.body ?? {}) as { text?: unknown; model?: unknown };
+    try {
+      const session = getSession(id);
+      if (!session) return res.status(404).json({ error: 'session_not_found', id });
+      if (body.model !== undefined && typeof body.model !== 'string') {
+        throw new SessionError('model must be a model reference string.');
+      }
+      const text = typeof body.text === 'string' ? body.text : '';
+      const model = (body.model as string | undefined)?.trim() || session.model || undefined;
+      const history = conversation(id);
+      const messages = [
+        ...history,
+        ...(text.trim() ? [{ role: 'user' as const, content: text }] : []),
+      ];
+      let rawModel: string | null = null;
+      try {
+        const t = resolveTarget(model);
+        rawModel = `${t.provider.id}/${t.model}`;
+      } catch {
+        // Unresolvable: the managed side says why.
+      }
+      const managed = await managedContext(managedDeps, session, text, model);
+      res.json({
+        raw: {
+          system: null,
+          messages,
+          tools: [],
+          memory: null,
+          model: rawModel,
+          fallbackModels: [],
+        },
+        managed: {
+          system: managed.system,
+          messages,
+          skill: managed.skill,
+          memory: managed.memory,
+          tools: managed.tools,
+          model: managed.model,
+          chosen: managed.chosen,
+          fallbackModels: managed.fallbackModels,
+          workspace: managed.workspace,
+          permissionMode: managed.permissionMode,
+        },
+      });
+    } catch (e) {
+      return chatError(res, e, 'mode_diff_failed');
+    }
+  });
+
+  /** A spec problem in a draft is the caller's to see, with its line. */
+  function draftError(res: Response, e: unknown, code: string): Response {
+    if (e instanceof SpecError) {
+      return res
+        .status(400)
+        .json({ error: 'invalid_spec', message: e.message, line: e.line, column: e.column });
+    }
+    if (e instanceof AutomationError) {
+      return res
+        .status(e.code === 'not_found' ? 404 : 409)
+        .json({ error: e.code, message: e.message });
+    }
+    return chatError(res, e, code);
+  }
+
+  // Automations drafted in a conversation: read, dry-run and save, by a person.
+  // Saving makes an automation that is switched off; nothing here switches one on.
+  app.get('/sessions/:id/drafts', (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    try {
+      if (!getSession(id)) return res.status(404).json({ error: 'session_not_found', id });
+      res.json({ drafts: listDrafts(id) });
+    } catch (e) {
+      return draftError(res, e, 'drafts_list_failed');
+    }
+  });
+
+  app.get('/sessions/:id/drafts/:draftId', (req: Request, res: Response) => {
+    const draft = getDraft(String(req.params?.id ?? ''), String(req.params?.draftId ?? ''));
+    if (!draft) return res.status(404).json({ error: 'draft_not_found' });
+    res.json(draft);
+  });
+
+  app.post('/sessions/:id/drafts/:draftId/dry-run', async (req: Request, res: Response) => {
+    try {
+      res.json(
+        await dryRunDraft(
+          String(req.params?.id ?? ''),
+          String(req.params?.draftId ?? ''),
+          automationDeps
+        )
+      );
+    } catch (e) {
+      return draftError(res, e, 'draft_dry_run_failed');
+    }
+  });
+
+  app.post('/sessions/:id/drafts/:draftId/save', (req: Request, res: Response) => {
+    try {
+      const sessionId = String(req.params?.id ?? '');
+      const automation = saveDraft(sessionId, String(req.params?.draftId ?? ''));
+      res.status(201).json({
+        id: automation.id,
+        name: automation.name,
+        enabled: automation.enabled,
+        authoredBy: automation.authoredBy ?? null,
+        source: automation.source,
+      });
+    } catch (e) {
+      return draftError(res, e, 'draft_save_failed');
+    }
+  });
+
   app.get('/runs', (req: Request, res: Response) => {
     // `since` (an ISO time) bounds the list by age, for views over a period;
     // it may then hold more runs than the default page.
@@ -830,6 +975,18 @@ export function createGateway(config: GatewayConfig = {}): {
       return res.status(404).json({ error: 'run_not_active', id });
     }
     res.json({ ok: true, id });
+  });
+
+  /** The tool calls a run's agent made, in order. */
+  app.get('/runs/:id/tool-calls', (req: Request, res: Response) => {
+    const id = String(req.params?.id ?? '');
+    try {
+      if (!getRun(id)) return res.status(404).json({ error: 'run_not_found', id });
+      res.json({ toolCalls: listToolCalls(id) });
+    } catch (e) {
+      logger.error('tool calls error', { id, err: e instanceof Error ? e.message : String(e) });
+      res.status(500).json({ error: 'tool_calls_failed' });
+    }
   });
 
   app.get('/runs/:id', (req: Request, res: Response) => {
@@ -956,6 +1113,9 @@ export function createGateway(config: GatewayConfig = {}): {
         // What a managed turn would carry from memory, under the memory policy.
         memory: savedNotes(question)?.text,
       });
+      // A managed chat message ends its system prompt with the word on its tools.
+      const session = sessionId ? getSession(sessionId) : null;
+      if (session) preview.systemPrompt += `\n\n${toolPrompt(session.workspace)}`;
       res.json(preview);
     } catch (e) {
       logger.error('context preview error', { err: e instanceof Error ? e.message : String(e) });
@@ -1048,20 +1208,12 @@ export function createGateway(config: GatewayConfig = {}): {
     return [skillsDir, ...getModuleSkillsDirs(modules.loaded())];
   }
 
-  /**
-   * The managed pipeline. Only a chat session passes history; /task and triggers are single-turn.
-   * It reads saved notes unless `memory` is false, which triggers and webhooks say: they run
-   * unattended, and a webhook's message may be written by whoever calls it.
-   */
-  async function runTaskFromContext(
-    message: string,
-    opts: { model?: string; dryRun?: boolean; history?: ChatMessage[]; memory?: boolean } = {}
-  ) {
+  /** Every skill: the configured directory's, then each module's not already seen. */
+  async function allSkills(): Promise<Awaited<ReturnType<typeof loadSkillsFromDir>>> {
     let skills: Awaited<ReturnType<typeof loadSkillsFromDir>> = [];
     try {
       skills = await loadSkillsFromDir(skillsDir);
-      const moduleSkillsDirs = getModuleSkillsDirs(modules.loaded());
-      for (const dir of moduleSkillsDirs) {
+      for (const dir of getModuleSkillsDirs(modules.loaded())) {
         const fromModule = await loadSkillsFromDir(dir);
         const seen = new Set(skills.map((s) => s.slug));
         for (const s of fromModule) {
@@ -1072,9 +1224,38 @@ export function createGateway(config: GatewayConfig = {}): {
         }
       }
     } catch {
-      // continue
+      // continue with what was read
     }
-    const selection = selectSkill(message.trim(), skills);
+    return skills;
+  }
+
+  /** What a managed chat message runs with. */
+  const managedDeps: ManagedDeps = {
+    driver: config.chatDriver ?? defaultDriver('builtin'),
+    async selectSkill(message) {
+      const selection = selectSkill(message, await allSkills());
+      if (!selection.skillSlug) return {};
+      const skill = await loadSkillContentFrom(allSkillsDirs(), selection.skillSlug);
+      return {
+        slug: selection.skillSlug,
+        name: selection.skill?.name,
+        instructions: skill?.body,
+      };
+    },
+    memory: (message) => savedNotes(message),
+    path: () => automationDeps.path(),
+  };
+
+  /**
+   * The managed pipeline. Only a chat session passes history; /task and triggers are single-turn.
+   * It reads saved notes unless `memory` is false, which triggers and webhooks say: they run
+   * unattended, and a webhook's message may be written by whoever calls it.
+   */
+  async function runTaskFromContext(
+    message: string,
+    opts: { model?: string; dryRun?: boolean; history?: ChatMessage[]; memory?: boolean } = {}
+  ) {
+    const selection = selectSkill(message.trim(), await allSkills());
     const skill = selection.skillSlug
       ? await loadSkillContentFrom(allSkillsDirs(), selection.skillSlug)
       : null;

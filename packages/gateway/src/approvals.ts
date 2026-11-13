@@ -28,6 +28,8 @@ export interface ApprovalRequest {
   requestedAt: string;
   /** Asked by a sub-agent: the run that started it, which the request is shown under. */
   parentRunId?: string;
+  /** Asked from a chat: the conversation whose message is waiting. */
+  sessionId?: string;
 }
 
 export interface ApprovalDecision {
@@ -136,7 +138,7 @@ export function decide(id: number, decision: ApprovalDecision): boolean {
 export function listPending(): ApprovalRequest[] {
   return getStore()
     .prepare(
-      `SELECT a.id, a.run_id, a.requested_at, a.reason, r.parent_run_id
+      `SELECT a.id, a.run_id, a.requested_at, a.reason, r.parent_run_id, r.session_id
        FROM approvals a LEFT JOIN runs r ON r.id = a.run_id
        WHERE a.decision IS NULL ORDER BY a.id`
     )
@@ -156,6 +158,8 @@ export function listPending(): ApprovalRequest[] {
         reason: meta.reason ?? '',
         requestedAt: String(r.requested_at),
         ...(r.parent_run_id ? { parentRunId: String(r.parent_run_id) } : {}),
+        // A sub-agent's own session is its transcript, not a conversation to open.
+        ...(r.session_id && !r.parent_run_id ? { sessionId: String(r.session_id) } : {}),
       };
     });
 }

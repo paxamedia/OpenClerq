@@ -60,8 +60,6 @@ import {
   addRunStep,
   completeRunStep,
   addArtifact,
-  addToolCall,
-  completeToolCall,
   getRun,
   RunCancelled,
   runCostWithChildren,
@@ -73,6 +71,7 @@ import {
   decide,
   openApprovalsOf,
   tierFor,
+  type ApprovalRequest,
 } from '../approvals.js';
 import { agentRegistry } from '../agent/llm-provider.js';
 import { emit } from '../events.js';
@@ -83,6 +82,7 @@ import { diffFiles, evaluateAssertion, type DiffFile } from './diff-assert.js';
 import { retryPlan, transientCause, TransientFailure } from './retry.js';
 import { checkModels, isSpecFault, judgeChain, keyAppliesTo, planModels } from './model-chain.js';
 import { recordFallback } from '../routing.js';
+import { eventRecorder } from '../agent/record-events.js';
 import { memoryBlock } from '../memory-context.js';
 import { SpendPool, subagentSpawner } from './subagents.js';
 import { isolationFor, profileProblem, type RunIsolation } from './isolation.js';
@@ -986,15 +986,10 @@ export async function runAgent(
   extras: AgentExtras = {}
 ): Promise<DriverResult> {
   const ctx = runEventContext(runId);
-  const pending = new Map<string, { seq: number; row: number; started: number }>();
+  const recorder = eventRecorder(runId);
   const log: string[] = [];
   let model: string | undefined;
   let result: DriverResult | undefined;
-  // A driver that reports its model calls one by one has them recorded as they
-  // happen; for one that does not, its own total is recorded at the end.
-  let modelCalls = 0;
-  let lastModelError: string | undefined;
-
   for await (const raw of driver.run({
     prompt: attempt.prompt,
     cwd: ws.path,
@@ -1023,75 +1018,17 @@ export async function runAgent(
     ...(extras.system ? { system: extras.system } : {}),
   })) {
     const event = scrub(raw, inUse);
+    // Narration, tool calls, model calls and compactions: recorded as every agent's are.
+    if (recorder.record(event)) continue;
     switch (event.type) {
       case 'started':
         model = event.model;
         emit('agent.turn.started', { driver: driver.id, model }, ctx);
         break;
-      case 'text':
-        // Narration, not a model call: status "text" keeps it out of cost accounting.
-        addRunStep(runId, { kind: 'llm', output: { text: event.text }, status: 'text' });
-        break;
-      case 'tool_call': {
-        const seq = addRunStep(runId, {
-          kind: 'tool',
-          input: { name: event.name, input: event.input },
-          status: 'running',
-        });
-        const row = addToolCall(runId, {
-          stepSeq: seq,
-          callId: event.id,
-          name: event.name,
-          input: event.input,
-        });
-        pending.set(event.id, { seq, row, started: Date.now() });
-        emit('tool.started', { name: event.name }, { ...ctx, toolCallId: event.id });
-        break;
-      }
-      case 'tool_result': {
-        const call = pending.get(event.id);
-        if (call) {
-          const status = event.denied ? 'denied' : event.isError ? 'error' : 'ok';
-          const durationMs = Date.now() - call.started;
-          const output = tail(event.output, 16_000);
-          completeRunStep(runId, call.seq, { output: { text: output }, status, durationMs });
-          completeToolCall(call.row, { output, status, durationMs, approval: event.approval });
-          pending.delete(event.id);
-        }
-        emit(
-          event.isError ? 'tool.failed' : 'tool.completed',
-          {},
-          { ...ctx, toolCallId: event.id }
-        );
-        break;
-      }
       case 'log':
         log.push(`[${event.stream}] ${event.line}`);
         if (log.length > 500) log.shift();
         break;
-      case 'model_call': {
-        modelCalls += 1;
-        const c = event.call;
-        lastModelError = c.ok ? undefined : c.error;
-        recordModelCall({
-          provider: c.provider,
-          model: c.model,
-          prompt:
-            c.purpose === 'turn'
-              ? `Agent turn ${c.turn}`
-              : `Summary of earlier context, before turn ${c.turn + 1}`,
-          status: c.ok ? 'ok' : 'error',
-          text:
-            c.text ||
-            (c.toolCalls ? `${c.toolCalls} tool call${c.toolCalls === 1 ? '' : 's'}` : ''),
-          error: c.error,
-          tokensIn: c.tokensIn,
-          tokensOut: c.tokensOut,
-          costUsd: c.costUsd,
-          latencyMs: c.latencyMs,
-        });
-        break;
-      }
       case 'model_fallback':
         // The call that failed is the model_call before this; here the move. The
         // model it left is down for the rest of the run: a later attempt (an
@@ -1109,16 +1046,6 @@ export async function runAgent(
           ctx
         );
         break;
-      case 'context': {
-        const { type: _type, action: _action, ...record } = event;
-        addRunStep(runId, {
-          kind: 'tool',
-          input: { name: 'context.compact', method: event.method },
-          output: record,
-          status: event.method === 'summary' ? 'ok' : 'warning',
-        });
-        break;
-      }
       case 'finished':
         result = event.result;
         break;
@@ -1127,7 +1054,7 @@ export async function runAgent(
   if (!result) {
     // Nothing was reported, but the attempt may still have spent: say so on
     // the run, whose cost then reads as a lower bound.
-    if (modelCalls === 0)
+    if (recorder.modelCalls === 0)
       recordModelCall({
         provider: driver.id,
         model: model ?? attempt.model ?? 'default',
@@ -1142,7 +1069,7 @@ export async function runAgent(
 
   // The CLI's own account of what the run cost. On a subscription it is the
   // API-equivalent price, which is still the right measure for a budget.
-  if (modelCalls === 0)
+  if (recorder.modelCalls === 0)
     recordModelCall({
       provider: driver.id,
       model: model ?? attempt.model ?? 'default',
@@ -1171,7 +1098,7 @@ export async function runAgent(
   if (log.length > 0) addArtifact(runId, 'log', log.join('\n'), 'agent.log');
   emit('agent.turn.completed', { ok: result.ok }, ctx);
   if (!result.ok) {
-    const cause = transientCause(result, lastModelError);
+    const cause = transientCause(result, recorder.lastModelError);
     throw cause ? new TransientFailure(result.summary, cause) : new Error(result.summary);
   }
   return result;
@@ -1197,7 +1124,42 @@ export async function approveToolCall(
   /** Asked by a sub-agent: the run that started it, which waits too. */
   parentRunId?: string
 ): Promise<boolean> {
-  const parent = parentRunId ? { runId: parentRunId } : undefined;
+  return askForApproval(request, {
+    runId,
+    signal,
+    timeoutMs: spec.approvals.timeoutMs,
+    reason: parentRunId
+      ? `A sub-agent of run ${parentRunId} wants to run ${request.tool}. ${request.reason}`
+      : `The agent wants to run ${request.tool}. ${request.reason}`,
+    arguments: { automation: spec.name },
+    parentRunId,
+  });
+}
+
+/**
+ * Ask a person about one tool call of a run and wait for the answer: the run
+ * shows as awaiting approval meanwhile (and its parent, for a sub-agent's).
+ * Unanswered within `timeoutMs` or by the agent's deadline, or stopped, the
+ * call is refused and the request settled. Shared by automation runs and chat.
+ */
+export async function askForApproval(
+  request: ToolApprovalRequest,
+  opts: {
+    runId: string;
+    signal: AbortSignal;
+    timeoutMs: number;
+    /** What the inbox shows. */
+    reason: string;
+    /** Extra context kept with the request (who asked, from where). */
+    arguments?: Record<string, unknown>;
+    parentRunId?: string;
+    /** Told once the request exists, and again with the decision. */
+    onRequested?: (approval: ApprovalRequest) => void;
+    onDecided?: (approval: ApprovalRequest, approved: boolean) => void;
+  }
+): Promise<boolean> {
+  const { runId, signal } = opts;
+  const parent = opts.parentRunId ? { runId: opts.parentRunId } : undefined;
   // The run's signal (cancel, kill switch) and the agent's own (its time limit).
   const stopped = AbortSignal.any([signal, request.signal]);
   if (stopped.aborted) return false;
@@ -1212,19 +1174,18 @@ export async function approveToolCall(
     runId,
     tool: request.tool,
     tier: tierFor(request.risk),
-    reason: parent
-      ? `A sub-agent of run ${parent.runId} wants to run ${request.tool}. ${request.reason}`
-      : `The agent wants to run ${request.tool}. ${request.reason}`,
+    reason: opts.reason,
     arguments: {
-      automation: spec.name,
+      ...opts.arguments,
       toolCallId: request.toolCallId,
       input: request.input,
       ...(parent ? { parentRunId: parent.runId } : {}),
     },
     ...(parent ? { parentRunId: parent.runId } : {}),
   });
+  opts.onRequested?.(pending);
   // Nobody can approve a call after the agent has run out of time.
-  const waitMs = Math.max(0, Math.min(spec.approvals.timeoutMs, request.deadline - Date.now()));
+  const waitMs = Math.max(0, Math.min(opts.timeoutMs, request.deadline - Date.now()));
   let onStop: (() => void) | undefined;
   const approved = await Promise.race([
     waitForDecision(pending.id, waitMs),
@@ -1247,6 +1208,7 @@ export async function approveToolCall(
           : 'timeout',
     });
   }
+  opts.onDecided?.(pending, approved);
   // Only a run still waiting goes back to work, and only once nothing else of
   // it (another call of the same reply, a sub-agent) waits for a person; a
   // finished one keeps its state.

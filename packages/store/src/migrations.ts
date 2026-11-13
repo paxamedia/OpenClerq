@@ -557,4 +557,26 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE run_processes ADD COLUMN container_runtime TEXT;
     `,
   },
+  {
+    id: 20,
+    name: 'chat_authoring',
+    // Automations drafted in a chat. A draft is the YAML a model proposed, kept
+    // with the conversation and run it came from; saving one makes an
+    // automation that starts disabled and names where it came from
+    // (`authored_by`, e.g. "chat ses_…"). Nothing here can switch one on.
+    sql: `
+      CREATE TABLE automation_drafts (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        spec TEXT NOT NULL,
+        automation_id TEXT REFERENCES automations(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        saved_at TEXT
+      );
+      CREATE INDEX idx_automation_drafts_session ON automation_drafts(session_id);
+      ALTER TABLE automations ADD COLUMN authored_by TEXT;
+    `,
+  },
 ];

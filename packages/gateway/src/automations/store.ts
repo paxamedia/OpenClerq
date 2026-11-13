@@ -28,6 +28,8 @@ export interface Automation {
   problem?: string;
   enabled: boolean;
   nextRunAt?: string;
+  /** Where the spec came from when not typed by a person: `chat <session id>` for a chat draft. */
+  authoredBy?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,6 +77,7 @@ function rowToAutomation(r: Record<string, unknown>): Automation {
     ...(problem ? { problem } : {}),
     enabled: Number(r.enabled) === 1,
     nextRunAt: r.next_run_at ? String(r.next_run_at) : undefined,
+    ...(r.authored_by ? { authoredBy: String(r.authored_by) } : {}),
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
   };
@@ -120,8 +123,13 @@ function assertNameFree(name: string, exceptId?: string): void {
 /**
  * Save a new automation. It always starts disabled: switching it on is a
  * separate, deliberate act, so whatever wrote the spec cannot also arm it.
+ * `authoredBy` records where a spec someone else wrote came from (a chat).
  */
-export function createAutomation(source: string, actor = 'operator'): Automation {
+export function createAutomation(
+  source: string,
+  actor = 'operator',
+  opts: { authoredBy?: string } = {}
+): Automation {
   const spec = parseSpec(source, { registry: specRegistry() });
   assertNameFree(spec.name);
   const id = `aut_${crypto.randomUUID()}`;
@@ -130,8 +138,8 @@ export function createAutomation(source: string, actor = 'operator'): Automation
   const db = getStore();
   db.prepare(
     `INSERT INTO automations
-       (id, name, spec, schedule, enabled, driver, model_policy, sandbox_profile, budget, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`
+       (id, name, spec, schedule, enabled, driver, model_policy, sandbox_profile, budget, authored_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     c.name,
@@ -141,10 +149,16 @@ export function createAutomation(source: string, actor = 'operator'): Automation
     c.model_policy,
     c.sandbox_profile,
     c.budget,
+    opts.authoredBy ?? null,
     now,
     now
   );
-  audit(db, { actor, action: 'automation.created', subject: id, detail: { name: spec.name } });
+  audit(db, {
+    actor,
+    action: 'automation.created',
+    subject: id,
+    detail: { name: spec.name, ...(opts.authoredBy ? { authoredBy: opts.authoredBy } : {}) },
+  });
   return requireAutomation(id);
 }
 
