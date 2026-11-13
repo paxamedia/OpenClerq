@@ -147,14 +147,63 @@ A chat message is a run with `trigger: 'manual'` in a session that has no schedu
 same providers, runs, steps and cost accounting as the automation runner.
 Sessions and their transcripts live in the store.
 
-| Mode        | What the gateway adds                                                                                                        |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Raw**     | Nothing. No system prompt, no skill selection, no memory, no tools. The exact request body is kept and is inspectable.       |
-| **Managed** | The full `/task` pipeline, with earlier turns: system prompt, skill routing, memory, calculation engine, durable transcript. |
+| Mode        | What the gateway adds                                                                                                                                            |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Raw**     | Nothing. No system prompt, no skill selection, no memory, no tools. The exact request body is kept and is inspectable.                                           |
+| **Managed** | An agent: the builtin tool loop with the system prompt, skill routing, memory, a policy-filtered tool set, approvals, redaction, truncation, durable transcript. |
 
 Raw removes OpenClerq's additions, not the vendor's: both modes call the same endpoint under
 the user's own key. Use it to tell whether an unexpected answer comes from the model or from
-the pipeline's prompt assembly.
+the pipeline's prompt assembly. A raw message is one call with the conversation as it is: it
+never reaches the agent loop, so it has no tools and reads no memory, whatever the session
+holds (a folder attached to it included).
+
+**Managed messages** run the builtin driver's loop (`@clerq/drivers`, with `Conversation` and
+context compaction from `@clerq/providers`) as the message's run (`chat/managed.ts`). The system
+prompt is the configured prompt, the selected skill's instructions and the `<memory>` block, then
+a paragraph on the tools; earlier turns roll as history. The tool set comes from `chatPolicy` in
+`chat/tools.ts`, decided call by call by `packages/policy`:
+
+| Tool (model name)            | Policy name                                                                             | When                                           |
+| ---------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `search_memory`              | `memory.search`, reading only the types the memory policy allows (`memory.read.<type>`) | always                                         |
+| `save_memory`                | `memory.write.<type>`, origin `agent`, the session as source                            | not in `plan`; waits for approval in `default` |
+| `draft_automation`           | `automation.draft`                                                                      | always                                         |
+| the builtin repository tools | `fs.*`, `runtime.shell`, `git.status`, `git.diff`, `git.push`                           | only in a folder attached to the conversation  |
+
+A conversation's folder (`workspace`, an existing directory, not the disk root) and its access
+(`permissionMode`: `acceptEdits` full access by default, `default` asks before writes and commands,
+`plan` reads only; a push from the shell always waits) are set with `POST /sessions/:id/update`.
+Without a folder the rules deny `group:fs`, `group:runtime` and `group:git` outright. Every chat
+denies `automation.save|create|update|enable|disable|run|delete` and `sessions.spawn`; no tool for
+any of them exists. A call that needs approval waits in the inbox (with the chat's `sessionId` on
+`GET /approvals`) and is sent in the message's stream as an `approval` event, then
+`approval_decided`; the run shows `awaiting_approval` meanwhile, ten minutes at most. Provider keys
+in the gateway's environment are redacted from tool input and output before the model or the record
+sees them; tool output is truncated by the driver. Each step, tool call (`tool_calls`, also on
+`GET /runs/:id` and `GET /runs/:id/tool-calls`) and model call is recorded on the run, which carries
+the session id. A model a person named (the message's or the conversation's) is used as chosen;
+otherwise the default chain applies. A message is bounded by 60 turns, 200 tool calls and 30
+minutes. The stream sends text a turn at a time (`delta`), and `tool`, `approval`,
+`approval_decided` and `draft` events.
+
+`POST /sessions/:id/mode-diff { text, model? }` returns what raw sends and what managed adds for a
+message, without calling a model: the system prompt, the skill, the memory block, the tools offered
+with how policy decides each, the model and its fallback chain, the folder. `POST /context/preview`
+with a `sessionId` includes the tool paragraph.
+
+**Conversational authoring.** `draft_automation` takes a whole spec as YAML and checks it with the
+real parser; an error goes back to the model with its line and column and the line quoted. A spec
+that parses is kept as a draft of the conversation (`automation_drafts`, store migration 20) and
+nothing else. A person reads it (`GET /sessions/:id/drafts[/:draftId]`), dry-runs it
+(`POST …/dry-run`: the automation preview's checks for the repository, driver, models, budgets,
+tokens and approvals, the next firings as real dates with the host's time zone, and a cost estimate
+from finished runs of the same driver and model in the last 90 days, or none; it executes nothing),
+and saves it (`POST …/save`). A saved draft is an automation that is switched off, with
+`authored_by: chat <session id>` (migration 20, on the summary and in the audit entry). Its first
+push waits for approval whatever the draft says, because every automation's first push does
+(`hasPushedBefore`); the dry run and the preview say so. Switching it on is `POST
+/automations/:id/enable`, a person's action in the Automations screen: no chat tool can reach it.
 
 `POST /sessions/:id/send` streams by default, as SSE; pass `stream: false` for one JSON
 response. `POST /sessions/:id/compare` sends one message to several models at once and returns
@@ -229,9 +278,8 @@ folded into a summary that has not expired goes on its own expiry, and undoing t
 restores what is left.
 
 **Retrieval is decided by policy.** Each type is its own tool in the `memory` group of
-`packages/policy`: `memory.read.<type>` and `memory.write.<type>`. Only the read side is enforced:
-`memory.write.<type>` is reserved for a memory tool an agent will be given, and nothing checks it yet
-(writes through the HTTP API are the user's own). A reader may read the types its
+`packages/policy`: `memory.read.<type>` and `memory.write.<type>`. A managed chat's `save_memory`
+is decided as `memory.write.<type>`; writes through the HTTP API are the user's own and are not. A reader may read the types its
 rules allow (`readableMemoryTypes(rules)`: an outright allow, not one that needs approval, since nobody
 can be asked while a prompt is built). Managed chat and `/task` read under the gateway's memory policy,
 every type until `PUT /memory/policy { readTypes }` narrows it (an empty list turns memory off for
@@ -588,30 +636,30 @@ approval.
 
 The gateway is the control plane. Endpoints:
 
-| Group       | Endpoints                                                                                                                                                                                                           |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                                                                                                                                             |
-| Models      | `GET /models`, `GET /providers`                                                                                                                                                                                     |
-| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                                                                                                                                              |
-| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                                                                                                                                             |
-| Tools       | `GET /tools`, `POST /tools/run`                                                                                                                                                                                     |
-| Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                                                                                                         |
-| Memory      | `GET /memory`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                                                                                                                                            |
-| Memory 2.0  | `GET /memory/search`, `GET \| POST /memory/records`, `GET \| PATCH \| DELETE /memory/records/:id`, `POST /memory/consolidate`, `POST /memory/records/:id/unconsolidate`, `GET \| PUT /memory/policy`                |
-| Runs        | `GET /runs?since=&limit=`, `GET /runs/:id`, `POST /runs/:id/cancel`                                                                                                                                                 |
-| Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update`                                                                                          |
-| Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                                                                                                         |
-| Events      | `GET /events` (SSE), `GET /events/stream` (SSE, resumable)                                                                                                                                                          |
-| Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                                                                                                                 |
-| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`, `GET \| PUT /routing`                                                                                                          |
-| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                                                                                                            |
-| Automations | `GET \| POST /automations`, `POST /automations/preview`, `GET \| PUT \| DELETE /automations/:id`, `POST /automations/:id/run\|enable\|disable`, `GET /drivers`, `GET /runs/:id/artifacts/:id`                       |
-| Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                                        |
-| Records     | `GET \| POST /records`, `POST /records/resolve`, `GET \| PATCH \| DELETE /records/:id`, `POST /records/:id/merge`, `GET /records/:id/activities`, `POST \| DELETE /records/links`, `GET /links`, `POST /activities` |
-| Inbox       | `GET /inbox`, `POST /inbox/items`, `GET \| PATCH /inbox/items/:id`, `POST /inbox/items/:id/respond`                                                                                                                 |
-| Remote      | `GET \| PUT /remote`, `POST /devices/pairing`, `POST /devices/pair` (no token), `GET /devices`, `DELETE /devices/:id`, `GET \| DELETE /devices/me`                                                                  |
-| Search      | `GET /search`, `GET /extensions`                                                                                                                                                                                    |
-| Modules     | `GET /modules`, `POST /modules/:id/token`, `DELETE /modules/:id/tokens`; module routes at `/api/modules/:id/*`, with `ui/`, `triggers/:id` and `services` reserved (see [MODULE_SYSTEM.md](MODULE_SYSTEM.md))       |
+| Group       | Endpoints                                                                                                                                                                                                               |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                                                                                                                                                 |
+| Models      | `GET /models`, `GET /providers`                                                                                                                                                                                         |
+| Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                                                                                                                                                  |
+| Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                                                                                                                                                 |
+| Tools       | `GET /tools`, `POST /tools/run`                                                                                                                                                                                         |
+| Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                                                                                                             |
+| Memory      | `GET /memory`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                                                                                                                                                |
+| Memory 2.0  | `GET /memory/search`, `GET \| POST /memory/records`, `GET \| PATCH \| DELETE /memory/records/:id`, `POST /memory/consolidate`, `POST /memory/records/:id/unconsolidate`, `GET \| PUT /memory/policy`                    |
+| Runs        | `GET /runs?since=&limit=`, `GET /runs/:id` (with `toolCalls`), `GET /runs/:id/tool-calls`, `POST /runs/:id/cancel`                                                                                                      |
+| Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update`, `/mode-diff`; `GET /sessions/:id/drafts[/:draftId]`, `POST …/drafts/:draftId/dry-run\|save` |
+| Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                                                                                                             |
+| Events      | `GET /events` (SSE), `GET /events/stream` (SSE, resumable)                                                                                                                                                              |
+| Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                                                                                                                     |
+| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`, `GET \| PUT /routing`                                                                                                              |
+| Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                                                                                                                |
+| Automations | `GET \| POST /automations`, `POST /automations/preview`, `GET \| PUT \| DELETE /automations/:id`, `POST /automations/:id/run\|enable\|disable`, `GET /drivers`, `GET /runs/:id/artifacts/:id`                           |
+| Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                                            |
+| Records     | `GET \| POST /records`, `POST /records/resolve`, `GET \| PATCH \| DELETE /records/:id`, `POST /records/:id/merge`, `GET /records/:id/activities`, `POST \| DELETE /records/links`, `GET /links`, `POST /activities`     |
+| Inbox       | `GET /inbox`, `POST /inbox/items`, `GET \| PATCH /inbox/items/:id`, `POST /inbox/items/:id/respond`                                                                                                                     |
+| Remote      | `GET \| PUT /remote`, `POST /devices/pairing`, `POST /devices/pair` (no token), `GET /devices`, `DELETE /devices/:id`, `GET \| DELETE /devices/me`                                                                      |
+| Search      | `GET /search`, `GET /extensions`                                                                                                                                                                                        |
+| Modules     | `GET /modules`, `POST /modules/:id/token`, `DELETE /modules/:id/tokens`; module routes at `/api/modules/:id/*`, with `ui/`, `triggers/:id` and `services` reserved (see [MODULE_SYSTEM.md](MODULE_SYSTEM.md))           |
 
 Responsibilities: loading skills from disk and normalising metadata (`inputSchema`,
 `outputSchema`, `dependsOn`); hosting tools under capability restrictions; store-backed memory,

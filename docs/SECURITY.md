@@ -28,7 +28,7 @@ designed on that basis.
 
 1. **A malicious or compromised dependency** in a repo OpenClerq operates on.
 2. **Prompt injection via repo content** — a README, issue body, changelog or dependency description crafted to redirect the agent. Repo content is untrusted input, and the agent reads it by design.
-3. **Prompt injection via pasted content** — the same threat through the chat console. Pasted text is untrusted, and the console will be able to draft scheduled jobs, so a model-drafted automation always saves disabled and pushes manually on its first run.
+3. **Prompt injection via pasted content** — the same threat through the chat console. Pasted text is untrusted, and the console can draft scheduled jobs, so a model-drafted automation always saves disabled and pushes manually on its first run.
 4. **A network-local attacker** reaching an exposed gateway port.
 5. **A malicious skill, module or plugin** installed by the user.
 6. **A confused model** — not adversarial, simply wrong, and destructive at scale because it is on a schedule.
@@ -63,6 +63,7 @@ designed on that basis.
 - **Vault access is audited.** Set and delete operations append to `~/.clerq/secrets.audit.log`.
 - **API keys are not bundled or logged.** The desktop app does not ship keys and does not send them anywhere except the local gateway.
 - **Numeric results are deterministic.** Calculations run in the Rust engine and return a `proof` object. The model never produces final numbers.
+- **A chat cannot arm an automation.** A managed chat's model can only draft a spec; a person saves it, it is saved switched off with `authored_by: chat <session>`, and switching it on is a separate action. No chat tool saves, enables, edits or runs an automation, and every chat's policy denies those actions. A raw chat has no tools at all, and a managed one has no file or shell tools unless a folder is attached to it.
 - **Automations cannot arm or publish themselves.** A new automation is saved disabled. Pushing waits for a human unless the spec opts out, and an automation's first push always waits. The agent gets a minimal environment, without the gateway token or provider keys, and the forge token reaches git through an environment-supplied header, never the command line or the remote URL.
 - **Runs are durable and accountable.** Every task and trigger firing writes a run record with its request, its steps, and the tokens and cost of each model call. A model with no known price records an unknown cost rather than zero.
 - **Approvals fail closed.** An approval nobody answers within the timeout is refused, never granted.
