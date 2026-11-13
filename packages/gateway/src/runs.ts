@@ -11,6 +11,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { getStore, isStoreOpen } from './store.js';
 import { emit } from './events.js';
 import { logger } from './logger.js';
+import { gatewayOwner } from './agent-processes.js';
 
 export type RunStatus =
   | 'queued'
@@ -96,10 +97,13 @@ export function createRun(input: {
 }): string {
   const id = `run_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
+  // Who started it, so a later gateway can tell a run still being worked on
+  // from one whose gateway died.
+  const owner = gatewayOwner();
   getStore()
     .prepare(
-      `INSERT INTO runs (id, automation_id, module_id, trigger_ref, input, status, trigger, started_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO runs (id, automation_id, module_id, trigger_ref, input, status, trigger, started_at, created_at, owner_pid, owner_start)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -110,7 +114,9 @@ export function createRun(input: {
       input.status ?? 'executing',
       input.trigger,
       now,
-      now
+      now,
+      owner.pid,
+      owner.start
     );
   return id;
 }
@@ -154,14 +160,17 @@ export function setRunFields(
 
 /**
  * Mark runs a previous gateway left unfinished as failed. Nothing can still be
- * working on them: their processes were tied to the gateway that died.
+ * working on them: their processes were tied to the gateway that died. Runs in
+ * `except` are the ones a gateway that is still running is working on, and are
+ * left as they are.
  */
-export function reapInterruptedRuns(): string[] {
+export function reapInterruptedRuns(options: { except?: ReadonlySet<string> } = {}): string[] {
   const db = getStore();
   const ids = db
     .prepare("SELECT id FROM runs WHERE status NOT IN ('done', 'failed', 'cancelled')")
     .all()
-    .map((r) => String(r.id));
+    .map((r) => String(r.id))
+    .filter((id) => !options.except?.has(id));
   const mark = db.prepare(
     `UPDATE runs SET status = 'failed', finished_at = ?,
        exit_reason = 'Interrupted: the gateway stopped while this run was in progress.'

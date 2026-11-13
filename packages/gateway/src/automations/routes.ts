@@ -11,7 +11,12 @@ import { logger } from '../logger.js';
 import { getStore } from '../store.js';
 import { listPending, decide } from '../approvals.js';
 import { addRunStep, reapInterruptedRuns, getArtifact, getRun } from '../runs.js';
-import { killLeftoverProcesses } from '../agent-processes.js';
+import {
+  killLeftoverProcesses,
+  readProcessTable,
+  runsOfLiveGateways,
+  warmGatewayIdentity,
+} from '../agent-processes.js';
 import { parseSpec, SpecError, type AutomationSpec } from './spec.js';
 import {
   AutomationError,
@@ -263,10 +268,18 @@ async function stopLeftoverProcesses(): Promise<void> {
  * them, and remove their worktrees.
  */
 export async function recoverAfterRestart(): Promise<void> {
+  // Learn when this process started, so what it records can be recognised later.
+  await warmGatewayIdentity();
+  // Runs of a gateway that is still running (another instance on the same
+  // store, or this process) are not interrupted: their processes are left
+  // alone below, and so are their runs, approvals and worktrees.
+  const table = await readProcessTable();
+  const theirs = table ? runsOfLiveGateways(table) : new Set<string>();
   // First, so nothing is still writing into a worktree when it is removed.
   await stopLeftoverProcesses();
-  const reaped = reapInterruptedRuns();
+  const reaped = reapInterruptedRuns({ except: theirs });
   for (const p of listPending()) {
+    if (theirs.has(p.runId)) continue;
     decide(p.id, { decision: 'denied', decidedBy: 'restart', reason: 'The gateway restarted.' });
   }
   for (const id of reaped) {
