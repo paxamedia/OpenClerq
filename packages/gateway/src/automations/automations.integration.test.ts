@@ -395,13 +395,16 @@ describe('automations API', () => {
     const listed = await json<{
       automations: Array<{ id: string; nextFirings: string[]; monthBudgetUsd: number | null }>;
     }>('/automations');
-    const mine = listed.body.automations.find((a) => a.id === id)!;
+    const mine = listed.body.automations.find(
+      (a) => a.id === id
+    )! as (typeof listed.body.automations)[number] & Record<string, unknown>;
     expect(mine.nextFirings).toHaveLength(10);
     expect(mine.nextFirings[0]).toBe(on.body.nextRunAt);
     expect(new Date(mine.nextFirings[1]).getTime() - new Date(mine.nextFirings[0]).getTime()).toBe(
       86_400_000
     );
     expect(mine.monthBudgetUsd).toBeNull();
+    expect(mine).toMatchObject({ queued: false, catchUp: false, missedSlots: null });
     const off = await json<{ enabled: boolean; nextRunAt: string | null }>(
       `/automations/${id}/disable`,
       {
@@ -790,6 +793,30 @@ describe('builtin driver', () => {
     expect(out.body.ready).toBe(false);
     expect(out.body.checks.find((c) => c.level === 'error')?.message).toContain(
       'fake/unpriced has no price in providers.yaml'
+    );
+  });
+
+  it('previews an unpriced escalation model with a dollar budget as a problem', async () => {
+    const out = await json<{ ready: boolean; checks: Array<{ level: string; message: string }> }>(
+      '/automations/preview',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          spec: builtinSpec(
+            'builtin-escalate-unpriced',
+            '  model:\n    primary: fake/priced\n    escalate: [fake/unpriced]\n',
+            'budget:\n  max_usd_per_run: 2'
+          ),
+        }),
+      }
+    );
+    expect(out.body.ready).toBe(false);
+    const errors = out.body.checks.filter((c) => c.level === 'error').map((c) => c.message);
+    expect(errors).toEqual([
+      expect.stringMatching(/^Escalation model fake\/unpriced: .*has no price/),
+    ]);
+    expect(out.body.checks.map((c) => c.message).join('\n')).toMatch(
+      /When a gate fails, the agent runs again with fake\/unpriced/
     );
   });
 

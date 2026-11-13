@@ -447,4 +447,21 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_tool_calls_run ON tool_calls(run_id, id);
     `,
   },
+  {
+    id: 14,
+    name: 'run_queue',
+    // Automation runs wait in the runs table as `queued` until a gateway leases
+    // one (status `leased`, lease_until, owner_pid). attempt counts the tries
+    // of one run, the first being 1; not_before holds a retry back until its
+    // backoff has passed. last_slot_at is the latest schedule slot an
+    // automation has dealt with (run, or recorded as missed), so a slot missed
+    // while the machine slept or the gateway was down is noticed on the next
+    // check.
+    sql: `
+      ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE runs ADD COLUMN not_before TEXT;
+      ALTER TABLE automations ADD COLUMN last_slot_at TEXT;
+      CREATE INDEX idx_runs_queue ON runs(status, not_before, created_at);
+    `,
+  },
 ];

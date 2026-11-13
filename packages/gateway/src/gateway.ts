@@ -87,6 +87,13 @@ import {
 
 import { mountAutomationRoutes, recoverAfterRestart } from './automations/routes.js';
 import { startAutomationSchedules, stopAutomationSchedules } from './automations/scheduler.js';
+import {
+  cancelQueuedRuns,
+  pauseAutomationQueue,
+  resumeAutomationQueue,
+  startAutomationQueue,
+  stopAutomationQueue,
+} from './automations/queue.js';
 import { userShellPath } from './automations/shell-path.js';
 import type { RunnerDeps } from './automations/runner.js';
 
@@ -610,11 +617,16 @@ export function createGateway(config: GatewayConfig = {}): {
     const body = (req.body ?? {}) as { approvals?: boolean; runs?: boolean; triggers?: boolean };
     try {
       const deniedApprovals = body.approvals === false ? 0 : denyAllPending('Kill switch engaged');
-      const cancelledRuns = body.runs === false ? 0 : cancelAllRuns('Kill switch engaged');
+      const cancelledRuns =
+        body.runs === false
+          ? 0
+          : cancelAllRuns('Kill switch engaged') + cancelQueuedRuns('Kill switch engaged');
       let triggersPaused = triggersPausedAt !== null;
       if (body.triggers !== false) {
         stopTriggers();
         stopAutomationSchedules();
+        // Queued automation runs wait too: starting one is new autonomous work.
+        pauseAutomationQueue();
         modules.triggers.pause();
         triggersPausedAt ??= new Date().toISOString();
         triggersPaused = true;
@@ -633,7 +645,9 @@ export function createGateway(config: GatewayConfig = {}): {
       const wasPaused = triggersPausedAt !== null;
       triggersPausedAt = null;
       startTriggers(runTriggered);
-      startAutomationSchedules(automationDeps);
+      // Slots missed while paused are skipped, never caught up.
+      startAutomationSchedules(automationDeps, { resume: true });
+      resumeAutomationQueue();
       modules.triggers.resume();
       emit('kill.released', { wasPaused });
       logger.info('Triggers resumed', { wasPaused });
@@ -1186,6 +1200,8 @@ export function createGateway(config: GatewayConfig = {}): {
     startPushPublisher();
     try {
       await recoverAfterRestart();
+      // Queued runs, from before the restart too, start as the limits allow.
+      startAutomationQueue(automationDeps);
       startAutomationSchedules(automationDeps);
     } catch (e) {
       logger.error('Automations failed to start', {
@@ -1198,6 +1214,11 @@ export function createGateway(config: GatewayConfig = {}): {
       logger.warn('Module load error', { err: e instanceof Error ? e.message : String(e) });
     }
     markReady();
+  });
+
+  server.on('close', () => {
+    stopAutomationSchedules();
+    stopAutomationQueue();
   });
 
   return { app, server, ready };

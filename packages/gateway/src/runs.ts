@@ -94,16 +94,20 @@ export function createRun(input: {
   triggerId?: string;
   input?: string;
   status?: RunStatus;
+  repoId?: string;
 }): string {
   const id = `run_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
+  const status = input.status ?? 'executing';
   // Who started it, so a later gateway can tell a run still being worked on
-  // from one whose gateway died.
-  const owner = gatewayOwner();
+  // from one whose gateway died. A queued run has no owner, and has not
+  // started, until a gateway leases it.
+  const queued = status === 'queued';
+  const owner = queued ? { pid: null, start: null } : gatewayOwner();
   getStore()
     .prepare(
-      `INSERT INTO runs (id, automation_id, module_id, trigger_ref, input, status, trigger, started_at, created_at, owner_pid, owner_start)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO runs (id, automation_id, module_id, trigger_ref, input, status, trigger, repo_id, started_at, created_at, owner_pid, owner_start)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -111,9 +115,10 @@ export function createRun(input: {
       input.moduleId ?? null,
       input.triggerId ?? null,
       input.input ?? null,
-      input.status ?? 'executing',
+      status,
       input.trigger,
-      now,
+      input.repoId ?? null,
+      queued ? null : now,
       now,
       owner.pid,
       owner.start
@@ -129,7 +134,7 @@ export function finishRun(
   // A reason recorded during the run ("No changes") stands unless replaced.
   getStore()
     .prepare(
-      'UPDATE runs SET status = ?, exit_reason = COALESCE(?, exit_reason), finished_at = ? WHERE id = ?'
+      'UPDATE runs SET status = ?, exit_reason = COALESCE(?, exit_reason), finished_at = ?, lease_until = NULL WHERE id = ?'
     )
     .run(status, exitReason ?? null, new Date().toISOString(), id);
 }
@@ -171,27 +176,98 @@ export function setRunFields(
     .run(...set.map(([, v]) => v as string), id);
 }
 
+export const INTERRUPTED = 'Interrupted: the gateway stopped while this run was in progress.';
+
+/** An unfinished run, as recovery sees it. */
+export interface UnfinishedRun {
+  id: string;
+  status: RunStatus;
+  automationId?: string;
+  attempt: number;
+}
+
+/**
+ * Runs a previous gateway left unfinished: started (not queued, which wait for
+ * any gateway) and not finished. Runs in `except` are the ones a gateway that
+ * is still running is working on.
+ */
+export function interruptedRuns(options: { except?: ReadonlySet<string> } = {}): UnfinishedRun[] {
+  return getStore()
+    .prepare(
+      `SELECT id, status, automation_id, attempt FROM runs
+       WHERE status NOT IN ('queued', 'done', 'failed', 'cancelled')`
+    )
+    .all()
+    .filter((r) => !options.except?.has(String(r.id)))
+    .map((r) => ({
+      id: String(r.id),
+      status: r.status as RunStatus,
+      automationId: r.automation_id ? String(r.automation_id) : undefined,
+      attempt: Number(r.attempt ?? 1),
+    }));
+}
+
+/** Mark a run that nothing is working on any more as failed. */
+export function failAbandonedRun(id: string, reason = INTERRUPTED): void {
+  getStore()
+    .prepare(
+      `UPDATE runs SET status = 'failed', finished_at = ?, exit_reason = ?, lease_until = NULL
+       WHERE id = ? AND status NOT IN ('done', 'failed', 'cancelled')`
+    )
+    .run(new Date().toISOString(), reason, id);
+  emit('run.failed', { error: reason }, { runId: id });
+}
+
 /**
  * Mark runs a previous gateway left unfinished as failed. Nothing can still be
  * working on them: their processes were tied to the gateway that died. Runs in
  * `except` are the ones a gateway that is still running is working on, and are
- * left as they are.
+ * left as they are. Queued runs are not interrupted: they wait for a gateway.
  */
 export function reapInterruptedRuns(options: { except?: ReadonlySet<string> } = {}): string[] {
-  const db = getStore();
-  const ids = db
-    .prepare("SELECT id FROM runs WHERE status NOT IN ('done', 'failed', 'cancelled')")
-    .all()
-    .map((r) => String(r.id))
-    .filter((id) => !options.except?.has(id));
-  const mark = db.prepare(
-    `UPDATE runs SET status = 'failed', finished_at = ?,
-       exit_reason = 'Interrupted: the gateway stopped while this run was in progress.'
-     WHERE id = ?`
-  );
-  const now = new Date().toISOString();
-  for (const id of ids) mark.run(now, id);
+  const ids = interruptedRuns(options).map((r) => r.id);
+  for (const id of ids) failAbandonedRun(id);
   return ids;
+}
+
+/**
+ * Put a run back in the queue to be tried again once `notBefore` has passed:
+ * written before anything else happens to it, so a gateway that stops now
+ * still finds it queued. It loses its owner and its lease, and its attempt
+ * count goes up unless `sameAttempt` (it never started any work).
+ */
+export function requeueRun(
+  id: string,
+  opts: { notBefore?: Date; reason: string; sameAttempt?: boolean }
+): boolean {
+  const res = getStore()
+    .prepare(
+      `UPDATE runs SET status = 'queued', lease_until = NULL, owner_pid = NULL, owner_start = NULL,
+         not_before = ?, attempt = attempt + ?, exit_reason = ?
+       WHERE id = ? AND status NOT IN ('done', 'failed', 'cancelled')`
+    )
+    .run(opts.notBefore?.toISOString() ?? null, opts.sameAttempt ? 0 : 1, opts.reason, id);
+  if (Number(res.changes) === 0) return false;
+  emit('run.status', { status: 'queued' }, { runId: id });
+  emit(
+    'run.queued',
+    { retry: !opts.sameAttempt, notBefore: opts.notBefore?.toISOString() },
+    { runId: id }
+  );
+  return true;
+}
+
+/** Cancel a run that is still waiting in the queue. Returns false when it is not queued. */
+export function cancelQueuedRun(id: string, reason = 'Cancelled'): boolean {
+  const res = getStore()
+    .prepare(
+      `UPDATE runs SET status = 'cancelled', exit_reason = ?, finished_at = ?
+       WHERE id = ? AND status = 'queued'`
+    )
+    .run(reason, new Date().toISOString(), id);
+  if (Number(res.changes) === 0) return false;
+  emit('run.cancelled', { reason }, { runId: id });
+  return true;
 }
 
 export type ArtifactKind = 'diff' | 'log' | 'file' | 'report';
@@ -468,10 +544,10 @@ export function activeRunIds(): string[] {
   return [...activeRuns.keys()];
 }
 
-/** Cancel one run. Returns false when it was not running. */
+/** Cancel one run, running or queued. Returns false when it was neither. */
 export function cancelRun(runId: string, reason = 'Cancelled'): boolean {
   const controller = activeRuns.get(runId);
-  if (!controller) return false;
+  if (!controller) return isStoreOpen() && cancelQueuedRun(runId, reason);
   controller.abort(new RunCancelled(reason));
   return true;
 }
@@ -594,6 +670,35 @@ export async function recordRun<T>(
     status: input.status,
   });
   input.onCreated?.(runId);
+  return executeRun(runId, input, fn);
+}
+
+/** What `executeRun` does with an error instead of failing the run. */
+export interface Requeue {
+  notBefore?: Date;
+  /** Shown on the run while it waits. */
+  reason: string;
+}
+
+/**
+ * Run `fn` as the run `runId`, which already exists (a queued run a gateway
+ * has leased, say): with the run as its context, cancellable, and closed
+ * either way. `retry`, when given, may turn a failure into another attempt:
+ * it returns where the run goes back to the queue, or null to let it fail.
+ * A requeued run's promise resolves with undefined.
+ */
+export async function executeRun<T>(
+  runId: string,
+  input: {
+    trigger: RunTrigger;
+    automationId?: string;
+    moduleId?: string;
+    triggerId?: string;
+    signal?: AbortSignal;
+    retry?: (e: unknown) => Requeue | null;
+  },
+  fn: () => Promise<T>
+): Promise<T> {
   const controller = new AbortController();
   const detach = link(input.signal, controller);
   activeRuns.set(runId, controller);
@@ -628,6 +733,8 @@ export async function recordRun<T>(
       throw e;
     }
     const message = e instanceof Error ? e.message : String(e);
+    const again = input.retry?.(e);
+    if (again && requeueRun(runId, again)) return undefined as T;
     finishRun(runId, 'failed', message);
     emit('run.failed', { error: message }, { runId });
     throw e;

@@ -36,8 +36,9 @@ import {
   type Fetcher,
   type Workspace,
 } from '@clerq/workspaces';
+import { getStore } from '../store.js';
 import {
-  recordRun,
+  executeRun,
   recordModelCall,
   currentRunId,
   currentRunSignal,
@@ -49,6 +50,7 @@ import {
   addArtifact,
   addToolCall,
   completeToolCall,
+  getRun,
   RunCancelled,
 } from '../runs.js';
 import { requestApproval, waitForDecision, decide, tierFor } from '../approvals.js';
@@ -56,7 +58,9 @@ import { agentRegistry } from '../agent/llm-provider.js';
 import { emit } from '../events.js';
 import { logger } from '../logger.js';
 import { watchProcess } from '../agent-processes.js';
-import { SpecError, type AutomationSpec } from './spec.js';
+import { isAssertion, type AutomationSpec, type GateSpec } from './spec.js';
+import { diffFiles, evaluateAssertion, type DiffFile } from './diff-assert.js';
+import { retryPlan, transientCause, TransientFailure } from './retry.js';
 import {
   ensureLocalRepo,
   expandHome,
@@ -78,6 +82,8 @@ export interface RunnerDeps {
   workspaceCacheDir?: string;
   /** Automation runs allowed at once, across all automations. Default 2. */
   maxConcurrent?: number;
+  /** How long a run's lease lasts before it must be renewed. Default 60s; tests shorten it. */
+  leaseMs?: number;
 }
 
 export class AutomationBusy extends Error {
@@ -121,11 +127,14 @@ export function policyFor(spec: AutomationSpec, firstPush: boolean): PolicyRules
   if (spec.publish.push) allow.push(TOOLS.push.name);
   if (spec.publish.pullRequest === 'draft') allow.push(TOOLS.pullRequest.name);
   const manual = spec.approvals.push === 'manual' || firstPush;
+  const commands = spec.gates.filter((g) => !isAssertion(g)).length;
   return {
     allow,
     approvalRequired: manual ? [TOOLS.push.name] : [],
-    // Exactly the actions a run consists of: agent, gates, commit, push, PR.
-    maxCallsPerRun: spec.gates.length + 4,
+    // Exactly the actions a run consists of: per attempt of the agent (one,
+    // plus one per escalation) the agent, a commit and the gate commands;
+    // then the push and the PR.
+    maxCallsPerRun: (spec.agent.escalate.length + 1) * (commands + 2) + 2,
   };
 }
 
@@ -148,42 +157,67 @@ function firstLine(text: string, max = 72): string {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
-const inFlight = new Set<string>();
+/** A gate did not pass: a command failed, or an assertion about the diff. */
+export class GateFailed extends Error {
+  constructor(
+    message: string,
+    /** The gate, as the spec has it. */
+    readonly gate: string,
+    /** What it printed or found, for the next model to read. */
+    readonly output: string
+  ) {
+    super(message);
+    this.name = 'GateFailed';
+  }
+}
 
-export function runningAutomations(): string[] {
-  return [...inFlight];
+/** The attempt a run is on, from 1. */
+function attemptOf(runId: string): number {
+  const row = getStore().prepare('SELECT attempt FROM runs WHERE id = ?').get(runId);
+  return Number(row?.attempt ?? 1);
+}
+
+/** What the run has cost so far, across its attempts. */
+function runCostUsd(runId: string): number {
+  const row = getStore().prepare('SELECT cost_usd FROM runs WHERE id = ?').get(runId);
+  return Number(row?.cost_usd ?? 0);
 }
 
 /**
- * Start a run of `automation`. Returns as soon as the run record exists; the
- * run carries on in the background and `done` settles when it ends.
+ * Work on a run a gateway has leased (queue.ts), to its end. A failure worth
+ * retrying (retry.ts) puts the run back in the queue when the spec allows,
+ * after its backoff; anything else ends it. Resolves either way.
  */
-export function startAutomationRun(
-  automation: Automation,
-  trigger: 'schedule' | 'manual',
-  deps: RunnerDeps
-): { runId: string; done: Promise<void> } {
-  const spec = automation.spec;
-  if (!spec) throw new SpecError(`Fix the spec before running it: ${automation.problem}`);
-  if (inFlight.has(automation.id)) {
-    throw new AutomationBusy(`"${automation.name}" is already running.`);
-  }
-  const limit = deps.maxConcurrent ?? 2;
-  if (inFlight.size >= limit) {
-    throw new AutomationBusy(`${limit} automation runs are already in progress; try again later.`);
-  }
-  inFlight.add(automation.id);
-
-  let runId = '';
-  const done = recordRun(
+export function runLeased(runId: string, automation: Automation, deps: RunnerDeps): Promise<void> {
+  const spec = automation.spec as AutomationSpec;
+  const trigger = getStore().prepare('SELECT trigger FROM runs WHERE id = ?').get(runId)?.trigger;
+  return executeRun(
+    runId,
     {
-      trigger,
+      trigger: trigger === 'manual' ? 'manual' : 'schedule',
       automationId: automation.id,
-      message: spec.prompt,
-      status: 'preparing',
-      onCreated: (id) => (runId = id),
+      retry: (e) => {
+        if (!(e instanceof TransientFailure)) return null;
+        const attempt = attemptOf(runId);
+        const plan = retryPlan(spec, attempt);
+        if (!plan) return null;
+        addRunStep(runId, {
+          kind: 'tool',
+          input: { name: 'run.retry', attempt: attempt + 1 },
+          output: { after: e.message, cause: e.kind, notBefore: plan.notBefore.toISOString() },
+          status: 'warning',
+        });
+        return {
+          notBefore: plan.notBefore,
+          reason: `Retry ${plan.retry} of ${plan.of} after: ${e.message}`,
+        };
+      },
     },
-    () => execute(automation, spec, deps)
+    async () => {
+      // Written before the stage starts, like every state after it.
+      setRunStatus(runId, 'preparing');
+      await execute(automation, spec, deps);
+    }
   )
     .catch((e: unknown) => {
       // Recorded on the run already; a scheduled run has nobody else to tell.
@@ -192,13 +226,7 @@ export function startAutomationRun(
         reason: e instanceof Error ? e.message : String(e),
       });
     })
-    .finally(() => {
-      inFlight.delete(automation.id);
-      enforceMonthlyBudget(automation, spec);
-    });
-
-  if (!runId) throw new Error('The run could not be recorded.');
-  return { runId, done };
+    .finally(() => enforceMonthlyBudget(automation, spec));
 }
 
 /** Pause an automation whose runs have used up its monthly budget. */
@@ -230,15 +258,7 @@ async function execute(
   const runId = currentRunId() as string;
   const signal = currentRunSignal() as AbortSignal;
 
-  const cap = spec.budget.maxUsdPerMonth;
-  if (cap !== undefined) {
-    const spent = monthSpendUsd(automation.id);
-    if (spent >= cap) {
-      throw new Error(
-        `The monthly budget of $${cap} is spent ($${spent.toFixed(2)} so far); the automation is paused.`
-      );
-    }
-  }
+  checkBudgets(automation, spec, runId);
 
   const firstPush = spec.publish.push && !hasPushedBefore(automation.id);
   const rules = policyFor(spec, firstPush);
@@ -260,6 +280,25 @@ async function execute(
   });
   if (!availability.available)
     throw new Error(availability.reason ?? `${driver.id} is unavailable.`);
+  // Every model the run may escalate to is checked now, so a run does not
+  // spend on the first model and then find it cannot go on.
+  for (const model of spec.agent.escalate) {
+    const next = await driver.detect({
+      apiKey: Boolean(spec.agent.apiKeySecret),
+      permissionMode: spec.agent.permissionMode,
+      model,
+      budget: hasBudget(spec),
+    });
+    addRunStep(runId, {
+      kind: 'tool',
+      input: { name: 'driver.detect', driver: driver.id, model, for: 'escalation' },
+      output: next,
+      status: next.available ? 'ok' : 'error',
+    });
+    if (!next.available) {
+      throw new Error(`Escalation model ${model}: ${next.reason ?? 'unavailable.'}`);
+    }
+  }
 
   let apiKey: Record<string, string> | undefined;
   if (spec.agent.apiKeySecret) {
@@ -343,40 +382,79 @@ async function execute(
       status: 'ok',
     });
 
-    setRunStatus(runId, 'executing');
-    // The agent leads its own process group, so it would outlive a gateway that
-    // crashes. Recording it lets the next gateway find it and stop it.
-    const agentProcess = watchProcess(runId, 'agent');
-    const result = await guard(rules, TOOLS.agent, budget, () =>
-      runAgent(driver, spec, ws, runId, signal, deps, apiKey, agentProcess.onSpawn, {
-        ...apiKey,
-        ...(token ? { FORGE_TOKEN: token } : {}),
-      }).finally(agentProcess.done)
-    );
-    if (!result.ok) throw new Error(result.summary);
+    // The agent, then the gates; when they fail and the spec lists models to
+    // escalate to, the agent again with the next one, in the same worktree.
+    const models = [spec.agent.model, ...spec.agent.escalate];
+    const inUse = { ...apiKey, ...(token ? { FORGE_TOKEN: token } : {}) };
+    let level = 0;
+    let prompt = spec.prompt;
+    let result: DriverResult;
+    let title: string;
+    let stat: Awaited<ReturnType<Workspace['diffStat']>>;
+    for (;;) {
+      const maxBudgetUsd = checkBudgets(automation, spec, runId);
+      setRunStatus(runId, 'executing');
+      // The agent leads its own process group, so it would outlive a gateway that
+      // crashes. Recording it lets the next gateway find it and stop it.
+      const agentProcess = watchProcess(runId, 'agent');
+      const attempt = { model: models[level], prompt, maxBudgetUsd };
+      result = await guard(rules, TOOLS.agent, budget, () =>
+        runAgent(
+          driver,
+          spec,
+          attempt,
+          ws,
+          runId,
+          signal,
+          deps,
+          apiKey,
+          agentProcess.onSpawn,
+          inUse
+        ).finally(agentProcess.done)
+      );
 
-    if (!(await ws.hasChanges())) {
-      setRunFields(runId, { exitReason: 'No changes: the agent left the repository as it was.' });
-      return;
-    }
+      // One commit for the run: an escalated attempt's changes join the earlier
+      // ones. Measured against the base, an attempt may also have undone them.
+      if (level > 0) await git(['reset', '--soft', ws.baseSha], { cwd: ws.path });
+      if (!(await ws.hasChanges())) {
+        setRunFields(runId, { exitReason: 'No changes: the agent left the repository as it was.' });
+        return;
+      }
 
-    const title = `${spec.name}: ${firstLine(result.summary) || 'automated changes'}`;
-    const sha = await guard(rules, TOOLS.commit, budget, () =>
-      ws.commitAll(title, { trailer: `Generated-by: OpenClerq\nOpenClerq-Run: ${runId}` })
-    );
-    const stat = await ws.diffStat();
-    addRunStep(runId, {
-      kind: 'git',
-      input: { action: 'commit' },
-      output: { sha, ...stat },
-      status: 'ok',
-    });
-    addArtifact(runId, 'diff', await ws.diff(), `${branch}.diff`);
+      title = `${spec.name}: ${firstLine(result.summary) || 'automated changes'}`;
+      const sha = await guard(rules, TOOLS.commit, budget, () =>
+        ws.commitAll(title, { trailer: `Generated-by: OpenClerq\nOpenClerq-Run: ${runId}` })
+      );
+      stat = await ws.diffStat();
+      addRunStep(runId, {
+        kind: 'git',
+        input: { action: 'commit' },
+        output: { sha, ...stat },
+        status: 'ok',
+      });
+      addArtifact(runId, 'diff', await ws.diff(), `${branch}.diff`);
 
-    if (spec.gates.length > 0) {
-      setRunStatus(runId, 'verifying');
-      for (const gate of spec.gates) {
-        await guard(rules, TOOLS.gate, budget, () => runGate(gate, ws, runId, signal, deps));
+      try {
+        await verify(spec, ws, runId, signal, deps, rules, budget);
+        break;
+      } catch (e) {
+        if (!(e instanceof GateFailed) || level + 1 >= models.length) throw e;
+        level += 1;
+        addRunStep(runId, {
+          kind: 'tool',
+          input: { name: 'agent.escalate', escalation: level, model: models[level] },
+          output: { from: models[level - 1] ?? 'default', after: e.message },
+          status: 'warning',
+        });
+        emit(
+          'model.escalated',
+          { from: models[level - 1] ?? null, to: models[level], reason: e.message },
+          { runId }
+        );
+        // Back to the agent's commit: whatever the gates wrote is not its work.
+        await git(['reset', '--hard', 'HEAD'], { cwd: ws.path });
+        await git(['clean', '-fd'], { cwd: ws.path });
+        prompt = escalationPrompt(spec.prompt, e);
       }
     }
 
@@ -448,7 +526,7 @@ async function execute(
             forge: 'github',
             project: project as string,
             title,
-            body: pullRequestBody(spec, runId, result, stat),
+            body: pullRequestBody(spec, runId, result, stat, models[level]),
             head: branch,
             base: baseBranch,
             draft: true,
@@ -478,6 +556,7 @@ async function execute(
 async function runAgent(
   driver: Driver,
   spec: AutomationSpec,
+  attempt: { model?: string; prompt: string; maxBudgetUsd?: number },
   ws: Workspace,
   runId: string,
   signal: AbortSignal,
@@ -494,14 +573,15 @@ async function runAgent(
   // A driver that reports its model calls one by one has them recorded as they
   // happen; for one that does not, its own total is recorded at the end.
   let modelCalls = 0;
+  let lastModelError: string | undefined;
 
   for await (const raw of driver.run({
-    prompt: spec.prompt,
+    prompt: attempt.prompt,
     cwd: ws.path,
-    model: spec.agent.model,
+    model: attempt.model,
     permissionMode: spec.agent.permissionMode,
     allowedTools: spec.agent.allowedTools,
-    maxBudgetUsd: spec.budget.maxUsdPerRun,
+    maxBudgetUsd: attempt.maxBudgetUsd,
     timeoutMs: spec.sandbox.timeoutMs,
     sandbox: { profile: spec.sandbox.profile },
     env: { PATH: deps.path() },
@@ -562,6 +642,7 @@ async function runAgent(
       case 'model_call': {
         modelCalls += 1;
         const c = event.call;
+        lastModelError = c.ok ? undefined : c.error;
         recordModelCall({
           provider: c.provider,
           model: c.model,
@@ -596,15 +677,17 @@ async function runAgent(
         break;
     }
   }
-  if (!result) throw new Error(`${driver.id} ended without reporting a result.`);
+  if (!result) {
+    throw new TransientFailure(`${driver.id} ended without reporting a result.`, 'driver_crash');
+  }
 
   // The CLI's own account of what the run cost. On a subscription it is the
   // API-equivalent price, which is still the right measure for a budget.
   if (modelCalls === 0)
     recordModelCall({
       provider: driver.id,
-      model: model ?? spec.agent.model ?? 'default',
-      prompt: spec.prompt,
+      model: model ?? attempt.model ?? 'default',
+      prompt: attempt.prompt,
       status: result.ok ? 'ok' : 'error',
       text: result.summary,
       error: result.ok ? undefined : result.summary,
@@ -623,6 +706,10 @@ async function runAgent(
   }
   if (log.length > 0) addArtifact(runId, 'log', log.join('\n'), 'agent.log');
   emit('agent.turn.completed', { ok: result.ok }, { runId });
+  if (!result.ok) {
+    const cause = transientCause(result, lastModelError);
+    throw cause ? new TransientFailure(result.summary, cause) : new Error(result.summary);
+  }
   return result;
 }
 
@@ -685,8 +772,55 @@ async function approveToolCall(
   return approved;
 }
 
+/** Run the spec's gates in order; the first that does not pass throws GateFailed. */
+async function verify(
+  spec: AutomationSpec,
+  ws: Workspace,
+  runId: string,
+  signal: AbortSignal,
+  deps: RunnerDeps,
+  rules: PolicyRules,
+  budget: RunBudget
+): Promise<void> {
+  if (spec.gates.length === 0) return;
+  setRunStatus(runId, 'verifying');
+  let files: DiffFile[] | undefined;
+  for (const gate of spec.gates) {
+    if (isAssertion(gate)) {
+      files ??= await diffFiles(ws.path, ws.baseSha);
+      checkAssertion(gate, files, runId);
+    } else {
+      await guard(rules, TOOLS.gate, budget, () => runGate(gate, ws, runId, signal, deps));
+    }
+  }
+}
+
+/** Check one diff assertion, recorded as a gate step. */
+function checkAssertion(
+  gate: Extract<GateSpec, { assert: string }>,
+  files: DiffFile[],
+  runId: string
+): void {
+  emit('gate.started', { assert: gate.assert }, { runId });
+  const r = evaluateAssertion(gate.check, files);
+  addRunStep(runId, {
+    kind: 'gate',
+    input: { assert: gate.assert },
+    output: {
+      detail: r.detail,
+      ...(r.actual === undefined ? {} : { actual: r.actual }),
+      ...(r.offending ? { offending: r.offending.slice(0, 200) } : {}),
+    },
+    status: r.passed ? 'passed' : 'failed',
+    durationMs: 0,
+  });
+  emit(r.passed ? 'gate.passed' : 'gate.failed', { assert: gate.assert }, { runId });
+  if (!r.passed)
+    throw new GateFailed(`Assertion failed: ${gate.assert} (${r.detail})`, gate.assert, r.detail);
+}
+
 async function runGate(
-  gate: AutomationSpec['gates'][number],
+  gate: Extract<GateSpec, { run: string }>,
   ws: Workspace,
   runId: string,
   signal: AbortSignal,
@@ -729,10 +863,64 @@ async function runGate(
   emit(passed ? 'gate.passed' : 'gate.failed', { run: gate.run, exitCode: r.code }, { runId });
   if (r.cancelled) throw new RunCancelled('Cancelled.');
   if (!passed) {
-    throw new Error(
-      r.timedOut ? `Gate timed out: ${gate.run}` : `Gate failed: ${gate.run} (exit ${r.code})`
+    throw new GateFailed(
+      r.timedOut ? `Gate timed out: ${gate.run}` : `Gate failed: ${gate.run} (exit ${r.code})`,
+      gate.run,
+      tail([r.stdout.trim(), r.stderr.trim()].filter(Boolean).join('\n'), 4_000)
     );
   }
+}
+
+/** The prompt for an escalated attempt: the task, and the check the last one failed. */
+export function escalationPrompt(task: string, failure: GateFailed): string {
+  return [
+    task,
+    '',
+    '---',
+    'An earlier attempt at this task left the changes that are now in this working tree, ' +
+      'and they did not pass this check:',
+    '',
+    failure.gate,
+    '',
+    failure.output ? `It reported:\n${failure.output}` : 'It reported nothing.',
+    '',
+    'Change what is needed so the check passes, keeping to the task above.',
+  ].join('\n');
+}
+
+/**
+ * Stop before an attempt the budgets cannot cover: the automation's month is
+ * spent, or this run's own budget is. Returns what is left of the run's
+ * budget, for the agent to be held to.
+ */
+function checkBudgets(
+  automation: Automation,
+  spec: AutomationSpec,
+  runId: string
+): number | undefined {
+  const cap = spec.budget.maxUsdPerMonth;
+  if (cap !== undefined) {
+    const spent = monthSpendUsd(automation.id);
+    if (spent >= cap) {
+      throw new Error(
+        `The monthly budget of $${cap} is spent ($${spent.toFixed(2)} so far); the automation is paused.`
+      );
+    }
+  }
+  return remainingRunBudget(spec, runId);
+}
+
+/** What is left of the run's budget across its attempts, or undefined when it has none. */
+function remainingRunBudget(spec: AutomationSpec, runId: string): number | undefined {
+  const max = spec.budget.maxUsdPerRun;
+  if (max === undefined) return undefined;
+  const spent = runCostUsd(runId);
+  if (spent >= max) {
+    throw new Error(
+      `The run's budget of $${max.toFixed(2)} is spent ($${spent.toFixed(2)} across its attempts).`
+    );
+  }
+  return Math.round((max - spent) * 1e6) / 1e6;
 }
 
 /** git configuration, through the environment, that authenticates to github.com with `token`. */
@@ -772,18 +960,24 @@ function pullRequestBody(
   spec: AutomationSpec,
   runId: string,
   result: DriverResult,
-  stat: { filesChanged: number; insertions: number; deletions: number }
+  stat: { filesChanged: number; insertions: number; deletions: number },
+  model: string | undefined
 ): string {
+  // Every attempt's spend, and unknown when any model call had no price.
+  const run = getRun(runId);
   const summary =
     result.summary.length > 4_000 ? `${result.summary.slice(0, 4_000)}…` : result.summary;
-  const gates = spec.gates.length ? spec.gates.map((g) => `\`${g.run}\``).join(', ') : 'none';
-  const cost = result.costUsd === null ? 'unknown' : `$${result.costUsd.toFixed(2)}`;
+  const gates = spec.gates.length
+    ? spec.gates.map((g) => `\`${isAssertion(g) ? g.assert : g.run}\``).join(', ')
+    : 'none';
+  const escalated = model && model !== spec.agent.model ? ` · escalated to \`${model}\`` : '';
+  const cost = !run || !run.costKnown ? 'unknown' : `$${run.costUsd.toFixed(2)}`;
   return [
     summary,
     '',
     '---',
     `Automation \`${spec.name}\` · run \`${runId}\``,
-    `${stat.filesChanged} files changed (+${stat.insertions} −${stat.deletions}) · gates passed: ${gates} · agent cost: ${cost}`,
+    `${stat.filesChanged} files changed (+${stat.insertions} −${stat.deletions}) · gates passed: ${gates} · agent cost: ${cost}${escalated}`,
     '',
     'Opened by OpenClerq as a draft. Nothing is merged automatically.',
   ].join('\n');

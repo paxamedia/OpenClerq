@@ -124,14 +124,115 @@ on:
     expect(errorOf(`${MINIMAL}on:\n  events: [pr_opened]\n`).message).toMatch(
       /"on.events" \(event triggers\) is not supported/
     );
-    expect(errorOf(`${MINIMAL}gates:\n  - assert: diff.files_changed <= 5\n`).message).toMatch(
-      /diff assertions/
+    expect(errorOf(`${MINIMAL}targets:\n  repos: [local:/a]\n  max_parallel: 4\n`).message).toMatch(
+      /Map keys must be unique|"targets.max_parallel" \(fleet runs/
     );
+    expect(
+      errorOf(MINIMAL.replace('[local:~/code/app]', '[local:~/code/app]\n  max_parallel: 2'))
+        .message
+    ).toMatch(/"targets.max_parallel" \(fleet runs across several repositories\) is not supported/);
+    expect(
+      errorOf(
+        MINIMAL.replace('driver: claude-code', 'driver: claude-code\n  model:\n    fallback: [x]')
+      ).message
+    ).toMatch(/"agent.model.fallback" \(model fallback\) is not supported/);
     expect(errorOf(MINIMAL.replace('profile: native', 'profile: container')).message).toMatch(
       /"native" profile only/
     );
     expect(errorOf(`${MINIMAL}  network: [registry.npmjs.org]\n`).message).toMatch(
       /network restriction/
+    );
+  });
+
+  it('reads on.catch_up, and refuses it without a schedule', () => {
+    expect(parseSpec(MINIMAL).catchUp).toBe(false);
+    const spec = parseSpec(`${MINIMAL}on:\n  schedule: '0 3 * * *'\n  catch_up: true\n`);
+    expect(spec).toMatchObject({ schedule: '0 3 * * *', catchUp: true });
+    const alone = errorOf(`${MINIMAL}on:\n  catch_up: true\n`);
+    expect(alone.message).toMatch(/needs "on.schedule"/);
+    expect(alone.line).toBe(11);
+    expect(
+      errorOf(`${MINIMAL}on:\n  schedule: '0 3 * * *'\n  catch_up: yes please\n`).message
+    ).toMatch(/"on.catch_up" must be true or false/);
+  });
+
+  it('reads retry, with no retries by default', () => {
+    expect(parseSpec(MINIMAL).retry).toEqual({ maxRetries: 0, backoffMs: 60_000 });
+    expect(parseSpec(`${MINIMAL}retry:\n  max_retries: 3\n  backoff: 30s\n`).retry).toEqual({
+      maxRetries: 3,
+      backoffMs: 30_000,
+    });
+    const many = errorOf(`${MINIMAL}retry:\n  max_retries: 11\n`);
+    expect(many.message).toMatch(/"retry.max_retries" must be a whole number from 0 to 10/);
+    expect([many.line, many.column]).toEqual([11, 16]);
+    expect(errorOf(`${MINIMAL}retry:\n  max_retries: 1.5\n`).message).toMatch(/whole number/);
+    expect(errorOf(`${MINIMAL}retry:\n  backoff: 2h\n`).message).toMatch(/at most 1h/);
+    expect(errorOf(`${MINIMAL}retry:\n  on: [gate]\n`).message).toMatch(/Unknown key "retry.on"/);
+  });
+
+  it('reads agent.model.escalate, and checks each model by line', () => {
+    const spec = parseSpec(
+      MINIMAL.replace(
+        'driver: claude-code',
+        'driver: claude-code\n  model:\n    primary: sonnet\n    escalate: [opus]'
+      )
+    );
+    expect(spec.agent).toMatchObject({ model: 'sonnet', escalate: ['opus'] });
+    expect(parseSpec(MINIMAL).agent.escalate).toEqual([]);
+
+    const builtin = (escalate: string) =>
+      MINIMAL.replace(
+        'driver: claude-code',
+        `driver: builtin\n  model:\n    primary: fake/small\n    escalate: ${escalate}`
+      );
+    expect(parseSpec(builtin('[fake/large, other/huge]')).agent.escalate).toEqual([
+      'fake/large',
+      'other/huge',
+    ]);
+    const bare = errorOf(builtin('[fake/large, huge]'));
+    expect(bare.message).toMatch(/"huge" must name the provider too/);
+    expect([bare.line, bare.column]).toEqual([9, 28]);
+    expect(errorOf(builtin('[fake/small]')).message).toMatch(/already the primary model/);
+    expect(errorOf(builtin('[fake/a, fake/a]')).message).toMatch(/already listed/);
+    expect(errorOf(builtin('[]')).message).toMatch(/one or more models/);
+    expect(errorOf(builtin('[a/1, a/2, a/3, a/4, a/5, a/6]')).message).toMatch(/at most 5/);
+  });
+
+  it('reads diff assertions as gates, and points at the mistake in a bad one', () => {
+    const spec = parseSpec(
+      `${MINIMAL}gates:\n  - run: pnpm test\n  - assert: diff.files_changed <= 5\n  - assert: diff.touches_none_of [src/**, .github/**]\n`
+    );
+    expect(spec.gates).toEqual([
+      { run: 'pnpm test', timeoutMs: 600_000 },
+      {
+        assert: 'diff.files_changed <= 5',
+        check: { kind: 'compare', metric: 'files_changed', op: '<=', value: 5 },
+      },
+      {
+        assert: 'diff.touches_none_of [src/**, .github/**]',
+        check: { kind: 'touches_none_of', globs: ['src/**', '.github/**'] },
+      },
+    ]);
+
+    // Line 11, the value starts at column 13; the column points into it.
+    const name = errorOf(`${MINIMAL}gates:\n  - assert: diff.files_changd <= 5\n`);
+    expect(name.message).toMatch(/Unknown diff.files_changd/);
+    expect([name.line, name.column]).toEqual([11, 18]);
+    const op = errorOf(`${MINIMAL}gates:\n  - assert: diff.lines_added =< 5\n`);
+    expect(op.message).toMatch(/must be compared with/);
+    expect([op.line, op.column]).toEqual([11, 30]);
+    const quoted = errorOf(`${MINIMAL}gates:\n  - assert: 'diff.lines_removed < many'\n`);
+    expect(quoted.message).toMatch(/needs a whole number/);
+    expect([quoted.line, quoted.column]).toEqual([11, 35]);
+    const list = errorOf(`${MINIMAL}gates:\n  - assert: diff.touches_only [docs/** src/**]\n`);
+    expect(list.message).toMatch(/Expected "," or "\]"/);
+    expect([list.line, list.column]).toEqual([11, 40]);
+    expect(errorOf(`${MINIMAL}gates:\n  - assert: pnpm test\n`).message).toMatch(/use "run:"/);
+    expect(
+      errorOf(`${MINIMAL}gates:\n  - assert: diff.files_changed <= 5\n    timeout: 1m\n`).message
+    ).toMatch(/Unknown key "gates.0.timeout"/);
+    expect(errorOf(`${MINIMAL}gates:\n  - check: x\n`).message).toMatch(
+      /"run: <command>" or "assert:/
     );
   });
 

@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { audit } from '@clerq/store';
 import { getStore } from '../store.js';
+import { cancelQueuedRun } from '../runs.js';
 import { parseSpec, SpecError, type AutomationSpec } from './spec.js';
 
 export interface Automation {
@@ -67,7 +68,10 @@ function columnsOf(spec: AutomationSpec) {
     name: spec.name,
     schedule: spec.schedule ?? null,
     driver: spec.agent.driver,
-    model_policy: JSON.stringify({ model: spec.agent.model ?? null }),
+    model_policy: JSON.stringify({
+      model: spec.agent.model ?? null,
+      ...(spec.agent.escalate.length ? { escalate: spec.agent.escalate } : {}),
+    }),
     sandbox_profile: spec.sandbox.profile,
     budget: JSON.stringify(spec.budget),
   };
@@ -135,7 +139,8 @@ export function updateAutomation(id: string, source: string, actor = 'operator')
   const db = getStore();
   db.prepare(
     `UPDATE automations SET name = ?, spec = ?, schedule = ?, driver = ?, model_policy = ?,
-       sandbox_profile = ?, budget = ?, next_run_at = NULL, updated_at = ? WHERE id = ?`
+       sandbox_profile = ?, budget = ?, next_run_at = NULL, updated_at = ?, last_slot_at = ?
+     WHERE id = ?`
   ).run(
     c.name,
     source,
@@ -144,6 +149,8 @@ export function updateAutomation(id: string, source: string, actor = 'operator')
     c.model_policy,
     c.sandbox_profile,
     c.budget,
+    new Date().toISOString(),
+    // A new schedule counts from now: slots of the old one are not missed.
     new Date().toISOString(),
     id
   );
@@ -162,9 +169,15 @@ export function setAutomationEnabled(
     throw new SpecError(`Fix the spec before enabling it: ${found.problem}`);
   }
   const db = getStore();
+  // Switched off, it should not start anything more: a run still waiting is cancelled.
+  if (!enabled) cancelQueuedRunsOf(id, 'The automation was switched off before this run started.');
+  // Slots while it was off are not missed: its schedule counts from now.
+  const now = new Date().toISOString();
   db.prepare(
-    'UPDATE automations SET enabled = ?, next_run_at = NULL, updated_at = ? WHERE id = ?'
-  ).run(enabled ? 1 : 0, new Date().toISOString(), id);
+    `UPDATE automations SET enabled = ?, next_run_at = NULL, updated_at = ?,
+       last_slot_at = CASE WHEN ? = 1 THEN ? ELSE last_slot_at END
+     WHERE id = ?`
+  ).run(enabled ? 1 : 0, now, enabled ? 1 : 0, now, id);
   audit(db, {
     actor,
     action: enabled ? 'automation.enabled' : 'automation.disabled',
@@ -177,8 +190,30 @@ export function setAutomationEnabled(
 export function deleteAutomation(id: string, actor = 'operator'): void {
   requireAutomation(id);
   const db = getStore();
+  // A run still waiting has nothing to run once its automation is gone.
+  cancelQueuedRunsOf(id, 'The automation was deleted before this run started.');
   db.prepare('DELETE FROM automations WHERE id = ?').run(id);
   audit(db, { actor, action: 'automation.deleted', subject: id });
+}
+
+function cancelQueuedRunsOf(automationId: string, reason: string): void {
+  for (const r of getStore()
+    .prepare("SELECT id FROM runs WHERE automation_id = ? AND status = 'queued'")
+    .all(automationId)) {
+    cancelQueuedRun(String(r.id), reason);
+  }
+}
+
+/** The latest schedule slot this automation has dealt with: run, or recorded as missed. */
+export function getLastSlotAt(id: string): Date | null {
+  const row = getStore().prepare('SELECT last_slot_at FROM automations WHERE id = ?').get(id);
+  return row?.last_slot_at ? new Date(String(row.last_slot_at)) : null;
+}
+
+export function setLastSlotAt(id: string, at: Date | null): void {
+  getStore()
+    .prepare('UPDATE automations SET last_slot_at = ? WHERE id = ?')
+    .run(at ? at.toISOString() : null, id);
 }
 
 export function setNextRunAt(id: string, at: Date | null): void {

@@ -10,14 +10,29 @@
 import cron from 'node-cron';
 import { DRIVER_CAPABILITIES, DRIVER_IDS, allowedToolProblem, type DriverId } from '@clerq/drivers';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
+import { AssertionSyntaxError, parseAssertion, type DiffAssertion } from './diff-assert.js';
 
 export type PermissionMode = 'acceptEdits' | 'default' | 'dontAsk' | 'plan';
+
+/** A gate: a command that must exit 0, or an assertion about the run's diff. */
+export type GateSpec =
+  | { run: string; timeoutMs: number }
+  | { assert: string; check: DiffAssertion };
+
+export function isAssertion(gate: GateSpec): gate is { assert: string; check: DiffAssertion } {
+  return 'assert' in gate;
+}
 
 export interface AutomationSpec {
   name: string;
   description?: string;
   /** Cron expression in the host's time zone. Absent: the automation only runs on demand. */
   schedule?: string;
+  /**
+   * A slot missed while the machine slept or the gateway was down runs once
+   * when it is noticed. Off: missed slots are skipped, and that is recorded.
+   */
+  catchUp: boolean;
   repo: { kind: 'local'; path: string; ref?: string };
   agent: {
     driver: DriverId;
@@ -26,10 +41,15 @@ export interface AutomationSpec {
     allowedTools: string[];
     /** Vault secret holding an API key for the agent. Absent: the CLI's own sign-in. */
     apiKeySecret?: string;
+    /**
+     * Models to run the agent again with, one at a time and in order, when the
+     * gates fail: `agent.model.escalate`.
+     */
+    escalate: string[];
   };
   prompt: string;
   sandbox: { profile: 'native'; timeoutMs: number };
-  gates: Array<{ run: string; timeoutMs: number }>;
+  gates: GateSpec[];
   publish: {
     branch: string;
     push: boolean;
@@ -40,7 +60,14 @@ export interface AutomationSpec {
   };
   budget: { maxUsdPerRun?: number; maxUsdPerMonth?: number };
   approvals: { push: 'manual' | 'auto'; timeoutMs: number };
+  /** Further attempts after a transient failure, and the wait before the first of them. */
+  retry: { maxRetries: number; backoffMs: number };
 }
+
+/** The most `retry.max_retries` may be. */
+export const MAX_RETRIES = 10;
+/** The most `agent.model.escalate` may list. */
+export const MAX_ESCALATIONS = 5;
 
 export class SpecError extends Error {
   readonly code = 'invalid_spec';
@@ -61,8 +88,9 @@ const PERMISSION_MODES: PermissionMode[] = ['acceptEdits', 'default', 'dontAsk',
 /** Keys of the documented format that this release does not run yet. */
 const NOT_YET: Record<string, string> = {
   'on.events': 'event triggers',
-  'on.catch_up': 'missed-schedule catch-up',
-  'targets.max_parallel': 'fleet runs',
+  // Targets are one repository per automation in this release, and an
+  // automation runs once at a time, so there is nothing to run in parallel.
+  'targets.max_parallel': 'fleet runs across several repositories',
   'agent.model.fallback': 'model fallback',
   'agent.model.strategy': 'routing strategies',
   'sandbox.network': 'network restriction',
@@ -88,12 +116,38 @@ class Reader {
     private readonly lines: LineCounter
   ) {}
 
-  /** Fail at a node's position. */
-  failAt(node: unknown, message: string): never {
-    const range = (node as { range?: [number, number, number] } | null)?.range;
+  /**
+   * Fail at a node's position, or `offset` characters into a single-line
+   * scalar's value (past its opening quote, if it has one).
+   */
+  failAt(node: unknown, message: string, offset = 0): never {
+    const n = node as { range?: [number, number, number]; type?: string } | null;
+    const range = n?.range;
     if (!range) throw new SpecError(message);
-    const pos = this.lines.linePos(range[0]);
+    let at = range[0];
+    // Only where the text maps one to one onto the source: one line, no escapes.
+    const oneLine = this.lines.linePos(range[0]).line === this.lines.linePos(range[1]).line;
+    if (offset > 0 && isScalar(node) && oneLine) {
+      if (n?.type === 'PLAIN') at += offset;
+      else if (n?.type === 'QUOTE_SINGLE') at += offset + 1;
+    }
+    const pos = this.lines.linePos(at);
     throw new SpecError(message, pos.line, pos.col);
+  }
+
+  /** The node at `path`, as YAML has it. */
+  node(path: Array<string | number>): unknown {
+    return this.doc.getIn(path, true);
+  }
+
+  /** A whole number at `path`, from `min` to `max`. */
+  count(path: string[], fallback: number, min: number, max: number): number {
+    const v = this.get(path);
+    if (v === undefined || v === null) return fallback;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) {
+      this.fail(path, `"${path.join('.')}" must be a whole number from ${min} to ${max}.`);
+    }
+    return v;
   }
 
   /** Fail at the node `path` points to, or the nearest ancestor that exists. */
@@ -224,6 +278,7 @@ export function parseSpec(source: string): AutomationSpec {
       'publish',
       'budget',
       'approvals',
+      'retry',
     ]
   );
 
@@ -232,10 +287,14 @@ export function parseSpec(source: string): AutomationSpec {
     r.fail(['name'], '"name" must be lowercase letters, digits and dashes, at most 63 characters.');
   }
 
-  r.keys(['on'], ['schedule']);
+  r.keys(['on'], ['schedule', 'catch_up']);
   const schedule = r.text(['on', 'schedule']);
   if (schedule !== undefined && !cron.validate(schedule)) {
     r.fail(['on', 'schedule'], `"${schedule}" is not a valid cron expression.`);
+  }
+  const catchUp = r.bool(['on', 'catch_up'], false);
+  if (catchUp && schedule === undefined) {
+    r.fail(['on', 'catch_up'], '"on.catch_up" needs "on.schedule": there are no slots to miss.');
   }
 
   r.keys(['targets'], ['repos']);
@@ -263,10 +322,50 @@ export function parseSpec(source: string): AutomationSpec {
   if (r.get(['agent', 'driver']) === undefined) r.fail(['agent'], '"agent.driver" is required.');
   const caps = DRIVER_CAPABILITIES[driver];
   let model: string | undefined;
+  let escalate: string[] = [];
   const rawModel = r.get(['agent', 'model']);
   if (rawModel !== undefined && rawModel !== null && typeof rawModel === 'object') {
-    r.keys(['agent', 'model'], ['primary']);
-    model = r.text(['agent', 'model', 'primary'], true);
+    r.keys(['agent', 'model'], ['primary', 'escalate']);
+    model =
+      driver === 'builtin'
+        ? r.text(['agent', 'model', 'primary'], true)
+        : r.text(['agent', 'model', 'primary']);
+    const list = r.get(['agent', 'model', 'escalate']);
+    if (list !== undefined && list !== null) {
+      if (!Array.isArray(list) || list.length === 0) {
+        r.fail(
+          ['agent', 'model', 'escalate'],
+          '"agent.model.escalate" must list one or more models, e.g. [anthropic/claude-opus-4-1].'
+        );
+      }
+      if (list.length > MAX_ESCALATIONS) {
+        r.fail(
+          ['agent', 'model', 'escalate', MAX_ESCALATIONS],
+          `"agent.model.escalate" may list at most ${MAX_ESCALATIONS} models.`
+        );
+      }
+      escalate = list.map((m, i) => {
+        if (typeof m !== 'string' || !m.trim()) {
+          r.fail(['agent', 'model', 'escalate', i], 'Each escalation model must be a model name.');
+        }
+        return m.trim();
+      });
+      // The model is passed to the CLI as it is, so it must take one.
+      if (!caps.models) {
+        r.fail(
+          ['agent', 'model', 'escalate'],
+          `"agent.model.escalate" is not supported by the ${driver} driver: ${caps.label}'s CLI cannot be told which model to use.`
+        );
+      }
+      escalate.forEach((m, i) => {
+        if (m === model || escalate.indexOf(m) !== i) {
+          r.fail(
+            ['agent', 'model', 'escalate', i],
+            `"${m}" is already ${m === model ? 'the primary model' : 'listed'}; escalation needs a different model at each step.`
+          );
+        }
+      });
+    }
   } else {
     model = r.text(['agent', 'model']);
   }
@@ -280,13 +379,17 @@ export function parseSpec(source: string): AutomationSpec {
         'The builtin driver needs "agent.model" as provider/model, e.g. anthropic/claude-sonnet-4-5.'
       );
     }
-    const slash = model.indexOf('/');
-    if (slash <= 0 || slash === model.length - 1) {
-      r.fail(
-        modelPath,
-        `"${model}" must name the provider too, as provider/model (e.g. anthropic/${model}).`
-      );
-    }
+    const qualified = (ref: string, path: Array<string | number>) => {
+      const slash = ref.indexOf('/');
+      if (slash <= 0 || slash === ref.length - 1) {
+        r.fail(
+          path,
+          `"${ref}" must name the provider too, as provider/model (e.g. anthropic/${ref}).`
+        );
+      }
+    };
+    qualified(model, modelPath);
+    escalate.forEach((m, i) => qualified(m, ['agent', 'model', 'escalate', i]));
   }
   const allowedTools = r.get(['agent', 'allowed_tools']) ?? [];
   if (
@@ -332,13 +435,20 @@ export function parseSpec(source: string): AutomationSpec {
 
   const gatesRaw = r.get(['gates']) ?? [];
   if (!Array.isArray(gatesRaw)) r.fail(['gates'], '"gates" must be a list.');
-  const gates = gatesRaw.map((_, i) => {
+  const gates = gatesRaw.map((_, i): GateSpec => {
     const node = r.get(['gates', i]);
     if (node && typeof node === 'object' && 'assert' in node) {
-      r.fail(
-        ['gates', i, 'assert'],
-        'diff assertions ("assert:") are not supported in this release.'
-      );
+      r.keys(['gates', String(i)], ['assert']);
+      const text = r.text(['gates', String(i), 'assert'], true);
+      try {
+        return { assert: text.trim(), check: parseAssertion(text) };
+      } catch (e) {
+        if (!(e instanceof AssertionSyntaxError)) throw e;
+        r.failAt(r.node(['gates', i, 'assert']), e.message, e.offset);
+      }
+    }
+    if (node && typeof node === 'object' && !('run' in node)) {
+      r.fail(['gates', i], 'A gate is "run: <command>" or "assert: diff.<name> …".');
     }
     r.keys(['gates', String(i)], ['run', 'timeout']);
     return {
@@ -380,10 +490,18 @@ export function parseSpec(source: string): AutomationSpec {
   // Nothing here merges, so a merge approval can only ever be manual.
   r.oneOf(['approvals', 'merge'], ['manual'] as const, 'manual');
 
+  r.keys(['retry'], ['max_retries', 'backoff']);
+  const maxRetries = r.count(['retry', 'max_retries'], 0, 0, MAX_RETRIES);
+  const backoffMs = r.duration(['retry', 'backoff'], 60_000);
+  if (backoffMs > 3_600_000) {
+    r.fail(['retry', 'backoff'], '"retry.backoff" may be at most 1h; it doubles with each retry.');
+  }
+
   return {
     name,
     description: r.text(['description']),
     schedule,
+    catchUp,
     repo: { kind: 'local', path: repoPath, ...(ref ? { ref } : {}) },
     agent: {
       driver,
@@ -393,6 +511,7 @@ export function parseSpec(source: string): AutomationSpec {
       ...(r.secretName(['agent', 'api_key_secret'])
         ? { apiKeySecret: r.secretName(['agent', 'api_key_secret']) }
         : {}),
+      escalate,
     },
     prompt,
     sandbox: { profile: 'native', timeoutMs: r.duration(['sandbox', 'timeout'], 20 * 60_000) },
@@ -412,5 +531,6 @@ export function parseSpec(source: string): AutomationSpec {
       push: r.oneOf(['approvals', 'push'], ['manual', 'auto'] as const, 'manual'),
       timeoutMs: r.duration(['approvals', 'timeout'], 24 * 3_600_000),
     },
+    retry: { maxRetries, backoffMs },
   };
 }

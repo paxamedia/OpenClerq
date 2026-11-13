@@ -3,20 +3,12 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
 import type { Express, Request, Response } from 'express';
 import { DRIVER_IDS } from '@clerq/drivers';
-import { git, isRepo, defaultBranch, pruneWorktrees } from '@clerq/workspaces';
+import { git, isRepo, defaultBranch } from '@clerq/workspaces';
 import { logger } from '../logger.js';
 import { getStore } from '../store.js';
-import { listPending, decide } from '../approvals.js';
-import { addRunStep, reapInterruptedRuns, getArtifact, getRun } from '../runs.js';
-import {
-  killLeftoverProcesses,
-  readProcessTable,
-  runsOfLiveGateways,
-  warmGatewayIdentity,
-} from '../agent-processes.js';
+import { getArtifact } from '../runs.js';
 import { parseSpec, SpecError, type AutomationSpec } from './spec.js';
 import {
   AutomationError,
@@ -37,16 +29,18 @@ import {
   githubProject,
   hasBudget,
   policyFor,
-  runningAutomations,
-  startAutomationRun,
   type RunnerDeps,
 } from './runner.js';
+import { hasQueuedRun, runningAutomations, startAutomationRun } from './queue.js';
 import {
+  lastMissedSlots,
   nextRunOf,
   nextRunsOf,
   startAutomationSchedules,
   stopAutomationSchedules,
 } from './scheduler.js';
+
+export { recoverAfterRestart } from './recovery.js';
 
 /** How many upcoming firings a summary lists. */
 const NEXT_FIRINGS = 10;
@@ -109,6 +103,11 @@ function summary(a: Automation) {
     repo: a.spec?.repo.path ?? null,
     problem: a.problem ?? null,
     running: runningAutomations().includes(a.id),
+    // A run waiting for its turn (the limit on runs at once, or a retry's backoff).
+    queued: hasQueuedRun(a.id),
+    catchUp: a.spec?.catchUp ?? false,
+    // The latest slots skipped because nobody was awake for them, or null.
+    missedSlots: lastMissedSlots(a.id),
     monthSpendUsd: monthSpendUsd(a.id),
     monthBudgetUsd: a.spec?.budget.maxUsdPerMonth ?? null,
     lastRun: lastRun(a.id),
@@ -157,6 +156,34 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
   });
   if (!driver.available)
     checks.push({ level: 'error', message: driver.reason ?? 'The driver is unavailable.' });
+  // An escalation model must be usable too, and priced when the spec has a
+  // budget in dollars: a run checks this before it starts, so say it now.
+  for (const model of spec.agent.escalate) {
+    const next = await (deps.driverFor ?? defaultDriver)(spec.agent.driver).detect({
+      apiKey: Boolean(spec.agent.apiKeySecret),
+      permissionMode: spec.agent.permissionMode,
+      model,
+      budget: hasBudget(spec),
+    });
+    if (!next.available) {
+      checks.push({
+        level: 'error',
+        message: `Escalation model ${model}: ${next.reason ?? 'unavailable.'}`,
+      });
+    }
+  }
+  if (spec.agent.escalate.length > 0) {
+    checks.push({
+      level: 'ok',
+      message: `When a gate fails, the agent runs again with ${spec.agent.escalate.join(', then ')}, in the same worktree.`,
+    });
+  }
+  if (spec.retry.maxRetries > 0) {
+    checks.push({
+      level: 'ok',
+      message: `A run that fails for a passing reason (the agent crashed, the provider was down, the gateway stopped) is tried up to ${spec.retry.maxRetries} more ${spec.retry.maxRetries === 1 ? 'time' : 'times'}.`,
+    });
+  }
 
   if (
     spec.publish.push &&
@@ -188,6 +215,13 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
   }
   if (!spec.schedule)
     checks.push({ level: 'ok', message: 'No schedule: it runs only when started by hand.' });
+  else
+    checks.push({
+      level: 'ok',
+      message: spec.catchUp
+        ? 'A slot missed while this machine slept or the gateway was down runs once when it wakes.'
+        : 'A slot missed while this machine slept or the gateway was down is skipped.',
+    });
 
   return {
     spec,
@@ -201,103 +235,6 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
     checks,
     ready: !checks.some((c) => c.level === 'error'),
   };
-}
-
-/** Remove what an interrupted run left behind: its worktree and its branch. */
-async function cleanUpRun(runId: string): Promise<void> {
-  const run = getRun(runId);
-  if (!run?.repoId) return;
-  const repo = getStore().prepare('SELECT local_path FROM repos WHERE id = ?').get(run.repoId);
-  const repoPath = repo?.local_path ? String(repo.local_path) : null;
-  const step = (
-    run.steps as Array<{ kind: string; input?: { action?: string }; output?: { path?: string } }>
-  ).find((s) => s.kind === 'git' && s.input?.action === 'worktree');
-  const worktree = step?.output?.path;
-  if (worktree && fs.existsSync(worktree)) fs.rmSync(worktree, { recursive: true, force: true });
-  if (repoPath && fs.existsSync(repoPath)) {
-    await pruneWorktrees(repoPath);
-    if (run.branch) await git(['branch', '-D', run.branch], { cwd: repoPath, allowFailure: true });
-  }
-}
-
-/**
- * Stop the agent and gate processes the previous gateway left running, and say
- * so on the run each belonged to. They lead their own process groups, so they
- * outlive a gateway that crashed, and would keep writing into a worktree that
- * is about to be removed. Only a process still matching what was recorded is
- * stopped; see agent-processes.ts.
- */
-async function stopLeftoverProcesses(): Promise<void> {
-  try {
-    for (const p of await killLeftoverProcesses()) {
-      if (p.outcome === 'killed') {
-        addRunStep(p.runId, {
-          kind: 'tool',
-          input: { name: 'process.cleanup', pid: p.pid, command: p.command, kind: p.kind },
-          output: {
-            note: `Stopped the ${p.kind} process (pid ${p.pid}) that the previous gateway left running.`,
-            forced: p.forced === true,
-          },
-          status: 'ok',
-        });
-        logger.warn('Stopped a process left running by the previous gateway', {
-          runId: p.runId,
-          pid: p.pid,
-          kind: p.kind,
-          forced: p.forced === true,
-        });
-      } else if (p.outcome === 'reused' || p.outcome === 'unverified') {
-        addRunStep(p.runId, {
-          kind: 'tool',
-          input: { name: 'process.cleanup', pid: p.pid, command: p.command, kind: p.kind },
-          output: {
-            note: `Left pid ${p.pid} alone: it could not be confirmed as the ${p.kind} process this run started.`,
-          },
-          status: 'warning',
-        });
-      }
-    }
-  } catch (e) {
-    // Never stop the gateway starting over this.
-    logger.warn('Could not check for processes left by the previous gateway', {
-      err: e instanceof Error ? e.message : String(e),
-    });
-  }
-}
-
-/**
- * After a restart: runs that were in flight died with the old process, and
- * their approvals can never be acted on. Stop what they left running, mark
- * them, and remove their worktrees.
- */
-export async function recoverAfterRestart(): Promise<void> {
-  // Learn when this process started, so what it records can be recognised later.
-  await warmGatewayIdentity();
-  // Runs of a gateway that is still running (another instance on the same
-  // store, or this process) are not interrupted: their processes are left
-  // alone below, and so are their runs, approvals and worktrees.
-  const table = await readProcessTable();
-  const theirs = table ? runsOfLiveGateways(table) : new Set<string>();
-  // First, so nothing is still writing into a worktree when it is removed.
-  await stopLeftoverProcesses();
-  const reaped = reapInterruptedRuns({ except: theirs });
-  for (const p of listPending()) {
-    if (theirs.has(p.runId)) continue;
-    decide(p.id, { decision: 'denied', decidedBy: 'restart', reason: 'The gateway restarted.' });
-  }
-  for (const id of reaped) {
-    try {
-      await cleanUpRun(id);
-    } catch (e) {
-      logger.warn('Could not clean up an interrupted run', {
-        runId: id,
-        err: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
-  if (reaped.length > 0) {
-    logger.warn('Marked runs interrupted by a restart as failed', { count: reaped.length });
-  }
 }
 
 export function mountAutomationRoutes(
@@ -396,8 +333,9 @@ export function mountAutomationRoutes(
     try {
       const a = getAutomation(String(req.params.id));
       if (!a) return res.status(404).json({ error: 'not_found' });
-      const { runId } = startAutomationRun(a, 'manual', deps);
-      res.status(202).json({ runId });
+      const { runId, queued } = startAutomationRun(a, 'manual', deps);
+      // `queued`: the limit on runs at once is reached, and it starts when a place frees.
+      res.status(202).json({ runId, queued });
     } catch (e) {
       fail(res, e, 'automation_run_failed');
     }
