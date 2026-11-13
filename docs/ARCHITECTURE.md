@@ -229,7 +229,9 @@ folded into a summary that has not expired goes on its own expiry, and undoing t
 restores what is left.
 
 **Retrieval is decided by policy.** Each type is its own tool in the `memory` group of
-`packages/policy`: `memory.read.<type>` and `memory.write.<type>`. A reader may read the types its
+`packages/policy`: `memory.read.<type>` and `memory.write.<type>`. Only the read side is enforced:
+`memory.write.<type>` is reserved for a memory tool an agent will be given, and nothing checks it yet
+(writes through the HTTP API are the user's own). A reader may read the types its
 rules allow (`readableMemoryTypes(rules)`: an outright allow, not one that needs approval, since nobody
 can be asked while a prompt is built). Managed chat and `/task` read under the gateway's memory policy,
 every type until `PUT /memory/policy { readTypes }` narrows it (an empty list turns memory off for
@@ -247,10 +249,13 @@ a tag: every `<` and `>` in a note is escaped (`&lt;`, `&gt;`) before it is plac
 Memory that cannot be read is left out, never a failed answer.
 
 The 0.5 `memory` table (one value per key) was rebuilt by store migration 16, which copies every row
-across as a `fact` with its dates, so nothing is lost. `GET /memory`, `GET /memory/:key`,
+across with its dates, keeping its type when it is one of the five (anything else becomes `fact`) and
+marking its origin `import`, so nothing is lost; migration 17 adds `agent_derived`. `GET /memory`, `GET /memory/:key`,
 `POST /memory` and `DELETE /memory/:key` answer as before with the record's other fields added:
 `POST /memory` still sets one `fact` under a key, in place, and `DELETE /memory/:key` forgets every
-record under it. The records themselves are under `/memory/records`. A key named `search`, `records`,
+record under it. Two things differ from before: `GET /memory` lists at most 500 records (`?limit=`, at
+most 1,000; it listed every one), and a value over 20,000 characters is refused with a 400 on
+`POST /memory` as on every write. The records themselves are under `/memory/records`. A key named `search`, `records`,
 `consolidate` or `policy` is reached with `GET /memory?key=`, since those words are paths.
 
 ### Automations

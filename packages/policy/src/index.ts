@@ -147,6 +147,11 @@ export function evaluate(rules: PolicyRules, tool: ToolDescriptor): PolicyResult
  *   `memory.read.procedure`  one type
  *   `group:memory`           every memory tool, read and write
  *   `risk:read`              also matches, as it does for every read tool
+ *
+ * Only the read side is enforced: retrieval asks `readableMemoryTypes(rules)`.
+ * `memory.write.<type>` and `writableMemoryTypes` are reserved for an agent's
+ * memory tool to be policed the same way; nothing checks them yet. Writes through
+ * the gateway's HTTP API are the user's own and are not decided by these rules.
  */
 export const MEMORY_TYPES = ['fact', 'preference', 'decision', 'procedure', 'note'] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];

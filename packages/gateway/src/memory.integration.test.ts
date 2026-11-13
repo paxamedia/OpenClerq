@@ -10,7 +10,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createGateway } from './gateway.js';
-import { recentEvents } from './events.js';
+import { subscribeEvents } from './events.js';
 
 const TOKEN = 'memory-test-token-0123456789';
 const authed = (url: string, init: RequestInit = {}) =>
@@ -164,6 +164,28 @@ describe('memory API', () => {
         error: 'memory_not_found',
       });
       expect((await send('POST', '/memory', { value: 1 })).status).toBe(400);
+    });
+
+    it('list at most 500 records unless asked for more, and refuse a value over 20,000 characters', async () => {
+      const db = (await import('./store.js')).getStore();
+      const insert = db.prepare(
+        "INSERT INTO memory (id, key, value, created_at, updated_at) VALUES (?, ?, '1', 'a', 'a')"
+      );
+      db.transaction(() => {
+        for (let i = 0; i < 505; i++) insert.run(`mem_bulk${i}`, `bulk-${i}`);
+      });
+      const listed = async (q = '') =>
+        (await json<{ entries: unknown[] }>(await get(`/memory${q}`))).entries.length;
+      expect(await listed()).toBe(500);
+      expect(await listed('?limit=1000')).toBe(505);
+      expect(await listed('?limit=10')).toBe(10);
+
+      const big = await send('POST', '/memory', { key: 'big', value: 'x'.repeat(20_001) });
+      expect(big.status).toBe(400);
+      expect(await json(big)).toMatchObject({ error: 'invalid_memory' });
+      expect((await send('POST', '/memory', { key: 'ok', value: 'x'.repeat(19_000) })).status).toBe(
+        200
+      );
     });
 
     it('set the same key again updates it in place, and a type keeps its own record', async () => {
@@ -469,15 +491,15 @@ describe('memory API', () => {
   });
 
   it('says memory.updated for each change', async () => {
-    const before = recentEvents().length;
+    const updates: string[] = [];
+    const stop = subscribeEvents((e) => {
+      if (e.name === 'memory.updated') updates.push((e.payload as { action: string }).action);
+    });
     const made = await json<{ record: { id: string } }>(
       await send('POST', '/memory/records', { key: 'evt', value: 1 })
     );
     await send('DELETE', `/memory/records/${made.record.id}`);
-    const updates = recentEvents()
-      .slice(before)
-      .filter((e) => e.name === 'memory.updated')
-      .map((e) => (e.payload as { action: string }).action);
+    stop();
     expect(updates).toEqual(['created', 'deleted']);
   });
 
