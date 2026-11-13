@@ -203,7 +203,8 @@ export const SUMMARY_PROMPT =
 export class Conversation {
   readonly system: string;
   readonly pinned: ConversationMessage[];
-  readonly budget: number;
+  /** Input tokens a request may use; `switchModel` changes it with the model. */
+  budget: number;
   private readonly tools: ToolDefinition[];
   private history: ConversationMessage[] = [];
   /** What compaction has summarised so far, carried into every later summary. */
@@ -262,6 +263,28 @@ export class Conversation {
   forRequest(): ConversationMessage[] {
     this.sentLength = this.history.length;
     return this.messages();
+  }
+
+  /**
+   * Carry on with another model: its input budget replaces the old one, and
+   * the opaque reasoning of earlier turns is dropped (as compaction does), since
+   * a vendor may refuse reasoning written by a different model, and another
+   * model has no use for it. The provider's token count belonged to the old
+   * model's tokenizer, so estimates start again from the heuristic until the
+   * next call reports one. Returns how many reasoning blocks were dropped.
+   */
+  switchModel(budget: number): number {
+    this.budget = budget;
+    this.calibration = null;
+    let dropped = 0;
+    this.history = this.history.map((m) => {
+      if (typeof m.content === 'string') return m;
+      const kept = m.content.filter((b) => b.type !== 'reasoning');
+      if (kept.length === m.content.length) return m;
+      dropped += m.content.length - kept.length;
+      return stripReasoning(m);
+    });
+    return dropped;
   }
 
   /** The provider's count of input tokens for the last request. */

@@ -230,6 +230,31 @@ describe('Conversation', () => {
     expect(record?.error).toBeUndefined();
   });
 
+  it("switches model: a new budget, no reasoning from the old model's turns, estimates from scratch", () => {
+    const c = new Conversation({ system: 'sys', pinned, budget: 10_000 });
+    for (const m of round(1)) c.append(m);
+    c.forRequest();
+    c.recordUsage(9_999);
+    expect(c.estimate()).toBe(9_999);
+
+    const dropped = c.switchModel(3_000);
+    expect(dropped).toBe(1);
+    expect(c.budget).toBe(3_000);
+    for (const m of c.messages()) {
+      if (typeof m.content !== 'string') {
+        expect(m.content.some((b) => b.type === 'reasoning')).toBe(false);
+      }
+    }
+    // The old model's count is not carried over to another tokenizer.
+    expect(c.estimate()).toBe(c.heuristicTokens());
+    // Everything else about the turn stays, so its tool call still has its result.
+    const kept = c.turns[0].content as Array<{ type: string }>;
+    expect(kept.map((b) => b.type)).toEqual(['text', 'tool_use']);
+    expect(c.turns).toHaveLength(2);
+    // Nothing to drop the second time.
+    expect(c.switchModel(3_000)).toBe(0);
+  });
+
   it('has nothing to compact while only one round exists', async () => {
     const c = new Conversation({ system: '', pinned, budget: 100 });
     for (const m of round(1, 4_000)) c.append(m);

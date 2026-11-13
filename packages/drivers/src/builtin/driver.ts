@@ -17,9 +17,9 @@ import {
   contextBudget,
   estimateCost,
   estimateTokens,
+  isUnavailable,
   loadRegistry,
   resolveModel,
-  ProviderError,
   SUMMARY_PROMPT,
   type CallResult,
   type ContentBlock,
@@ -202,7 +202,7 @@ export function builtin(options: BuiltinOptions = {}): Driver {
       };
     }
     if (opts.budget && !priced(provider, model)) {
-      return { ...base, available: false, reason: unpricedReason(provider, model) };
+      return { ...base, available: false, unpriced: true, reason: unpricedReason(provider, model) };
     }
     if (!provider.authEnv) {
       // A local server: check something answers, so a run does not fail on its first call.
@@ -237,6 +237,19 @@ interface Totals {
   turns: number;
 }
 
+/** The model a call goes to now, with what the call needs from it. */
+interface Active {
+  provider: ProviderSpec;
+  model: ModelSpec;
+  /** `provider/model`, as the registry names it. */
+  ref: string;
+  /** The key for this model's provider: the run's own, or none (then the provider's usual one). */
+  apiKey: string | undefined;
+  keyOptional: boolean;
+  /** The most a reply may write: bounded by the model's window. */
+  maxOutput: number;
+}
+
 async function* runLoop(
   input: DriverRunInput,
   options: BuiltinOptions & { registry: () => Registry; fetch: FetchLike }
@@ -249,23 +262,76 @@ async function* runLoop(
     yield failed(problem);
     return;
   }
+  /** The run's key belongs to the provider of the model it starts with. */
+  let keyProvider: string | undefined;
   let registry: Registry;
-  let provider: ProviderSpec;
-  let model: ModelSpec;
+  let start: Active;
   try {
     registry = options.registry();
-    ({ provider, model } = resolveModel(registry, input.model as string));
+    start = bind(input.model as string);
   } catch (e) {
     yield failed(e instanceof Error ? e.message : String(e));
     return;
   }
-  const ref = `${provider.id}/${model.id}`;
-  if (input.maxBudgetUsd !== undefined && !priced(provider, model)) {
-    yield failed(unpricedReason(provider, model));
+  keyProvider = start.provider.id;
+  if (input.maxBudgetUsd !== undefined && !priced(start.provider, start.model)) {
+    yield failed(unpricedReason(start.provider, start.model));
     return;
   }
-  const apiKey = input.secrets?.[BUILTIN_KEY_ENV];
-  const keyOptional = options.keyOptional?.(provider.id) ?? false;
+
+  /**
+   * The model `ref` as a target for calls. The run's own key goes only to the
+   * provider it was given for: a fallback on another provider uses that
+   * provider's usual key, so a key is never sent to a vendor it was not for.
+   */
+  function bind(ref: string): Active {
+    const { provider, model } = resolveModel(registry, ref);
+    const maxOutput = Math.min(
+      options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+      Math.max(1_024, Math.floor((model.context ?? 32_000) / 4))
+    );
+    return {
+      provider,
+      model,
+      ref: `${provider.id}/${model.id}`,
+      // Until the first model is bound the key is for it, whatever it is.
+      apiKey:
+        keyProvider === undefined || provider.id === keyProvider
+          ? input.secrets?.[BUILTIN_KEY_ENV]
+          : undefined,
+      keyOptional: options.keyOptional?.(provider.id) ?? false,
+      maxOutput,
+    };
+  }
+
+  /**
+   * Why a model cannot take over, or undefined when it can: it must be a
+   * model the registry resolves, priced when the run has a dollar budget, and
+   * have a key (the run's own for its provider, else the provider's usual one).
+   */
+  function unusable(ref: string): { active?: Active; reason?: string } {
+    const bad = qualified(ref);
+    if (bad) return { reason: bad };
+    let active: Active;
+    try {
+      active = bind(ref);
+    } catch (e) {
+      return { reason: e instanceof Error ? e.message : String(e) };
+    }
+    if (input.maxBudgetUsd !== undefined && !priced(active.provider, active.model)) {
+      return { reason: unpricedReason(active.provider, active.model) };
+    }
+    const authEnv = active.provider.authEnv;
+    if (authEnv && !active.apiKey && !active.keyOptional && !process.env[authEnv]) {
+      return { reason: `${active.provider.label} needs ${authEnv}, and it is not set.` };
+    }
+    return { active };
+  }
+
+  // The model in use, and the ones to move to when it is unavailable.
+  let active = start;
+  const chain = [...new Set([active.ref, ...(input.fallbackModels ?? [])])];
+  let chainAt = 0;
 
   // One signal for everything the run starts: the caller's, and the deadline.
   const controller = new AbortController();
@@ -286,14 +352,11 @@ async function* runLoop(
   const budget = new RunBudget(rules);
   const tools = offeredTools(rules);
   const byModelName = new Map<string, BuiltinTool>(tools.map((t) => [t.definition.name, t]));
-  const maxOutput = Math.min(
-    options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    Math.max(1_024, Math.floor((model.context ?? 32_000) / 4))
-  );
+  const budgetOf = (a: Active) => contextBudget(a.model, { maxOutputTokens: a.maxOutput }).budget;
   const conversation = new Conversation({
     system: options.system ?? SYSTEM_PROMPT,
     pinned: [{ role: 'user', content: `Task:\n${input.prompt}` }],
-    budget: contextBudget(model, { maxOutputTokens: maxOutput }).budget,
+    budget: budgetOf(active),
     tools: tools.map((t) => t.definition),
   });
 
@@ -336,7 +399,16 @@ async function* runLoop(
     return undefined;
   };
 
-  /** One model call, accounted. */
+  /**
+   * Events to report at the next safe point, in the order they happened: the
+   * calls that failed because a model was unavailable, and the moves to the next.
+   */
+  const outbox: DriverEvent[] = [];
+  function* flush(): Generator<DriverEvent> {
+    while (outbox.length > 0) yield outbox.shift() as DriverEvent;
+  }
+
+  /** One model call to the model in use, accounted. */
   const ask = async (
     purpose: ModelCallInfo['purpose'],
     request: {
@@ -350,14 +422,14 @@ async function* runLoop(
     try {
       const result = await call(
         registry,
-        ref,
+        active.ref,
         {
           system: request.system,
           messages: request.messages,
           ...(request.withTools && tools.length ? { tools: tools.map((t) => t.definition) } : {}),
           maxTokens: request.maxTokens,
-          apiKey,
-          keyOptional,
+          apiKey: active.apiKey,
+          keyOptional: active.keyOptional,
           signal,
           timeoutMs: Math.max(1_000, Math.min(MAX_CALL_MS, deadline - Date.now())),
         },
@@ -388,11 +460,13 @@ async function* runLoop(
       return {
         info: {
           purpose,
-          provider: provider.id,
-          model: model.id,
+          provider: active.provider.id,
+          model: active.model.id,
           turn: totals.turns,
           ok: false,
           error: e instanceof Error ? e.message : String(e),
+          // Only the adapter's own account of the failure counts, never a message.
+          ...(isUnavailable(e) ? { unavailable: true } : {}),
           toolCalls: 0,
           text: '',
           tokensIn: 0,
@@ -405,6 +479,36 @@ async function* runLoop(
   };
 
   /**
+   * After a call that failed because the model is unavailable: move to the
+   * next model in the chain that can take over. Returns false when there is
+   * none. The conversation goes with it: its budget becomes the new model's,
+   * and the old model's reasoning is dropped from the history.
+   */
+  const moveOn = (failed: ModelCallInfo): boolean => {
+    const skipped: Array<{ model: string; reason: string }> = [];
+    while (chainAt + 1 < chain.length) {
+      chainAt += 1;
+      const next = unusable(chain[chainAt]);
+      if (!next.active) {
+        skipped.push({ model: chain[chainAt], reason: next.reason ?? 'It cannot be used.' });
+        continue;
+      }
+      const from = active.ref;
+      active = next.active;
+      conversation.switchModel(budgetOf(active));
+      outbox.push({
+        type: 'model_fallback',
+        from,
+        to: active.ref,
+        reason: failed.error ?? 'The model was unavailable.',
+        ...(skipped.length > 0 ? { skipped } : {}),
+      });
+      return true;
+    }
+    return false;
+  };
+
+  /**
    * Stop before a call the budget cannot cover: its input as estimated, and
    * its output at the full limit the call is allowed, since that is what it
    * may cost.
@@ -412,13 +516,13 @@ async function* runLoop(
   const overBudget = (inputTokens: number, outputTokens: number): string | undefined => {
     const max = input.maxBudgetUsd;
     if (max === undefined) return undefined;
-    const next = estimateCost(model, { inputTokens, outputTokens }) ?? 0;
+    const next = estimateCost(active.model, { inputTokens, outputTokens }) ?? 0;
     if (totals.spent + next <= max) return undefined;
     return `Stopped: the next model call would pass the run's budget of $${max.toFixed(2)} ($${totals.spent.toFixed(4)} spent).`;
   };
 
   try {
-    yield { type: 'started', model: ref, tools: tools.map((t) => t.name) };
+    yield { type: 'started', model: active.ref, tools: tools.map((t) => t.name) };
     const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
     let cutOff = 0;
 
@@ -435,7 +539,6 @@ async function* runLoop(
 
       // Context: compact before the request would no longer fit.
       if (conversation.overBudget(COMPACT_AT)) {
-        const pending: ModelCallInfo[] = [];
         const record = await conversation.compact(async (transcript) => {
           const prompt = `${transcript}\n\n---\n${SUMMARY_PROMPT}`;
           const why = overBudget(
@@ -443,17 +546,21 @@ async function* runLoop(
             SUMMARY_MAX_TOKENS
           );
           if (why) throw new Error(why);
-          const { result, info } = await ask('compaction', {
-            system: SUMMARY_SYSTEM,
-            messages: [{ role: 'user', content: prompt }],
-            withTools: false,
-            maxTokens: SUMMARY_MAX_TOKENS,
-          });
-          pending.push(info);
-          if (!result) throw new Error(info.error ?? 'The summary call failed.');
-          return result.text;
+          // A summary is asked of the next model too when this one is unavailable.
+          for (;;) {
+            const { result, info } = await ask('compaction', {
+              system: SUMMARY_SYSTEM,
+              messages: [{ role: 'user', content: prompt }],
+              withTools: false,
+              maxTokens: SUMMARY_MAX_TOKENS,
+            });
+            outbox.push({ type: 'model_call', call: info });
+            if (result) return result.text;
+            if (info.unavailable && !stopped() && moveOn(info)) continue;
+            throw new Error(info.error ?? 'The summary call failed.');
+          }
         });
-        for (const info of pending) yield { type: 'model_call', call: info };
+        yield* flush();
         if (record) yield { type: 'context', action: 'compacted', ...record };
         if (conversation.estimate() > conversation.budget) {
           const trimmed = await conversation.trim({
@@ -464,7 +571,7 @@ async function* runLoop(
         if (conversation.estimate() > conversation.budget) {
           yield finish(
             false,
-            `The task and its latest step do not fit in ${ref}'s context window (about ${conversation.estimate()} tokens for ${conversation.budget}).`
+            `The task and its latest step do not fit in ${active.ref}'s context window (about ${conversation.estimate()} tokens for ${conversation.budget}).`
           );
           return;
         }
@@ -475,7 +582,7 @@ async function* runLoop(
         }
       }
 
-      const why = overBudget(conversation.estimate(), maxOutput);
+      const why = overBudget(conversation.estimate(), active.maxOutput);
       if (why) {
         yield finish(false, why);
         return;
@@ -486,13 +593,24 @@ async function* runLoop(
         system: conversation.system,
         messages: conversation.forRequest(),
         withTools: true,
-        maxTokens: maxOutput,
+        maxTokens: active.maxOutput,
       });
-      yield { type: 'model_call', call: info };
+      outbox.push({ type: 'model_call', call: info });
       if (!result) {
-        yield stopped() ?? finish(false, info.error ?? 'The model call failed.');
+        const over = stopped();
+        // Another model takes the turn over, from the top of the loop: its window
+        // may be smaller, so the conversation is checked against it first, and a
+        // turn lost to an outage does not count against the turn limit.
+        if (!over && info.unavailable && moveOn(info)) {
+          yield* flush();
+          totals.turns -= 1;
+          continue;
+        }
+        yield* flush();
+        yield over ?? finish(false, info.error ?? 'The model call failed.');
         return;
       }
+      yield* flush();
       if (result.usageReported) conversation.recordUsage(result.usage.inputTokens);
       if (result.content.length > 0)
         conversation.append({ role: 'assistant', content: result.content });
@@ -519,7 +637,7 @@ async function* runLoop(
           if (cutOff >= MAX_CUT_OFF) {
             yield finish(
               false,
-              `The model's replies kept stopping at the output limit (${maxOutput} tokens).`
+              `The model's replies kept stopping at the output limit (${active.maxOutput} tokens).`
             );
             return;
           }

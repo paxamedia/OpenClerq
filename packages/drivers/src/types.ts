@@ -18,6 +18,12 @@ export interface DriverAvailability {
   model?: string;
   /** Model providers and whether each has what it needs (builtin only). */
   providers?: Array<{ id: string; label: string; ready: boolean; local: boolean; reason?: string }>;
+  /**
+   * Why a model is refused, when the reason is that it has no price and the
+   * run has a budget in dollars (builtin only). Unlike a missing key, that is
+   * a fault in the spec, which no other model in a chain can make up for.
+   */
+  unpriced?: boolean;
 }
 
 /** What `detect` is told about the run it is checking for. */
@@ -70,6 +76,13 @@ export interface ModelCallInfo {
   toolCalls: number;
   /** The text the model wrote, if any. */
   text: string;
+  /**
+   * The call failed because the model cannot be used right now (the provider
+   * is down, overloaded or rate limiting, did not answer, or does not accept
+   * the key), as the provider adapter reports it. Never read from the agent's
+   * own text.
+   */
+  unavailable?: boolean;
   tokensIn: number;
   tokensOut: number;
   /** US dollars; null when the model has no price in the registry. */
@@ -91,6 +104,14 @@ export interface DriverRunInput {
   /** The workspace the agent works in. */
   cwd: string;
   model?: string;
+  /**
+   * Models to move to, in order, when the model in use becomes unavailable.
+   * Only a driver that makes the model calls itself (builtin) can switch in
+   * the middle of a run; for a CLI the caller starts a new attempt with the
+   * next model instead. A model the key in `secrets` does not belong to
+   * (another provider's) uses that provider's own key, never this one.
+   */
+  fallbackModels?: string[];
   /** Tools the agent may use without asking, in the CLI's own syntax. */
   allowedTools?: string[];
   /** How the agent treats edits and commands it has not been granted. */
@@ -144,6 +165,19 @@ export type DriverEvent =
   | { type: 'log'; stream: 'stdout' | 'stderr'; line: string }
   /** A model call the driver made itself, so its tokens and cost are recorded one by one. */
   | { type: 'model_call'; call: ModelCallInfo }
+  /**
+   * The model in use became unavailable and the driver moved on to the next
+   * one in `fallbackModels`. The failed call is a `model_call` before this.
+   */
+  | {
+      type: 'model_fallback';
+      from: string;
+      to: string;
+      /** Why the first one was left: the provider's own error. */
+      reason: string;
+      /** Models passed over on the way, and why none of them could be used. */
+      skipped?: Array<{ model: string; reason: string }>;
+    }
   /** Older context was summarised or dropped to fit the model's window. */
   | {
       type: 'context';

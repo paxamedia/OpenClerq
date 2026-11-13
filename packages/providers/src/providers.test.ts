@@ -14,6 +14,8 @@ import {
   call,
   callStream,
   ProviderError,
+  isUnavailable,
+  unavailableStatus,
   DEFAULT_REGISTRY_YAML,
   type Registry,
 } from './index.js';
@@ -743,5 +745,153 @@ describe('response limits and cancellation', () => {
         }) as unknown as Response) as unknown as typeof fetch
     ).catch((e: unknown) => e);
     expect((error as ProviderError).cancelled).toBe(false);
+  });
+});
+
+describe('unavailable models', () => {
+  const saved = { ...process.env };
+  beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  const answer = (status: number, body = 'x') =>
+    (async () =>
+      ({
+        ok: false,
+        status,
+        text: async () => body,
+      }) as unknown as Response) as unknown as typeof fetch;
+  const failure = (run: Promise<unknown>) =>
+    run.then(
+      () => undefined,
+      (e: unknown) => e
+    );
+
+  it('says which statuses mean the model cannot be used right now', () => {
+    for (const status of [401, 403, 408, 429, 500, 502, 503, 529]) {
+      expect(unavailableStatus(status), String(status)).toBe(true);
+    }
+    // A malformed request or an unknown model id is the request's fault: another model would hide it.
+    for (const status of [400, 404, 413, 422]) {
+      expect(unavailableStatus(status), String(status)).toBe(false);
+    }
+  });
+
+  it('marks a provider failure, overload, rate limit and refused key as unavailable', async () => {
+    for (const status of [500, 503, 529, 429, 401]) {
+      const e = await failure(
+        call(registry, 'deepseek/deepseek-chat', { prompt: 'hi' }, answer(status))
+      );
+      expect(isUnavailable(e), String(status)).toBe(true);
+      expect((e as ProviderError).status).toBe(status);
+    }
+  });
+
+  it('does not mark a request the provider refused as malformed', async () => {
+    const e = await failure(
+      call(registry, 'deepseek/deepseek-chat', { prompt: 'hi' }, answer(400, 'bad request'))
+    );
+    expect(e).toBeInstanceOf(ProviderError);
+    expect(isUnavailable(e)).toBe(false);
+  });
+
+  it('marks a missing key, an unreachable endpoint and a timeout as unavailable', async () => {
+    delete process.env.DEEPSEEK_API_KEY;
+    expect(
+      isUnavailable(
+        await failure(call(registry, 'deepseek/deepseek-chat', { prompt: 'hi' }, answer(200)))
+      )
+    ).toBe(true);
+    expect(
+      isUnavailable(
+        await failure(
+          call(registry, 'ollama/llama3.2', { prompt: 'hi' }, (async () => {
+            throw new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED') });
+          }) as unknown as typeof fetch)
+        )
+      )
+    ).toBe(true);
+    expect(
+      isUnavailable(
+        await failure(
+          call(
+            registry,
+            'ollama/llama3.2',
+            { prompt: 'hi', timeoutMs: 20 },
+            ((_url: string, init: RequestInit) =>
+              new Promise((_resolve, reject) => {
+                init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+              })) as unknown as typeof fetch
+          )
+        )
+      )
+    ).toBe(true);
+  });
+
+  it('does not mark a cancel as unavailable', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const e = await failure(
+      call(
+        registry,
+        'ollama/llama3.2',
+        { prompt: 'hi', signal: controller.signal },
+        ((_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            if (init.signal?.aborted) reject(new Error('aborted'));
+          })) as unknown as typeof fetch
+      )
+    );
+    expect((e as ProviderError).cancelled).toBe(true);
+    expect(isUnavailable(e)).toBe(false);
+  });
+
+  it('marks a streamed overload as unavailable, and a streamed error of another kind as not', async () => {
+    const frame = (error: Record<string, unknown>) =>
+      (async () => {
+        const encoder = new TextEncoder();
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          body: new ReadableStream<Uint8Array>({
+            start(c) {
+              c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error })}\n\n`));
+              c.close();
+            },
+          }),
+        } as unknown as Response;
+      }) as unknown as typeof fetch;
+    const overloaded = await failure(
+      callStream(
+        registry,
+        'anthropic/claude-haiku-4-5',
+        { prompt: 'hi' },
+        () => {},
+        frame({ type: 'overloaded_error', message: 'Overloaded' })
+      )
+    );
+    expect(isUnavailable(overloaded)).toBe(true);
+    const invalid = await failure(
+      callStream(
+        registry,
+        'anthropic/claude-haiku-4-5',
+        { prompt: 'hi' },
+        () => {},
+        frame({ type: 'invalid_request_error', message: 'bad' })
+      )
+    );
+    expect(isUnavailable(invalid)).toBe(false);
+  });
+
+  it('reads the error object, never a message', () => {
+    expect(isUnavailable(new Error('Anthropic returned 503: busy'))).toBe(false);
+    expect(isUnavailable(undefined)).toBe(false);
+    expect(isUnavailable(new ProviderError('x', { unavailable: true }))).toBe(true);
   });
 });

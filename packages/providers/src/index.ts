@@ -88,11 +88,47 @@ export class ProviderError extends Error {
   readonly code = 'provider_error';
   /** True when the caller cancelled the call, as opposed to it failing. */
   readonly cancelled: boolean;
-  constructor(message: string, opts: { cancelled?: boolean } = {}) {
+  /** The HTTP status the provider answered with, when it answered. */
+  readonly status?: number;
+  /**
+   * True when this model cannot be used right now, whatever the request said:
+   * the provider is down, overloaded or rate limiting, did not answer, or does
+   * not accept our key (or we have none). A caller that has another model to
+   * use switches to it; one that does not reports the error. A request the
+   * provider refused as malformed is not this, and neither is a cancel.
+   */
+  readonly unavailable: boolean;
+  constructor(
+    message: string,
+    opts: { cancelled?: boolean; status?: number; unavailable?: boolean } = {}
+  ) {
     super(message);
     this.name = 'ProviderError';
     this.cancelled = opts.cancelled ?? false;
+    if (opts.status !== undefined) this.status = opts.status;
+    this.unavailable = opts.unavailable ?? false;
   }
+}
+
+/**
+ * Whether an HTTP status says the model cannot be used right now: the
+ * provider failed (5xx), is overloaded or limiting (429, 408), or refused our
+ * credentials (401, 403). Not a malformed request (400, 422), and not a
+ * model id it does not know (404): that is a mistake in the request, and
+ * another model would hide it.
+ */
+export function unavailableStatus(status: number): boolean {
+  return status >= 500 || status === 429 || status === 408 || status === 401 || status === 403;
+}
+
+/**
+ * True when `e` is a provider error that says the model is unavailable (see
+ * `ProviderError.unavailable`). Reads the error's own fields, never its
+ * message, so it works across copies of this module.
+ */
+export function isUnavailable(e: unknown): boolean {
+  const err = e as { code?: unknown; unavailable?: unknown } | null;
+  return err?.code === 'provider_error' && err.unavailable === true;
 }
 
 /** Where a user's own registry lives when CLERQ_PROVIDERS_FILE is not set. */
@@ -322,7 +358,10 @@ function keyFor(provider: ProviderSpec, opts: CallOptions): string | undefined {
   const key = process.env[provider.authEnv];
   if (!key && !opts.keyOptional) {
     throw new ProviderError(
-      `${provider.label} needs ${provider.authEnv} to be set, and it is not.`
+      `${provider.label} needs ${provider.authEnv} to be set, and it is not.`,
+      {
+        unavailable: true,
+      }
     );
   }
   return key || undefined;
@@ -402,14 +441,18 @@ async function run(
   } catch (e) {
     if (e instanceof ProviderError) throw e;
     if (timeout.signal.aborted) {
-      throw new ProviderError(`${provider.label} did not respond within ${timeoutMs} ms.`);
+      throw new ProviderError(`${provider.label} did not respond within ${timeoutMs} ms.`, {
+        unavailable: true,
+      });
     }
     if (opts.signal?.aborted) {
       throw new ProviderError(`Call to ${provider.label} was cancelled.`, { cancelled: true });
     }
     // fetch rejects with a bare "fetch failed"; name the endpoint so the cause is findable.
     const cause = e instanceof Error ? (e.cause instanceof Error ? e.cause.message : e.message) : e;
-    throw new ProviderError(`${provider.label} is unreachable at ${provider.baseUrl}: ${cause}`);
+    throw new ProviderError(`${provider.label} is unreachable at ${provider.baseUrl}: ${cause}`, {
+      unavailable: true,
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -570,7 +613,10 @@ async function send(ctx: CallContext, prepared: PreparedRequest): Promise<Respon
       const { max_tokens: limit, ...rest } = prepared.body;
       return send(ctx, { ...prepared, body: { ...rest, max_completion_tokens: limit } });
     }
-    throw new ProviderError(`${provider.label} returned ${res.status}: ${body.slice(0, 300)}`);
+    throw new ProviderError(`${provider.label} returned ${res.status}: ${body.slice(0, 300)}`, {
+      status: res.status,
+      unavailable: unavailableStatus(res.status),
+    });
   }
   return res;
 }
@@ -594,8 +640,14 @@ function anthropicStream(): StreamParser {
     consume(event) {
       const type = event.type;
       if (type === 'error') {
-        const error = event.error as { message?: string } | undefined;
-        throw new ProviderError(`Stream failed: ${error?.message ?? 'unknown error'}`);
+        const error = event.error as { message?: string; type?: string } | undefined;
+        throw new ProviderError(`Stream failed: ${error?.message ?? 'unknown error'}`, {
+          // The provider's own account of why: it was busy or failing, not that the request was wrong.
+          unavailable:
+            error?.type === 'overloaded_error' ||
+            error?.type === 'api_error' ||
+            error?.type === 'rate_limit_error',
+        });
       }
       const text = turn.consume(event);
       if (type === 'message_start') {
@@ -639,7 +691,11 @@ async function readStream(
   parser: StreamParser
 ): Promise<Outcome> {
   const res = await send(ctx, prepared);
-  if (!res.body) throw new ProviderError(`${ctx.provider.label} returned an empty stream.`);
+  if (!res.body) {
+    throw new ProviderError(`${ctx.provider.label} returned an empty stream.`, {
+      unavailable: true,
+    });
+  }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
