@@ -579,4 +579,14 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE automations ADD COLUMN authored_by TEXT;
     `,
   },
+  {
+    id: 21,
+    name: 'draft_dry_run',
+    // A draft is saved only after a dry run of exactly its YAML: the hash of
+    // the YAML that was dry-run, compared when it is saved.
+    sql: `
+      ALTER TABLE automation_drafts ADD COLUMN dry_run_hash TEXT;
+      ALTER TABLE automation_drafts ADD COLUMN dry_run_at TEXT;
+    `,
+  },
 ];

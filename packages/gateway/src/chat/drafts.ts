@@ -17,7 +17,7 @@
 
 import crypto from 'node:crypto';
 import { getStore } from '../store.js';
-import { parseSpec, SpecError, type AutomationSpec } from '../automations/spec.js';
+import { isAssertion, parseSpec, SpecError, type AutomationSpec } from '../automations/spec.js';
 import {
   createAutomation,
   getAutomation,
@@ -27,7 +27,6 @@ import {
 import { previewSpec } from '../automations/routes.js';
 import { dueSlots, nextRunsOf } from '../automations/scheduler.js';
 import type { RunnerDeps } from '../automations/runner.js';
-import { SessionError } from './sessions.js';
 
 export interface DraftSummary {
   name: string;
@@ -44,6 +43,19 @@ export interface DraftSummary {
   pushApproval: 'manual' | 'auto';
   maxUsdPerRun: number | null;
   maxUsdPerMonth: number | null;
+  /** What the agent is told to do, in full. */
+  prompt: string;
+  /** The gates: each command, and each diff assertion, as written. */
+  gates: string[];
+  /** The isolation: `native` (none) unless the spec opts in. */
+  sandbox: { profile: string; network: 'all' | string[] | null };
+  permissionMode: string;
+  allowedTools: string[];
+  /** The memory types it reads, and whether notes an agent wrote are among them. */
+  memoryRead: string[];
+  memoryIncludeAgent: boolean;
+  /** What a person should look at before saving it, in words. */
+  warnings: string[];
 }
 
 export interface Draft {
@@ -57,10 +69,31 @@ export interface Draft {
   summary: DraftSummary | null;
   /** Why the YAML no longer passes this release's checks (it did when drafted). */
   problem?: string;
-  /** The automation it was saved as, once a person saved it. */
+  /**
+   * The automation it was saved as, once a person saved it. Null again if that
+   * automation was deleted (the link is ON DELETE SET NULL), and then the draft
+   * may be saved again.
+   */
   automationId: string | null;
   savedAt: string | null;
+  /** When it was last dry-run; saving needs a dry run of exactly this YAML. */
+  dryRunAt: string | null;
   createdAt: string;
+}
+
+/** A draft that is not there, or not ready to save. */
+export class DraftError extends Error {
+  constructor(
+    readonly code: 'not_found' | 'needs_dry_run' | 'already_saved',
+    message: string
+  ) {
+    super(message);
+    this.name = 'DraftError';
+  }
+}
+
+function hashOf(source: string): string {
+  return crypto.createHash('sha256').update(source).digest('hex');
 }
 
 /** The most drafts one conversation keeps; older ones go first. */
@@ -80,7 +113,41 @@ export function summarise(spec: AutomationSpec): DraftSummary {
     pushApproval: spec.approvals.push,
     maxUsdPerRun: spec.budget.maxUsdPerRun ?? null,
     maxUsdPerMonth: spec.budget.maxUsdPerMonth ?? null,
+    prompt: spec.prompt,
+    gates: spec.gates.map((g) => (isAssertion(g) ? g.assert : g.run)),
+    sandbox: { profile: spec.sandbox.profile, network: spec.sandbox.network ?? null },
+    permissionMode: spec.agent.permissionMode,
+    allowedTools: spec.agent.allowedTools,
+    memoryRead: spec.memory.read,
+    memoryIncludeAgent: spec.memory.includeAgent,
+    warnings: draftWarnings(spec),
   };
+}
+
+/** What deserves a second look in a drafted spec, before it is saved. */
+export function draftWarnings(spec: AutomationSpec): string[] {
+  const out: string[] = [];
+  if (spec.publish.push && spec.approvals.push === 'auto') {
+    out.push(
+      'After its first push, it pushes without asking (approvals.push: auto). The first push still waits.'
+    );
+  }
+  if (spec.sandbox.profile === 'native') {
+    out.push('It runs without isolation: the agent and the gates have your account’s access.');
+  }
+  const commands = spec.gates.filter((g) => !isAssertion(g));
+  if (commands.length > 0) {
+    out.push(
+      `Its gates run ${commands.length === 1 ? 'a command' : `${commands.length} commands`} on this machine.`
+    );
+  }
+  if (spec.publish.push && spec.gates.length === 0) {
+    out.push('It has no gates: nothing is checked before it pushes.');
+  }
+  if (spec.memory.includeAgent) {
+    out.push('It reads notes an agent wrote (memory.include_agent).');
+  }
+  return out;
 }
 
 function rowToDraft(r: Record<string, unknown>): Draft {
@@ -102,6 +169,8 @@ function rowToDraft(r: Record<string, unknown>): Draft {
     ...(problem ? { problem } : {}),
     automationId: r.automation_id ? String(r.automation_id) : null,
     savedAt: r.saved_at ? String(r.saved_at) : null,
+    // Only a dry run of this very YAML counts.
+    dryRunAt: r.dry_run_hash === hashOf(source) && r.dry_run_at ? String(r.dry_run_at) : null,
     createdAt: String(r.created_at),
   };
 }
@@ -155,7 +224,8 @@ export function listDrafts(sessionId: string): Draft[] {
 
 function requireDraft(sessionId: string, id: string): Draft {
   const draft = getDraft(sessionId, id);
-  if (!draft) throw new SessionError(`No draft ${id} in this conversation.`);
+  // A draft of another conversation is not found here either.
+  if (!draft) throw new DraftError('not_found', `No draft ${id} in this conversation.`);
   return draft;
 }
 
@@ -230,6 +300,10 @@ export async function dryRunDraft(sessionId: string, id: string, deps: RunnerDep
   const draft = requireDraft(sessionId, id);
   const spec = parseSpec(draft.source, { registry: specRegistry() });
   const preview = await previewSpec(spec, deps);
+  // Saving is allowed once this YAML has been dry-run.
+  getStore()
+    .prepare('UPDATE automation_drafts SET dry_run_hash = ?, dry_run_at = ? WHERE id = ?')
+    .run(hashOf(draft.source), new Date().toISOString(), draft.id);
   // A chat-authored automation's first push waits whatever the draft says; the
   // preview already judges it as one that has never pushed.
   return {
@@ -243,17 +317,19 @@ export async function dryRunDraft(sessionId: string, id: string, deps: RunnerDep
 
 /**
  * Save a draft as an automation, at a person's request: switched off, with
- * `authored_by: chat <session>`. A draft is saved once.
+ * `authored_by: chat <session>`. Only after a dry run of exactly this YAML, and
+ * once (again only if the automation it became was deleted).
  */
 export function saveDraft(sessionId: string, id: string, actor = 'operator'): Automation {
   const draft = requireDraft(sessionId, id);
   if (draft.automationId) {
-    const existing = getAutomation(draft.automationId);
-    throw new SessionError(
-      existing
-        ? `This draft was already saved as ${existing.name}.`
-        : 'This draft was already saved; its automation has since been deleted.'
+    throw new DraftError(
+      'already_saved',
+      `This draft was already saved as ${getAutomation(draft.automationId)?.name ?? 'an automation'}.`
     );
+  }
+  if (!draft.dryRunAt) {
+    throw new DraftError('needs_dry_run', 'Dry-run this draft before saving it.');
   }
   const created = createAutomation(draft.source, actor, { authoredBy: `chat ${sessionId}` });
   getStore()

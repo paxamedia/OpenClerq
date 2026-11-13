@@ -18,12 +18,14 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { evaluate } from '@clerq/policy';
+import { evaluate, memoryReadRules } from '@clerq/policy';
 import { offeredTools } from '@clerq/drivers';
 import { createGateway } from '../gateway.js';
 import { getStore } from '../store.js';
 import { chatPolicy, chatTools, CHAT_NEVER } from './tools.js';
 import { CHAT_PERMISSION_MODES } from './sessions.js';
+import { memoryBlock } from '../memory-context.js';
+import { parseSpec } from '../automations/spec.js';
 
 const TOKEN = 'chat-managed-test-token-0123456789';
 const KEY = 'sk-fake-chat-key-0123456789';
@@ -95,6 +97,7 @@ const VARS = [
   'CLERQ_MODEL',
   'CLERQ_KEYCHAIN',
   'FAKE_CHAT_KEY',
+  'HOME',
 ];
 
 describe('chat console: managed mode and authoring', () => {
@@ -103,6 +106,7 @@ describe('chat console: managed mode and authoring', () => {
   let fake: http.Server;
   let dir: string;
   let repoDir: string;
+  let fakeHome: string;
   let saved: Record<string, string | undefined>;
 
   const authed = (url: string, init: RequestInit = {}) =>
@@ -167,6 +171,10 @@ describe('chat console: managed mode and authoring', () => {
     const url = `http://127.0.0.1:${(fake.address() as { port: number }).port}/v1`;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-chat-managed-'));
     repoDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-chat-folder-')));
+    // A home of the test's own, with OpenClerq's state dir and a token in it.
+    fakeHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-chat-home-')));
+    fs.mkdirSync(path.join(fakeHome, '.clerq'), { mode: 0o700 });
+    fs.writeFileSync(path.join(fakeHome, '.clerq', 'gateway-token'), TOKEN, { mode: 0o600 });
     const file = path.join(dir, 'providers.yaml');
     fs.writeFileSync(
       file,
@@ -195,6 +203,7 @@ describe('chat console: managed mode and authoring', () => {
     process.env.CLERQ_LLM_PROVIDER = 'fake';
     process.env.CLERQ_KEYCHAIN = 'off';
     process.env.FAKE_CHAT_KEY = KEY;
+    process.env.HOME = fakeHome;
     const { server: s } = createGateway({
       port: 0,
       authToken: TOKEN,
@@ -221,6 +230,7 @@ describe('chat console: managed mode and authoring', () => {
     await new Promise<void>((resolve) => fake.close(() => resolve()));
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(fakeHome, { recursive: true, force: true });
     for (const v of VARS) {
       if (saved[v] === undefined) delete process.env[v];
       else process.env[v] = saved[v];
@@ -476,6 +486,20 @@ describe('chat console: managed mode and authoring', () => {
       (await json<{ drafts: unknown[] }>(authed(`/sessions/${s.id}/drafts`))).drafts
     ).toHaveLength(1);
 
+    // Not before a dry run of this YAML.
+    const early = await post(`/sessions/${s.id}/drafts/${drafts[0].id}/save`);
+    expect(early.status).toBe(409);
+    expect(await early.json()).toMatchObject({ error: 'needs_dry_run' });
+    const full = await json<{
+      summary: { prompt: string; sandbox: { profile: string }; warnings: string[] };
+      dryRunAt: string | null;
+    }>(authed(`/sessions/${s.id}/drafts/${drafts[0].id}`));
+    expect(full.dryRunAt).toBeNull();
+    expect(full.summary.prompt).toBe('Check CI on main and summarise what broke.');
+    expect(full.summary.sandbox.profile).toBe('native');
+    expect(full.summary.warnings.join(' ')).toContain('pushes without asking');
+    expect(full.summary.warnings.join(' ')).toContain('without isolation');
+
     const runsBefore = (await json<{ runs: unknown[] }>(authed('/runs?limit=500'))).runs.length;
     const dry = await json<{
       executed: boolean;
@@ -520,8 +544,8 @@ describe('chat console: managed mode and authoring', () => {
     );
     expect(preview.policy.approvalRequired).toContain('git.push');
     // Saved once.
-    expect((await post(`/sessions/${s.id}/drafts/${drafts[0].id}/save`)).status).toBe(400);
-    expect((await post(`/sessions/${s.id}/drafts/drf_nope/save`)).status).toBe(400);
+    expect((await post(`/sessions/${s.id}/drafts/${drafts[0].id}/save`)).status).toBe(409);
+    expect((await post(`/sessions/${s.id}/drafts/drf_nope/save`)).status).toBe(404);
   });
 
   it('has no tool that saves, enables, edits or runs an automation, and refuses any call that tries', async () => {
@@ -533,6 +557,7 @@ describe('chat console: managed mode and authoring', () => {
     ];
     const drafted = done(await send(s.id, 'Draft one'));
     const draftId = (drafted.message.meta.drafts as Array<{ id: string }>)[0].id;
+    await post(`/sessions/${s.id}/drafts/${draftId}/dry-run`);
     const saved = await json<{ id: string }>(post(`/sessions/${s.id}/drafts/${draftId}/save`));
 
     // The model tries everything it might: none exists, nothing changes.
@@ -634,4 +659,245 @@ describe('chat console: managed mode and authoring', () => {
       await authed('/routing', { method: 'PUT', body: JSON.stringify({ fallback: [] }) });
     }
   });
+
+  it('keeps drafts to their own conversation', async () => {
+    const a = await newSession();
+    script = [
+      { calls: [{ name: 'draft_automation', args: { spec: GOOD_SPEC('mine-only') } }] },
+      { text: 'Drafted.' },
+    ];
+    const drafted = done(await send(a.id, 'Draft one'));
+    const draftId = (drafted.message.meta.drafts as Array<{ id: string }>)[0].id;
+    const b = await newSession();
+    expect((await authed(`/sessions/${b.id}/drafts/${draftId}`)).status).toBe(404);
+    expect((await post(`/sessions/${b.id}/drafts/${draftId}/dry-run`)).status).toBe(404);
+    expect((await post(`/sessions/${b.id}/drafts/${draftId}/save`)).status).toBe(404);
+    expect((await json<{ drafts: unknown[] }>(authed(`/sessions/${b.id}/drafts`))).drafts).toEqual(
+      []
+    );
+  });
+
+  it('asks before saving a preference or procedure at every level, and before any note in default', async () => {
+    const s = await newSession();
+    script = [
+      {
+        calls: [
+          { name: 'save_memory', args: { type: 'preference', key: 'style', value: 'terse' } },
+        ],
+      },
+      { text: 'Asked.' },
+    ];
+    const asked: string[] = [];
+    await send(s.id, 'Remember I like terse answers.', async (event) => {
+      if (event.type !== 'approval') return;
+      const approval = event.approval as { id: number; tool: string };
+      asked.push(approval.tool);
+      await post(`/approvals/${approval.id}/deny`);
+    });
+    expect(asked).toEqual(['memory.write.preference']);
+    expect(
+      (await json<{ records: unknown[] }>(authed('/memory/records?key=style'))).records
+    ).toEqual([]);
+
+    // In `default`, a fact waits too; approved, it is saved.
+    const d = await newSession({ mode: 'managed', permissionMode: 'default' });
+    script = [
+      { calls: [{ name: 'save_memory', args: { type: 'fact', key: 'city', value: 'Tallinn' } }] },
+      { text: 'Saved.' },
+    ];
+    const events = await send(d.id, 'Remember my city.', async (event) => {
+      if (event.type === 'approval') {
+        await post(`/approvals/${(event.approval as { id: number }).id}/approve`);
+      }
+    });
+    expect(events.filter((e) => e.type === 'approval')).toHaveLength(1);
+    expect(
+      (await json<{ records: unknown[] }>(authed('/memory/records?key=city'))).records
+    ).toHaveLength(1);
+  });
+
+  it('never offers save_memory in plan', async () => {
+    const s = await newSession({ mode: 'managed', permissionMode: 'plan' });
+    script = [{ text: 'Read only.' }];
+    await send(s.id, 'Remember this.');
+    expect(requests[0].tools?.map((t) => t.function.name)).toEqual([
+      'search_memory',
+      'draft_automation',
+    ]);
+  });
+
+  it('labels notes an agent wrote in a chat, and leaves them out of automations unless asked', async () => {
+    const s = await newSession();
+    script = [
+      {
+        calls: [
+          { name: 'save_memory', args: { type: 'fact', key: 'deploy-host', value: 'web-7' } },
+        ],
+      },
+      { text: 'Noted.' },
+    ];
+    await send(s.id, 'Remember the deploy host is web-7.');
+    const diff = await json<{ managed: { system: string } }>(
+      post(`/sessions/${s.id}/mode-diff`, { text: 'deploy-host' })
+    );
+    expect(diff.managed.system).toContain('[fact, written by an agent] deploy-host');
+    const rules = memoryReadRules(['fact']);
+    expect(memoryBlock('deploy-host', rules, { includeAgent: false })?.text ?? '').not.toContain(
+      'web-7'
+    );
+    expect(memoryBlock('deploy-host', rules, { includeAgent: true })?.text).toContain('web-7');
+    const spec = parseSpec(
+      `${GOOD_SPEC('reads-agent')}memory:\n  read: [fact]\n  include_agent: true\n`
+    );
+    expect(spec.memory).toEqual({ read: ['fact'], includeAgent: true });
+    expect(parseSpec(`${GOOD_SPEC('reads')}memory:\n  read: [fact]\n`).memory.includeAgent).toBe(
+      false
+    );
+    expect(() => parseSpec(`${GOOD_SPEC('x')}memory:\n  include_agent: true\n`)).toThrow(
+      /needs "memory.read"/
+    );
+  });
+
+  it('leaves no approval waiting when the client goes away', async () => {
+    const s = await newSession({ mode: 'managed', workspace: repoDir, permissionMode: 'default' });
+    script = [
+      { calls: [{ name: 'write_file', args: { path: 'gone.txt', content: 'x' } }] },
+      { text: 'never' },
+    ];
+    const controller = new AbortController();
+    const res = await fetch(`${baseUrl}/sessions/${s.id}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ text: 'Write gone.txt' }),
+      signal: controller.signal,
+    });
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let seen = '';
+    while (!seen.includes('"type":"approval"')) {
+      const { value, done: ended } = await reader.read();
+      if (ended) break;
+      seen += decoder.decode(value, { stream: true });
+    }
+    const runId = /"runId":"(run_[^"]+)"/.exec(seen)?.[1] as string;
+    expect((await json<{ approvals: unknown[] }>(authed('/approvals'))).approvals).toHaveLength(1);
+    controller.abort();
+    for (let i = 0; i < 200; i++) {
+      const pending = (await json<{ approvals: unknown[] }>(authed('/approvals'))).approvals;
+      const run = await json<{ status: string }>(authed(`/runs/${runId}`));
+      if (pending.length === 0 && run.status === 'cancelled') break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect((await json<{ approvals: unknown[] }>(authed('/approvals'))).approvals).toEqual([]);
+    expect((await json<{ status: string }>(authed(`/runs/${runId}`))).status).toBe('cancelled');
+    expect(fs.existsSync(path.join(repoDir, 'gone.txt'))).toBe(false);
+  });
+
+  it('keeps OpenClerq’s own data out of a chat’s folder and its commands’ home', async () => {
+    const s = await newSession();
+    // A folder that is, holds or lies inside ~/.clerq cannot be attached.
+    for (const bad of [fakeHome, path.join(fakeHome, '.clerq')]) {
+      const res = await post(`/sessions/${s.id}/update`, { workspace: bad });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { message: string }).message).toContain("OpenClerq's own data");
+    }
+    fs.mkdirSync(path.join(fakeHome, '.clerq', 'inside'), { recursive: true });
+    expect(
+      (
+        await post(`/sessions/${s.id}/update`, {
+          workspace: path.join(fakeHome, '.clerq', 'inside'),
+        })
+      ).status
+    ).toBe(400);
+    expect((await post('/sessions', { mode: 'managed', workspace: fakeHome })).status).toBe(400);
+
+    // A link in the folder to it is not followed by the file tools.
+    const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-chat-linked-')));
+    try {
+      fs.symlinkSync(path.join(fakeHome, '.clerq'), path.join(folder, 'state'));
+      await post(`/sessions/${s.id}/update`, { workspace: folder });
+      script = [
+        { calls: [{ name: 'read_file', args: { path: 'state/gateway-token' } }] },
+        {
+          calls: [
+            {
+              name: 'run_shell',
+              args: { command: 'echo "home=$HOME"; cat ~/.clerq/gateway-token' },
+            },
+          ],
+        },
+        { text: 'No.' },
+      ];
+      const events = await send(s.id, 'Read the token');
+      const run = await json<{ toolCalls: Array<{ output: string; status: string }> }>(
+        authed(`/runs/${done(events).runId}`)
+      );
+      expect(run.toolCalls[0].status).toBe('error');
+      expect(run.toolCalls[0].output).not.toContain(TOKEN);
+      // Commands get a home of the conversation's own: `~` is not the user's.
+      expect(run.toolCalls[1].output).toContain('home=');
+      expect(run.toolCalls[1].output).not.toContain(`home=${fakeHome}`);
+      expect(run.toolCalls[1].output).toContain('No such file');
+      expect(JSON.stringify(requests)).not.toContain(TOKEN);
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts the gateway token from what a command prints', async () => {
+    const s = await newSession({ mode: 'managed', workspace: repoDir });
+    fs.writeFileSync(path.join(repoDir, 'leak.txt'), `token=${TOKEN}\n`);
+    script = [
+      { calls: [{ name: 'run_shell', args: { command: 'cat leak.txt' } }] },
+      { text: 'Done.' },
+    ];
+    const events = await send(s.id, 'Show leak.txt');
+    expect(JSON.stringify(requests)).not.toContain(TOKEN);
+    expect(JSON.stringify(requests[1].messages)).toContain('token=«redacted»');
+    const run = await json<{ toolCalls: Array<{ output: string }> }>(
+      authed(`/runs/${done(events).runId}`)
+    );
+    expect(run.toolCalls[0].output).toContain('token=«redacted»');
+  });
+
+  it.runIf(process.platform === 'darwin' && fs.existsSync('/usr/bin/sandbox-exec'))(
+    'runs a Sandboxed conversation’s commands under seatbelt: writes only in the folder, no credentials',
+    async () => {
+      const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-chat-out-')));
+      try {
+        const s = await newSession({
+          mode: 'managed',
+          workspace: repoDir,
+          permissionMode: 'sandboxed',
+        });
+        expect(s.permissionMode).toBe('sandboxed');
+        script = [
+          {
+            calls: [{ name: 'run_shell', args: { command: 'echo inside > in.txt && cat in.txt' } }],
+          },
+          { calls: [{ name: 'run_shell', args: { command: `echo x > ${outside}/out.txt` } }] },
+          {
+            calls: [
+              {
+                name: 'run_shell',
+                args: { command: `cat ${path.join(fakeHome, '.clerq', 'gateway-token')}` },
+              },
+            ],
+          },
+          { text: 'Done.' },
+        ];
+        const events = await send(s.id, 'Try things');
+        const run = await json<{ toolCalls: Array<{ output: string }> }>(
+          authed(`/runs/${done(events).runId}`)
+        );
+        expect(run.toolCalls[0].output).toContain('inside');
+        expect(fs.readFileSync(path.join(repoDir, 'in.txt'), 'utf8')).toBe('inside\n');
+        expect(fs.existsSync(path.join(outside, 'out.txt'))).toBe(false);
+        expect(run.toolCalls[2].output).not.toContain(TOKEN);
+        expect(run.toolCalls[2].output).toMatch(/Operation not permitted|exit code [1-9]/);
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    }
+  );
 });
