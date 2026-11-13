@@ -16,6 +16,7 @@ import {
   Conversation,
   contextBudget,
   estimateCost,
+  estimateTokens,
   loadRegistry,
   resolveModel,
   ProviderError,
@@ -29,7 +30,7 @@ import {
   type ToolCall,
 } from '@clerq/providers';
 import { guard, PolicyViolation, RunBudget, type ToolDescriptor } from '@clerq/policy';
-import { PathContainmentError } from '@clerq/sandbox';
+import { PathContainmentError, redact } from '@clerq/sandbox';
 import { DEFAULT_TIMEOUT_MS, failed } from '../cli.js';
 import type {
   Driver,
@@ -63,6 +64,9 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 const MAX_CALL_MS = 10 * 60_000;
 /** Compaction starts when the next request would use this share of the budget. */
 const COMPACT_AT = 0.8;
+/** The output limit of a summary call, and its instructions. */
+const SUMMARY_MAX_TOKENS = 2_048;
+const SUMMARY_SYSTEM = "You summarise an agent's progress so it can continue with less context.";
 /** Replies in a row cut off at the output limit before the run gives up. */
 const MAX_CUT_OFF = 3;
 
@@ -92,6 +96,19 @@ export const SYSTEM_PROMPT = [
   'A tool result may be cut short; it says so and how to see the rest.',
   'When the task is done, stop calling tools and reply with a short summary of what you changed and why.',
 ].join(' ');
+
+/** `value` with every string in it redacted of the run's secret values. */
+export function redactDeep(value: unknown, secrets: Record<string, string> | undefined): unknown {
+  if (!secrets || Object.keys(secrets).length === 0) return value;
+  if (typeof value === 'string') return redact(value, secrets);
+  if (Array.isArray(value)) return value.map((v) => redactDeep(v, secrets));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redactDeep(v, secrets)])
+    );
+  }
+  return value;
+}
 
 function qualified(ref: string | undefined): string | undefined {
   if (!ref)
@@ -387,12 +404,15 @@ async function* runLoop(
     }
   };
 
-  /** Stop before a call the budget cannot cover. */
-  const overBudget = (): string | undefined => {
+  /**
+   * Stop before a call the budget cannot cover: its input as estimated, and
+   * its output at the full limit the call is allowed, since that is what it
+   * may cost.
+   */
+  const overBudget = (inputTokens: number, outputTokens: number): string | undefined => {
     const max = input.maxBudgetUsd;
     if (max === undefined) return undefined;
-    const next =
-      estimateCost(model, { inputTokens: conversation.estimate(), outputTokens: 0 }) ?? 0;
+    const next = estimateCost(model, { inputTokens, outputTokens }) ?? 0;
     if (totals.spent + next <= max) return undefined;
     return `Stopped: the next model call would pass the run's budget of $${max.toFixed(2)} ($${totals.spent.toFixed(4)} spent).`;
   };
@@ -417,13 +437,17 @@ async function* runLoop(
       if (conversation.overBudget(COMPACT_AT)) {
         const pending: ModelCallInfo[] = [];
         const record = await conversation.compact(async (transcript) => {
-          const why = overBudget();
+          const prompt = `${transcript}\n\n---\n${SUMMARY_PROMPT}`;
+          const why = overBudget(
+            estimateTokens(SUMMARY_SYSTEM) + estimateTokens(prompt),
+            SUMMARY_MAX_TOKENS
+          );
           if (why) throw new Error(why);
           const { result, info } = await ask('compaction', {
-            system: "You summarise an agent's progress so it can continue with less context.",
-            messages: [{ role: 'user', content: `${transcript}\n\n---\n${SUMMARY_PROMPT}` }],
+            system: SUMMARY_SYSTEM,
+            messages: [{ role: 'user', content: prompt }],
             withTools: false,
-            maxTokens: 2_048,
+            maxTokens: SUMMARY_MAX_TOKENS,
           });
           pending.push(info);
           if (!result) throw new Error(info.error ?? 'The summary call failed.');
@@ -451,7 +475,7 @@ async function* runLoop(
         }
       }
 
-      const why = overBudget();
+      const why = overBudget(conversation.estimate(), maxOutput);
       if (why) {
         yield finish(false, why);
         return;
@@ -490,7 +514,7 @@ async function* runLoop(
       }
 
       if (result.toolCalls.length === 0) {
-        if (result.stopReason === 'max_tokens' || result.content.length === 0) {
+        if (result.stopReason === 'max_tokens') {
           cutOff += 1;
           if (cutOff >= MAX_CUT_OFF) {
             yield finish(
@@ -506,14 +530,27 @@ async function* runLoop(
           });
           continue;
         }
-        yield finish(true, result.text.trim() || 'Finished.');
+        if (result.stopReason !== 'end_turn') {
+          yield finish(
+            false,
+            `The model stopped without finishing (stop reason "${result.rawStopReason ?? result.stopReason}").`
+          );
+          return;
+        }
+        if (!result.text.trim()) {
+          // Only reasoning, or nothing: there is no answer to report.
+          yield finish(false, 'The model ended its turn without a final answer.');
+          return;
+        }
+        yield finish(true, result.text.trim());
         return;
       }
       cutOff = 0;
 
       // Every call gets a result, in one user turn, in the order made.
       const results: ContentBlock[] = [];
-      for (const tc of result.toolCalls) {
+      const cut = result.stopReason === 'max_tokens';
+      for (const [i, tc] of result.toolCalls.entries()) {
         if (budget.stats.calls >= (rules.maxCallsPerRun ?? Infinity)) {
           yield finish(
             false,
@@ -521,7 +558,8 @@ async function* runLoop(
           );
           return;
         }
-        const outcome = yield* runTool(tc, result.stopReason === 'max_tokens');
+        // The last call of a reply cut off at the output limit may be incomplete.
+        const outcome = yield* redacted(runTool(tc, cut && i === result.toolCalls.length - 1));
         results.push({
           type: 'tool_result',
           toolUseId: tc.id,
@@ -541,10 +579,32 @@ async function* runLoop(
     input.signal?.removeEventListener('abort', onAbort);
   }
 
+  function redactValue(value: unknown): unknown {
+    return redactDeep(value, input.secrets);
+  }
+
+  /**
+   * A tool's events and result with the run's secret values taken out, before
+   * the model or the run's record sees them. Under full access a command runs
+   * as the gateway's user and could print a secret it found.
+   */
+  async function* redacted(
+    events: AsyncGenerator<DriverEvent, { output: string; isError: boolean }>
+  ): AsyncGenerator<DriverEvent, { output: string; isError: boolean }> {
+    for (;;) {
+      const next = await events.next();
+      if (next.done) return { ...next.value, output: redact(next.value.output, input.secrets) };
+      const e = next.value;
+      if (e.type === 'tool_call') yield { ...e, input: redactValue(e.input) };
+      else if (e.type === 'tool_result') yield { ...e, output: redact(e.output, input.secrets) };
+      else yield e;
+    }
+  }
+
   /** Run one tool call through policy, yielding its call and result events. */
   async function* runTool(
     tc: ToolCall,
-    cutOffTurn: boolean
+    unfinished: boolean
   ): AsyncGenerator<DriverEvent, { output: string; isError: boolean }> {
     const tool = byModelName.get(tc.name);
     const descriptor: ToolDescriptor = !tool
@@ -570,10 +630,17 @@ async function* runLoop(
       yield result(out, true);
       return { output: out, isError: true };
     }
+    if (unfinished) {
+      const out =
+        `Your reply stopped at the output limit, so this ${tc.name} call may be incomplete. ` +
+        'It was not run. Send it again, with less in it.';
+      yield result(out, true);
+      return { output: out, isError: true };
+    }
     if (tc.inputError !== undefined) {
       const out =
-        `The input for ${tc.name} was not valid JSON${cutOffTurn ? ' (the reply stopped at the output limit)' : ''}: ` +
-        `${tc.inputError.slice(0, 500)}. Send the call again${cutOffTurn ? ', with less in it' : ''}.`;
+        `The input for ${tc.name} was not a valid JSON object: ` +
+        `${tc.inputError.slice(0, 500)}. Send the call again.`;
       yield result(out, true);
       return { output: out, isError: true };
     }
@@ -587,19 +654,27 @@ async function* runLoop(
         // Without someone to ask, guard refuses the call as needing approval.
         onApproval &&
           (async (verdict) => {
+            let stop: (() => void) | undefined;
+            const ended = new Promise<boolean>((resolve) => {
+              if (signal.aborted) return resolve(false);
+              stop = () => resolve(false);
+              signal.addEventListener('abort', stop, { once: true });
+            });
             const decision = await Promise.race([
               onApproval({
                 toolCallId: tc.id,
                 tool: descriptor.name,
                 risk: descriptor.risk,
                 reason: verdict.reason,
-                input: tc.input,
+                input: redactValue(tc.input),
+                // The asker stops waiting when the agent does, and by its deadline.
+                signal,
+                deadline,
               }),
-              new Promise<boolean>((resolve) => {
-                if (signal.aborted) resolve(false);
-                else signal.addEventListener('abort', () => resolve(false), { once: true });
-              }),
-            ]);
+              ended,
+            ]).finally(() => {
+              if (stop) signal.removeEventListener('abort', stop);
+            });
             approval = decision ? 'approved' : 'denied';
             return decision;
           })
@@ -615,10 +690,15 @@ async function* runLoop(
       }
       const known = e instanceof ToolInputError || e instanceof PathContainmentError;
       const code = (e as NodeJS.ErrnoException)?.code;
+      const target = String((tc.input as { path?: unknown })?.path ?? '');
       const out =
         code === 'ENOENT'
-          ? `No such file or directory: ${String((tc.input as { path?: unknown })?.path ?? '')}`
-          : `${known ? '' : `${tc.name} failed: `}${e instanceof Error ? e.message : String(e)}`;
+          ? `No such file or directory: ${target}`
+          : code === 'ELOOP'
+            ? `${target} became a symbolic link while it was being written; not followed.`
+            : code === 'EEXIST'
+              ? `${target} appeared while it was being created; not overwritten. Try again.`
+              : `${known ? '' : `${tc.name} failed: `}${e instanceof Error ? e.message : String(e)}`;
       yield result(out, true);
       return { output: out, isError: true };
     }

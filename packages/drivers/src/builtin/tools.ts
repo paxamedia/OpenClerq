@@ -97,6 +97,26 @@ function relative(cwd: string, abs: string): string {
   return path.relative(fs.realpathSync.native(cwd), abs) || '.';
 }
 
+const { O_WRONLY, O_CREAT, O_EXCL, O_TRUNC } = fs.constants;
+/** Not on Windows, where there is nothing to refuse it for in the same way. */
+const O_NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+
+/**
+ * Write a file the containment check has resolved, without following a link
+ * at its last step: a link planted after the check is refused (ELOOP), not
+ * followed. A new file is created exclusively, so one that appears in between
+ * is not overwritten.
+ */
+async function writeContained(abs: string, content: string, create: boolean): Promise<void> {
+  const flags = O_WRONLY | O_NOFOLLOW | (create ? O_CREAT | O_EXCL : O_TRUNC);
+  const handle = await fs.promises.open(abs, flags, 0o666);
+  try {
+    await handle.writeFile(content, 'utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Run a command in the worktree through the sandbox. */
 async function command(
   ctx: ToolContext,
@@ -191,19 +211,25 @@ const readFile: BuiltinTool = {
     }
     const end = Math.min(lines.length, offset - 1 + limit);
     const width = String(end).length;
-    let body = lines
-      .slice(offset - 1, end)
-      .map((l, i) => `${String(offset + i).padStart(width)}\t${l}`)
-      .join('\n');
-    // Lines can be long: a minified file is one line.
+    const numbered = (i: number) => `${String(i + 1).padStart(width)}\t${lines[i]}`;
+    // Whole lines only, up to the result cap, so "read on" starts where this page stopped.
+    let body = '';
+    let shown = offset - 1;
+    for (let i = offset - 1; i < end; i++) {
+      const line = numbered(i);
+      if (body && body.length + 1 + line.length > MAX_RESULT_CHARS) break;
+      body = body ? `${body}\n${line}` : line;
+      shown = i + 1;
+    }
+    // A single line over the cap (a minified file) is shown in part.
     body = truncateOutput(body, {
       maxChars: MAX_RESULT_CHARS,
       tailShare: 0,
-      hint: `Read again with a smaller limit, or search_files for what you need.`,
+      hint: `Line ${shown} is too long to show whole; use run_shell (cut -c or head -c) for the rest.`,
     }).text;
     const more =
-      end < lines.length
-        ? `\n[Lines ${offset}-${end} of ${lines.length}. Read with offset ${end + 1} to see more.]`
+      shown < lines.length
+        ? `\n[Lines ${offset}-${shown} of ${lines.length}. Read with offset ${shown + 1} to see more.]`
         : '';
     return { output: `${body}${more}`, isError: false };
   },
@@ -328,7 +354,7 @@ const writeFile: BuiltinTool = {
     // Created after the check, so a link planted in between could still point
     // out; check the real path once more now that the directories exist.
     resolveWithinRoot(ctx.cwd, relative(ctx.cwd, abs));
-    await fs.promises.writeFile(abs, content, 'utf8');
+    await writeContained(abs, content, !existed);
     return {
       output: `${existed ? 'Replaced' : 'Created'} ${relative(ctx.cwd, abs)} (${Buffer.byteLength(content)} bytes).`,
       isError: false,
@@ -377,7 +403,7 @@ const editFile: BuiltinTool = {
         isError: true,
       };
     }
-    await fs.promises.writeFile(abs, text.split(oldText).join(newText), 'utf8');
+    await writeContained(abs, text.split(oldText).join(newText), false);
     return {
       output: `Edited ${rel}: ${count} replacement${count === 1 ? '' : 's'}.`,
       isError: false,

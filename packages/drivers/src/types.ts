@@ -49,6 +49,10 @@ export interface ToolApprovalRequest {
   /** Why approval is needed, from the policy decision. */
   reason: string;
   input: unknown;
+  /** Aborts when the agent stops (cancelled, or out of time); the wait must end then. */
+  signal: AbortSignal;
+  /** Epoch ms when the agent's own time limit runs out. */
+  deadline: number;
 }
 
 /** One model call an in-process driver made, with what it cost. */

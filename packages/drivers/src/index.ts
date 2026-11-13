@@ -34,6 +34,7 @@ export {
   priced,
   BUILTIN_KEY_ENV,
   DEFAULT_MAX_TURNS,
+  redactDeep,
   SYSTEM_PROMPT,
   type BuiltinOptions,
 } from './builtin/driver.js';

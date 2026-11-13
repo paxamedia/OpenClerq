@@ -9,7 +9,13 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseRegistry, type Registry } from '@clerq/providers';
+import {
+  estimateMessageTokens,
+  estimateTokens,
+  estimateToolTokens,
+  parseRegistry,
+  type Registry,
+} from '@clerq/providers';
 import {
   allowedToolProblem,
   builtin,
@@ -17,6 +23,8 @@ import {
   offeredTools,
   shellDescriptor,
   BUILTIN_KEY_ENV,
+  BUILTIN_TOOLS,
+  SYSTEM_PROMPT,
   type DriverEvent,
   type DriverResult,
   type DriverRunInput,
@@ -671,5 +679,172 @@ describe('builtin driver: detect', () => {
     const none = await builtin({ registry: () => REGISTRY }).detect();
     expect(none.available).toBe(false);
     expect(none.reason).toContain('No model provider has a key set');
+  });
+});
+
+describe('builtin driver: review fixes', () => {
+  it.skipIf(isWindows)(
+    'refuses to write or edit through a dangling link that leads out',
+    async () => {
+      const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-outside-')));
+      fs.symlinkSync(path.join(outside, 'pwned'), path.join(repo, 'link'));
+      fs.symlinkSync(path.join(outside, 'edited'), path.join(repo, 'elink'));
+      const model = scriptedModel([
+        {
+          content: [
+            use('a', 'write_file', { path: 'link', content: 'escaped' }),
+            use('b', 'write_file', { path: 'link/../pwned2', content: 'escaped' }),
+            use('c', 'edit_file', { path: 'elink', old_text: 'a', new_text: 'b' }),
+          ],
+        },
+        { content: [text('done')] },
+      ]);
+      const { events } = await run(model.fetchImpl);
+      const [a, , c] = toolResults(events);
+      expect(a).toMatchObject({ isError: true });
+      expect(a.output).toContain('symbolic link');
+      expect(c).toMatchObject({ isError: true });
+      expect(c.output).toContain('symbolic link');
+      expect(fs.readdirSync(outside)).toEqual([]);
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  );
+
+  it('gives the asker the agent signal and deadline, and stops waiting at the deadline', async () => {
+    let seen: { signal: AbortSignal; deadline: number } | undefined;
+    const model = scriptedModel([
+      { content: [use('a', 'write_file', { path: 'x.txt', content: 'y' })] },
+    ]);
+    const started = Date.now();
+    const { result } = await run(model.fetchImpl, {
+      permissionMode: 'default',
+      timeoutMs: 1_000,
+      onApproval: (request) => {
+        seen = { signal: request.signal, deadline: request.deadline };
+        return new Promise<boolean>(() => undefined); // nobody answers
+      },
+    });
+    expect(result).toMatchObject({ ok: false, timedOut: true });
+    expect(seen?.signal.aborted).toBe(true);
+    expect(seen!.deadline).toBeGreaterThanOrEqual(started + 1_000);
+    expect(seen!.deadline).toBeLessThan(started + 2_000);
+    expect(fs.existsSync(path.join(repo, 'x.txt'))).toBe(false);
+  });
+
+  it('does not run the last call of a reply cut off at the output limit', async () => {
+    const model = scriptedModel([
+      {
+        content: [
+          use('a', 'write_file', { path: 'first.txt', content: 'complete' }),
+          use('b', 'write_file', { path: 'second.txt', content: 'maybe cut' }),
+        ],
+        stop: 'max_tokens',
+      },
+      { content: [text('done')] },
+    ]);
+    const { events } = await run(model.fetchImpl);
+    const [first, second] = toolResults(events);
+    expect(first.isError).toBe(false);
+    expect(second).toMatchObject({ isError: true });
+    expect(second.output).toContain('It was not run. Send it again');
+    expect(fs.existsSync(path.join(repo, 'first.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(repo, 'second.txt'))).toBe(false);
+  });
+
+  it('counts the full output limit when checking the budget before a call', async () => {
+    // tiny's window caps the output at 1,500 tokens: $0.0015 at $1/M, more than the budget.
+    const model = scriptedModel([{ content: [text('never')] }]);
+    const { result } = await run(model.fetchImpl, { model: 'fake/tiny', maxBudgetUsd: 0.001 });
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("would pass the run's budget of $0.00");
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it('takes the run secrets out of tool results before the model or the record sees them', async () => {
+    fs.writeFileSync(path.join(repo, '.env'), 'SETTING=placeholder-value\n');
+    const model = scriptedModel([
+      {
+        content: [
+          use('a', 'read_file', { path: '.env' }),
+          use('b', 'run_shell', { command: 'echo placeholder-value' }),
+        ],
+      },
+      { content: [use('c', 'write_file', { path: 'copy.txt', content: 'placeholder-value' })] },
+      { content: [text('done')] },
+    ]);
+    const { events } = await run(model.fetchImpl, {
+      secrets: { [BUILTIN_KEY_ENV]: 'placeholder-value' },
+    });
+    const results = toolResults(events);
+    expect(results[0].output).toContain('SETTING=«redacted»');
+    expect(results[1].output).toContain('«redacted»');
+    const calls = events.filter((e) => e.type === 'tool_call');
+    expect(JSON.stringify(calls[2])).not.toContain('placeholder-value');
+    // The results that went back to the model carry no secret either.
+    const sent = model.requests[1].messages as Array<{ role: string; content: unknown }>;
+    expect(JSON.stringify(sent.at(-1))).toContain('tool_result');
+    expect(JSON.stringify(sent.at(-1))).not.toContain('placeholder-value');
+  });
+
+  it('fails a turn that ends with only reasoning, or for another reason, instead of calling it done', async () => {
+    const onlyThinking = scriptedModel([
+      { content: [{ type: 'thinking', thinking: '', signature: 's' }], stop: 'end_turn' },
+    ]);
+    expect((await run(onlyThinking.fetchImpl)).result).toMatchObject({
+      ok: false,
+      summary: 'The model ended its turn without a final answer.',
+    });
+    const paused = scriptedModel([{ content: [text('partial')], stop: 'pause_turn' }]);
+    expect((await run(paused.fetchImpl)).result).toMatchObject({
+      ok: false,
+      summary: 'The model stopped without finishing (stop reason "pause_turn").',
+    });
+  });
+
+  it('pages by whole lines when long lines hit the result cap, so reading on skips nothing', async () => {
+    fs.writeFileSync(
+      path.join(repo, 'wide.txt'),
+      Array.from({ length: 100 }, (_, i) => `${i + 1}:${'w'.repeat(1_000)}`).join('\n')
+    );
+    const model = scriptedModel([
+      { content: [use('a', 'read_file', { path: 'wide.txt' })] },
+      { content: [text('done')] },
+    ]);
+    const { events } = await run(model.fetchImpl);
+    const out = toolResults(events)[0].output;
+    const m = /\[Lines 1-(\d+) of 100\. Read with offset (\d+) to see more\.\]/.exec(out);
+    expect(m).not.toBeNull();
+    const last = Number(m![1]);
+    expect(Number(m![2])).toBe(last + 1);
+    // The last line shown is whole, and it is the line the hint says it is.
+    const shown = out.split('\n').filter((l) => /^ *\d+\t/.test(l));
+    expect(shown.at(-1)).toMatch(new RegExp(`^ *${last}\\t${last}:w{1000}$`));
+    expect(out).not.toContain('output truncated');
+  });
+
+  it('does not compact every turn when the pinned task alone is near the budget', async () => {
+    // Size the task so the pinned context is ~85% of tiny's budget (4,478 tokens).
+    const tools = BUILTIN_TOOLS.map((t) => t.definition);
+    const fixed =
+      estimateTokens(SYSTEM_PROMPT) +
+      estimateToolTokens(tools) +
+      estimateMessageTokens({ role: 'user', content: 'Task:\n' });
+    const prompt = 'p'.repeat(Math.max(0, Math.floor(4_478 * 0.85) - fixed) * 4);
+    const model = scriptedModel([
+      { content: [use('a', 'git_status', {})], usage: { input_tokens: 3_800, output_tokens: 10 } },
+      { content: [use('b', 'git_status', {})], usage: { input_tokens: 3_850, output_tokens: 10 } },
+      { content: [text('done')], usage: { input_tokens: 3_900, output_tokens: 10 } },
+    ]);
+    const { events, result } = await run(
+      model.fetchImpl,
+      { model: 'fake/tiny', prompt },
+      { maxOutputTokens: 1_024 }
+    );
+    expect(result.summary).toBe('done');
+    const purposes = events
+      .filter((e) => e.type === 'model_call')
+      .map((e) => (e as { call: { purpose: string } }).call.purpose);
+    expect(purposes).toEqual(['turn', 'turn', 'turn']);
+    expect(events.some((e) => e.type === 'context')).toBe(false);
   });
 });
