@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Driver, DriverEvent, DriverRunInput } from '@clerq/drivers';
+import type { Driver, DriverAvailability, DriverEvent, DriverRunInput } from '@clerq/drivers';
 import type { Fetcher } from '@clerq/workspaces';
 import { createGateway } from '../gateway.js';
 import { getStore } from '../store.js';
@@ -24,51 +24,60 @@ type Mode = 'edit' | 'no-change' | 'fail' | 'slow';
 let mode: Mode = 'edit';
 let agentCalls = 0;
 let lastAgentInput: DriverRunInput | undefined;
+let lastDetect: { id: string; options: unknown } | undefined;
+/** What detect() says, for the drivers a test wants to be unavailable. */
+let unavailable: Record<string, string> = {};
 
 /** A scripted agent: edits a file, or not, or fails, or takes its time. */
-const fakeDriver: Driver = {
-  id: 'claude-code',
-  async detect() {
-    return { id: 'claude-code', available: true, version: 'test', path: '/fake/claude' };
-  },
-  async *run(input: DriverRunInput): AsyncIterable<DriverEvent> {
-    agentCalls += 1;
-    lastAgentInput = input;
-    yield { type: 'started', model: 'fake-model' };
-    yield { type: 'text', text: 'Updating the changelog.' };
-    if (mode === 'slow') {
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, 15_000);
-        input.signal?.addEventListener('abort', () => {
-          clearTimeout(t);
-          resolve();
-        });
+function scripted(id: string): Driver {
+  return {
+    id,
+    async detect(options): Promise<DriverAvailability> {
+      lastDetect = { id, options };
+      if (unavailable[id]) return { id, available: false, reason: unavailable[id] };
+      return { id, available: true, version: 'test', path: `/fake/${id}` };
+    },
+    run: (input) => runScripted(id, input),
+  };
+}
+
+async function* runScripted(id: string, input: DriverRunInput): AsyncIterable<DriverEvent> {
+  agentCalls += 1;
+  lastAgentInput = input;
+  yield { type: 'started', model: 'fake-model' };
+  yield { type: 'text', text: 'Updating the changelog.' };
+  if (mode === 'slow') {
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 15_000);
+      input.signal?.addEventListener('abort', () => {
+        clearTimeout(t);
+        resolve();
       });
-    }
-    if (mode === 'edit' || mode === 'slow') {
-      yield { type: 'tool_call', id: 't1', name: 'Write', input: { file_path: 'CHANGED.md' } };
-      fs.writeFileSync(path.join(input.cwd, 'CHANGED.md'), `changed by run ${agentCalls}\n`);
-      yield { type: 'tool_result', id: 't1', output: 'written', isError: false };
-    }
-    const cancelled = input.signal?.aborted ?? false;
-    yield {
-      type: 'finished',
-      result: {
-        ok: mode !== 'fail' && !cancelled,
-        summary: mode === 'fail' ? 'The agent gave up.' : 'Added CHANGED.md',
-        costUsd: 0.25,
-        tokensIn: 1000,
-        tokensOut: 200,
-        durationMs: 5,
-        exitCode: mode === 'fail' ? 1 : 0,
-        timedOut: false,
-        cancelled,
-        permissionDenials: [],
-        warnings: ['Running without isolation (profile "native").'],
-      },
-    };
-  },
-};
+    });
+  }
+  if (mode === 'edit' || mode === 'slow') {
+    yield { type: 'tool_call', id: 't1', name: 'Write', input: { file_path: 'CHANGED.md' } };
+    fs.writeFileSync(path.join(input.cwd, 'CHANGED.md'), `changed by run ${agentCalls}\n`);
+    yield { type: 'tool_result', id: 't1', output: 'written', isError: false };
+  }
+  const cancelled = input.signal?.aborted ?? false;
+  yield {
+    type: 'finished',
+    result: {
+      ok: mode !== 'fail' && !cancelled,
+      summary: mode === 'fail' ? 'The agent gave up.' : 'Added CHANGED.md',
+      costUsd: 0.25,
+      tokensIn: 1000,
+      tokensOut: 200,
+      durationMs: 5,
+      exitCode: mode === 'fail' ? 1 : 0,
+      timedOut: false,
+      cancelled,
+      permissionDenials: [],
+      warnings: ['Running without isolation (profile "native").'],
+    },
+  };
+}
 
 const pullRequests: Array<{ url: string; body: Record<string, unknown>; auth?: string }> = [];
 const fakeForge: Fetcher = async (url, init) => {
@@ -233,7 +242,7 @@ beforeAll(async () => {
     dbPath: ':memory:',
     modulesDir: '/nonexistent-modules-dir-xyz',
     automations: {
-      driverFor: () => fakeDriver,
+      driverFor: (id) => scripted(id),
       fetcher: fakeForge,
       getSecret: (name) => secrets[name],
       workspaceCacheDir: path.join(root, 'cache'),
@@ -259,6 +268,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   mode = 'edit';
+  unavailable = {};
   secrets = { GITHUB_TOKEN: FORGE_TOKEN };
 });
 
@@ -527,5 +537,92 @@ describe('an automation run', () => {
     // And the next run refuses to start work.
     const next = await waitForRun(await start(id), finished);
     expect(next.exitReason).toMatch(/monthly budget of \$0.2 is spent/);
+  });
+});
+
+describe('agent drivers', () => {
+  it('lists every driver, each with what detect found', async () => {
+    unavailable = { codex: 'Codex is not signed in on this machine. Run `codex login`.' };
+    const { status, body } = await json<{
+      drivers: Array<{ id: string; available: boolean; reason?: string }>;
+    }>('/drivers');
+    expect(status).toBe(200);
+    expect(body.drivers.map((d) => d.id)).toEqual(['claude-code', 'codex', 'cursor-agent']);
+    expect(body.drivers.find((d) => d.id === 'codex')).toMatchObject({
+      available: false,
+      reason: expect.stringContaining('codex login'),
+    });
+    expect(body.drivers.find((d) => d.id === 'cursor-agent')?.available).toBe(true);
+  });
+
+  it('saves a spec for codex or cursor-agent, and refuses what their CLIs cannot do, by line', async () => {
+    for (const driver of ['codex', 'cursor-agent']) {
+      const ok = await json<{ id: string }>('/automations', {
+        method: 'POST',
+        body: JSON.stringify({
+          spec: spec(`saved-${driver}`).replace('driver: claude-code', `driver: ${driver}`),
+        }),
+      });
+      expect(ok.status).toBe(201);
+
+      const budget = await json<{ error: string; message: string; line: number }>('/automations', {
+        method: 'POST',
+        body: JSON.stringify({
+          spec: spec(`budgeted-${driver}`, 'budget:\n  max_usd_per_run: 3').replace(
+            'driver: claude-code',
+            `driver: ${driver}`
+          ),
+        }),
+      });
+      expect(budget.status).toBe(400);
+      expect(budget.body).toMatchObject({ error: 'invalid_spec', line: 13 });
+      expect(budget.body.message).toMatch(/max_usd_per_run.*not supported.*no spend limit/);
+    }
+  });
+
+  it('previews a driver that is not signed in as a problem, unless the spec brings a key', async () => {
+    unavailable = { codex: 'Codex is not signed in on this machine. Run `codex login`.' };
+    const codexSpec = (key = '') =>
+      spec('preview-codex').replace('driver: claude-code', `driver: codex${key}`);
+    const preview = (source: string) =>
+      json<{ ready: boolean; checks: Array<{ level: string; message: string }> }>(
+        '/automations/preview',
+        { method: 'POST', body: JSON.stringify({ spec: source }) }
+      );
+
+    const out = await preview(codexSpec());
+    expect(out.body.ready).toBe(false);
+    expect(out.body.checks).toContainEqual({
+      level: 'error',
+      message: 'Codex is not signed in on this machine. Run `codex login`.',
+    });
+    expect(lastDetect).toEqual({ id: 'codex', options: { apiKey: false } });
+
+    // With a key for the CLI, its own sign-in is not what the run depends on.
+    secrets = { GITHUB_TOKEN: FORGE_TOKEN, CODEX_API_KEY: 'sk-codex-test-key-000000' };
+    await preview(codexSpec('\n  api_key_secret: CODEX_API_KEY'));
+    expect(lastDetect).toEqual({ id: 'codex', options: { apiKey: true } });
+  });
+
+  it('runs a codex automation, giving the CLI the vault key under the name it reads', async () => {
+    secrets = { GITHUB_TOKEN: FORGE_TOKEN, MY_OPENAI_KEY: 'sk-test-openai-key-000000' };
+    const source = spec('codex-run', 'publish:\n  push: false')
+      .replace('driver: claude-code', 'driver: codex\n  api_key_secret: MY_OPENAI_KEY')
+      .replace('  model: sonnet\n', '  model: gpt-5-codex\n');
+    const created = await json<{ id: string }>('/automations', {
+      method: 'POST',
+      body: JSON.stringify({ spec: source }),
+    });
+    expect(created.status).toBe(201);
+
+    const run = await waitForRun(await start(created.body.id), finished);
+    expect(run.status).toBe('done');
+    expect(lastDetect).toEqual({ id: 'codex', options: { apiKey: true } });
+    expect(lastAgentInput?.secrets).toEqual({ CODEX_API_KEY: 'sk-test-openai-key-000000' });
+    expect(lastAgentInput).toMatchObject({ model: 'gpt-5-codex', permissionMode: 'acceptEdits' });
+    // The run's record names the driver that did the work.
+    expect(run.steps.find((s) => s.input?.name === 'driver.detect')?.input).toMatchObject({
+      driver: 'codex',
+    });
   });
 });

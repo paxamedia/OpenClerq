@@ -8,7 +8,7 @@
  * An automation's first push always waits, whatever its spec says.
  */
 
-import { getDriver, type Driver, type DriverResult } from '@clerq/drivers';
+import { DRIVER_CAPABILITIES, getDriver, type Driver, type DriverResult } from '@clerq/drivers';
 import {
   guard,
   RunBudget,
@@ -211,7 +211,8 @@ async function execute(
   const budget = new RunBudget(rules);
 
   const driver = (deps.driverFor ?? getDriver)(spec.agent.driver);
-  const availability = await driver.detect();
+  // A key from the vault stands in for the CLI's own sign-in, so it is not checked.
+  const availability = await driver.detect({ apiKey: Boolean(spec.agent.apiKeySecret) });
   addRunStep(runId, {
     kind: 'tool',
     input: { name: 'driver.detect', driver: driver.id },
@@ -225,7 +226,7 @@ async function execute(
   if (spec.agent.apiKeySecret) {
     const value = deps.getSecret(spec.agent.apiKeySecret);
     if (!value) throw new Error(`The secret ${spec.agent.apiKeySecret} is not in the vault.`);
-    apiKey = { ANTHROPIC_API_KEY: value };
+    apiKey = { [DRIVER_CAPABILITIES[spec.agent.driver].apiKeyEnv]: value };
   }
 
   // Checked before any work, so a run does not spend money and then fail to publish.

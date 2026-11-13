@@ -8,6 +8,7 @@
  */
 
 import cron from 'node-cron';
+import { DRIVER_CAPABILITIES, DRIVER_IDS, type DriverId } from '@clerq/drivers';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
 
 export type PermissionMode = 'acceptEdits' | 'default' | 'dontAsk' | 'plan';
@@ -19,7 +20,7 @@ export interface AutomationSpec {
   schedule?: string;
   repo: { kind: 'local'; path: string; ref?: string };
   agent: {
-    driver: 'claude-code';
+    driver: DriverId;
     model?: string;
     permissionMode: PermissionMode;
     allowedTools: string[];
@@ -258,8 +259,9 @@ export function parseSpec(source: string): AutomationSpec {
   const [repoPath, ref] = target.slice(6).trim().split('#');
 
   r.keys(['agent'], ['driver', 'model', 'permission_mode', 'allowed_tools', 'api_key_secret']);
-  r.oneOf(['agent', 'driver'], ['claude-code'] as const, 'claude-code');
+  const driver = r.oneOf(['agent', 'driver'], DRIVER_IDS, 'claude-code');
   if (r.get(['agent', 'driver']) === undefined) r.fail(['agent'], '"agent.driver" is required.');
+  const caps = DRIVER_CAPABILITIES[driver];
   let model: string | undefined;
   const rawModel = r.get(['agent', 'model']);
   if (rawModel !== undefined && rawModel !== null && typeof rawModel === 'object') {
@@ -274,6 +276,13 @@ export function parseSpec(source: string): AutomationSpec {
     allowedTools.some((t) => typeof t !== 'string' || !t.trim())
   ) {
     r.fail(['agent', 'allowed_tools'], '"agent.allowed_tools" must be a list of tool names.');
+  }
+  if (allowedTools.length > 0 && !caps.allowedTools) {
+    r.fail(
+      ['agent', 'allowed_tools'],
+      `"agent.allowed_tools" is not supported by the ${driver} driver: ${caps.label}'s CLI takes no tool list. ` +
+        'Limit the agent with "agent.permission_mode" instead.'
+    );
   }
 
   const prompt = r.text(['prompt'], true);
@@ -327,6 +336,21 @@ export function parseSpec(source: string): AutomationSpec {
 
   r.keys(['budget'], ['max_usd_per_run', 'max_usd_per_month', 'on_exceed']);
   r.oneOf(['budget', 'on_exceed'], ['pause_automation'] as const, 'pause_automation');
+  // A budget the agent's CLI cannot keep is refused, not quietly ignored.
+  if (r.get(['budget', 'max_usd_per_run']) != null && !caps.budgetLimit) {
+    r.fail(
+      ['budget', 'max_usd_per_run'],
+      `"budget.max_usd_per_run" is not supported by the ${driver} driver: ${caps.label}'s CLI has no spend limit. ` +
+        'Bound a run with "sandbox.timeout" instead.'
+    );
+  }
+  if (r.get(['budget', 'max_usd_per_month']) != null && !caps.reportsCost) {
+    r.fail(
+      ['budget', 'max_usd_per_month'],
+      `"budget.max_usd_per_month" is not supported by the ${driver} driver: ${caps.label}'s CLI does not report what a run costs, ` +
+        'so there is nothing to add up.'
+    );
+  }
 
   r.keys(['approvals'], ['push', 'merge', 'timeout']);
   // Nothing here merges, so a merge approval can only ever be manual.
@@ -338,7 +362,7 @@ export function parseSpec(source: string): AutomationSpec {
     schedule,
     repo: { kind: 'local', path: repoPath, ...(ref ? { ref } : {}) },
     agent: {
-      driver: 'claude-code',
+      driver,
       ...(model ? { model } : {}),
       permissionMode: r.oneOf(['agent', 'permission_mode'], PERMISSION_MODES, 'acceptEdits'),
       allowedTools: (allowedTools as string[]).map((t) => t.trim()),

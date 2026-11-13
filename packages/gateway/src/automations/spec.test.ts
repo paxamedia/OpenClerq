@@ -145,14 +145,62 @@ on:
 
   it('checks names, drivers, amounts and durations', () => {
     expect(errorOf(MINIMAL.replace('name: deps', 'name: Deps Bot')).message).toMatch(/lowercase/);
-    expect(errorOf(MINIMAL.replace('driver: claude-code', 'driver: codex')).message).toMatch(
-      /one of: claude-code/
+    expect(errorOf(MINIMAL.replace('driver: claude-code', 'driver: aider')).message).toMatch(
+      /one of: claude-code, codex, cursor-agent/
     );
     expect(errorOf(`${MINIMAL}budget:\n  max_usd_per_run: -1\n`).message).toMatch(/positive/);
     expect(errorOf(`${MINIMAL}  timeout: soon\n`).message).toMatch(/duration/);
     expect(errorOf(`${MINIMAL}publish:\n  push: false\n  pull_request: draft\n`).message).toMatch(
       /needs "publish.push: true"/
     );
+  });
+
+  it('accepts the codex and cursor-agent drivers', () => {
+    for (const driver of ['codex', 'cursor-agent']) {
+      const spec = parseSpec(
+        MINIMAL.replace('driver: claude-code', `driver: ${driver}\n  model: some-model`)
+      );
+      expect(spec.agent).toMatchObject({
+        driver,
+        model: 'some-model',
+        permissionMode: 'acceptEdits',
+        allowedTools: [],
+      });
+    }
+  });
+
+  it("refuses what the driver's CLI cannot do, naming the key and the driver", () => {
+    for (const [driver, label] of [
+      ['codex', 'Codex'],
+      ['cursor-agent', 'Cursor'],
+    ]) {
+      const base = MINIMAL.replace('driver: claude-code', `driver: ${driver}`);
+      const tools = errorOf(
+        base.replace(`driver: ${driver}`, `driver: ${driver}\n  allowed_tools: [Edit]`)
+      );
+      expect(tools.message).toMatch(
+        new RegExp(`"agent.allowed_tools" is not supported by the ${driver} driver`)
+      );
+      expect(tools.message).toContain(label);
+      expect(tools.line).toBe(7);
+
+      const perRun = errorOf(`${base}budget:\n  max_usd_per_run: 2\n`);
+      expect(perRun.message).toMatch(/"budget.max_usd_per_run" is not supported.*no spend limit/);
+      expect(perRun.line).toBe(11);
+
+      const perMonth = errorOf(`${base}budget:\n  max_usd_per_month: 50\n`);
+      expect(perMonth.message).toMatch(
+        /"budget.max_usd_per_month" is not supported.*does not report/
+      );
+    }
+  });
+
+  it('still allows claude-code a tool list and both budgets', () => {
+    const spec = parseSpec(
+      MINIMAL.replace('driver: claude-code', 'driver: claude-code\n  allowed_tools: [Edit]') +
+        'budget:\n  max_usd_per_run: 2\n  max_usd_per_month: 50\n'
+    );
+    expect(spec.budget).toEqual({ maxUsdPerRun: 2, maxUsdPerMonth: 50 });
   });
 
   it('reports YAML syntax errors with their position', () => {

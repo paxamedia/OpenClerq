@@ -179,6 +179,8 @@ export interface DriverInfo {
   available: boolean;
   path?: string;
   version?: string;
+  /** Whether the CLI reports a signed-in account. Absent when it was not checked. */
+  signedIn?: boolean;
   /** Why it cannot run. */
   reason?: string;
 }
