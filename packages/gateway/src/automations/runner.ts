@@ -64,6 +64,7 @@ import { retryPlan, transientCause, TransientFailure } from './retry.js';
 import {
   ensureLocalRepo,
   expandHome,
+  getAutomation,
   hasPushedBefore,
   monthSpendUsd,
   setAutomationEnabled,
@@ -201,6 +202,10 @@ export function runLeased(runId: string, automation: Automation, deps: RunnerDep
         const attempt = attemptOf(runId);
         const plan = retryPlan(spec, attempt);
         if (!plan) return null;
+        // Switched off since it started (or run by hand while off): it ends here.
+        if (!getAutomation(automation.id)?.enabled) {
+          return { failure: `${e.message} Not retried: the automation is switched off.` };
+        }
         addRunStep(runId, {
           kind: 'tool',
           input: { name: 'run.retry', attempt: attempt + 1 },

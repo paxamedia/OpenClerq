@@ -19,7 +19,17 @@ import {
 } from '@clerq/drivers';
 import { parseRegistry } from '@clerq/providers';
 import { closeStore, getStore, initStore } from '../store.js';
-import { cancelRun, createRun, getRun, reapInterruptedRuns } from '../runs.js';
+import {
+  addRunStep,
+  cancelRun,
+  claimAbandonedRun,
+  createRun,
+  failAbandonedRun,
+  getRun,
+  reapInterruptedRuns,
+  requeueRun,
+  unfinishedOf,
+} from '../runs.js';
 import { subscribeEvents, type ClerqEvent } from '../events.js';
 import { readProcessTable, warmGatewayIdentity } from '../agent-processes.js';
 import {
@@ -37,7 +47,7 @@ import {
   startAutomationQueue,
   stopAutomationQueue,
 } from './queue.js';
-import { reclaimExpiredLeases, recoverAfterRestart } from './recovery.js';
+import { MAX_RELAUNCHES, reclaimExpiredLeases, recoverAfterRestart } from './recovery.js';
 import {
   checkSchedules,
   lastMissedSlots,
@@ -198,7 +208,10 @@ function makeRepo(name: string): string {
 }
 
 let counter = 0;
-function automation(extra = '', opts: { repo?: string; prompt?: string; driver?: string } = {}) {
+function automation(
+  extra = '',
+  opts: { repo?: string; prompt?: string; driver?: string; off?: boolean } = {}
+) {
   counter += 1;
   const source = [
     `name: q-${counter}`,
@@ -213,7 +226,9 @@ function automation(extra = '', opts: { repo?: string; prompt?: string; driver?:
     '  push: false',
     extra,
   ].join('\n');
-  return createAutomation(source);
+  // Switched on, as a scheduled automation is; without a schedule it only runs when queued here.
+  const created = createAutomation(source);
+  return opts.off ? created : setAutomationEnabled(created.id, true);
 }
 
 type RunView = NonNullable<ReturnType<typeof getRun>>;
@@ -486,6 +501,70 @@ describe.skipIf(isWindows)('lease expiry', () => {
     getStore().prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(id);
   });
 
+  it('puts a run that keeps losing its gateway before it starts back only three times', async () => {
+    const a = automation();
+    const id = abandoned(a, 'leased', { pid: await deadPid(), start: null }, past());
+    for (let i = 1; i <= MAX_RELAUNCHES; i++) {
+      addRunStep(id, { kind: 'tool', input: { name: 'run.requeue', relaunch: i } });
+    }
+    await reclaimExpiredLeases();
+    const run = await waitFor(id, finished);
+    expect(run.status).toBe('failed');
+    expect(run.exitReason).toMatch(/stopped 4 times before the run could start/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not retry an abandoned run of an automation that is switched off', async () => {
+    const a = automation('retry:\n  max_retries: 2\n  backoff: 10ms', { off: true });
+    const id = abandoned(a, 'executing', { pid: await deadPid(), start: null }, past());
+    await reclaimExpiredLeases();
+    const run = await waitFor(id, finished);
+    expect(run.exitReason).toMatch(/Not retried: the automation is switched off/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('leaves a run alone when another gateway claims it while this one is still checking', async () => {
+    // Two gateways on one store both find this run abandoned. This one reads
+    // it, then, while it asks the OS which gateways are alive, the other one
+    // claims it. This one's claim must then fail, and remove nothing.
+    const a = automation('retry:\n  max_retries: 2\n  backoff: 10ms');
+    const dead = await deadPid();
+    const id = abandoned(a, 'executing', { pid: dead, start: null }, past());
+    const worktree = path.join(root, `wt-${id}`);
+    fs.mkdirSync(worktree);
+    addRunStep(id, {
+      kind: 'git',
+      input: { action: 'worktree' },
+      output: { path: worktree },
+      status: 'ok',
+    });
+    const other = await deadPid();
+    const checking = reclaimExpiredLeases();
+    // The other gateway's claim, as claimAbandonedRun writes it.
+    getStore()
+      .prepare('UPDATE runs SET owner_pid = ?, owner_start = NULL WHERE id = ? AND owner_pid = ?')
+      .run(other, id, dead);
+    expect(await checking).not.toContain(id);
+    expect(fs.existsSync(worktree)).toBe(true);
+    expect(row(id)).toMatchObject({ status: 'executing', owner_pid: other, attempt: 1 });
+    getStore().prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(id);
+  });
+
+  it('lets only one of two gateways claim an abandoned run read the same way', async () => {
+    const a = automation();
+    const id = abandoned(a, 'verifying', { pid: await deadPid(), start: null }, past());
+    const read = unfinishedOf(row(id));
+    const before = new Date().toISOString();
+    expect(claimAbandonedRun(read, { leaseMs: 60_000, leaseBefore: before })).toBe(true);
+    // The second, from the same stale read: the owner and the lease have changed.
+    expect(claimAbandonedRun(read, { leaseMs: 60_000, leaseBefore: before })).toBe(false);
+    expect(row(id).owner_pid).toBe(process.pid);
+    // And a requeue or failure only takes effect from the state and owner expected.
+    expect(failAbandonedRun(id, 'x', { from: 'executing', ownerPid: process.pid })).toBe(false);
+    expect(requeueRun(id, { reason: 'x', from: 'verifying', ownerPid: 1 })).toBe(false);
+    expect(failAbandonedRun(id, 'gone', { from: 'verifying', ownerPid: process.pid })).toBe(true);
+  });
+
   it('does not retry a run that was waiting for approval when its gateway died', async () => {
     const a = automation('retry:\n  max_retries: 2\n  backoff: 50ms');
     const id = abandoned(a, 'awaiting_approval', { pid: await deadPid(), start: null }, past());
@@ -713,6 +792,17 @@ describe('retries', () => {
       expect(named(run, 'run.retry')).toHaveLength(0);
       expect(calls).toHaveLength(1);
     }
+  });
+
+  it('does not retry a run of an automation that is switched off', async () => {
+    script = [crash, write('OUT.md', 'x\n')];
+    const run = await waitFor(
+      enqueue(automation('retry:\n  max_retries: 2\n  backoff: 10ms', { off: true })),
+      finished
+    );
+    expect(run.status).toBe('failed');
+    expect(run.exitReason).toMatch(/Not retried: the automation is switched off\.$/);
+    expect(calls).toHaveLength(1);
   });
 
   it('can be cancelled while it waits out its backoff', async () => {

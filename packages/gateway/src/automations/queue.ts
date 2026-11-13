@@ -22,7 +22,7 @@ import { getStore, isStoreOpen } from '../store.js';
 import { emit, subscribeEvents } from '../events.js';
 import { logger } from '../logger.js';
 import { gatewayOwner } from '../agent-processes.js';
-import { addRunStep, createRun, failAbandonedRun } from '../runs.js';
+import { addRunStep, cancelQueuedRun, createRun, failAbandonedRun } from '../runs.js';
 import { SpecError } from './spec.js';
 import { ensureLocalRepo, getAutomation, type Automation } from './store.js';
 import { AutomationBusy, runLeased, type RunnerDeps } from './runner.js';
@@ -373,6 +373,16 @@ export function pumpQueue(): void {
       .prepare("SELECT id FROM runs WHERE status = 'queued' AND automation_id IS NULL")
       .all()) {
       failAbandonedRun(String(r.id), 'The automation was deleted before this run started.');
+    }
+    // A scheduled run of an automation switched off since it was queued (a
+    // retry, say) does not start.
+    for (const r of getStore()
+      .prepare(
+        `SELECT r.id FROM runs r JOIN automations a ON a.id = r.automation_id
+         WHERE r.status = 'queued' AND r.trigger = 'schedule' AND a.enabled = 0`
+      )
+      .all()) {
+      cancelQueuedRun(String(r.id), 'The automation was switched off before this run started.');
     }
     for (let pick = claimNext(d); pick; pick = claimNext(d)) launch(pick, d);
   } catch (e) {

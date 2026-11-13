@@ -19,12 +19,13 @@ import { listPending, decide } from '../approvals.js';
 import {
   activeRunIds,
   addRunStep,
+  claimAbandonedRun,
   failAbandonedRun,
   getRun,
   interruptedRuns,
   requeueRun,
+  unfinishedOf,
   INTERRUPTED,
-  type RunStatus,
   type UnfinishedRun,
 } from '../runs.js';
 import {
@@ -108,22 +109,86 @@ async function stopLeftoverProcesses(): Promise<void> {
 /** Runs being settled now, so two checks never settle one twice. */
 const settling = new Set<string>();
 
+/** How long a claim on an abandoned run lasts: long enough to clean it up. */
+const CLAIM_MS = 60_000;
+/** How often a run that never got past `leased` is put back before it fails. */
+export const MAX_RELAUNCHES = 3;
+
+function stepsNamed(runId: string, name: string): number {
+  const row = getStore()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM run_steps WHERE run_id = ? AND kind = 'tool'
+         AND json_extract(input, '$.name') = ?`
+    )
+    .get(runId, name);
+  return Number(row?.n ?? 0);
+}
+
 /**
- * Retry or fail one run nothing is working on. Returns what happened to it.
+ * Retry or fail one run nothing is working on. It is claimed first, in one
+ * conditional write (see claimAbandonedRun): a run another gateway got to,
+ * or that changed since it was read, is skipped, and nothing is removed.
+ *
  * A run that was only leased never started any work, so it goes back to the
- * queue as the same attempt, whatever its spec says about retries.
+ * queue as the same attempt, up to MAX_RELAUNCHES times. Neither that nor a
+ * retry happens once its automation is switched off.
  */
-async function settleAbandoned(run: UnfinishedRun, reason: string): Promise<'requeued' | 'failed'> {
-  const spec = run.automationId ? getAutomation(run.automationId)?.spec : null;
-  if (spec && run.status === 'leased') {
-    requeueRun(run.id, {
-      reason: 'Back in the queue: its gateway stopped before it started.',
-      sameAttempt: true,
-    });
-    return 'requeued';
+async function settleAbandoned(
+  run: UnfinishedRun,
+  reason: string,
+  opts: { leaseBefore?: string; denyApprovals?: string } = {}
+): Promise<'requeued' | 'failed' | 'skipped'> {
+  if (!claimAbandonedRun(run, { leaseMs: CLAIM_MS, leaseBefore: opts.leaseBefore })) {
+    return 'skipped';
   }
-  const plan = spec && RETRYABLE_STAGES.has(run.status) ? retryPlan(spec, run.attempt) : null;
+  const me = process.pid;
+  if (opts.denyApprovals) {
+    for (const p of listPending()) {
+      if (p.runId === run.id) {
+        decide(p.id, {
+          decision: 'denied',
+          decidedBy: opts.denyApprovals,
+          reason: 'The run is no longer being worked on.',
+        });
+      }
+    }
+  }
+  const automation = run.automationId ? getAutomation(run.automationId) : null;
+  const spec = automation?.spec ?? null;
+  const off = Boolean(automation && !automation.enabled);
+  const fail = async (why: string): Promise<'failed'> => {
+    failAbandonedRun(run.id, why, { from: run.status, ownerPid: me });
+    await cleanUpRun(run.id);
+    return 'failed';
+  };
+
   try {
+    if (spec && run.status === 'leased') {
+      if (off) return await fail(`${reason} Not started again: the automation is switched off.`);
+      const relaunches = stepsNamed(run.id, 'run.requeue');
+      if (relaunches >= MAX_RELAUNCHES) {
+        return await fail(
+          `${reason} Its gateway stopped ${relaunches + 1} times before the run could start; it is not put back again.`
+        );
+      }
+      addRunStep(run.id, {
+        kind: 'tool',
+        input: { name: 'run.requeue', relaunch: relaunches + 1 },
+        output: { after: reason, of: MAX_RELAUNCHES },
+        status: 'warning',
+      });
+      requeueRun(run.id, {
+        reason: 'Back in the queue: its gateway stopped before it started.',
+        sameAttempt: true,
+        from: 'leased',
+        ownerPid: me,
+      });
+      return 'requeued';
+    }
+    const plan = spec && RETRYABLE_STAGES.has(run.status) ? retryPlan(spec, run.attempt) : null;
+    if (plan && off) {
+      return await fail(`${reason} Not retried: the automation is switched off.`);
+    }
     if (plan) {
       addRunStep(run.id, {
         kind: 'tool',
@@ -141,19 +206,19 @@ async function settleAbandoned(run: UnfinishedRun, reason: string): Promise<'req
       requeueRun(run.id, {
         notBefore: plan.notBefore,
         reason: `Retry ${plan.retry} of ${plan.of} after: ${reason}`,
+        from: run.status,
+        ownerPid: me,
       });
       return 'requeued';
     }
-    failAbandonedRun(run.id, reason);
-    await cleanUpRun(run.id);
-    return 'failed';
+    return await fail(reason);
   } catch (e) {
     logger.warn('Could not clean up an interrupted run', {
       runId: run.id,
       err: e instanceof Error ? e.message : String(e),
     });
     // Whatever was left behind, the run must not stay unfinished.
-    failAbandonedRun(run.id, reason);
+    failAbandonedRun(run.id, reason, { ownerPid: me });
     return 'failed';
   }
 }
@@ -178,7 +243,7 @@ export async function recoverAfterRestart(): Promise<void> {
     if (theirs.has(p.runId)) continue;
     decide(p.id, { decision: 'denied', decidedBy: 'restart', reason: 'The gateway restarted.' });
   }
-  const outcome = { requeued: 0, failed: 0 };
+  const outcome = { requeued: 0, failed: 0, skipped: 0 };
   for (const run of runs) {
     if (settling.has(run.id)) continue;
     settling.add(run.id);
@@ -205,11 +270,12 @@ export async function reclaimExpiredLeases(
   const nowIso = (opts.now ?? new Date()).toISOString();
   const expired = getStore()
     .prepare(
-      `SELECT id, status, automation_id, attempt, owner_pid FROM runs
+      `SELECT id, status, automation_id, attempt, owner_pid, owner_start FROM runs
        WHERE status IN ('leased','preparing','executing','verifying','publishing','awaiting_approval')
          AND lease_until IS NOT NULL AND lease_until < ?`
     )
-    .all(nowIso);
+    .all(nowIso)
+    .map(unfinishedOf);
   if (expired.length === 0) return [];
 
   const active = new Set(activeRunIds());
@@ -219,51 +285,31 @@ export async function reclaimExpiredLeases(
 
   const out: string[] = [];
   let stopped = false;
-  const still = getStore().prepare(
-    `SELECT status, attempt, owner_pid FROM runs WHERE id = ?
-       AND status IN ('leased','preparing','executing','verifying','publishing','awaiting_approval')
-       AND lease_until IS NOT NULL AND lease_until < ?`
-  );
-  for (const first of expired) {
-    const id = String(first.id);
-    if (mine(id) || settling.has(id)) continue;
-    // Read again: the process table took a while, and in the meantime another
-    // check may have settled it, or a gateway leased it afresh.
-    const r = still.get(id, nowIso);
-    if (!r || Number(r.owner_pid) !== Number(first.owner_pid)) continue;
-    const ownPid = Number(r.owner_pid) === process.pid;
+  for (const run of expired) {
+    if (mine(run.id) || settling.has(run.id)) continue;
+    const ownPid = run.ownerPid === process.pid;
     // Another gateway's run counts as abandoned only when the process table
     // says its gateway is gone; one of this gateway's own when it is not
     // being worked on here.
-    if (!ownPid && (!live || live.has(id))) continue;
+    if (!ownPid && (!live || live.has(run.id))) continue;
     if (!stopped && !ownPid) {
       await stopLeftoverProcesses();
       stopped = true;
     }
-    settling.add(id);
+    settling.add(run.id);
     try {
-      for (const p of listPending()) {
-        if (p.runId === id) {
-          decide(p.id, {
-            decision: 'denied',
-            decidedBy: 'lease-expired',
-            reason: 'The run is no longer being worked on.',
-          });
-        }
-      }
+      // The claim in settleAbandoned checks the run is still as read above,
+      // lease expired and owner unchanged, before anything is done to it.
       const outcome = await settleAbandoned(
-        {
-          id,
-          status: String(r.status) as RunStatus,
-          automationId: first.automation_id ? String(first.automation_id) : undefined,
-          attempt: Number(r.attempt ?? 1),
-        },
-        'Lease expired: the gateway working on this run stopped renewing it.'
+        run,
+        'Lease expired: the gateway working on this run stopped renewing it.',
+        { leaseBefore: nowIso, denyApprovals: 'lease-expired' }
       );
-      logger.warn('Reclaimed an automation run whose lease expired', { runId: id, outcome });
-      out.push(id);
+      if (outcome === 'skipped') continue;
+      logger.warn('Reclaimed an automation run whose lease expired', { runId: run.id, outcome });
+      out.push(run.id);
     } finally {
-      settling.delete(id);
+      settling.delete(run.id);
     }
   }
   return out;

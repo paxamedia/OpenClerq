@@ -130,13 +130,18 @@ export function finishRun(
   id: string,
   status: Extract<RunStatus, 'done' | 'failed' | 'cancelled'>,
   exitReason?: string
-): void {
+): boolean {
   // A reason recorded during the run ("No changes") stands unless replaced.
-  getStore()
+  // Only an unfinished run this gateway owns: one another gateway reclaimed
+  // (its lease expired) is that gateway's to settle.
+  const res = getStore()
     .prepare(
-      'UPDATE runs SET status = ?, exit_reason = COALESCE(?, exit_reason), finished_at = ?, lease_until = NULL WHERE id = ?'
+      `UPDATE runs SET status = ?, exit_reason = COALESCE(?, exit_reason), finished_at = ?, lease_until = NULL
+       WHERE id = ? AND status NOT IN ('done', 'failed', 'cancelled')
+         AND (owner_pid IS NULL OR owner_pid = ?)`
     )
-    .run(status, exitReason ?? null, new Date().toISOString(), id);
+    .run(status, exitReason ?? null, new Date().toISOString(), id, process.pid);
+  return Number(res.changes) > 0;
 }
 
 /** Move a run to its next state, before the work of that state starts. */
@@ -184,6 +189,9 @@ export interface UnfinishedRun {
   status: RunStatus;
   automationId?: string;
   attempt: number;
+  /** The gateway that owned it, as recorded: compared again when it is claimed. */
+  ownerPid: number | null;
+  ownerStart: string | null;
 }
 
 /**
@@ -194,28 +202,84 @@ export interface UnfinishedRun {
 export function interruptedRuns(options: { except?: ReadonlySet<string> } = {}): UnfinishedRun[] {
   return getStore()
     .prepare(
-      `SELECT id, status, automation_id, attempt FROM runs
+      `SELECT id, status, automation_id, attempt, owner_pid, owner_start FROM runs
        WHERE status NOT IN ('queued', 'done', 'failed', 'cancelled')`
     )
     .all()
     .filter((r) => !options.except?.has(String(r.id)))
-    .map((r) => ({
-      id: String(r.id),
-      status: r.status as RunStatus,
-      automationId: r.automation_id ? String(r.automation_id) : undefined,
-      attempt: Number(r.attempt ?? 1),
-    }));
+    .map(unfinishedOf);
 }
 
-/** Mark a run that nothing is working on any more as failed. */
-export function failAbandonedRun(id: string, reason = INTERRUPTED): void {
-  getStore()
+export function unfinishedOf(r: Record<string, unknown>): UnfinishedRun {
+  return {
+    id: String(r.id),
+    status: r.status as RunStatus,
+    automationId: r.automation_id ? String(r.automation_id) : undefined,
+    attempt: Number(r.attempt ?? 1),
+    ownerPid: r.owner_pid === null || r.owner_pid === undefined ? null : Number(r.owner_pid),
+    ownerStart: r.owner_start ? String(r.owner_start) : null,
+  };
+}
+
+/**
+ * Take over a run nothing is working on, before doing anything to it: it
+ * becomes this gateway's, with a fresh lease, only if it is still exactly as
+ * it was read (same status, same owner, and with `leaseBefore`, a lease that
+ * expired before then). Two gateways that both find it abandoned cannot both
+ * settle it. Returns whether this one got it.
+ */
+export function claimAbandonedRun(
+  run: UnfinishedRun,
+  opts: { leaseMs: number; leaseBefore?: string }
+): boolean {
+  const me = gatewayOwner();
+  const res = getStore()
+    .prepare(
+      `UPDATE runs SET owner_pid = ?, owner_start = ?, lease_until = ?
+       WHERE id = ? AND status = ? AND owner_pid IS ? AND owner_start IS ?
+         ${opts.leaseBefore ? 'AND lease_until IS NOT NULL AND lease_until < ?' : ''}`
+    )
+    .run(
+      me.pid,
+      me.start,
+      new Date(Date.now() + opts.leaseMs).toISOString(),
+      run.id,
+      run.status,
+      run.ownerPid,
+      run.ownerStart,
+      ...(opts.leaseBefore ? [opts.leaseBefore] : [])
+    );
+  return Number(res.changes) === 1;
+}
+
+/**
+ * Mark a run that nothing is working on any more as failed. With `from`, only
+ * while it is still in that state; with `ownerPid`, only while that gateway
+ * owns it (the one that claimed it).
+ */
+export function failAbandonedRun(
+  id: string,
+  reason = INTERRUPTED,
+  opts: { from?: RunStatus; ownerPid?: number } = {}
+): boolean {
+  const res = getStore()
     .prepare(
       `UPDATE runs SET status = 'failed', finished_at = ?, exit_reason = ?, lease_until = NULL
-       WHERE id = ? AND status NOT IN ('done', 'failed', 'cancelled')`
+       WHERE id = ? AND status NOT IN ('done', 'failed', 'cancelled')
+         AND (? IS NULL OR status = ?) AND (? IS NULL OR owner_pid = ?)`
     )
-    .run(new Date().toISOString(), reason, id);
+    .run(
+      new Date().toISOString(),
+      reason,
+      id,
+      opts.from ?? null,
+      opts.from ?? null,
+      opts.ownerPid ?? null,
+      opts.ownerPid ?? null
+    );
+  if (Number(res.changes) === 0) return false;
   emit('run.failed', { error: reason }, { runId: id });
+  return true;
 }
 
 /**
@@ -238,15 +302,33 @@ export function reapInterruptedRuns(options: { except?: ReadonlySet<string> } = 
  */
 export function requeueRun(
   id: string,
-  opts: { notBefore?: Date; reason: string; sameAttempt?: boolean }
+  opts: {
+    notBefore?: Date;
+    reason: string;
+    sameAttempt?: boolean;
+    /** Only while the run is still in this state. */
+    from?: RunStatus;
+    /** Only while this gateway owns it. Default: this one. */
+    ownerPid?: number;
+  }
 ): boolean {
+  const owner = opts.ownerPid ?? process.pid;
   const res = getStore()
     .prepare(
       `UPDATE runs SET status = 'queued', lease_until = NULL, owner_pid = NULL, owner_start = NULL,
          not_before = ?, attempt = attempt + ?, exit_reason = ?
-       WHERE id = ? AND status NOT IN ('done', 'failed', 'cancelled')`
+       WHERE id = ? AND status NOT IN ('queued', 'done', 'failed', 'cancelled')
+         AND (? IS NULL OR status = ?) AND owner_pid = ?`
     )
-    .run(opts.notBefore?.toISOString() ?? null, opts.sameAttempt ? 0 : 1, opts.reason, id);
+    .run(
+      opts.notBefore?.toISOString() ?? null,
+      opts.sameAttempt ? 0 : 1,
+      opts.reason,
+      id,
+      opts.from ?? null,
+      opts.from ?? null,
+      owner
+    );
   if (Number(res.changes) === 0) return false;
   emit('run.status', { status: 'queued' }, { runId: id });
   emit(
@@ -695,7 +777,8 @@ export async function executeRun<T>(
     moduleId?: string;
     triggerId?: string;
     signal?: AbortSignal;
-    retry?: (e: unknown) => Requeue | null;
+    /** A requeue; null to fail as is; `{ failure }` to fail with that reason instead. */
+    retry?: (e: unknown) => Requeue | { failure: string } | null;
   },
   fn: () => Promise<T>
 ): Promise<T> {
@@ -732,9 +815,10 @@ export async function executeRun<T>(
       emit('run.cancelled', { reason }, { runId });
       throw e;
     }
-    const message = e instanceof Error ? e.message : String(e);
+    let message = e instanceof Error ? e.message : String(e);
     const again = input.retry?.(e);
-    if (again && requeueRun(runId, again)) return undefined as T;
+    if (again && 'failure' in again) message = again.failure;
+    else if (again && requeueRun(runId, again)) return undefined as T;
     finishRun(runId, 'failed', message);
     emit('run.failed', { error: message }, { runId });
     throw e;
