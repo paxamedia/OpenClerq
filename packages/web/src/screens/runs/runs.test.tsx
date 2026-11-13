@@ -18,7 +18,7 @@ import {
   ToolCalls,
 } from './RunParts';
 import { Runs } from './Runs';
-import { describeStep, stepLabel } from './steps';
+import { describeStep, previousModel, stepLabel } from './steps';
 
 const client = createFixtureClient({ now: FIXTURE_NOW });
 
@@ -69,6 +69,21 @@ describe('step labels', () => {
     expect(w.label).toBe('A gate failed: running the agent again with x/big');
     expect(w.note).toContain('same worktree');
     expect(w.note).toContain('x/small');
+  });
+
+  it('does not call an unnamed model "default" as if it were one', () => {
+    const unnamed = describeStep(
+      tool('agent.escalate', { model: 'x/big' }, { from: 'default', after: 'Gate failed: t' })
+    );
+    expect(unnamed.note).toContain(
+      'Before this it used the agent program’s own default model, since none was named.'
+    );
+    expect(unnamed.note).not.toMatch(/used default/i);
+    expect(
+      describeStep(tool('agent.escalate', { model: 'x/big' }, { after: 'Gate failed: t' })).note
+    ).not.toContain('Before this');
+    expect(previousModel('x/small')).toBe('Before this it used x/small.');
+    expect(previousModel(undefined)).toBeUndefined();
   });
 
   it('says what a sub-agent started with', () => {

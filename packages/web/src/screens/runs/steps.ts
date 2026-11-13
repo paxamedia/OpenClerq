@@ -38,6 +38,20 @@ function toolsWords(tools: unknown): string {
   return text(tools) ?? 'read-only';
 }
 
+/**
+ * What the model before an escalation was. The runner records `default` when no
+ * model was named for it: a spec that sets none leaves the choice to the agent
+ * program (a CLI), so the model is that program's own default, not one this page
+ * can name. The gateway's default chain does not apply to an automation run.
+ */
+export function previousModel(from: unknown): string | undefined {
+  const model = text(from);
+  if (!model) return undefined;
+  return model === 'default'
+    ? 'Before this it used the agent program’s own default model, since none was named.'
+    : `Before this it used ${model}.`;
+}
+
 function toolStep(name: string, input: Fields, output: Fields): StepWords | null {
   switch (name) {
     case 'model.fallback': {
@@ -68,7 +82,7 @@ function toolStep(name: string, input: Fields, output: Fields): StepWords | null
         note: [
           after && `After: ${sentence(after)}`,
           'It starts over in the same worktree, with the failed check in its prompt.',
-          text(output.from) && `Before this it used ${String(output.from)}.`,
+          previousModel(output.from),
         ]
           .filter(Boolean)
           .join(' '),

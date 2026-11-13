@@ -7,11 +7,13 @@ import { LiveProvider, LiveStore } from '../../app/live';
 import { createFixtureClient, FIXTURE_NOW } from '../../fixtures';
 import { ToastProvider } from '../../ui/Toast';
 import {
-  canSummarise,
   originOf,
   PolicyEditor,
   POLICY_NOTE,
   sameKeyCounts,
+  summariseInfo,
+  summariseLabel,
+  MEMORY_LIST_LIMIT,
   sameTypes,
   SUMMARISE_NOTE,
   SummariseDialog,
@@ -200,11 +202,35 @@ describe('who wrote a memory record', () => {
     const b = rec({ id: 'b', key: 'style', type: 'preference' });
     const c = rec({ id: 'c', key: 'style', type: 'note' });
     const d = rec({ id: 'd', key: 'style', type: 'preference', status: 'superseded' });
-    const counts = sameKeyCounts([a, b, c, d]);
+    const all = [a, b, c, d];
+    const counts = sameKeyCounts(all);
     expect(counts.get('preference\u0000style')).toBe(2);
-    expect(canSummarise(a, counts)).toBe(true);
-    expect(canSummarise(c, counts)).toBe(false);
-    expect(canSummarise(d, counts)).toBe(false);
+    expect(summariseInfo(a, all)).toEqual({ offer: true, count: 2 });
+    expect(summariseInfo(c, all)).toEqual({ offer: false, count: 1 });
+    expect(summariseInfo(d, all)).toEqual({ offer: false, count: null });
+  });
+
+  it('counts from every record in use, so a search that shows one of them neither hides the button nor changes the count', () => {
+    const a = rec({ id: 'a', key: 'style', type: 'preference' });
+    const b = rec({ id: 'b', key: 'style', type: 'preference' });
+    const searchResults = [a];
+    // The row on screen is `a`, but the count is read from the whole list.
+    expect(summariseInfo(searchResults[0], [a, b])).toEqual({ offer: true, count: 2 });
+    // Counting from what the search shows is the mistake: it would find one.
+    expect(sameKeyCounts(searchResults).get('preference\u0000style')).toBe(1);
+  });
+
+  it('states no count it does not know, and still offers Summarise', () => {
+    const a = rec({ id: 'a', key: 'style', type: 'preference' });
+    // The whole list has not loaded.
+    expect(summariseInfo(a, undefined)).toEqual({ offer: true, count: null });
+    // The list is long enough to have been cut off.
+    const long = Array.from({ length: MEMORY_LIST_LIMIT }, (_, i) =>
+      rec({ id: `m${i}`, key: `k${i}` })
+    );
+    expect(summariseInfo(long[0], long)).toEqual({ offer: true, count: null });
+    expect(summariseLabel(a, null)).toBe('Summarise the records under style');
+    expect(summariseLabel(a, 3)).toBe('Summarise 3 records under style');
   });
 
   it('lists folded records only on request, and never beside a search', () => {
@@ -258,6 +284,15 @@ describe('summarising memory', () => {
     expect(markup).toContain('Undo brings them back');
     expect(markup).toContain('used as named, with no fallback');
     expect(SUMMARISE_NOTE).toContain('kept');
+  });
+
+  it('names no count in the question when it does not know one', async () => {
+    const [rec] = (await client.memory()).entries.filter((r) => r.key === 'style');
+    const markup = page(
+      <SummariseDialog record={rec} count={null} onClose={() => {}} onDone={() => {}} />
+    );
+    expect(markup).toContain('Summarise the records under');
+    expect(markup).not.toMatch(/Summarise \d+ records/);
   });
 
   it('folds records into a summary and undo restores them', async () => {

@@ -80,8 +80,32 @@ export function sameKeyCounts(records: MemoryRecord[]): Map<string, number> {
   return counts;
 }
 
-export function canSummarise(r: MemoryRecord, counts: Map<string, number>): boolean {
-  return r.status === 'active' && (counts.get(groupKey(r)) ?? 0) >= 2;
+/** `GET /memory` lists at most this many records; a longer list may be cut off. */
+export const MEMORY_LIST_LIMIT = 500;
+
+/**
+ * Whether to offer Summarise on a record, and how many records in use share its
+ * key and type. It is read from the whole list of records in use, never from a
+ * search's results: a search narrows what is shown, not what there is. When the
+ * whole list is not known (still loading, or long enough to be cut off) the
+ * count is null, nothing is stated, and Summarise is offered: the gateway says
+ * whether there are enough.
+ */
+export function summariseInfo(
+  r: MemoryRecord,
+  all: MemoryRecord[] | undefined
+): { offer: boolean; count: number | null } {
+  if (r.status !== 'active') return { offer: false, count: null };
+  if (!all || all.length >= MEMORY_LIST_LIMIT) return { offer: true, count: null };
+  const count = sameKeyCounts(all).get(groupKey(r)) ?? 0;
+  return { offer: count >= 2, count };
+}
+
+/** What Summarise on a record is called, with the count only when it is known. */
+export function summariseLabel(r: Pick<MemoryRecord, 'key'>, count: number | null): string {
+  return count === null
+    ? `Summarise the records under ${r.key}`
+    : `Summarise ${count} records under ${r.key}`;
 }
 
 /**
@@ -215,7 +239,8 @@ export function SummariseDialog({
   onDone,
 }: {
   record: MemoryRecord | null;
-  count: number;
+  /** How many records in use it folds, when that is known. */
+  count: number | null;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -251,7 +276,7 @@ export function SummariseDialog({
     <Dialog
       open={record !== null}
       onClose={onClose}
-      title={record ? `Summarise ${count} records under “${record.key}”?` : 'Summarise'}
+      title={record ? `${summariseLabel({ key: `“${record.key}”` }, count)}?` : 'Summarise'}
       description={SUMMARISE_NOTE}
       actions={
         <>
@@ -289,13 +314,21 @@ export function MemorySection() {
   const [query, setQuery] = useState('');
   const q = query.trim();
   const [folded, setFolded] = useState(false);
+  // Every record in use is always loaded: Summarise counts from it, not from a search's results.
+  const all = useResource('memory', async () => (await client.memory()).entries, {
+    on: ['memory'],
+  });
   // A search is its own resource, so the list comes back the moment it is cleared.
-  const memory = useResource(
-    q ? `memory:search:${q}` : 'memory',
-    async (): Promise<MemoryRecord[]> =>
-      q ? (await client.searchMemory(q)).results : (await client.memory()).entries,
+  const found = useResource(
+    q ? `memory:search:${q}` : null,
+    async () => (await client.searchMemory(q)).results,
     { on: ['memory'] }
   );
+  const memory = q ? found : all;
+  const reload = () => {
+    void all.reload();
+    if (q) void found.reload();
+  };
   // Records folded into a summary are not in use; they are fetched only when asked for.
   const superseded = useResource(
     folded && !q ? 'memory:superseded' : null,
@@ -326,7 +359,7 @@ export function MemorySection() {
     ) {
       setKey('');
       setValue('');
-      void memory.reload();
+      reload();
     }
   };
 
@@ -339,7 +372,7 @@ export function MemorySection() {
         tone: 'ok',
       });
       live.invalidate(['memory']);
-      void memory.reload();
+      reload();
     } catch (e) {
       toast({ message: `Couldn’t undo the summary. ${errorMessage(e)}`, tone: 'err' });
     } finally {
@@ -349,7 +382,7 @@ export function MemorySection() {
 
   const refresh = () => {
     live.invalidate(['memory']);
-    void memory.reload();
+    reload();
   };
 
   return (
@@ -396,7 +429,6 @@ export function MemorySection() {
         />
         <Loaded resource={memory} what="memory" skeleton="rows">
           {(entries) => {
-            const counts = sameKeyCounts(entries);
             const rows = visibleRecords(entries, superseded.data, folded, Boolean(q));
             return (
               <Table
@@ -459,12 +491,12 @@ export function MemorySection() {
                         <span className="page-muted">Folded into a summary</span>
                       ) : (
                         <span className="settings-row-actions">
-                          {canSummarise(e, counts) && (
+                          {summariseInfo(e, all.data).offer && (
                             <Button
                               size="sm"
                               icon={Sparkles}
                               onClick={() => setSummarising(e)}
-                              aria-label={`Summarise ${counts.get(groupKey(e))} records under ${e.key}`}
+                              aria-label={summariseLabel(e, summariseInfo(e, all.data).count)}
                             >
                               Summarise
                             </Button>
@@ -505,9 +537,7 @@ export function MemorySection() {
         )}
         <SummariseDialog
           record={summarising}
-          count={
-            summarising ? (sameKeyCounts(memory.data ?? []).get(groupKey(summarising)) ?? 0) : 0
-          }
+          count={summarising ? summariseInfo(summarising, all.data).count : null}
           onClose={() => setSummarising(null)}
           onDone={refresh}
         />
@@ -526,7 +556,7 @@ export function MemorySection() {
               deleting.key,
               () => client.deleteMemoryRecord(deleting.id),
               `Deleted ${deleting.key}.`
-            ).then(() => memory.reload())
+            ).then(() => reload())
           }
         />
       </Section>
