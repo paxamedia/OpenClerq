@@ -32,6 +32,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { startEgressProxy, type DeniedAttempt, type EgressProxy } from './egress.js';
+export { resolveWithinRoot, PathContainmentError } from './paths.js';
 
 export {
   startEgressProxy,
