@@ -115,7 +115,15 @@ export function decide(id: number, decision: ApprovalDecision): boolean {
     detail: { runId: row.run_id, reason: decision.reason },
   });
 
-  emit('approval.decided', { id, ...decision }, { runId: String(row.run_id) });
+  const parent = db.prepare('SELECT parent_run_id FROM runs WHERE id = ?').get(String(row.run_id));
+  emit(
+    'approval.decided',
+    { id, ...decision },
+    {
+      runId: String(row.run_id),
+      ...(parent?.parent_run_id ? { parentRunId: String(parent.parent_run_id) } : {}),
+    }
+  );
 
   const waiter = waiters.get(id);
   if (waiter) {
@@ -177,6 +185,20 @@ export function waitForDecision(id: number, timeoutMs = 300_000): Promise<boolea
       resolve(d.decision === 'approved');
     });
   });
+}
+
+/**
+ * Undecided approvals of a run and of the sub-agents it started. A run goes
+ * back to work from awaiting_approval only when this is 0.
+ */
+export function openApprovalsOf(runId: string): number {
+  const row = getStore()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM approvals a JOIN runs r ON r.id = a.run_id
+       WHERE a.decision IS NULL AND (r.id = ? OR r.parent_run_id = ?)`
+    )
+    .get(runId, runId);
+  return Number(row?.n ?? 0);
 }
 
 /** Refuse every pending approval — used by the kill switch. */

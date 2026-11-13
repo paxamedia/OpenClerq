@@ -325,7 +325,7 @@ export function failAbandonedRun(
       opts.ownerPid ?? null
     );
   if (Number(res.changes) === 0) return false;
-  emit('run.failed', { error: reason }, { runId: id });
+  emit('run.failed', { error: reason }, storedEventContext(id));
   return true;
 }
 
@@ -723,6 +723,18 @@ export function currentSessionId(): string | undefined {
  * The current run's cancellation signal. A model call inside a run listens to
  * it, so cancelling the run stops the call — and the spend — mid-flight.
  */
+/** The correlation ids of a run as stored: with its parent run and session, when it has them. */
+function storedEventContext(runId: string): EventContext {
+  const row = getStore()
+    .prepare('SELECT parent_run_id, session_id FROM runs WHERE id = ?')
+    .get(runId);
+  return {
+    runId,
+    ...(row?.parent_run_id ? { parentRunId: String(row.parent_run_id) } : {}),
+    ...(row?.session_id ? { sessionId: String(row.session_id) } : {}),
+  };
+}
+
 /** The run that started the current one, when it is a sub-agent's. */
 export function currentParentRunId(): string | undefined {
   return runContext.getStore()?.parentRunId;
@@ -730,11 +742,12 @@ export function currentParentRunId(): string | undefined {
 
 /**
  * The correlation ids of an event about `runId`: with its parent run and its
- * session when it is the run in progress here.
+ * session, from the run in progress here or else from the store.
  */
 export function runEventContext(runId: string | undefined): EventContext {
   const here = runContext.getStore();
-  if (!runId || here?.runId !== runId) return { runId };
+  if (!runId) return { runId };
+  if (here?.runId !== runId) return isStoreOpen() ? storedEventContext(runId) : { runId };
   return {
     runId,
     ...(here.parentRunId ? { parentRunId: here.parentRunId } : {}),
