@@ -116,61 +116,74 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
 };
 
 /**
- * Where an agent CLI keeps its sign-in and state on this machine: the
- * directories it writes, and files it rewrites through a temporary sibling
- * (`files` are prefixes: `~/.claude.json` covers `~/.claude.json.tmp.1`).
- * Under the seatbelt profile they are the only places outside the worktree
- * the agent may write: a CLI refreshes its sign-in there, and a copy would
- * rotate the refresh token away from the user's own sign-in.
+ * Where an agent CLI keeps its sign-in and state on this machine, as an
+ * allow-list for the seatbelt profile:
  *
- * `protect` lists what inside them holds only configuration that would run
- * code the next time the CLI is used outside the sandbox (hooks, MCP servers,
- * a notify command, instructions it reads): kept read-only. A file the CLI
- * itself rewrites during a run (`~/.claude.json`) cannot be protected.
+ *   readDirs    its state directories, readable (they are among the
+ *               credential stores no profile otherwise lets a run read)
+ *   writeDirs   the directories inside them it writes during a run: session,
+ *               cache and log directories. Created before the run if missing.
+ *   writeFiles  files it rewrites, as prefixes (`~/.claude.json` covers
+ *               `~/.claude.json.tmp.1`): its sign-in, which it refreshes, and
+ *               files it keeps state in. A copy would not do: refreshing a
+ *               sign-in in a copy rotates the token away from the user's own.
+ *
+ * Everything else in the state directories is read-only: settings, hooks,
+ * MCP servers, rules, skills, plugins, instructions, which would run code or
+ * steer the CLI the next time it is used outside the sandbox. The lists are
+ * from each vendor's documented layout, not observed against the real CLIs:
+ * a CLI that writes somewhere else fails under seatbelt rather than gets it.
  */
 export function agentStatePaths(
   id: DriverId,
   home = os.homedir(),
   env: NodeJS.ProcessEnv = process.env
-): { dirs: string[]; files: string[]; protect: string[] } {
+): { readDirs: string[]; writeDirs: string[]; writeFiles: string[] } {
   const config = env.XDG_CONFIG_HOME || path.join(home, '.config');
   switch (id) {
     case 'claude-code': {
       const dir = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
-      const protect = [
-        'settings.json',
-        'settings.local.json',
-        'CLAUDE.md',
-        'commands',
-        'agents',
-        'hooks',
-        'plugins',
-        'skills',
-      ].map((p) => path.join(dir, p));
-      return env.CLAUDE_CONFIG_DIR
-        ? { dirs: [dir], files: [], protect }
-        : {
-            dirs: [dir, path.join(home, 'Library', 'Caches', 'claude-cli-nodejs')],
-            files: [path.join(home, '.claude.json')],
-            protect,
-          };
+      const inDir = (...names: string[]) => names.map((n) => path.join(dir, n));
+      return {
+        readDirs: [dir],
+        writeDirs: [
+          ...inDir(
+            'todos',
+            'shell-snapshots',
+            'statsig',
+            'debug',
+            'session-env',
+            'file-history',
+            'plans',
+            'telemetry',
+            'ide'
+          ),
+          path.join(home, 'Library', 'Caches', 'claude-cli-nodejs'),
+        ],
+        writeFiles: [
+          ...inDir('.credentials.json'),
+          // Its main state file; it also holds user-scope MCP servers (see SECURITY.md).
+          env.CLAUDE_CONFIG_DIR ? path.join(dir, '.claude.json') : path.join(home, '.claude.json'),
+        ],
+      };
     }
     case 'codex': {
       const dir = env.CODEX_HOME || path.join(home, '.codex');
+      const inDir = (...names: string[]) => names.map((n) => path.join(dir, n));
       return {
-        dirs: [dir],
-        files: [],
-        protect: ['config.toml', 'AGENTS.md', 'prompts'].map((p) => path.join(dir, p)),
+        readDirs: [dir],
+        writeDirs: inDir('log', 'sessions'),
+        writeFiles: inDir('auth.json', 'history.jsonl', 'version.json', 'models_cache.json'),
       };
     }
     case 'cursor-agent':
       return {
-        dirs: [path.join(home, '.cursor'), path.join(config, 'cursor')],
-        files: [],
-        protect: [path.join(home, '.cursor', 'mcp.json'), path.join(home, '.cursor', 'rules')],
+        readDirs: [path.join(home, '.cursor'), path.join(config, 'cursor')],
+        writeDirs: [path.join(home, '.cursor', 'chats'), path.join(home, '.cursor', 'logs')],
+        writeFiles: [path.join(config, 'cursor', 'auth.json')],
       };
     case 'builtin':
-      return { dirs: [], files: [], protect: [] };
+      return { readDirs: [], writeDirs: [], writeFiles: [] };
   }
 }
 

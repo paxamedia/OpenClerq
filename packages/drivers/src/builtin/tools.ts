@@ -94,14 +94,57 @@ function int(
   return v;
 }
 
+/** Worktrees pinned for a run: their real path, and the directory each was then. */
+const pinned = new Map<string, { dev: number; ino: number; holders: number }>();
+
+/**
+ * Fix the worktree for a run: its real path, resolved once, and the directory
+ * (device and inode) it is. Every file tool then checks that the path is still
+ * that directory, so a worktree moved away and replaced by a link (to the home
+ * directory, say) is refused rather than written through. Returns the path to
+ * use as the run's `cwd`; call `unpinRoot` with it when the run ends.
+ */
+export function pinRoot(cwd: string): string {
+  const real = fs.realpathSync.native(cwd);
+  const st = fs.lstatSync(real);
+  const held = pinned.get(real);
+  if (held) held.holders += 1;
+  else pinned.set(real, { dev: st.dev, ino: st.ino, holders: 1 });
+  return real;
+}
+
+export function unpinRoot(real: string): void {
+  const held = pinned.get(real);
+  if (held && --held.holders <= 0) pinned.delete(real);
+}
+
+const MOVED =
+  'The worktree was moved or replaced while the agent was working; file tools and commands stopped.';
+
+/** Throws when a pinned worktree is no longer the directory it was. */
+function assertRoot(cwd: string): void {
+  const pin = pinned.get(cwd);
+  if (!pin) return;
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(cwd);
+  } catch {
+    throw new ToolInputError(MOVED);
+  }
+  if (!st.isDirectory() || st.dev !== pin.dev || st.ino !== pin.ino)
+    throw new ToolInputError(MOVED);
+}
+
 /** A path inside the worktree. "." and "" mean the worktree itself. */
 function within(cwd: string, rel: string | undefined): string {
+  assertRoot(cwd);
   const p = (rel ?? '.').trim();
   if (p === '' || p === '.' || p === './') return fs.realpathSync.native(cwd);
   return resolveWithinRoot(cwd, p);
 }
 
 function relative(cwd: string, abs: string): string {
+  assertRoot(cwd);
   return path.relative(fs.realpathSync.native(cwd), abs) || '.';
 }
 
@@ -132,6 +175,7 @@ async function command(
   args: string[],
   timeoutMs: number
 ): Promise<{ code: number | null; out: string; timedOut: boolean; cancelled: boolean }> {
+  assertRoot(ctx.cwd);
   const wallMs = Math.max(1_000, Math.min(timeoutMs, ctx.deadline - Date.now()));
   let ended: (() => void) | undefined;
   try {

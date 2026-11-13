@@ -848,3 +848,33 @@ describe('builtin driver: review fixes', () => {
     expect(events.some((e) => e.type === 'context')).toBe(false);
   });
 });
+
+describe.skipIf(isWindows)('builtin driver: a worktree swapped under it', () => {
+  it('refuses file tools and commands once the worktree is moved and replaced by a link', async () => {
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-elsewhere-')));
+    try {
+      const model = scriptedModel([
+        {
+          content: [
+            use('t1', 'run_shell', {
+              command: `mv "${repo}" "${repo}.moved" && ln -s "${elsewhere}" "${repo}"`,
+            }),
+          ],
+        },
+        { content: [use('t2', 'write_file', { path: 'planted.txt', content: 'x\n' })] },
+        { content: [use('t3', 'run_shell', { command: 'echo hi > planted2.txt' })] },
+        { content: [text('Done.')] },
+      ]);
+      const { events } = await run(model.fetchImpl);
+      const results = toolResults(events);
+      expect(results[1].isError).toBe(true);
+      expect(results[1].output).toMatch(/moved or replaced/);
+      expect(results[2].output).toMatch(/moved or replaced/);
+      expect(fs.readdirSync(elsewhere)).toEqual([]);
+    } finally {
+      fs.rmSync(repo, { force: true });
+      fs.renameSync(`${repo}.moved`, repo);
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+});

@@ -48,6 +48,8 @@ import {
   SPAWN_AGENT,
   shellDescriptor,
   ToolInputError,
+  pinRoot,
+  unpinRoot,
   type BuiltinTool,
   type ToolContext,
   type ToolOutcome,
@@ -396,8 +398,10 @@ async function* runLoop(
   const totals: Totals = { spent: 0, unknownCost: false, tokensIn: 0, tokensOut: 0, turns: 0 };
   const denials: DriverResult['permissionDenials'] = [];
   const warnings = new Set<string>();
+  // Resolved and pinned once: see pinRoot.
+  const root = pinRoot(input.cwd);
   const ctx: ToolContext = {
-    cwd: input.cwd,
+    cwd: root,
     signal,
     deadline,
     sandbox: input.sandbox ?? { profile: 'native' },
@@ -799,6 +803,7 @@ async function* runLoop(
   } finally {
     clearTimeout(timer);
     input.signal?.removeEventListener('abort', onAbort);
+    unpinRoot(root);
   }
 
   /**

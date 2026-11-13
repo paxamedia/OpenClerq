@@ -211,27 +211,50 @@ describe('what each driver declares', () => {
     expect(DRIVER_CAPABILITIES.builtin.providerHosts).toEqual([]);
   });
 
-  it('says where each CLI keeps its sign-in, honouring the variables that move it', () => {
+  it('lists only what each CLI may write; the rest of its state stays read-only', () => {
     const home = '/home/u';
-    expect(agentStatePaths('claude-code', home, {})).toMatchObject({
-      dirs: ['/home/u/.claude', '/home/u/Library/Caches/claude-cli-nodejs'],
-      files: ['/home/u/.claude.json'],
-    });
-    // What would run code the next time the CLI is used outside the sandbox stays read-only.
-    expect(agentStatePaths('claude-code', home, {}).protect).toEqual(
-      expect.arrayContaining(['/home/u/.claude/settings.json', '/home/u/.claude/hooks'])
+    const claude = agentStatePaths('claude-code', home, {});
+    expect(claude.readDirs).toEqual(['/home/u/.claude']);
+    expect(claude.writeDirs).toEqual(
+      expect.arrayContaining(['/home/u/.claude/todos', '/home/u/Library/Caches/claude-cli-nodejs'])
     );
-    expect(agentStatePaths('claude-code', home, { CLAUDE_CONFIG_DIR: '/cfg' })).toMatchObject({
-      dirs: ['/cfg'],
-      files: [],
-    });
-    expect(agentStatePaths('codex', home, {}).protect).toContain('/home/u/.codex/config.toml');
-    expect(agentStatePaths('codex', home, { CODEX_HOME: '/c' }).dirs).toEqual(['/c']);
-    expect(agentStatePaths('cursor-agent', home, {}).dirs).toEqual([
-      '/home/u/.cursor',
-      '/home/u/.config/cursor',
+    expect(claude.writeFiles).toEqual([
+      '/home/u/.claude/.credentials.json',
+      '/home/u/.claude.json',
     ]);
+    // Nothing that carries code or instructions is writable.
+    const writable = [...claude.writeDirs, ...claude.writeFiles].join(' ');
+    for (const carrier of [
+      'settings',
+      'hooks',
+      'commands',
+      'agents',
+      'plugins',
+      'skills',
+      'projects',
+      'CLAUDE.md',
+      'local',
+    ]) {
+      expect(writable).not.toContain(`/.claude/${carrier}`);
+    }
+    expect(agentStatePaths('claude-code', home, { CLAUDE_CONFIG_DIR: '/cfg' }).writeFiles).toEqual([
+      '/cfg/.credentials.json',
+      '/cfg/.claude.json',
+    ]);
+    const codex = agentStatePaths('codex', home, { CODEX_HOME: '/c' });
+    expect(codex.readDirs).toEqual(['/c']);
+    expect([...codex.writeDirs, ...codex.writeFiles].join(' ')).not.toMatch(
+      /config\.toml|rules|skills|AGENTS/
+    );
+    const cursor = agentStatePaths('cursor-agent', home, {});
+    expect([...cursor.writeDirs, ...cursor.writeFiles].join(' ')).not.toMatch(
+      /extensions|hooks\.json|cli-config\.json|mcp\.json|rules/
+    );
     for (const id of DRIVER_IDS) expect(agentStatePaths(id, home, {})).toBeTruthy();
-    expect(agentStatePaths('builtin', home, {})).toEqual({ dirs: [], files: [], protect: [] });
+    expect(agentStatePaths('builtin', home, {})).toEqual({
+      readDirs: [],
+      writeDirs: [],
+      writeFiles: [],
+    });
   });
 });
