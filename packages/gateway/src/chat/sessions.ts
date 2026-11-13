@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getStore } from '../store.js';
+import { removeChatHome, seatbeltAvailable, stateDirProblem } from './environment.js';
 
 export type PipelineMode = 'raw' | 'managed';
 
@@ -26,13 +27,16 @@ export type PipelineMode = 'raw' | 'managed';
  * How a managed conversation's agent treats the folder attached to it, as
  * the builtin agent's permission modes say: `acceptEdits` (the default, full
  * access) works without asking; `default` asks before writes and commands;
- * `plan` only reads. A push always waits.
+ * `plan` only reads; `sandboxed` (macOS, opt-in) works without asking, with
+ * commands and file tools under seatbelt: writes only in the folder, no
+ * network, credential stores unreadable. A push always waits.
  */
-export type ChatPermissionMode = 'acceptEdits' | 'default' | 'plan';
+export type ChatPermissionMode = 'acceptEdits' | 'default' | 'plan' | 'sandboxed';
 export const CHAT_PERMISSION_MODES: readonly ChatPermissionMode[] = [
   'acceptEdits',
   'default',
   'plan',
+  'sandboxed',
 ];
 
 export interface Session {
@@ -46,6 +50,8 @@ export interface Session {
    */
   workspace: string | null;
   permissionMode: ChatPermissionMode;
+  /** Whether this machine can run the Sandboxed access level. */
+  sandboxAvailable: boolean;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -106,6 +112,7 @@ function rowToSession(r: Record<string, unknown>): Session {
     permissionMode: CHAT_PERMISSION_MODES.includes(meta.permissionMode as ChatPermissionMode)
       ? (meta.permissionMode as ChatPermissionMode)
       : 'acceptEdits',
+    sandboxAvailable: seatbeltAvailable(),
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
     messageCount: Number(r.message_count ?? 0),
@@ -226,12 +233,18 @@ export function parseWorkspace(value: unknown): string | null {
   if (path.dirname(real) === real) {
     throw new SessionError('Attach a project folder, not the root of the disk.');
   }
+  // The gateway's token, vault and store stay out of the file tools' reach.
+  const problem = stateDirProblem(real);
+  if (problem) throw new SessionError(problem);
   return real;
 }
 
 export function parsePermissionMode(value: unknown): ChatPermissionMode {
   if (!CHAT_PERMISSION_MODES.includes(value as ChatPermissionMode)) {
     throw new SessionError(`permissionMode must be one of ${CHAT_PERMISSION_MODES.join(', ')}.`);
+  }
+  if (value === 'sandboxed' && !seatbeltAvailable()) {
+    throw new SessionError('Sandboxed needs macOS sandbox-exec, which this machine does not have.');
   }
   return value as ChatPermissionMode;
 }
@@ -271,8 +284,10 @@ export function updateSession(
 }
 
 export function deleteSession(id: string): boolean {
-  // Messages go with it: the schema cascades.
-  return getStore().prepare('DELETE FROM sessions WHERE id = ?').run(id).changes > 0;
+  // Messages go with it: the schema cascades. So does the home its commands had.
+  const gone = getStore().prepare('DELETE FROM sessions WHERE id = ?').run(id).changes > 0;
+  if (gone) removeChatHome(id);
+  return gone;
 }
 
 /** Roughly four characters per token — enough to show context pressure. */

@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import fssync from 'node:fs';
+import path from 'node:path';
 import type { Server } from 'node:http';
 import type { GatewayConfig } from './types.js';
 import { licenseCheck } from './middleware/license.js';
@@ -88,7 +89,8 @@ import {
   type ManagedPipeline,
 } from './chat/console.js';
 import { managedContext, runManagedTurn, toolPrompt, type ManagedDeps } from './chat/managed.js';
-import { dryRunDraft, getDraft, listDrafts, saveDraft } from './chat/drafts.js';
+import { setGatewayStateDirs } from './chat/environment.js';
+import { DraftError, dryRunDraft, getDraft, listDrafts, saveDraft } from './chat/drafts.js';
 import { SpecError } from './automations/spec.js';
 import { AutomationError } from './automations/store.js';
 import { defaultDriver } from './automations/runner.js';
@@ -889,7 +891,7 @@ export function createGateway(config: GatewayConfig = {}): {
         .status(400)
         .json({ error: 'invalid_spec', message: e.message, line: e.line, column: e.column });
     }
-    if (e instanceof AutomationError) {
+    if (e instanceof AutomationError || e instanceof DraftError) {
       return res
         .status(e.code === 'not_found' ? 404 : 409)
         .json({ error: e.code, message: e.message });
@@ -1244,7 +1246,13 @@ export function createGateway(config: GatewayConfig = {}): {
     },
     memory: (message) => savedNotes(message),
     path: () => automationDeps.path(),
+    // A command in an attached folder that prints the token does not hand it to the model.
+    secrets: () => ({ CLERQ_GATEWAY_TOKEN: auth.token }),
   };
+  // The store's directory, besides ~/.clerq, cannot be a chat's folder.
+  setGatewayStateDirs(
+    config.dbPath && config.dbPath !== ':memory:' ? [path.dirname(path.resolve(config.dbPath))] : []
+  );
 
   /**
    * The managed pipeline. Only a chat session passes history; /task and triggers are single-turn.

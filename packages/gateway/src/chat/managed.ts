@@ -17,12 +17,14 @@
  * Raw mode never comes here (see console.ts): no prompt, memory or tools.
  */
 
+import os from 'node:os';
 import {
   offeredTools,
   redactDeep,
   type Driver,
   type DriverEvent,
   type DriverResult,
+  type SandboxOptions,
   type ToolApprovalRequest,
 } from '@clerq/drivers';
 import { evaluate, type PolicyRules } from '@clerq/policy';
@@ -36,7 +38,9 @@ import { getDefaultFallback, recordFallback } from '../routing.js';
 import { RunCancelled, currentRunSignal } from '../runs.js';
 import type { ApprovalRequest } from '../approvals.js';
 import type { Draft } from './drafts.js';
-import type { Session } from './sessions.js';
+import { SessionError, type Session } from './sessions.js';
+import { credentialPaths } from '../automations/isolation.js';
+import { chatCommandEnv, chatHome, gatewayStateDirs, stateDirProblem } from './environment.js';
 import { chatPolicy, chatTools } from './tools.js';
 
 /** How long a chat message waits for a person to answer an approval. */
@@ -59,6 +63,8 @@ export interface ManagedDeps {
   memory(message: string): { text: string; count: number } | undefined;
   /** PATH for commands in an attached folder. */
   path(): string;
+  /** Values to redact besides the provider keys: the gateway's own token. */
+  secrets?(): Record<string, string>;
 }
 
 /** What managed mode adds to a message, beyond what raw sends. */
@@ -186,6 +192,22 @@ export function providerSecrets(): Record<string, string> {
   return out;
 }
 
+/**
+ * The isolation for a chat's commands and file tools: none (the user's access)
+ * unless the conversation is Sandboxed, then seatbelt with writes only in the
+ * folder and the chat's home, no network, and credential stores and the
+ * gateway's own state unreadable.
+ */
+export function chatSandbox(session: Session): SandboxOptions {
+  if (session.permissionMode !== 'sandboxed' || !session.workspace) return { profile: 'native' };
+  return {
+    profile: 'seatbelt',
+    network: 'none',
+    allowWrite: [chatHome(session.id)],
+    denyRead: [...new Set([...credentialPaths(os.homedir()), ...gatewayStateDirs()])],
+  };
+}
+
 /** What a managed message streams while it works. */
 export type ManagedEvent =
   | { type: 'delta'; text: string }
@@ -220,9 +242,12 @@ export async function runManagedTurn(
   }
 ): Promise<ManagedTurnResult> {
   const { session, runId } = input;
+  // Checked again at every message: the gateway's data may have moved since the folder was attached.
+  const problem = session.workspace ? stateDirProblem(session.workspace) : undefined;
+  if (problem) throw new SessionError(`${problem} Attach another folder.`);
   const context = await managedContext(deps, session, input.text, input.model);
   const signal = currentRunSignal() ?? new AbortController().signal;
-  const secrets = providerSecrets();
+  const secrets = { ...providerSecrets(), ...deps.secrets?.() };
   const drafts: Array<Pick<Draft, 'id' | 'name'>> = [];
   const extraTools = chatTools({
     sessionId: session.id,
@@ -263,8 +288,9 @@ export async function runManagedTurn(
     system: context.system,
     extraTools,
     timeoutMs: CHAT_TIMEOUT_MS,
-    sandbox: { profile: 'native' },
-    env: { PATH: deps.path() },
+    sandbox: chatSandbox(session),
+    // A home of the conversation's own: `~` is not the user's, nor ~/.clerq under it.
+    env: chatCommandEnv(session.id, deps.path()),
     secrets,
     signal,
     onApproval: approve,
