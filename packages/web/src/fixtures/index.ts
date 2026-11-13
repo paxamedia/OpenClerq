@@ -13,6 +13,8 @@ import type {
   ChatMessage,
   ChatSession,
   ProviderInfo,
+  RepoDetail,
+  RepoSummary,
   RunDetail,
   RunStep,
   RunSummary,
@@ -394,6 +396,100 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
     }
     return steps;
   }
+
+  // Repositories: one per automation's folder, then a clone of a GitHub one and a GitLab one.
+  const repoRows: RepoSummary[] = [];
+  if (!opts.empty) {
+    const folders: Record<string, { path: string; exists: boolean }> = {
+      aut_deps: { path: '/Users/me/code/shop', exists: true },
+      aut_docs: { path: '/Users/me/code/site', exists: true },
+      aut_tests: { path: '/Users/me/code/api', exists: true },
+      aut_licence: { path: '/Users/me/code/kit', exists: false },
+    };
+    const lastOf = (ids: string[]): RepoSummary['lastRun'] => {
+      const r = runs.find((x) => x.automationId && ids.includes(x.automationId));
+      return r
+        ? {
+            id: r.id,
+            status: r.status,
+            createdAt: r.createdAt,
+            startedAt: r.startedAt,
+            finishedAt: r.finishedAt,
+          }
+        : null;
+    };
+    const countOf = (ids: string[]): RepoSummary['runs'] => ({
+      queued: runs.filter(
+        (x) => x.automationId && ids.includes(x.automationId) && x.status === 'queued'
+      ).length,
+      running: runs.filter(
+        (x) =>
+          x.automationId &&
+          ids.includes(x.automationId) &&
+          ['preparing', 'executing', 'verifying', 'publishing', 'awaiting_approval'].includes(
+            x.status
+          )
+      ).length,
+    });
+    for (const [autId, f] of Object.entries(folders)) {
+      const a = automations.find((x) => x.id === autId);
+      if (!a) continue;
+      repoRows.push({
+        id: `repo_${autId.slice(4)}`,
+        kind: 'local',
+        name: f.path.split('/').pop() as string,
+        url: null,
+        path: { value: f.path, exists: f.exists, role: 'repository' },
+        credential: null,
+        automations: [{ id: a.id, name: a.name, enabled: a.enabled }],
+        runs: countOf([autId]),
+        lastRun: lastOf([autId]),
+        createdAt: iso(now - 30 * D),
+      });
+    }
+    repoRows.push(
+      {
+        id: 'repo_gh_widgets',
+        kind: 'github',
+        name: 'example/widgets',
+        url: 'https://github.com/example/widgets.git',
+        path: {
+          value: '/Users/me/.clerq/workspaces/widgets-3f9a1c2b7d10',
+          exists: true,
+          role: 'clone',
+        },
+        credential: { secret: 'GITHUB_TOKEN', present: true },
+        automations: [],
+        runs: { queued: 0, running: 0 },
+        lastRun: null,
+        createdAt: iso(now - 12 * D),
+      },
+      {
+        id: 'repo_gl_tools',
+        kind: 'gitlab',
+        name: 'lab/tools',
+        url: 'https://gitlab.com/lab/tools.git',
+        path: null,
+        credential: { secret: 'GITLAB_TOKEN', present: false },
+        automations: [],
+        runs: { queued: 0, running: 0 },
+        lastRun: null,
+        createdAt: iso(now - 2 * D),
+      }
+    );
+  }
+  const repoDetail = (id: string): RepoDetail | undefined => {
+    const base = repoRows.find((r) => r.id === id);
+    if (!base) return undefined;
+    const ids = base.automations.map((a) => a.id);
+    return {
+      ...base,
+      recentRuns: runs
+        .filter((r) => r.automationId && ids.includes(r.automationId))
+        .slice(0, 20)
+        .map((r) => summaryOf(r)),
+    };
+  };
 
   const approvals: Approval[] = opts.empty
     ? []
@@ -856,12 +952,15 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
   const fail = () => Promise.reject(new TypeError('Failed to fetch'));
   const ok = <T>(v: T) =>
     opts.offline ? fail() : new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), 30));
-  const summary = (r: RunDetail): RunSummary => {
+  // A run as the list shows it: no steps, tool calls, files or children.
+  function summaryOf(r: RunDetail): RunSummary {
     const rest = { ...r } as Partial<RunDetail>;
     delete rest.steps;
     delete rest.artifacts;
+    delete rest.toolCalls;
+    delete rest.children;
     return rest as RunSummary;
-  };
+  }
 
   const client = {
     // The preview serves a demo module UI at /api/modules/notes/ui/, so frames load there.
@@ -907,6 +1006,18 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         maxFallback: 5,
       }),
     setRouting: (fallback: string[]) => ok({ fallback }),
+    repos: () => ok({ repos: repoRows }),
+    repo: (id: string) => {
+      const r = repoDetail(id);
+      return r
+        ? ok(r)
+        : Promise.reject(
+            Object.assign(new Error('Gateway 404: {"error":"repo_not_found"}'), {
+              status: 404,
+              body: { error: 'repo_not_found' },
+            })
+          );
+    },
     automations: () => ok({ automations: automations.map(({ source: _s, ...a }) => a) }),
     automation: (id: string) => {
       const a = automations.find((x) => x.id === id);
@@ -968,7 +1079,7 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         runs: runs
           .filter((r) => Date.parse(r.createdAt) >= since)
           .slice(0, limit)
-          .map(summary),
+          .map(summaryOf),
       });
     },
     run: (id: string) => {

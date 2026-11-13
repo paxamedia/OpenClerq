@@ -125,6 +125,7 @@ export { chatModule, CHAT_ID } from './screens/chat';
 // Screens on their own, for an app that lays them out itself.
 export { Home } from './screens/home/Home';
 export { Runs } from './screens/runs/Runs';
+export { Repos } from './screens/repos/Repos';
 export { Inbox, ApprovalDetail, useInbox } from './screens/inbox/Inbox';
 export { Records } from './screens/records/Records';
 export { ModuleFrame, moduleUiUrl, type ModuleFrameProps } from './shell/ModuleFrame';

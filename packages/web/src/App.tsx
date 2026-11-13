@@ -2,7 +2,7 @@
  * The whole interface, ready to mount: <OpenClerqApp client host modules />.
  *
  * The desktop passes the gateway client and a Tauri host; another app passes
- * its own. Core pages (Home, Inbox, Runs, Records, Developer, Settings) are
+ * its own. Core pages (Home, Inbox, Runs, Repos, Records, Developer, Settings) are
  * always there. Modules add theirs under `#/m/<id>/…` through the slot
  * contract: bundled ones passed in, and every module the gateway runs.
  */
@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import {
   Code,
   Contact,
+  FolderGit2,
   History,
   House,
   Inbox as InboxIcon,
@@ -48,6 +49,7 @@ import { Palette } from './shell/Palette';
 import { AboutDialog } from './screens/About';
 import { Home } from './screens/home/Home';
 import { Runs } from './screens/runs/Runs';
+import { Repos } from './screens/repos/Repos';
 import { Inbox, useInbox } from './screens/inbox/Inbox';
 import { Records } from './screens/records/Records';
 import { gatewayModule } from './screens/InstalledModule';
@@ -60,6 +62,7 @@ const CORE: RailEntry[] = [
   { id: 'home', label: 'Home', icon: House, path: '/', order: 0 },
   { id: 'runs', label: 'Runs', icon: History, path: '/runs', order: 20 },
   { id: 'inbox', label: 'Inbox', icon: InboxIcon, path: '/inbox', order: 5 },
+  { id: 'repos', label: 'Repos', icon: FolderGit2, path: '/repos', order: 30, secondary: true },
   { id: 'records', label: 'Records', icon: Contact, path: '/records', order: 35, secondary: true },
   {
     id: 'developer',
@@ -371,6 +374,7 @@ function AppFrame({
   const [first, second] = segments;
   if (!first) page = <Home />;
   else if (first === 'runs') page = <Runs id={second ?? null} />;
+  else if (first === 'repos') page = <Repos id={second ?? null} />;
   else if (first === 'inbox') page = <Inbox id={second ?? null} />;
   else if (first === 'records') page = <Records id={second ?? null} tab={segments[2] ?? null} />;
   else if (first === 'approvals') page = null;

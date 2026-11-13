@@ -28,6 +28,10 @@ const PAGES = [
   ['runs', '/runs'],
   ['run', '/runs/run_wait01'],
   ['run-live', '/runs/run_live01'],
+  ['repos', '/repos'],
+  ['repo', '/repos/repo_deps'],
+  ['repo-folder-missing', '/repos/repo_licence'],
+  ['repo-remote', '/repos/repo_gl_tools'],
   ['inbox', '/inbox'],
   ['inbox-reply', '/inbox/inb_1'],
   ['records', '/records'],
@@ -48,6 +52,7 @@ const PAGES = [
   ['gallery', '/dev/gallery'],
   ['empty-home', '/', 'empty'],
   ['empty-automations', '/m/automations', 'empty'],
+  ['empty-repos', '/repos', 'empty'],
   ['offline-runs', '/runs', 'offline'],
 ];
 const THEMES = ['light', 'dark'];

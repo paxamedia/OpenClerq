@@ -22,10 +22,20 @@ describe('the app', () => {
         modules={[automationsModule, chatModule]}
       />
     );
-    for (const label of ['Home', 'Inbox', 'Automations', 'Runs', 'Chat', 'Developer', 'Settings']) {
+    for (const label of [
+      'Home',
+      'Inbox',
+      'Automations',
+      'Runs',
+      'Repos',
+      'Chat',
+      'Developer',
+      'Settings',
+    ]) {
       expect(html).toContain(`>${label}<`);
     }
     expect(html).toContain('href="#/m/automations"');
+    expect(html).toContain('href="#/repos"');
     expect(html).toContain('0.6.0');
   });
 
