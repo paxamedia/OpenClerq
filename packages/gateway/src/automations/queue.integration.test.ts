@@ -363,7 +363,10 @@ describe('the run queue', () => {
     expect(Date.parse(first)).toBeGreaterThan(Date.now());
     expect(row(id)).toMatchObject({ owner_pid: process.pid, attempt: 1 });
     expect(going.startedAt).toBeTruthy();
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Renewed within a few lease periods, however busy the machine is.
+    for (let i = 0; i < 100 && String(row(id).lease_until) === first; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
     expect(Date.parse(String(row(id).lease_until))).toBeGreaterThan(Date.parse(first));
     releases.splice(0).forEach((r) => r());
     const done = await waitFor(id, finished);
