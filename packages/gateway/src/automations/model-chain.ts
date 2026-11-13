@@ -122,6 +122,10 @@ export async function checkModels(
   const checks: ModelCheck[] = [];
   for (const entry of entries) {
     const availability = await driver.detect({
+      // A CLI in a container is the image's; the host's is not checked.
+      ...(spec.sandbox.profile === 'container' && spec.agent.driver !== 'builtin'
+        ? { inContainer: true }
+        : {}),
       apiKey: keyAppliesTo(spec, entry.model),
       permissionMode: spec.agent.permissionMode,
       model: entry.model,

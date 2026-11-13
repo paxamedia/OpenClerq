@@ -3,9 +3,10 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import type { Express, Request, Response } from 'express';
-import { DRIVER_IDS } from '@clerq/drivers';
-import { git, isRepo, defaultBranch } from '@clerq/workspaces';
+import { DRIVER_CAPABILITIES, DRIVER_IDS } from '@clerq/drivers';
+import { cacheKey, defaultBranch, forgeOf, git, isRepo } from '@clerq/workspaces';
 import { logger } from '../logger.js';
 import { getStore } from '../store.js';
 import { getArtifact } from '../runs.js';
@@ -26,12 +27,14 @@ import {
 } from './store.js';
 import {
   AutomationBusy,
+  cacheDirOf,
   defaultDriver,
-  githubProject,
   hasBudget,
   policyFor,
   type RunnerDeps,
 } from './runner.js';
+import { vaultCredentials } from './credentials.js';
+import { profileProblem } from './isolation.js';
 import { hasQueuedRun, runningAutomations, startAutomationRun } from './queue.js';
 import { checkModels, judgeChain, modelChoiceProblem, planModels } from './model-chain.js';
 import {
@@ -102,7 +105,8 @@ function summary(a: Automation) {
       ? nextRunsOf(a.spec.schedule, NEXT_FIRINGS).map((d) => d.toISOString())
       : [],
     driver: a.spec?.agent.driver ?? null,
-    repo: a.spec?.repo.path ?? null,
+    // A local path, or the remote as the spec names it (github:owner/name).
+    repo: a.spec ? (a.spec.repo.kind === 'local' ? a.spec.repo.path : a.spec.repo.target) : null,
     problem: a.problem ?? null,
     running: runningAutomations().includes(a.id),
     // A run waiting for its turn (the limit on runs at once, or a retry's backoff).
@@ -124,30 +128,62 @@ function summary(a: Automation) {
  */
 async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: string) {
   const checks: Array<{ level: 'ok' | 'warning' | 'error'; message: string }> = [];
-  const repoPath = expandHome(spec.repo.path);
-  const repo: Record<string, unknown> = { path: repoPath };
+  const repo: Record<string, unknown> = { target: spec.repo.target };
+  let forge: { forge: 'github' | 'gitlab'; project: string } | null = null;
 
-  if (!fs.existsSync(repoPath)) {
-    checks.push({ level: 'error', message: `${repoPath} does not exist.` });
-  } else if (!(await isRepo(repoPath))) {
-    checks.push({ level: 'error', message: `${repoPath} is not a git repository.` });
-  } else {
-    const origin = await git(['config', '--get', 'remote.origin.url'], {
-      cwd: repoPath,
-      allowFailure: true,
-    });
-    repo.origin = origin.code === 0 ? origin.stdout.trim() : null;
-    repo.project = githubProject(repo.origin as string | null);
-    repo.base = spec.repo.ref ?? (await defaultBranch(repoPath));
-    if (spec.publish.push && !repo.origin) {
-      checks.push({ level: 'error', message: 'The repository has no origin remote to push to.' });
-    }
-    if (spec.publish.pullRequest === 'draft' && !repo.project) {
-      checks.push({
-        level: 'error',
-        message: 'origin is not a GitHub repository, so no pull request can be opened.',
+  if (spec.repo.kind === 'local') {
+    const repoPath = expandHome(spec.repo.path);
+    repo.path = repoPath;
+    if (!fs.existsSync(repoPath)) {
+      checks.push({ level: 'error', message: `${repoPath} does not exist.` });
+    } else if (!(await isRepo(repoPath))) {
+      checks.push({ level: 'error', message: `${repoPath} is not a git repository.` });
+    } else {
+      const origin = await git(['config', '--get', 'remote.origin.url'], {
+        cwd: repoPath,
+        allowFailure: true,
       });
+      repo.origin = origin.code === 0 ? origin.stdout.trim() : null;
+      forge = forgeOf(repo.origin as string | null);
+      repo.forge = forge?.forge ?? null;
+      repo.project = forge?.project ?? null;
+      repo.base = spec.repo.ref ?? (await defaultBranch(repoPath));
+      if (spec.publish.push && !repo.origin) {
+        checks.push({ level: 'error', message: 'The repository has no origin remote to push to.' });
+      }
+      if (spec.publish.pullRequest === 'draft' && !forge) {
+        checks.push({
+          level: 'error',
+          message: 'origin is not on GitHub or GitLab, so no pull request can be opened.',
+        });
+      }
     }
+  } else {
+    forge = { forge: spec.repo.kind, project: spec.repo.project };
+    repo.url = spec.repo.url;
+    repo.forge = forge.forge;
+    repo.project = forge.project;
+    // Nothing is fetched to check a spec: the cached clone, if a run made one.
+    const clone = path.join(cacheDirOf(deps), cacheKey(spec.repo.url));
+    if (fs.existsSync(clone) && (await isRepo(clone))) {
+      repo.cache = clone;
+      repo.base = spec.repo.ref ?? (await defaultBranch(clone));
+    }
+    const credential = await (deps.forgeCredentials ?? vaultCredentials(deps.getSecret))({
+      ...forge,
+      purpose: 'fetch',
+      secretName: spec.publish.tokenSecret,
+      automationId: automationId ?? '',
+      runId: '',
+    });
+    checks.push({
+      level: 'ok',
+      message:
+        `${spec.repo.target} is cloned into the workspace cache on its first run and fetched before each run` +
+        (credential
+          ? `, with ${credential.source.replace(/^vault:/, '')} as the credential.`
+          : `. There is no ${spec.publish.tokenSecret} in the vault, so only a public repository can be cloned.`),
+    });
   }
 
   // Every model a run may use is checked as the run itself will check it: the
@@ -199,7 +235,14 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
   if (
     spec.publish.push &&
     spec.publish.pullRequest === 'draft' &&
-    !deps.getSecret(spec.publish.tokenSecret)
+    forge &&
+    !(await (deps.forgeCredentials ?? vaultCredentials(deps.getSecret))({
+      ...forge,
+      purpose: 'pull_request',
+      secretName: spec.publish.tokenSecret,
+      automationId: automationId ?? '',
+      runId: '',
+    }))
   ) {
     checks.push({
       level: 'error',
@@ -209,11 +252,41 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
   if (spec.agent.apiKeySecret && !deps.getSecret(spec.agent.apiKeySecret)) {
     checks.push({ level: 'error', message: `No ${spec.agent.apiKeySecret} in the vault.` });
   }
-  checks.push({
-    level: 'warning',
-    message:
-      'The agent and the gates run without isolation (profile "native"), with your account\'s access to files and the network.',
-  });
+  const unrunnable = profileProblem(spec);
+  if (unrunnable) checks.push({ level: 'error', message: unrunnable });
+  if (spec.sandbox.profile === 'native') {
+    checks.push({
+      level: 'warning',
+      message:
+        'The agent and the gates run without isolation (profile "native"), with your account\'s access to files and the network.' +
+        (spec.sandbox.explicit
+          ? ''
+          : ' Add a sandbox block with profile seatbelt or container to limit them.'),
+    });
+  } else {
+    const caps = DRIVER_CAPABILITIES[spec.agent.driver];
+    const hosts = spec.sandbox.network === 'all' ? null : (spec.sandbox.network ?? []);
+    checks.push({
+      level: 'ok',
+      message:
+        `The agent and the gates run under the ${spec.sandbox.profile} profile: writes only in the run's worktree; ` +
+        (hosts === null
+          ? 'any host on the network.'
+          : `network to ${hosts.length ? hosts.join(', ') : 'no host'}` +
+            (caps.providerHosts.length
+              ? ` (the agent also to ${caps.providerHosts.join(', ')}).`
+              : '.')),
+    });
+    if (spec.sandbox.profile === 'container') {
+      checks.push({
+        level: 'warning',
+        message:
+          `The image ${spec.sandbox.image} must provide the gates' tools` +
+          (caps.cliName ? ` and \`${caps.cliName}\`` : '') +
+          '; that is not checked until a run starts.',
+      });
+    }
+  }
   const firstPush = spec.publish.push && !(automationId && hasPushedBefore(automationId));
   if (spec.publish.push) {
     checks.push({

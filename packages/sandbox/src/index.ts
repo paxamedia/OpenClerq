@@ -305,6 +305,18 @@ function canonical(p: string): string {
   }
 }
 
+/** Every directory above the given paths, once each. */
+function ancestorsOf(paths: string[]): string[] {
+  const out = new Set<string>();
+  for (const p of paths) {
+    for (let at = path.dirname(p); !out.has(at); at = path.dirname(at)) {
+      out.add(at);
+      if (path.dirname(at) === at) break;
+    }
+  }
+  return [...out];
+}
+
 /** A path as an SBPL string. Quotes and line breaks have no place in one. */
 function sbplPath(p: string): string {
   if (/["\n\r\\]/.test(p)) {
@@ -369,9 +381,16 @@ export function buildSeatbeltProfile(
     '(allow mach-lookup)',
     // Except what must stay unread: credentials, the gateway's own state.
     ...denied.map((d) => `(deny file-read* file-write* (subpath ${sbplPath(d)}))`),
-    // What the command is given stays readable, wherever it lives.
+    // What the command is given stays readable, wherever it lives, and so does
+    // the metadata of the directories above it: resolving a path (realpath,
+    // git finding its repository) stats every component on the way down.
     ...(denied.length > 0
-      ? readable.map((r) => `(allow file-read* (subpath ${sbplPath(r)}))`)
+      ? [
+          ...readable.map((r) => `(allow file-read* (subpath ${sbplPath(r)}))`),
+          ...ancestorsOf(readable).map(
+            (a) => `(allow file-read-metadata (literal ${sbplPath(a)}))`
+          ),
+        ]
       : []),
     // Writes: workspace and temp only.
     ...writable.map((w) => `(allow file-write* (subpath ${sbplPath(w)}))`),

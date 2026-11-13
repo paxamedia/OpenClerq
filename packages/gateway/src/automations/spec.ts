@@ -17,6 +17,8 @@ import {
   isMemoryType,
   type MemoryType,
 } from '@clerq/policy';
+import { parseAllowlist } from '@clerq/sandbox';
+import { parseRemote, type Forge } from '@clerq/workspaces';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
 import { AssertionSyntaxError, parseAssertion, type DiffAssertion } from './diff-assert.js';
 
@@ -31,6 +33,45 @@ export function isAssertion(gate: GateSpec): gate is { assert: string; check: Di
   return 'assert' in gate;
 }
 
+/** The repository an automation works on. */
+export type RepoTarget =
+  | {
+      kind: 'local';
+      path: string;
+      ref?: string;
+      /** As the spec wrote it. */
+      target: string;
+    }
+  | {
+      /** The forge it is on. */
+      kind: Forge;
+      /** "owner/name" on GitHub, "group/name" on GitLab. */
+      project: string;
+      /** The https URL it is cloned, fetched and pushed over. */
+      url: string;
+      ref?: string;
+      target: string;
+    };
+
+export type SandboxProfileName = 'native' | 'seatbelt' | 'container';
+
+export interface SandboxSettings {
+  /** `native` unless the spec opts into isolation. */
+  profile: SandboxProfileName;
+  timeoutMs: number;
+  /**
+   * Hosts the run may reach under seatbelt or container (the agent also
+   * reaches its provider's), or `all`. Absent: none beyond the provider's.
+   */
+  network?: 'all' | string[];
+  /** Under seatbelt and container: writes only in the run's worktree. */
+  filesystem?: 'repo_only';
+  /** The container image (container only). */
+  image?: string;
+  /** False when the spec has no `sandbox` block and native was assumed. */
+  explicit: boolean;
+}
+
 export interface AutomationSpec {
   name: string;
   description?: string;
@@ -41,7 +82,7 @@ export interface AutomationSpec {
    * when it is noticed. Off: missed slots are skipped, and that is recorded.
    */
   catchUp: boolean;
-  repo: { kind: 'local'; path: string; ref?: string };
+  repo: RepoTarget;
   agent: {
     driver: DriverId;
     model?: string;
@@ -69,7 +110,7 @@ export interface AutomationSpec {
     subagents: { enabled: boolean; maxConcurrent: number; models: string[] };
   };
   prompt: string;
-  sandbox: { profile: 'native'; timeoutMs: number };
+  sandbox: SandboxSettings;
   gates: GateSpec[];
   publish: {
     branch: string;
@@ -116,6 +157,9 @@ export class SpecError extends Error {
 const NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const DEFAULT_BRANCH = 'auto/{{automation}}/{{date}}-{{run}}';
 const PERMISSION_MODES: PermissionMode[] = ['acceptEdits', 'default', 'dontAsk', 'plan'];
+const PROFILES: SandboxProfileName[] = ['native', 'seatbelt', 'container'];
+/** The most hosts `sandbox.network` may list. */
+export const MAX_NETWORK_HOSTS = 50;
 
 /** Keys of the documented format that this release does not run yet. */
 const NOT_YET: Record<string, string> = {
@@ -125,8 +169,6 @@ const NOT_YET: Record<string, string> = {
   'targets.max_parallel': 'fleet runs across several repositories',
   'agent.model.strategy':
     'routing strategies such as cost_aware, quality_first, race and consensus',
-  'sandbox.network': 'network restriction',
-  'sandbox.filesystem': 'filesystem restriction',
   'publish.notify': 'notifications',
   'approvals.secrets_access': 'secret-access approvals',
 };
@@ -365,13 +407,40 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
     r.fail(['targets', 'repos', 1], 'This release runs one repository per automation.');
   }
   const target = repos[0];
-  if (typeof target !== 'string' || !target.startsWith('local:') || !target.slice(6).trim()) {
+  if (typeof target !== 'string' || !target.trim()) {
     r.fail(
       ['targets', 'repos', 0],
-      'Repositories are given as local:<path> in this release; remote repositories come later.'
+      'A repository is a string such as local:~/code/app or github:owner/name.'
     );
   }
-  const [repoPath, ref] = target.slice(6).trim().split('#');
+  const [where, ref] = target.trim().split('#');
+  let repo: RepoTarget;
+  if (where.startsWith('local:')) {
+    const repoPath = where.slice(6).trim();
+    if (!repoPath) r.fail(['targets', 'repos', 0], 'local: needs a path, e.g. local:~/code/app.');
+    repo = { kind: 'local', path: repoPath, target: target.trim() };
+  } else {
+    const remote = parseRemote(where);
+    if (!remote) {
+      r.fail(
+        ['targets', 'repos', 0],
+        `"${where}" is not a repository this release can work on. Use local:<path>, github:owner/name, ` +
+          'gitlab:group/name, or an https URL on github.com or gitlab.com.'
+      );
+    }
+    repo = {
+      kind: remote.forge,
+      project: remote.project,
+      url: remote.url,
+      target: target.trim(),
+    };
+  }
+  if (ref !== undefined) {
+    if (!/^[A-Za-z0-9._/-]+$/.test(ref) || ref.startsWith('-') || ref.includes('..')) {
+      r.fail(['targets', 'repos', 0], `"${ref}" is not a branch name.`);
+    }
+    repo.ref = ref;
+  }
 
   r.keys(
     ['agent'],
@@ -617,24 +686,92 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
 
   const prompt = r.text(['prompt'], true);
 
-  r.keys(['sandbox'], ['profile', 'timeout']);
-  // Binding rule 4 in SECURITY.md: running without isolation must be chosen,
-  // never fallen into. This release has no other profile to offer, so the
-  // spec has to say so.
-  const profile = r.get(['sandbox', 'profile']);
-  if (profile === undefined || profile === null) {
+  r.keys(['sandbox'], ['profile', 'network', 'filesystem', 'timeout', 'image']);
+  // Binding rule 4 in SECURITY.md asks for isolation by default; the user's
+  // decision for this release is that it is opt-in. Without a profile the run
+  // is native, and says so on the run.
+  const explicitSandbox = r.get(['sandbox']) !== undefined && r.get(['sandbox']) !== null;
+  const profile = r.oneOf(['sandbox', 'profile'], PROFILES, 'native');
+  const cannot = (key: string) =>
     r.fail(
-      ['sandbox'],
-      'Automations run without isolation in this release: the agent and the gates have your ' +
-        "account's access to files and the network. Add `sandbox: { profile: native }` to accept that."
+      ['sandbox', key],
+      `"sandbox.${key}" needs the seatbelt or container profile: the native profile runs with your ` +
+        `account's access to files and the network, and cannot limit them.`
     );
+  let network: SandboxSettings['network'];
+  const rawNetwork = r.get(['sandbox', 'network']);
+  if (rawNetwork !== undefined && rawNetwork !== null) {
+    if (profile === 'native') cannot('network');
+    if (rawNetwork === 'all') network = 'all';
+    else {
+      if (!Array.isArray(rawNetwork)) {
+        r.fail(
+          ['sandbox', 'network'],
+          '"sandbox.network" must list hosts, e.g. [registry.npmjs.org, api.github.com], or be all.'
+        );
+      }
+      if (rawNetwork.length > MAX_NETWORK_HOSTS) {
+        r.fail(
+          ['sandbox', 'network', MAX_NETWORK_HOSTS],
+          `"sandbox.network" may list at most ${MAX_NETWORK_HOSTS} hosts.`
+        );
+      }
+      network = rawNetwork.map((h, i) => {
+        if (typeof h !== 'string' || !h.trim() || /[\s/@]/.test(h.trim())) {
+          r.fail(
+            ['sandbox', 'network', i],
+            'Each host is a name such as registry.npmjs.org, with an optional :port or a leading *.'
+          );
+        }
+        try {
+          parseAllowlist([h]);
+        } catch (e) {
+          r.fail(['sandbox', 'network', i], e instanceof Error ? e.message : String(e));
+        }
+        return h.trim().toLowerCase();
+      });
+    }
   }
-  if (profile !== 'native') {
-    r.fail(
-      ['sandbox', 'profile'],
-      'This release runs automations with the "native" profile only; seatbelt and container come later.'
-    );
+  const rawFilesystem = r.get(['sandbox', 'filesystem']);
+  if (rawFilesystem !== undefined && rawFilesystem !== null) {
+    if (profile === 'native') cannot('filesystem');
+    r.oneOf(['sandbox', 'filesystem'], ['repo_only'] as const, 'repo_only');
   }
+  const image = r.text(['sandbox', 'image']);
+  if (image !== undefined && profile !== 'container') {
+    r.fail(['sandbox', 'image'], '"sandbox.image" is for the container profile only.');
+  }
+  if (profile === 'container') {
+    if (!image) {
+      r.fail(
+        ['sandbox'],
+        'The container profile needs "sandbox.image": an image with the tools your gates run' +
+          (DRIVER_CAPABILITIES[driver].cliName
+            ? ` and ${DRIVER_CAPABILITIES[driver].label}'s CLI (\`${DRIVER_CAPABILITIES[driver].cliName}\`) on its PATH.`
+            : '.')
+      );
+    }
+    if (/\s/.test(image) || image.startsWith('-')) {
+      r.fail(['sandbox', 'image'], `"${image}" is not an image name.`);
+    }
+    // The CLI's sign-in on this machine (a keychain, a file in your home) is
+    // not in the container; it needs a key of its own.
+    if (driver !== 'builtin' && r.get(['agent', 'api_key_secret']) == null) {
+      r.fail(
+        ['sandbox', 'profile'],
+        `In a container, ${DRIVER_CAPABILITIES[driver].label} cannot use this machine's sign-in. ` +
+          `Store an API key in the vault and name it in "agent.api_key_secret".`
+      );
+    }
+  }
+  const sandbox: SandboxSettings = {
+    profile,
+    timeoutMs: r.duration(['sandbox', 'timeout'], 20 * 60_000),
+    ...(network ? { network } : {}),
+    ...(profile === 'native' ? {} : { filesystem: 'repo_only' as const }),
+    ...(image ? { image } : {}),
+    explicit: explicitSandbox,
+  };
 
   const gatesRaw = r.get(['gates']) ?? [];
   if (!Array.isArray(gatesRaw)) r.fail(['gates'], '"gates" must be a list.');
@@ -661,6 +798,7 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
   });
 
   r.keys(['publish'], ['branch', 'push', 'pull_request', 'on_no_changes', 'token_secret']);
+
   const push = r.bool(['publish', 'push'], true);
   const pullRequest = r.oneOf(
     ['publish', 'pull_request'],
@@ -727,7 +865,7 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
     description: r.text(['description']),
     schedule,
     catchUp,
-    repo: { kind: 'local', path: repoPath, ...(ref ? { ref } : {}) },
+    repo,
     agent: {
       driver,
       ...(model ? { model } : {}),
@@ -741,14 +879,17 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
       subagents,
     },
     prompt,
-    sandbox: { profile: 'native', timeoutMs: r.duration(['sandbox', 'timeout'], 20 * 60_000) },
+    sandbox,
     gates,
     publish: {
       branch: r.text(['publish', 'branch']) ?? DEFAULT_BRANCH,
       push,
       pullRequest,
       onNoChanges: r.oneOf(['publish', 'on_no_changes'], ['skip'] as const, 'skip'),
-      tokenSecret: r.secretName(['publish', 'token_secret'], 'GITHUB_TOKEN') as string,
+      tokenSecret: r.secretName(
+        ['publish', 'token_secret'],
+        repo.kind === 'gitlab' ? 'GITLAB_TOKEN' : 'GITHUB_TOKEN'
+      ) as string,
     },
     budget: {
       maxUsdPerRun: r.money(['budget', 'max_usd_per_run']),

@@ -488,6 +488,72 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
   it('does nothing when nothing was recorded', async () => {
     expect(await killLeftoverProcesses()).toEqual([]);
   });
+
+  describe('containers (container profile)', () => {
+    /** A stand-in runtime that only records what it is asked. */
+    function fakeRuntime(): { bin: string; calls: () => string[] } {
+      const bin = path.join(dir, `docker-${Math.random().toString(36).slice(2)}`);
+      fs.writeFileSync(bin, `#!/bin/sh\necho "$*" >> "${bin}.calls"\n`, { mode: 0o755 });
+      return {
+        bin,
+        calls: () =>
+          fs.existsSync(`${bin}.calls`)
+            ? fs.readFileSync(`${bin}.calls`, 'utf8').trim().split('\n')
+            : [],
+      };
+    }
+
+    it('records the container a process runs its work in', () => {
+      const id = recordProcess(runId, 'agent', {
+        pid: 999_999,
+        pgid: 999_999,
+        command: 'claude',
+        container: { runtime: '/usr/local/bin/docker', name: 'clerq-run_1-abcd' },
+      }) as number;
+      expect(
+        getStore()
+          .prepare('SELECT container, container_runtime FROM run_processes WHERE id = ?')
+          .get(id)
+      ).toEqual({ container: 'clerq-run_1-abcd', container_runtime: '/usr/local/bin/docker' });
+    });
+
+    it("removes a dead gateway's container by name, whatever became of the runtime CLI's pid", async () => {
+      const runtime = fakeRuntime();
+      // The runtime CLI is long gone; its container would still be running.
+      const id = insert({
+        pid: await deadPid(),
+        command: 'claude',
+        procStart: new Date(Date.now() - 60_000),
+        ownerPid: await deadPid(),
+      });
+      getStore()
+        .prepare('UPDATE run_processes SET container = ?, container_runtime = ? WHERE id = ?')
+        .run('clerq-run_9-0001', runtime.bin, id);
+      const [found] = await killLeftoverProcesses();
+      expect(found).toMatchObject({ outcome: 'gone', container: 'clerq-run_9-0001' });
+      expect(runtime.calls()).toEqual([
+        'rm -f clerq-run_9-0001 clerq-run_9-0001-egress',
+        'network rm clerq-run_9-0001-net',
+      ]);
+      expect(row(id).ended_at).not.toBeNull();
+    });
+
+    it("leaves a live gateway's container alone", async () => {
+      const runtime = fakeRuntime();
+      const id = recordProcess(runId, 'agent', {
+        pid: process.pid,
+        pgid: process.pid,
+        command: 'claude',
+        container: { runtime: runtime.bin, name: 'clerq-run_8-0002' },
+      }) as number;
+      await settleRecords();
+      const [found] = await killLeftoverProcesses();
+      expect(found.outcome).toBe('own');
+      expect(found.container).toBeUndefined();
+      expect(runtime.calls()).toEqual([]);
+      expect(row(id).ended_at).toBeNull();
+    });
+  });
 });
 
 describe.skipIf(isWindows)('recovering after a restart', () => {

@@ -143,11 +143,12 @@ on:
       /"agent.model.strategy" \(routing strategies such as cost_aware, quality_first, race and consensus\) is not supported in this release\. They are planned after 1\.0\..*"agent.model.fallback".*"agent.model.escalate"/
     );
     expect([strategy.line, strategy.column]).toEqual([9, 5]);
-    expect(errorOf(MINIMAL.replace('profile: native', 'profile: container')).message).toMatch(
-      /"native" profile only/
-    );
+    // The native profile cannot limit the network or the filesystem, and says so.
     expect(errorOf(`${MINIMAL}  network: [registry.npmjs.org]\n`).message).toMatch(
-      /network restriction/
+      /"sandbox.network" needs the seatbelt or container profile/
+    );
+    expect(errorOf(`${MINIMAL}  filesystem: repo_only\n`).message).toMatch(
+      /"sandbox.filesystem" needs the seatbelt or container profile/
     );
   });
 
@@ -356,11 +357,39 @@ on:
     );
   });
 
-  it('refuses remote and multiple repositories', () => {
+  it('reads remote repositories: github:, gitlab: and https URLs on either', () => {
+    const gh = parseSpec(MINIMAL.replace('[local:~/code/app]', '[github:paxamedia/OpenClerq#dev]'));
+    expect(gh.repo).toEqual({
+      kind: 'github',
+      project: 'paxamedia/OpenClerq',
+      url: 'https://github.com/paxamedia/OpenClerq.git',
+      ref: 'dev',
+      target: 'github:paxamedia/OpenClerq#dev',
+    });
+    expect(gh.publish.tokenSecret).toBe('GITHUB_TOKEN');
+    const gl = parseSpec(MINIMAL.replace('[local:~/code/app]', '[gitlab:group/sub/app]'));
+    expect(gl.repo).toMatchObject({ kind: 'gitlab', project: 'group/sub/app' });
+    // A GitLab token by default, for a GitLab repository.
+    expect(gl.publish.tokenSecret).toBe('GITLAB_TOKEN');
+    const https = parseSpec(
+      MINIMAL.replace('[local:~/code/app]', '["https://github.com/acme/app.git"]')
+    );
+    expect(https.repo).toMatchObject({ kind: 'github', project: 'acme/app' });
+  });
+
+  it('refuses a repository it cannot work on, and more than one', () => {
+    const other = errorOf(
+      MINIMAL.replace('[local:~/code/app]', '["https://git.example.com/acme/app.git"]')
+    );
+    expect(other.message).toMatch(/local:<path>, github:owner\/name, gitlab:group\/name/);
+    expect(other.line).toBe(4);
+    expect(errorOf(MINIMAL.replace('[local:~/code/app]', '[github:acme]')).message).toMatch(
+      /not a repository/
+    );
     expect(
-      errorOf(MINIMAL.replace('[local:~/code/app]', '[github:paxamedia/OpenClerq]')).message
-    ).toMatch(/local:<path>/);
-    const two = errorOf(MINIMAL.replace('[local:~/code/app]', '[local:/a, local:/b]'));
+      errorOf(MINIMAL.replace('[local:~/code/app]', "['github:acme/app#--upload-pack=x']")).message
+    ).toMatch(/not a branch name/);
+    const two = errorOf(MINIMAL.replace('[local:~/code/app]', '[local:/a, github:acme/app]'));
     expect(two.message).toMatch(/one repository/);
   });
 
@@ -433,9 +462,69 @@ on:
     expect(() => parseSpec(`${MINIMAL}prompt: again\n`)).toThrow(SpecError);
   });
 
-  it('makes running without isolation an explicit choice', () => {
-    const e = errorOf(MINIMAL.replace('sandbox:\n  profile: native\n', ''));
-    expect(e.message).toMatch(/Add `sandbox: \{ profile: native \}` to accept that/);
+  it('runs native when the spec has no sandbox block, and remembers that it was assumed', () => {
+    const assumed = parseSpec(MINIMAL.replace('sandbox:\n  profile: native\n', ''));
+    expect(assumed.sandbox).toEqual({ profile: 'native', timeoutMs: 20 * 60_000, explicit: false });
+    expect(parseSpec(MINIMAL).sandbox.explicit).toBe(true);
+  });
+
+  it('reads the seatbelt profile with its hosts, and limits the filesystem to the repo', () => {
+    const spec = parseSpec(
+      MINIMAL.replace(
+        'profile: native',
+        'profile: seatbelt\n  network: [Registry.npmjs.org, "*.github.com", "api.example.com:8443"]\n  timeout: 5m'
+      )
+    );
+    expect(spec.sandbox).toEqual({
+      profile: 'seatbelt',
+      timeoutMs: 5 * 60_000,
+      network: ['registry.npmjs.org', '*.github.com', 'api.example.com:8443'],
+      filesystem: 'repo_only',
+      explicit: true,
+    });
+    expect(
+      parseSpec(MINIMAL.replace('profile: native', 'profile: seatbelt\n  network: all')).sandbox
+        .network
+    ).toBe('all');
+  });
+
+  it('refuses hosts it cannot enforce, with the line', () => {
+    const bad = errorOf(
+      MINIMAL.replace(
+        'profile: native',
+        'profile: seatbelt\n  network: [ok.example, "http://x.example/"]'
+      )
+    );
+    expect(bad.message).toMatch(/Each host is a name/);
+    expect(bad.line).toBe(10);
+    expect(
+      errorOf(
+        MINIMAL.replace('profile: native', 'profile: seatbelt\n  network: ["x.example:99999"]')
+      ).message
+    ).toMatch(/invalid port/);
+    expect(
+      errorOf(MINIMAL.replace('profile: native', 'profile: seatbelt\n  filesystem: everything'))
+        .message
+    ).toMatch(/"sandbox.filesystem" must be one of: repo_only/);
+  });
+
+  it('needs an image, and a key for a CLI, in a container', () => {
+    expect(errorOf(MINIMAL.replace('profile: native', 'profile: container')).message).toMatch(
+      /needs "sandbox.image".*Claude Code's CLI \(`claude`\)/
+    );
+    expect(
+      errorOf(MINIMAL.replace('profile: native', 'profile: container\n  image: agents:1')).message
+    ).toMatch(/cannot use this machine's sign-in.*"agent.api_key_secret"/);
+    const ok = parseSpec(
+      MINIMAL.replace(
+        'driver: claude-code',
+        'driver: claude-code\n  api_key_secret: ANTHROPIC_KEY'
+      ).replace('profile: native', 'profile: container\n  image: ghcr.io/acme/agents:1')
+    );
+    expect(ok.sandbox).toMatchObject({ profile: 'container', image: 'ghcr.io/acme/agents:1' });
+    expect(
+      errorOf(MINIMAL.replace('profile: native', 'profile: seatbelt\n  image: x')).message
+    ).toMatch(/container profile only/);
   });
 
   it('refuses an empty spec', () => {

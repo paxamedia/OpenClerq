@@ -284,3 +284,43 @@ export function ensureLocalRepo(localPath: string): string {
   ).run(id, `${path.basename(resolved)}-${hash}`, resolved, new Date().toISOString());
   return id;
 }
+
+/**
+ * The repos row for an automation's repository, created on first use: a local
+ * path, or a remote by its URL, with the clone in the workspace cache (once
+ * the run knows where that is) and the vault secret it is reached with.
+ */
+export function ensureRepoRow(spec: AutomationSpec, clonePath?: string): string {
+  if (spec.repo.kind === 'local') return ensureLocalRepo(spec.repo.path);
+  const db = getStore();
+  const { url, project, kind } = spec.repo;
+  const found = db
+    .prepare('SELECT id, local_path, credential_ref FROM repos WHERE url = ?')
+    .get(url);
+  if (found) {
+    if (
+      (clonePath && found.local_path !== clonePath) ||
+      found.credential_ref !== spec.publish.tokenSecret
+    ) {
+      db.prepare(
+        'UPDATE repos SET local_path = COALESCE(?, local_path), credential_ref = ? WHERE id = ?'
+      ).run(clonePath ?? null, spec.publish.tokenSecret, String(found.id));
+    }
+    return String(found.id);
+  }
+  const id = `repo_${crypto.randomUUID()}`;
+  const hash = crypto.createHash('sha256').update(url).digest('hex').slice(0, 8);
+  db.prepare(
+    `INSERT INTO repos (id, name, kind, url, local_path, credential_ref, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    `${project.replace(/\//g, '-')}-${hash}`,
+    kind,
+    url,
+    clonePath ?? null,
+    spec.publish.tokenSecret,
+    new Date().toISOString()
+  );
+  return id;
+}

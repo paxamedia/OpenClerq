@@ -24,7 +24,7 @@ import { logger } from '../logger.js';
 import { gatewayOwner } from '../agent-processes.js';
 import { addRunStep, cancelQueuedRun, createRun, failAbandonedRun } from '../runs.js';
 import { SpecError } from './spec.js';
-import { ensureLocalRepo, getAutomation, type Automation } from './store.js';
+import { ensureRepoRow, getAutomation, type Automation } from './store.js';
 import { AutomationBusy, runLeased, type RunnerDeps } from './runner.js';
 import { reclaimExpiredLeases } from './recovery.js';
 
@@ -251,7 +251,7 @@ export function queueRunRow(
     automationId: automation.id,
     input: spec.prompt,
     status: 'queued',
-    repoId: ensureLocalRepo(spec.repo.path),
+    repoId: ensureRepoRow(spec),
     modelOverride: opts.model,
   });
   if (opts.note) {

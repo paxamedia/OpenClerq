@@ -71,6 +71,16 @@ export async function cleanUpRun(runId: string): Promise<void> {
 async function stopLeftoverProcesses(): Promise<void> {
   try {
     for (const p of await killLeftoverProcesses()) {
+      if (p.container) {
+        addRunStep(p.runId, {
+          kind: 'tool',
+          input: { name: 'process.cleanup', container: p.container, kind: p.kind },
+          output: {
+            note: `Removed the container ${p.container} that the previous gateway's ${p.kind} left behind.`,
+          },
+          status: 'ok',
+        });
+      }
       if (p.outcome === 'killed') {
         addRunStep(p.runId, {
           kind: 'tool',

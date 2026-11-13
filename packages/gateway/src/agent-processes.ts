@@ -32,9 +32,11 @@
  */
 
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { SpawnedProcess } from '@clerq/drivers';
+import { removeContainer, resolveRuntime } from '@clerq/sandbox';
 import { getStore } from './store.js';
 import { logger } from './logger.js';
 
@@ -169,8 +171,9 @@ export function recordProcess(
     const res = getStore()
       .prepare(
         `INSERT INTO run_processes
-           (run_id, kind, pid, pgid, command, proc_start, owner_pid, owner_start, started_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`
+           (run_id, kind, pid, pgid, command, proc_start, owner_pid, owner_start, started_at,
+            container, container_runtime)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`
       )
       .run(
         runId,
@@ -180,7 +183,9 @@ export function recordProcess(
         spawned.command,
         owner.pid,
         owner.start,
-        new Date().toISOString()
+        new Date().toISOString(),
+        spawned.container?.name ?? null,
+        spawned.container?.runtime ?? null
       );
     const id = Number(res.lastInsertRowid);
 
@@ -270,6 +275,12 @@ export interface LeftoverProcess {
   outcome: LeftoverOutcome;
   /** For a process that was stopped: whether it had to be killed outright. */
   forced?: boolean;
+  /**
+   * The container the process ran its work in (container profile), removed by
+   * name: the process is only the runtime CLI, and stopping it does not stop
+   * the container.
+   */
+  container?: string;
 }
 
 interface Row {
@@ -282,12 +293,15 @@ interface Row {
   procStart: number | null;
   ownerPid: number;
   ownerStart: number | null;
+  container: string | null;
+  containerRuntime: string | null;
 }
 
 function rows(): Row[] {
   return getStore()
     .prepare(
-      `SELECT id, run_id, kind, pid, pgid, command, proc_start, owner_pid, owner_start
+      `SELECT id, run_id, kind, pid, pgid, command, proc_start, owner_pid, owner_start,
+              container, container_runtime
        FROM run_processes WHERE ended_at IS NULL ORDER BY id`
     )
     .all()
@@ -301,6 +315,8 @@ function rows(): Row[] {
       procStart: r.proc_start ? Date.parse(String(r.proc_start)) : null,
       ownerPid: Number(r.owner_pid),
       ownerStart: r.owner_start ? Date.parse(String(r.owner_start)) : null,
+      container: r.container ? String(r.container) : null,
+      containerRuntime: r.container_runtime ? String(r.container_runtime) : null,
     }));
 }
 
@@ -428,7 +444,24 @@ export async function killLeftoverProcesses(
   const table = await readTable();
   const out: LeftoverProcess[] = [];
   const close = (row: Row, outcome: string) => markProcessEnded(row.id, outcome);
-  const report = (row: Row, outcome: LeftoverOutcome, forced?: boolean) =>
+  /** Containers removed so far, by name: a run's processes may share none, but never twice. */
+  const removed = new Set<string>();
+  const report = async (row: Row, outcome: LeftoverOutcome, forced?: boolean) => {
+    // The container is named for this run alone, so whatever the verdict on
+    // the pid (which may since have been reused), a container of a gateway
+    // that is gone is removed by its name.
+    let container: string | undefined;
+    if (row.container && outcome !== 'own' && outcome !== 'owner_alive') {
+      const runtime =
+        row.containerRuntime && fs.existsSync(row.containerRuntime)
+          ? row.containerRuntime
+          : resolveRuntime();
+      if (runtime && !removed.has(row.container)) {
+        removed.add(row.container);
+        await removeContainer(runtime, row.container);
+        container = row.container;
+      }
+    }
     out.push({
       runId: row.runId,
       kind: row.kind,
@@ -437,14 +470,16 @@ export async function killLeftoverProcesses(
       command: row.command,
       outcome,
       ...(forced === undefined ? {} : { forced }),
+      ...(container ? { container } : {}),
     });
+  };
 
   if (!table) {
     if (process.platform === 'win32') {
       // Nothing here can ever be checked, so do not keep the records.
       for (const row of live) {
         close(row, 'unsupported');
-        report(row, 'unsupported');
+        await report(row, 'unsupported');
       }
     } else {
       logger.warn(
@@ -464,25 +499,25 @@ export async function killLeftoverProcesses(
       verdict = fresh ? judge(row, fresh) : 'unverified';
     }
     if (verdict === 'own' || verdict === 'owner_alive') {
-      report(row, verdict);
+      await report(row, verdict);
       continue;
     }
     if (verdict !== 'killed') {
       close(row, verdict);
-      report(row, verdict);
+      await report(row, verdict);
       continue;
     }
     try {
       const forced = await stopGroup(row.pgid, options.graceMs ?? 3_000);
       close(row, forced ? 'killed (forced)' : 'killed');
-      report(row, 'killed', forced);
+      await report(row, 'killed', forced);
     } catch (e) {
       // Not ours to signal, or it would not die: leave the record for the next start.
       logger.warn('Could not stop an agent process left by an earlier gateway', {
         pid: row.pid,
         err: e instanceof Error ? e.message : String(e),
       });
-      report(row, 'unverified');
+      await report(row, 'unverified');
     }
   }
   return out;

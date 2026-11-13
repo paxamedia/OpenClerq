@@ -34,7 +34,7 @@ import { subscribeEvents, type ClerqEvent } from '../events.js';
 import { readProcessTable, warmGatewayIdentity } from '../agent-processes.js';
 import {
   createAutomation,
-  ensureLocalRepo,
+  ensureRepoRow,
   getAutomation,
   setAutomationEnabled,
   setLastSlotAt,
@@ -293,7 +293,7 @@ function abandoned(
     trigger: 'schedule',
     automationId: a.id,
     status: 'executing',
-    repoId: ensureLocalRepo(a.spec!.repo.path),
+    repoId: ensureRepoRow(a.spec!),
   });
   getStore()
     .prepare(

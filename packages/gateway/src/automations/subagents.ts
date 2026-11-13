@@ -23,6 +23,7 @@ import {
   SUBAGENT_SYSTEM_PROMPT,
   type Driver,
   type DriverResult,
+  type SandboxOptions,
   type SharedBudget,
   type SubagentOutcome,
   type SubagentRequest,
@@ -171,6 +172,8 @@ export interface SpawnerContext {
   /** The builtin driver the parent runs on. */
   driver: Driver;
   ws: Workspace;
+  /** The run's isolation, which a sub-agent's commands run under as well. */
+  sandbox?: SandboxOptions;
   deps: RunnerDeps;
   pool: SpendPool;
   /** The model key from the vault, as the parent has it. */
@@ -373,6 +376,7 @@ export function subagentSpawner(
             ctx.inUse,
             used,
             {
+              ...(ctx.sandbox ? { sandbox: ctx.sandbox } : {}),
               policy: rules,
               system: SUBAGENT_SYSTEM_PROMPT,
               sharedBudget: pool.member(runId),

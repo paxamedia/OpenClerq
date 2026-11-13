@@ -545,4 +545,16 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_runs_parent ON runs(parent_run_id) WHERE parent_run_id IS NOT NULL;
     `,
   },
+  {
+    id: 19,
+    name: 'run_process_container',
+    // A process run under the container profile is the runtime CLI (docker,
+    // podman); the work happens in a container, which outlives the CLI if the
+    // gateway dies. Its name and the runtime are kept with the process, so the
+    // next gateway can remove it by name.
+    sql: `
+      ALTER TABLE run_processes ADD COLUMN container TEXT;
+      ALTER TABLE run_processes ADD COLUMN container_runtime TEXT;
+    `,
+  },
 ];

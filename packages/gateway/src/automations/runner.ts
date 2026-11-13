@@ -17,6 +17,7 @@ import {
   type DriverEvent,
   type DriverResult,
   type DriverRunInput,
+  type SandboxOptions,
   type SharedBudget,
   type ToolApprovalRequest,
 } from '@clerq/drivers';
@@ -28,14 +29,23 @@ import {
   type PolicyRules,
   type ToolDescriptor,
 } from '@clerq/policy';
-import { exec } from '@clerq/sandbox';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { exec, redact } from '@clerq/sandbox';
 import {
+  cacheKey,
   defaultBranch,
+  ensureRepo,
+  forgeAuthEnv,
+  forgeOf,
   git,
   openWorkspace,
   openPullRequest,
+  remoteTarget,
   renderBranchName,
   type Fetcher,
+  type Forge,
   type Workspace,
 } from '@clerq/workspaces';
 import { getStore } from '../store.js';
@@ -75,8 +85,15 @@ import { checkModels, isSpecFault, judgeChain, keyAppliesTo, planModels } from '
 import { recordFallback } from '../routing.js';
 import { memoryBlock } from '../memory-context.js';
 import { SpendPool, subagentSpawner } from './subagents.js';
+import { isolationFor, profileProblem } from './isolation.js';
 import {
-  ensureLocalRepo,
+  vaultCredentials,
+  type CredentialPurpose,
+  type ForgeCredential,
+  type ForgeCredentials,
+} from './credentials.js';
+import {
+  ensureRepoRow,
   expandHome,
   getAutomation,
   hasPushedBefore,
@@ -93,8 +110,13 @@ export interface RunnerDeps {
   driverFor?(id: string): Driver;
   /** For opening pull requests; tests pass a fake. */
   fetcher?: Fetcher;
-  /** Where worktrees live. Defaults to ~/.clerq/workspaces. */
+  /** Where worktrees, and clones of remote repositories, live. Defaults to ~/.clerq/workspaces. */
   workspaceCacheDir?: string;
+  /**
+   * The forge credential for a clone, fetch, push or pull request. Default:
+   * the vault secret the spec names (`publish.token_secret`).
+   */
+  forgeCredentials?: ForgeCredentials;
   /** Automation runs allowed at once, across all automations. Default 2. */
   maxConcurrent?: number;
   /** How long a run's lease lasts before it must be renewed. Default 60s; tests shorten it. */
@@ -171,12 +193,8 @@ export function policyFor(spec: AutomationSpec, firstPush: boolean): PolicyRules
 
 /** "owner/repo" for a GitHub remote URL, or null. */
 export function githubProject(url: string | null): string | null {
-  if (!url) return null;
-  const m =
-    /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(
-      url.trim()
-    );
-  return m ? `${m[1]}/${m[2]}` : null;
+  const found = forgeOf(url);
+  return found?.forge === 'github' ? found.project : null;
 }
 
 function tail(text: string, max: number): string {
@@ -206,6 +224,11 @@ export class GateFailed extends Error {
     super(message);
     this.name = 'GateFailed';
   }
+}
+
+/** Where worktrees and clones of remote repositories live. */
+export function cacheDirOf(deps: RunnerDeps): string {
+  return deps.workspaceCacheDir ?? path.join(os.homedir(), '.clerq', 'workspaces');
 }
 
 /** The attempt a run is on, from 1. */
@@ -299,6 +322,9 @@ async function execute(
   const signal = currentRunSignal() as AbortSignal;
 
   checkBudgets(automation, spec, runId);
+  // A profile this machine cannot run is found before anything is spent.
+  const unrunnable = profileProblem(spec);
+  if (unrunnable) throw new Error(unrunnable);
 
   const firstPush = spec.publish.push && !hasPushedBefore(automation.id);
   const rules = policyFor(spec, firstPush);
@@ -352,36 +378,90 @@ async function execute(
   }
 
   // Checked before any work, so a run does not spend money and then fail to publish.
-  const repoPath = expandHome(spec.repo.path);
-  const token = spec.publish.push ? deps.getSecret(spec.publish.tokenSecret) : undefined;
-  if (spec.publish.pullRequest === 'draft' && !token) {
+  const target = spec.repo;
+  let repoPath = target.kind === 'local' ? expandHome(target.path) : '';
+  let remoteUrl: string | null;
+  let forge: { forge: Forge; project: string } | null;
+  if (target.kind === 'local') {
+    // The URL as configured: `git remote get-url` would apply url.insteadOf
+    // rewrites, and a rewritten URL no longer names the forge's project.
+    const origin = await git(['config', '--get', 'remote.origin.url'], {
+      cwd: repoPath,
+      allowFailure: true,
+    });
+    remoteUrl = origin.code === 0 ? origin.stdout.trim() : null;
+    forge = forgeOf(remoteUrl);
+  } else {
+    remoteUrl = target.url;
+    forge = { forge: target.kind, project: target.project };
+  }
+  const credentials = deps.forgeCredentials ?? vaultCredentials(deps.getSecret);
+  const credentialFor = async (purpose: CredentialPurpose) =>
+    forge
+      ? await credentials({
+          forge: forge.forge,
+          project: forge.project,
+          purpose,
+          secretName: spec.publish.tokenSecret,
+          automationId: automation.id,
+          runId,
+        })
+      : undefined;
+  if (spec.publish.pullRequest === 'draft' && !forge) {
     throw new Error(
-      `Opening a pull request needs a forge token: store one in the vault as ${spec.publish.tokenSecret}, or set publish.pull_request: none.`
+      `The repository's origin (${remoteUrl ?? 'none'}) is not on GitHub or GitLab, so no pull request can be opened. Set publish.pull_request: none.`
     );
   }
-  // The URL as configured: `git remote get-url` would apply url.insteadOf
-  // rewrites, and a rewritten URL no longer names the GitHub project.
-  const origin = await git(['config', '--get', 'remote.origin.url'], {
-    cwd: repoPath,
-    allowFailure: true,
-  });
-  const remoteUrl = origin.code === 0 ? origin.stdout.trim() : null;
-  const project = githubProject(remoteUrl);
-  if (spec.publish.pullRequest === 'draft' && !project) {
+  const pushCredential = spec.publish.push ? await credentialFor('push') : undefined;
+  const prCredential =
+    spec.publish.pullRequest === 'draft' ? await credentialFor('pull_request') : undefined;
+  if (spec.publish.pullRequest === 'draft' && !prCredential) {
     throw new Error(
-      `The repository's origin (${remoteUrl ?? 'none'}) is not on GitHub, so no pull request can be opened. Set publish.pull_request: none.`
+      `Opening a pull request needs a forge token: store one in the vault as ${spec.publish.tokenSecret}, or set publish.pull_request: none.`
     );
   }
   if (spec.publish.push && !remoteUrl) {
     throw new Error('The repository has no origin remote to push to. Set publish.push: false.');
   }
+  // A public remote is cloned without one; a private one needs it.
+  const fetchCredential = await credentialFor('fetch');
+  const authFor = (credential: ForgeCredential | undefined) =>
+    forge && credential ? forgeAuthEnv(forge.forge, credential.token) : undefined;
 
-  setRunFields(runId, { repoId: ensureLocalRepo(spec.repo.path) });
+  if (target.kind !== 'local') {
+    // A remote is cloned once into the workspace cache and fetched before each run.
+    const fresh = !fs.existsSync(path.join(cacheDirOf(deps), cacheKey(target.url)));
+    try {
+      repoPath = await ensureRepo(
+        { kind: 'remote', location: target.url },
+        { cacheDir: cacheDirOf(deps), env: authFor(fetchCredential), fetch: false }
+      );
+    } catch (e) {
+      throw new Error(
+        `Could not clone ${target.target}${fetchCredential ? '' : ` (no ${spec.publish.tokenSecret} in the vault, so it was tried without credentials)`}: ${redact(
+          e instanceof Error ? e.message : String(e),
+          fetchCredential ? { t: fetchCredential.token } : undefined
+        ).slice(0, 1_000)}`
+      );
+    }
+    addRunStep(runId, {
+      kind: 'git',
+      input: { action: fresh ? 'clone' : 'cached', repo: target.target },
+      output: {
+        path: repoPath,
+        url: target.url,
+        ...(fetchCredential ? { credential: fetchCredential.source } : {}),
+      },
+      status: 'ok',
+    });
+  }
+
+  setRunFields(runId, { repoId: ensureRepoRow(spec, repoPath) });
 
   // Start from the remote's copy of the base branch: a local branch the user
   // has not pulled in weeks would give the agent stale code and the PR conflicts.
   const baseBranch = spec.repo.ref ?? (await defaultBranch(repoPath));
-  let startRef = baseBranch;
+  let startRef = target.kind === 'local' ? baseBranch : `origin/${baseBranch}`;
   if (remoteUrl) {
     const fetched = await git(
       ['fetch', '--quiet', 'origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
@@ -389,7 +469,7 @@ async function execute(
         cwd: repoPath,
         allowFailure: true,
         timeoutMs: 120_000,
-        env: project && token ? githubAuthEnv(token) : undefined,
+        env: authFor(fetchCredential),
       }
     );
     if (fetched.code === 0) startRef = `origin/${baseBranch}`;
@@ -402,7 +482,10 @@ async function execute(
           : {
               startRef,
               error: tail(fetched.stderr.trim(), 2_000),
-              note: 'Starting from the local branch.',
+              note:
+                target.kind === 'local'
+                  ? 'Starting from the local branch.'
+                  : 'Starting from the copy fetched by an earlier run.',
             },
       status: fetched.code === 0 ? 'ok' : 'warning',
     });
@@ -432,12 +515,31 @@ async function execute(
     // model: the builtin agent in the middle of its run, a CLI by starting
     // again with the next model.
     const models: Array<string | undefined> = [verdict.start, ...plan.escalate];
-    const inUse = { ...apiKey, ...(token ? { FORGE_TOKEN: token } : {}) };
+    // Vault values this run holds, taken out of everything it stores.
+    const inUse: Record<string, string> = { ...apiKey };
+    for (const [i, c] of [fetchCredential, pushCredential, prCredential].entries()) {
+      if (c) inUse[`FORGE_TOKEN_${i}`] = c.token;
+    }
+    // What the run's agent and gates may touch (spec.sandbox): the same
+    // profile for the agent, its commands and the gates.
+    const isolation = isolationFor(spec, await ws.gitDirs(), { runId });
+    addRunStep(runId, {
+      kind: 'tool',
+      input: { name: 'sandbox', profile: spec.sandbox.profile },
+      output: {
+        note: isolation.note,
+        ...(spec.sandbox.profile === 'native'
+          ? {}
+          : { agent: isolation.agent(spec.agent.driver), gates: isolation.gates }),
+      },
+      status: spec.sandbox.profile === 'native' ? 'warning' : 'ok',
+    });
     const switchesModels = DRIVER_CAPABILITIES[spec.agent.driver].midRunModelSwitch;
     // The models whose attempt ended at the gates: not used as a fallback later.
     const tried = new Set<string>();
     const used: ModelInUse = { unavailable };
     let level = 0;
+    let secretInDiff = false;
     let prompt = spec.prompt;
     let result: DriverResult;
     let title: string;
@@ -471,8 +573,10 @@ async function execute(
         };
         // A key from the vault is for the provider of the model it was given for.
         const secrets = keyAppliesTo(spec, model) ? apiKey : undefined;
+        const agentSandbox = isolation.agent(spec.agent.driver);
         const subagents = withSubagents
           ? {
+              sandbox: agentSandbox,
               sharedBudget: pool.member(runId),
               onSubagent: subagentSpawner({
                 parentRunId: runId,
@@ -480,6 +584,7 @@ async function execute(
                 spec,
                 driver,
                 ws,
+                sandbox: agentSandbox,
                 deps,
                 pool,
                 apiKey,
@@ -515,7 +620,7 @@ async function execute(
                 ],
               }),
             }
-          : {};
+          : { sandbox: agentSandbox };
         try {
           result = await guard(rules, TOOLS.agent, budget, () =>
             runAgent(
@@ -577,10 +682,16 @@ async function execute(
         output: { sha, ...stat },
         status: 'ok',
       });
-      addArtifact(runId, 'diff', await ws.diff(), `${branch}.diff`);
+      // The stored copy is redacted of the vault values this run holds. The
+      // commit itself is not: a secret the agent wrote into a file is in it,
+      // and is pushed with it unless a person stops the push (below).
+      const diff = await ws.diff();
+      const shown = redact(diff, inUse);
+      if (shown !== diff) secretInDiff = true;
+      addArtifact(runId, 'diff', shown, `${branch}.diff`);
 
       try {
-        await verify(spec, ws, runId, signal, deps, rules, budget);
+        await verify(spec, ws, runId, signal, deps, rules, budget, isolation.gates, inUse);
         break;
       } catch (e) {
         if (!(e instanceof GateFailed) || level + 1 >= models.length) throw e;
@@ -606,20 +717,40 @@ async function execute(
       }
     }
 
+    if (secretInDiff) {
+      addRunStep(runId, {
+        kind: 'tool',
+        input: { name: 'diff.secrets' },
+        output: {
+          note:
+            'The diff contains a value from the vault that this run uses (redacted in the stored diff, ' +
+            'not in the commit). Pushing waits for approval.',
+        },
+        status: 'warning',
+      });
+    }
+
     if (!spec.publish.push) {
-      keepBranch = true;
-      setRunFields(runId, { exitReason: `Committed to the local branch ${branch}; not pushed.` });
+      if (target.kind === 'local') {
+        keepBranch = true;
+        setRunFields(runId, { exitReason: `Committed to the local branch ${branch}; not pushed.` });
+      } else {
+        setRunFields(runId, {
+          exitReason: 'Committed, not pushed (publish.push: false); the diff is kept with the run.',
+        });
+      }
       return;
     }
 
     setRunStatus(runId, 'publishing');
     const describe = `${branch} (${stat.filesChanged} files, +${stat.insertions} −${stat.deletions})`;
     try {
+      // A secret in the diff always waits for a person, whatever the spec says.
       await guard(
-        rules,
+        secretInDiff ? policyFor(spec, true) : rules,
         TOOLS.push,
         budget,
-        () => pushBranch(ws, branch, project, token),
+        () => pushBranch(ws, branch, forge, pushCredential?.token),
         async (verdict) => {
           setRunStatus(runId, 'awaiting_approval');
           const request = requestApproval({
@@ -629,9 +760,11 @@ async function execute(
             reason:
               `Push ${describe} to ${remoteUrl}` +
               (spec.publish.pullRequest === 'draft' ? ' and open a draft pull request.' : '.') +
-              (firstPush && spec.approvals.push === 'auto'
-                ? " This automation's first push waits for approval."
-                : ''),
+              (secretInDiff
+                ? ' The diff contains a value from the vault this run uses.'
+                : firstPush && spec.approvals.push === 'auto'
+                  ? " This automation's first push waits for approval."
+                  : ''),
             arguments: { automation: spec.name, branch, verdict: verdict.reason, ...stat },
           });
           const approved = await Promise.race([
@@ -671,8 +804,8 @@ async function execute(
       const pr = await guard(rules, TOOLS.pullRequest, budget, () =>
         openPullRequest(
           {
-            forge: 'github',
-            project: project as string,
+            forge: forge?.forge ?? 'github',
+            project: forge?.project as string,
             title,
             body: pullRequestBody(spec, runId, result, stat, {
               escalatedTo: level > 0 ? models[level] : undefined,
@@ -681,7 +814,7 @@ async function execute(
             head: branch,
             base: baseBranch,
             draft: true,
-            token: token as string,
+            token: prCredential?.token as string,
           },
           deps.fetcher
         )
@@ -706,6 +839,8 @@ async function execute(
 
 /** What a run of the builtin agent gets beyond the spec: sub-agents, or being one. */
 export interface AgentExtras {
+  /** The run's isolation for the agent (`isolationFor`). Absent: native. */
+  sandbox?: SandboxOptions;
   onSubagent?: DriverRunInput['onSubagent'];
   sharedBudget?: SharedBudget;
   /** A sub-agent's rules, in place of those from the spec's permission mode and tools. */
@@ -752,7 +887,7 @@ export async function runAgent(
     allowedTools: spec.agent.allowedTools,
     maxBudgetUsd: attempt.maxBudgetUsd,
     timeoutMs: extras.timeoutMs ?? spec.sandbox.timeoutMs,
-    sandbox: { profile: spec.sandbox.profile },
+    sandbox: extras.sandbox ?? { profile: 'native' },
     env: { PATH: deps.path() },
     secrets,
     signal,
@@ -1012,7 +1147,9 @@ async function verify(
   signal: AbortSignal,
   deps: RunnerDeps,
   rules: PolicyRules,
-  budget: RunBudget
+  budget: RunBudget,
+  sandbox: SandboxOptions,
+  inUse: Record<string, string>
 ): Promise<void> {
   if (spec.gates.length === 0) return;
   setRunStatus(runId, 'verifying');
@@ -1022,7 +1159,9 @@ async function verify(
       files ??= await diffFiles(ws.path, ws.baseSha);
       checkAssertion(gate, files, runId);
     } else {
-      await guard(rules, TOOLS.gate, budget, () => runGate(gate, ws, runId, signal, deps));
+      await guard(rules, TOOLS.gate, budget, () =>
+        runGate(gate, ws, runId, signal, deps, sandbox, inUse)
+      );
     }
   }
 }
@@ -1056,7 +1195,10 @@ async function runGate(
   ws: Workspace,
   runId: string,
   signal: AbortSignal,
-  deps: RunnerDeps
+  deps: RunnerDeps,
+  sandbox: SandboxOptions,
+  /** Vault values the run holds: a gate that prints one (from a file) has it taken out. */
+  inUse: Record<string, string>
 ): Promise<void> {
   emit('gate.started', { run: gate.run }, { runId });
   const seq = addRunStep(runId, { kind: 'gate', input: { run: gate.run }, status: 'running' });
@@ -1067,7 +1209,7 @@ async function runGate(
   const watch = watchProcess(runId, 'gate');
   const r = await exec(
     {
-      profile: 'native',
+      ...sandbox,
       cwd: ws.path,
       env: { PATH: deps.path() },
       limits: { wallMs: gate.timeoutMs },
@@ -1082,12 +1224,15 @@ async function runGate(
     }
   ).finally(watch.done);
   const passed = r.code === 0 && !r.timedOut && !r.cancelled;
+  r.stdout = redact(r.stdout, inUse);
+  r.stderr = redact(r.stderr, inUse);
   completeRunStep(runId, seq, {
     output: {
       exitCode: r.code,
       timedOut: r.timedOut,
       stdout: tail(r.stdout, 8_000),
       stderr: tail(r.stderr, 8_000),
+      ...(r.egress?.denied.length ? { egressDenied: r.egress.denied.slice(0, 50) } : {}),
     },
     status: passed ? 'passed' : 'failed',
     durationMs: r.durationMs,
@@ -1222,33 +1367,23 @@ function remainingRunBudget(spec: AutomationSpec, runId: string): number | undef
   return Math.round((max - spent) * 1e6) / 1e6;
 }
 
-/** git configuration, through the environment, that authenticates to github.com with `token`. */
-function githubAuthEnv(token: string): Record<string, string> {
-  const basic = Buffer.from(`x-access-token:${token}`).toString('base64');
-  return {
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
-    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
-  };
-}
-
 /**
- * Push the run's branch. With a token, over HTTPS with the token in an
- * environment-supplied header, so it never reaches the argv or the remote URL;
- * without one, to origin with the user's own git credentials.
+ * Push the run's branch. With a token, over HTTPS to the forge with the token
+ * in an environment-supplied header, so it never reaches the argv or the
+ * remote URL; without one, to origin with the user's own git credentials.
  */
 async function pushBranch(
   ws: Workspace,
   branch: string,
-  project: string | null,
+  forge: { forge: Forge; project: string } | null,
   token: string | undefined
 ): Promise<void> {
   const refspec = `refs/heads/${branch}:refs/heads/${branch}`;
-  if (project && token) {
-    await git(['push', `https://github.com/${project}.git`, refspec], {
+  if (forge && token) {
+    await git(['push', remoteTarget(forge.forge, forge.project).url, refspec], {
       cwd: ws.path,
       timeoutMs: 300_000,
-      env: githubAuthEnv(token),
+      env: forgeAuthEnv(forge.forge, token),
     });
     return;
   }

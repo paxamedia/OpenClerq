@@ -121,6 +121,18 @@ describe.skipIf(!isMac)('seatbelt filesystem rules, run (macOS)', () => {
     expect(r.stdout).toBe('readmenew\n');
   });
 
+  it('can resolve its worktree’s real path through a denied directory, but not list it', async () => {
+    // realpath stats every directory on the way down; git does it to find its repository.
+    const r = await exec(spec(), process.execPath, [
+      '-e',
+      `const fs = require('node:fs');
+       console.log(fs.realpathSync(process.cwd()) === ${JSON.stringify(work)});
+       try { fs.readdirSync(${JSON.stringify(path.join(home, '.clerq'))}); console.log('listed'); }
+       catch { console.log('not listed'); }`,
+    ]);
+    expect(r.stdout.trim().split('\n')).toEqual(['true', 'not listed']);
+  });
+
   it('cannot change a protected file inside its worktree', async () => {
     const r = await exec(spec({ protect: [path.join(work, '.git')] }), 'sh', [
       '-c',
