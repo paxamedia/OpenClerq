@@ -551,8 +551,9 @@ the gates, from the worktree's git directories (`Workspace.gitDirs()`):
 
 - the same profile for the agent, the builtin agent's shell commands and sub-agents' commands, and the gates;
 - writes in the worktree and the worktree's own entry in the git directory; the git directory itself and the `.git`, `HEAD`, `commondir` and `gitdir` pointers read-only, because the gateway's git runs in the worktree after the agent, outside the profile;
-- under seatbelt, reads everywhere except the credential stores in `credentialPaths()`, and an agent CLI's state directories writable (`agentStatePaths()` in `@clerq/drivers`) with their configuration-only files protected; under container, only the mounted paths;
-- the network: `sandbox.network`, plus the CLI's provider hosts for the agent (`DRIVER_CAPABILITIES[*].providerHosts`; none for builtin, whose model calls the gateway makes), through an egress proxy: on macOS a proxy in the gateway with the sandbox's network closed but its port, in a container a proxy container on an internal network. `network: all` lifts the limit.
+- under seatbelt, reads everywhere except the credential stores in `credentialPaths()`; an agent CLI may write only the parts of its state on an allow-list (`agentStatePaths()` in `@clerq/drivers`, created before the run), the rest of it read-only; writable directories and every directory above one or above a protected path are pinned (no rename, removal or replacement); mach services are an allow-list without LaunchServices; under container, only the mounted paths;
+- the gateway's checks after the agent and after the gates (`automations/pin.ts`): the worktree and its git entry must be the directories they were, with the same pointers, or the run fails with no git run in them; its git there is hardened (`HARDENED_GIT` and `SAFE_DIFF` in `@clerq/workspaces`: no fsmonitor, hooks, submodule recursion, external diff or textconv), and a nested repository staged as a gitlink is refused before the commit; the builtin agent's file tools pin the worktree's real path and inode for the run;
+- the network: `sandbox.network`, plus the CLI's provider hosts for the agent (`DRIVER_CAPABILITIES[*].providerHosts`; none for builtin, whose model calls the gateway makes), through an egress proxy: on macOS a proxy in the gateway with the sandbox's network closed but its port, in a container a proxy container on an internal network. `network: all` lifts the limit for IP; Unix-domain sockets stay refused under seatbelt (only the resolver's is allowed).
 
 Seatbelt on a machine that is not a Mac, or the container profile with no runtime, fails the run
 before it does any work, and the spec preview says so. Under seatbelt and container, Codex runs
@@ -560,9 +561,9 @@ with `--sandbox danger-full-access` (its own sandbox cannot nest in seatbelt; th
 the boundary) and a read-only permission mode makes the worktree read-only. In a container a CLI
 driver runs the image's CLI by name (`DRIVER_CAPABILITIES[*].cliName`), `detect` does not check the
 host's copy, and the spec must give the CLI a key (`agent.api_key_secret`). Each container is named
-`clerq-<run>-<random>`; `exec` removes it (with its proxy and network) when the command ends, and the
+`clerq-<run>-<random>` and labelled `clerq.run=<run>`, as are its egress proxy and network; `exec` removes it (with its proxy and network) when the command ends, and the
 name is kept in `run_processes.container` (store migration 19) so the next gateway removes what a
-crashed one left. What each profile does and does not enforce is in
+crashed one left, and sweeps by label for what was made before the record. What each profile does and does not enforce is in
 [SECURITY.md §2.1](SECURITY.md#21-automation-sandbox-profiles).
 
 #### Remote repositories
