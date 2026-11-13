@@ -153,6 +153,24 @@ describe('migrations', () => {
     expect(db.prepare('SELECT count(*) AS n FROM run_steps').get()?.n).toBe(0);
   });
 
+  it('records which gateway process started a run', () => {
+    db.prepare(
+      `INSERT INTO runs (id, status, trigger, created_at, owner_pid, owner_start)
+       VALUES ('r3', 'executing', 'manual', '2026-01-01', 4242, '2026-01-01T00:00:00.000Z')`
+    ).run();
+    db.prepare(
+      "INSERT INTO runs (id, status, trigger, created_at) VALUES ('r4', 'done', 'manual', '2026-01-01')"
+    ).run();
+    expect(
+      db
+        .prepare("SELECT id, owner_pid, owner_start FROM runs WHERE id IN ('r3', 'r4') ORDER BY id")
+        .all()
+    ).toEqual([
+      { id: 'r3', owner_pid: 4242, owner_start: '2026-01-01T00:00:00.000Z' },
+      { id: 'r4', owner_pid: null, owner_start: null },
+    ]);
+  });
+
   it('keeps the processes a run started, and drops them with the run', () => {
     db.prepare(
       "INSERT INTO runs (id, status, trigger, created_at) VALUES ('r2', 'executing', 'manual', '2026-01-01')"

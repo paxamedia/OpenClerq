@@ -408,4 +408,17 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_run_processes_run ON run_processes(run_id);
     `,
   },
+  {
+    id: 12,
+    name: 'run_owner',
+    // Which gateway process started a run: its pid, and when the OS says that
+    // process started, so a reused pid is not mistaken for it. At startup a run
+    // whose owner is still running is not an interrupted run, and is left
+    // alone. Runs from before this migration have neither, and are treated as
+    // the old gateway's.
+    sql: `
+      ALTER TABLE runs ADD COLUMN owner_pid INTEGER;
+      ALTER TABLE runs ADD COLUMN owner_start TEXT;
+    `,
+  },
 ];
