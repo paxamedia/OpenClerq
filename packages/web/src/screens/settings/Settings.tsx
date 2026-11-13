@@ -26,13 +26,9 @@ import { Loaded, Page, PageHeader, PHONE_QUERY, Section, useMedia } from '../../
 import { ModuleFrame } from '../../shell/ModuleFrame';
 import { useExtensions } from '../../app/extensions';
 import { DevicesSection, RemoteSection } from './devices';
-import {
-  AdvancedSection,
-  MemorySection,
-  SecretsSection,
-  SkillsSection,
-  TriggersSection,
-} from './sections';
+import { MemorySection } from './memory';
+import { FallbackSection } from './routing';
+import { AdvancedSection, SecretsSection, SkillsSection, TriggersSection } from './sections';
 import './settings.css';
 
 export const SETTINGS_SECTIONS = [
@@ -304,6 +300,7 @@ function ModelsSection() {
           )}
         </Loaded>
       </Section>
+      <FallbackSection />
       {host.saveApiKey && (
         <Section title="Anthropic key">
           <div className="settings-inline">

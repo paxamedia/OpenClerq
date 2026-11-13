@@ -1,13 +1,8 @@
 /** Settings sections that edit what the background service stores. */
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { BookOpen, Database, KeyRound, Play, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
-import {
-  MEMORY_TYPES,
-  type MemoryRecord,
-  type MemoryType,
-  type SkillMeta,
-} from '@clerq/gateway-client';
+import { BookOpen, KeyRound, Play, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
+import type { SkillMeta } from '@clerq/gateway-client';
 import { Button, IconButton } from '../../ui/Button';
 import { SegmentedControl, Switch } from '../../ui/Choice';
 import { CodeBlock, EmptyState } from '../../ui/Display';
@@ -32,10 +27,9 @@ import {
   type TriggersConfig,
 } from '../../app/persistentRun';
 import { Loaded, Section } from '../../shell/layout';
-import { When } from '../common';
 
 /** Saves a section: shows success or the reason as a toast, and keeps a busy flag. */
-function useSaver() {
+export function useSaver() {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const save = async (what: string, fn: () => Promise<unknown>, done = 'Saved.') => {
@@ -55,7 +49,7 @@ function useSaver() {
 }
 
 /** A delete that names what goes, in an in-app dialog. */
-function ConfirmDelete({
+export function ConfirmDelete({
   what,
   detail,
   open,
@@ -363,164 +357,6 @@ export function SkillsSection() {
 }
 
 // ---------------------------------------------------------------------------
-
-/** What each kind of memory is for, for the picker and the Type column. */
-const MEMORY_TYPE_HINTS: Record<MemoryType, string> = {
-  fact: 'Something true: a rate, a name, a deadline.',
-  preference: 'How you like things done. Read in every managed chat.',
-  decision: 'A choice made, and why.',
-  procedure: 'How to do something, step by step.',
-  note: 'Anything else.',
-};
-
-export function MemorySection() {
-  const client = useClient();
-  const [query, setQuery] = useState('');
-  const q = query.trim();
-  // A search is its own resource, so the list comes back the moment it is cleared.
-  const memory = useResource(
-    q ? `memory:search:${q}` : 'memory',
-    async (): Promise<MemoryRecord[]> =>
-      q ? (await client.searchMemory(q)).results : (await client.memory()).entries,
-    { on: ['memory'] }
-  );
-  const { save, busy } = useSaver();
-  const [key, setKey] = useState('');
-  const [value, setValue] = useState('');
-  const [type, setType] = useState<MemoryType>('fact');
-  const [deleting, setDeleting] = useState<MemoryRecord | null>(null);
-
-  const add = async () => {
-    let v: unknown = value;
-    try {
-      v = JSON.parse(value);
-    } catch {
-      /* plain text is stored as it is */
-    }
-    if (
-      await save(
-        'the entry',
-        () => client.addMemoryRecord({ key: key.trim(), value: v, type }),
-        'Added.'
-      )
-    ) {
-      setKey('');
-      setValue('');
-      void memory.reload();
-    }
-  };
-
-  return (
-    <Section title="Memory">
-      <p className="page-hint">What managed chats and tasks remember between conversations.</p>
-      <div className="settings-inline">
-        <Input label="Key" value={key} onChange={(e) => setKey(e.target.value)} mono />
-        <Input
-          label="Value"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          hint="Text or JSON."
-        />
-        <Select
-          label="Type"
-          value={type}
-          onChange={(e) => setType(e.target.value as MemoryType)}
-          hint={MEMORY_TYPE_HINTS[type]}
-        >
-          {MEMORY_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </Select>
-        <Button variant="primary" icon={Plus} busy={busy} disabled={!key.trim()} onClick={add}>
-          Add entry
-        </Button>
-      </div>
-      <Input
-        label="Search"
-        type="search"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        hint="Finds entries by the words in their key or value."
-      />
-      <Loaded resource={memory} what="memory" skeleton="rows">
-        {(entries) => (
-          <Table
-            label="Memory entries"
-            rows={entries}
-            rowKey={(e) => e.id}
-            columns={[
-              {
-                key: 'key',
-                header: 'Key',
-                cell: (e) => <code>{e.key}</code>,
-                sortValue: (e) => e.key,
-                width: 'md',
-              },
-              {
-                key: 'type',
-                header: 'Type',
-                cell: (e) => e.type,
-                sortValue: (e) => e.type,
-                width: 'sm',
-              },
-              {
-                key: 'value',
-                header: 'Value',
-                cell: (e) => (
-                  <span className="settings-value">
-                    {typeof e.value === 'string' ? e.value : JSON.stringify(e.value)}
-                  </span>
-                ),
-              },
-              {
-                key: 'at',
-                header: 'Added',
-                cell: (e) => <When at={e.createdAt} />,
-                sortValue: (e) => e.createdAt,
-                width: 'sm',
-              },
-              {
-                key: 'del',
-                header: <span className="ui-sr-only">Delete</span>,
-                width: 'xs',
-                cell: (e) => (
-                  <IconButton
-                    icon={Trash2}
-                    label={`Delete ${e.key}`}
-                    size="sm"
-                    onClick={() => setDeleting(e)}
-                  />
-                ),
-              },
-            ]}
-            empty={
-              <EmptyState
-                icon={Database}
-                title={q ? 'Nothing matches' : 'Nothing remembered yet'}
-              />
-            }
-          />
-        )}
-      </Loaded>
-      <ConfirmDelete
-        what={deleting?.key ?? ''}
-        detail="Managed chats and tasks will no longer see it."
-        open={deleting !== null}
-        onClose={() => setDeleting(null)}
-        onConfirm={() =>
-          deleting &&
-          void save(
-            deleting.key,
-            () => client.deleteMemoryRecord(deleting.id),
-            `Deleted ${deleting.key}.`
-          ).then(() => memory.reload())
-        }
-      />
-    </Section>
-  );
-}
 
 // ---------------------------------------------------------------------------
 

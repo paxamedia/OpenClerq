@@ -46,6 +46,7 @@ const PAGES = [
   ['chat-managed', '/m/chat/ses_3'],
   ['settings', '/settings/general'],
   ['settings-models', '/settings/models'],
+  ['settings-memory', '/settings/memory'],
   ['settings-triggers', '/settings/triggers'],
   ['settings-advanced', '/settings/advanced'],
   ['settings-devices', '/settings/devices'],

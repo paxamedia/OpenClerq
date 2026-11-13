@@ -12,6 +12,8 @@ import type {
   ChatDraft,
   ChatMessage,
   ChatSession,
+  MemoryRecord,
+  MemoryType,
   ProviderInfo,
   RepoDetail,
   RepoSummary,
@@ -1208,21 +1210,23 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
   };
   const memoryRecord = (
     id: string,
-    type: 'fact' | 'preference' | 'decision' | 'procedure' | 'note',
+    type: MemoryType,
     key: string,
     value: unknown,
-    created: number
-  ) => ({
+    created: number,
+    extra: Partial<MemoryRecord> = {}
+  ): MemoryRecord => ({
     id,
     type,
     key,
     value,
-    origin: 'user' as const,
-    status: 'active' as const,
+    origin: 'user',
+    status: 'active',
     createdAt: iso(created),
     updatedAt: iso(created),
+    ...extra,
   });
-  const memory = opts.empty
+  const memory: MemoryRecord[] = opts.empty
     ? []
     : [
         memoryRecord('mem_tone', 'preference', 'tone', 'Plain, short sentences.', now - 5 * D),
@@ -1234,7 +1238,46 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
           'Tag on main, then run the release workflow.',
           now - 2 * D
         ),
+        memoryRecord('mem_style1', 'preference', 'style', 'Short paragraphs.', now - 9 * D),
+        memoryRecord('mem_style2', 'preference', 'style', 'No exclamation marks.', now - 8 * D),
+        memoryRecord(
+          'mem_ci',
+          'note',
+          'ci-triage',
+          'The checkout test is flaky on Mondays; rerun before reporting it.',
+          now - 4 * D,
+          { origin: 'agent', sourceSession: 'ses_3' }
+        ),
+        memoryRecord(
+          'mem_deps_sum',
+          'decision',
+          'deps-policy',
+          'Patch and minor updates only; a major version needs a person.',
+          now - D,
+          { origin: 'consolidation', agentDerived: true }
+        ),
+        memoryRecord(
+          'mem_deps_a',
+          'decision',
+          'deps-policy',
+          'Patch and minor only.',
+          now - 12 * D,
+          {
+            status: 'superseded',
+            supersededBy: 'mem_deps_sum',
+          }
+        ),
+        memoryRecord(
+          'mem_deps_b',
+          'decision',
+          'deps-policy',
+          'Majors wait for a person to say yes.',
+          now - 11 * D,
+          { origin: 'agent', status: 'superseded', supersededBy: 'mem_deps_sum' }
+        ),
       ];
+  let memoryReadTypes: MemoryType[] = ['fact', 'preference', 'decision', 'procedure', 'note'];
+  let routingFallback: string[] = [];
   let killed = false;
 
   const records = opts.empty
@@ -1456,10 +1499,24 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
     routing: () =>
       ok({
         default: { provider: 'anthropic', model: 'claude-sonnet-5-5' },
-        fallback: [] as string[],
+        fallback: routingFallback,
         maxFallback: 5,
       }),
-    setRouting: (fallback: string[]) => ok({ fallback }),
+    setRouting: (fallback: string[]) => {
+      const unknown = fallback.find((m) => !providers.some((p) => p.id === m.split('/')[0]));
+      if (unknown) {
+        return Promise.reject(
+          Object.assign(new Error('Gateway 400'), {
+            body: {
+              error: 'invalid_routing',
+              message: `Unknown provider in "${unknown}". Known: ${providers.map((p) => p.id).join(', ')}.`,
+            },
+          })
+        );
+      }
+      routingFallback = [...fallback];
+      return ok({ fallback: routingFallback });
+    },
     repos: () => ok({ repos: repoRows }),
     repo: (id: string) => {
       const r = repoDetail(id);
@@ -1924,32 +1981,115 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         body: '# Instructions\n\nExplain the rule, then point to the engine for the number.',
       }),
     updateSkill: () => ok({ ok: true }),
-    memory: () => ok({ entries: memory }),
+    memory: () => ok({ entries: memory.filter((m) => m.status === 'active') }),
     getMemory: (key: string) => ok(memory.find((m) => m.key === key)),
     setMemory: () => ok({ ok: true }),
     deleteMemory: () => ok({ ok: true }),
-    memoryRecords: () => ok({ records: memory }),
-    addMemoryRecord: () => ok({ record: memory[0] }),
+    memoryRecords: (
+      f: { status?: 'active' | 'superseded' | 'all'; type?: MemoryType; key?: string } = {}
+    ) =>
+      ok({
+        records: memory.filter(
+          (m) =>
+            (f.status === 'all' || m.status === (f.status ?? 'active')) &&
+            (!f.type || m.type === f.type) &&
+            (!f.key || m.key === f.key)
+        ),
+      }),
+    addMemoryRecord: (input: { key: string; value: unknown; type?: MemoryType }) => {
+      const record = memoryRecord(
+        `mem_${memory.length + 1}`,
+        input.type ?? 'fact',
+        input.key,
+        input.value,
+        now
+      );
+      memory.push(record);
+      return ok({ record });
+    },
     updateMemoryRecord: () => ok({ record: memory[0] }),
-    deleteMemoryRecord: () => ok({ ok: true }),
+    deleteMemoryRecord: (id: string) => {
+      const i = memory.findIndex((m) => m.id === id);
+      if (i >= 0) {
+        // A summary takes the records folded into it along.
+        for (let j = memory.length - 1; j >= 0; j--) {
+          if (memory[j].supersededBy === id) memory.splice(j, 1);
+        }
+        memory.splice(
+          memory.findIndex((m) => m.id === id),
+          1
+        );
+      }
+      return ok({ ok: true });
+    },
     searchMemory: (q: string) =>
       ok({
         query: q,
         mode: 'fts5' as const,
         results: memory
-          .filter((m) =>
-            `${m.key} ${JSON.stringify(m.value)}`.toLowerCase().includes(q.toLowerCase())
+          .filter(
+            (m) =>
+              m.status === 'active' &&
+              `${m.key} ${JSON.stringify(m.value)}`.toLowerCase().includes(q.toLowerCase())
           )
           .map((m) => ({ ...m, score: 1 })),
       }),
-    consolidateMemory: () => ok({ record: memory[0], superseded: [] as string[] }),
-    unconsolidateMemory: () => ok({ restored: [] as string[] }),
+    consolidateMemory: (key: string, o: { type?: MemoryType; model?: string } = {}) => {
+      const sources = memory.filter(
+        (m) => m.key === key && m.status === 'active' && (!o.type || m.type === o.type)
+      );
+      if (sources.length < 2) {
+        return Promise.reject(
+          Object.assign(new Error('Gateway 409'), {
+            body: {
+              error: 'cannot_consolidate',
+              message: `"${key}" has ${sources.length} record in use; summarising needs at least two.`,
+            },
+          })
+        );
+      }
+      const record = memoryRecord(
+        `mem_sum_${memory.length + 1}`,
+        sources[0].type,
+        key,
+        `A summary of ${sources.length} records under ${key}.`,
+        now,
+        {
+          origin: 'consolidation',
+          ...(sources.some((s) => s.origin === 'agent' || s.agentDerived)
+            ? { agentDerived: true as const }
+            : {}),
+        }
+      );
+      for (const s of sources) {
+        s.status = 'superseded';
+        s.supersededBy = record.id;
+      }
+      memory.push(record);
+      return ok({ record, superseded: sources.map((s) => s.id), model: o.model });
+    },
+    unconsolidateMemory: (id: string) => {
+      const restored = memory.filter((m) => m.supersededBy === id);
+      for (const m of restored) {
+        m.status = 'active';
+        delete m.supersededBy;
+      }
+      const i = memory.findIndex((m) => m.id === id);
+      if (i >= 0) memory.splice(i, 1);
+      return ok({ restored: restored.map((m) => m.id) });
+    },
     memoryPolicy: () =>
       ok({
-        readTypes: ['fact', 'preference', 'decision', 'procedure', 'note'],
-        types: ['fact', 'preference', 'decision', 'procedure', 'note'],
+        readTypes: memoryReadTypes,
+        types: ['fact', 'preference', 'decision', 'procedure', 'note'] as MemoryType[],
       }),
-    setMemoryPolicy: (readTypes: string[]) => ok({ readTypes, types: readTypes }),
+    setMemoryPolicy: (readTypes: MemoryType[]) => {
+      memoryReadTypes = [...readTypes];
+      return ok({
+        readTypes: memoryReadTypes,
+        types: ['fact', 'preference', 'decision', 'procedure', 'note'] as MemoryType[],
+      });
+    },
     calculateEval: () =>
       ok({
         values: { net: 100, tax: 25 },
