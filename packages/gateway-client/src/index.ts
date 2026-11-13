@@ -240,6 +240,8 @@ export interface MemoryHit extends MemoryRecord {
 
 export interface RunDetail extends RunSummary {
   steps: RunStep[];
+  /** The tool calls its agent made, in order. Absent from an older gateway. */
+  toolCalls?: ToolCallRecord[];
   artifacts: ArtifactInfo[];
   /** The sub-agents it started, oldest first. Absent from an older gateway. */
   children?: ChildRunSummary[];
@@ -297,6 +299,8 @@ export interface AutomationSummary {
     prUrl?: string;
     createdAt: string;
   } | null;
+  /** Where the spec came from when not typed by a person: `chat <session id>` for a chat draft. */
+  authoredBy?: string | null;
   updatedAt: string;
 }
 
@@ -321,7 +325,120 @@ export interface AutomationPreview {
   driver: DriverInfo;
   checks: Array<{ level: 'ok' | 'warning' | 'error'; message: string }>;
   ready: boolean;
+  /** The rules a run would be decided by; `approvalRequired` lists what waits for a person. */
+  policy?: {
+    allow?: string[];
+    deny?: string[];
+    approvalRequired?: string[];
+    maxCallsPerRun?: number;
+  };
 }
+
+/** What saving a chat draft and running it would do, worked out without doing it. */
+export interface DraftDryRun extends AutomationPreview {
+  draftId: string;
+  /** The host's time zone, which the schedule and `nextFirings` are in. */
+  timeZone: string;
+  estimate: {
+    /** Average cost of past finished runs of the same driver and model; null without any. */
+    perRunUsd: number | null;
+    perMonthUsd: number | null;
+    basedOnRuns: number;
+    /** Firings in the next 30 days. Null without a schedule. */
+    firingsPerMonth: number | null;
+    capPerRunUsd: number | null;
+    capPerMonthUsd: number | null;
+    note: string;
+  };
+  /** Always false: a dry run executes nothing. */
+  executed: false;
+}
+
+/** An automation a model drafted in a chat. Saving it is a person's action, and it starts off. */
+export interface ChatDraft {
+  id: string;
+  sessionId: string;
+  runId: string | null;
+  name: string;
+  /** The YAML as drafted. */
+  source: string;
+  summary: {
+    name: string;
+    description?: string;
+    schedule: string | null;
+    nextRunAt: string | null;
+    repo: string;
+    driver: string;
+    model: string | null;
+    push: boolean;
+    pullRequest: 'draft' | 'none';
+    /** What the draft asked for; the first push waits for approval either way. */
+    pushApproval: 'manual' | 'auto';
+    maxUsdPerRun: number | null;
+    maxUsdPerMonth: number | null;
+  } | null;
+  /** Why it no longer passes the checks. */
+  problem?: string;
+  /** The automation it was saved as. */
+  automationId: string | null;
+  savedAt: string | null;
+  createdAt: string;
+}
+
+/** One tool call of a run's agent, as GET /runs/:id and /runs/:id/tool-calls list it. */
+export interface ToolCallRecord {
+  id: number;
+  /** The run step that shows it. */
+  stepSeq?: number;
+  callId?: string;
+  /** The tool as policy names it (`fs.write`, `memory.write.fact`, `automation.draft`). */
+  name: string;
+  input?: unknown;
+  output?: string;
+  status: 'running' | 'ok' | 'error' | 'denied';
+  durationMs?: number;
+  /** Whether a person was asked; null when the driver does not say (a CLI agent). */
+  approvalState: 'not_required' | 'approved' | 'denied' | null;
+  createdAt: string;
+  finishedAt?: string;
+}
+
+/** What managed mode adds to a message, beside what raw sends (POST /sessions/:id/mode-diff). */
+export interface ModeDiff {
+  raw: {
+    system: null;
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+    tools: [];
+    memory: null;
+    model: string | null;
+    fallbackModels: [];
+  };
+  managed: {
+    system: string;
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+    skill: { slug?: string; name?: string; instructions?: string } | null;
+    memory: { text: string; count: number } | null;
+    tools: Array<{
+      name: string;
+      modelName: string;
+      risk: string;
+      decision: 'allow' | 'needs_approval';
+    }>;
+    model: string;
+    /** A model a person chose: used as chosen, with no fallback. */
+    chosen: boolean;
+    fallbackModels: string[];
+    workspace: string | null;
+    permissionMode: ChatPermissionMode;
+  };
+}
+
+/** What a managed message streams besides its text. */
+export type ChatStreamEvent =
+  | { type: 'tool'; id: string; name: string; status: 'running' | 'ok' | 'error' | 'denied' }
+  | { type: 'approval'; approval: Approval & { input?: unknown } }
+  | { type: 'approval_decided'; id: number; approved: boolean }
+  | { type: 'draft'; draft: Pick<ChatDraft, 'id' | 'name' | 'summary'> };
 
 /** One event from the gateway's bus, as GET /events/stream sends it. */
 export interface ClerqEvent<T = unknown> {
@@ -508,15 +625,23 @@ export interface Approval {
   requestedAt: string;
   /** Asked by a sub-agent: the run that started it. */
   parentRunId?: string;
+  /** Asked from a chat: the conversation waiting for the answer. */
+  sessionId?: string;
 }
 
 export type PipelineMode = 'raw' | 'managed';
+
+/** How a managed conversation's agent treats the attached folder: full access, ask first, or read only. */
+export type ChatPermissionMode = 'acceptEdits' | 'default' | 'plan';
 
 export interface ChatSession {
   id: string;
   title: string | null;
   mode: PipelineMode;
   model: string | null;
+  /** A folder attached to a managed conversation; its agent works there. Absent from an older gateway. */
+  workspace?: string | null;
+  permissionMode?: ChatPermissionMode;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -552,6 +677,12 @@ export interface ChatMessage {
     runId?: string;
     chosen?: number | null;
     columns?: ComparisonColumn[];
+    /** Managed: tool calls made, drafts proposed, the skill and the saved notes read. */
+    toolCalls?: number;
+    drafts?: Array<{ id: string; name: string }>;
+    skillSlug?: string;
+    memoryCount?: number;
+    workspace?: string;
     [key: string]: unknown;
   };
 }
@@ -737,7 +868,13 @@ export const gateway = {
   },
 
   createSession(
-    input: { title?: string; mode?: PipelineMode; model?: string } = {}
+    input: {
+      title?: string;
+      mode?: PipelineMode;
+      model?: string;
+      workspace?: string;
+      permissionMode?: ChatPermissionMode;
+    } = {}
   ): Promise<ChatSession> {
     return fetchJson('/sessions', { method: 'POST', body: JSON.stringify(input) });
   },
@@ -748,7 +885,14 @@ export const gateway = {
 
   updateSession(
     id: string,
-    patch: { title?: string; mode?: PipelineMode; model?: string | null }
+    patch: {
+      title?: string;
+      mode?: PipelineMode;
+      model?: string | null;
+      /** A folder path to attach, or null to detach. */
+      workspace?: string | null;
+      permissionMode?: ChatPermissionMode;
+    }
   ): Promise<ChatSession> {
     return fetchJson(`/sessions/${encodeURIComponent(id)}/update`, {
       method: 'POST',
@@ -779,7 +923,9 @@ export const gateway = {
       continueOnDisconnect?: boolean;
     },
     onDelta?: (text: string) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    /** Managed: tool activity, approvals to answer, drafts, as they happen (streaming only). */
+    onEvent?: (event: ChatStreamEvent) => void
   ): Promise<{ runId: string; message: ChatMessage }> {
     const res = await fetch(getUrl(`/sessions/${encodeURIComponent(id)}/send`), {
       method: 'POST',
@@ -816,6 +962,13 @@ export const gateway = {
         };
         if (event.type === 'start' && event.runId) runId = event.runId;
         else if (event.type === 'delta' && event.text) onDelta(event.text);
+        else if (
+          event.type === 'tool' ||
+          event.type === 'approval' ||
+          event.type === 'approval_decided' ||
+          event.type === 'draft'
+        )
+          onEvent?.(event as unknown as ChatStreamEvent);
         else if (event.type === 'error') throw new Error(event.error ?? 'The model call failed.');
         else if (event.type === 'done' && event.message) {
           result = { runId: event.runId ?? '', message: event.message };
@@ -851,6 +1004,42 @@ export const gateway = {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  },
+
+  /** What managed mode would add to `text` over raw, in this conversation. Calls no model. */
+  modeDiff(id: string, input: { text: string; model?: string }): Promise<ModeDiff> {
+    return fetchJson(`/sessions/${encodeURIComponent(id)}/mode-diff`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  /** Automations a model drafted in this conversation, oldest first. */
+  drafts(id: string): Promise<{ drafts: ChatDraft[] }> {
+    return fetchJson(`/sessions/${encodeURIComponent(id)}/drafts`);
+  },
+
+  draft(id: string, draftId: string): Promise<ChatDraft> {
+    return fetchJson(`/sessions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}`);
+  },
+
+  /** Check a draft against this machine and expand its schedule; executes nothing. */
+  dryRunDraft(id: string, draftId: string): Promise<DraftDryRun> {
+    return fetchJson(
+      `/sessions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}/dry-run`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  /** Save a draft as an automation. It starts switched off; enabling it is a separate action. */
+  saveDraft(
+    id: string,
+    draftId: string
+  ): Promise<{ id: string; name: string; enabled: false; authoredBy: string; source: string }> {
+    return fetchJson(
+      `/sessions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}/save`,
+      { method: 'POST', body: '{}' }
+    );
   },
 
   promote(id: string, messageId: number, index: number): Promise<ChatMessage> {
@@ -1112,6 +1301,11 @@ export const gateway = {
 
   run(id: string): Promise<RunDetail> {
     return fetchJson(`/runs/${encodeURIComponent(id)}`);
+  },
+
+  /** The tool calls a run's agent made, in order. */
+  runToolCalls(id: string): Promise<{ toolCalls: ToolCallRecord[] }> {
+    return fetchJson(`/runs/${encodeURIComponent(id)}/tool-calls`);
   },
 
   secrets(): Promise<

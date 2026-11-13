@@ -1,12 +1,14 @@
 /**
  * Chat: conversations, the transcript, and an inspector with the request, raw
- * response, tokens and cost. Raw sends the conversation as it is; Managed adds
- * the system prompt, skills and memory. Compare sends one message to several
- * models side by side.
+ * response, tokens and cost. Raw sends the conversation as it is; Managed runs
+ * an agent with the system prompt, skills, memory and tools (files and
+ * commands only in a folder you attach), asks before what needs approval,
+ * and can draft automations you preview, dry-run and save (they start off).
+ * Compare sends one message to several models side by side.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Columns3, MessageSquare, Plus, Send, Square, Trash2 } from 'lucide-react';
+import { Columns3, FolderOpen, MessageSquare, Plus, Send, Square, Trash2 } from 'lucide-react';
 import type {
   ChatMessage,
   ChatSession,
@@ -39,6 +41,15 @@ import {
   useMedia,
 } from '../../shell/layout';
 import { When } from '../common';
+import {
+  DraftCard,
+  FolderDialog,
+  LiveActivity,
+  ModeDiffView,
+  permissionLabel,
+  type LiveApproval,
+  type LiveTool,
+} from './Managed';
 import './chat.css';
 
 function costText(cost: number | null | undefined): string {
@@ -52,7 +63,9 @@ function MetaLine({ meta }: { meta: ChatMessage['meta'] }) {
     parts.push(meta.provider ? `${meta.provider} · ${meta.model}` : String(meta.model));
   if (typeof meta.tokensIn === 'number')
     parts.push(`${tokens(meta.tokensIn, false)} in · ${tokens(meta.tokensOut ?? 0, false)} out`);
-  if (meta.mode !== 'managed') parts.push(costText(meta.costUsd));
+  if (typeof meta.toolCalls === 'number' && meta.toolCalls > 0)
+    parts.push(`${meta.toolCalls} tool call${meta.toolCalls === 1 ? '' : 's'}`);
+  if (meta.mode !== 'managed' || 'costUsd' in meta) parts.push(costText(meta.costUsd));
   if (typeof meta.latencyMs === 'number') parts.push(duration(meta.latencyMs));
   return parts.length ? <p className="chat-meta">{parts.join(' · ')}</p> : null;
 }
@@ -102,7 +115,18 @@ function Columns({
   );
 }
 
-function Inspector({ message, onClose }: { message: ChatMessage | null; onClose: () => void }) {
+function Inspector({
+  message,
+  sessionId,
+  question,
+  onClose,
+}: {
+  message: ChatMessage | null;
+  sessionId: string;
+  /** The user message this answers, for the managed-over-raw comparison. */
+  question: string;
+  onClose: () => void;
+}) {
   const meta = message?.meta;
   const raw = meta
     ? Object.fromEntries(Object.entries(meta).filter(([k]) => k !== 'request'))
@@ -152,6 +176,7 @@ function Inspector({ message, onClose }: { message: ChatMessage | null; onClose:
               },
             ]}
           />
+          {meta?.mode === 'managed' && <ModeDiffView sessionId={sessionId} text={question} />}
           {meta?.request ? (
             <CodeBlock
               title="Request"
@@ -229,6 +254,9 @@ function Conversation({ id, base }: { id: string; base: string }) {
   const [error, setError] = useState<unknown>(null);
   const [inspect, setInspect] = useState<ChatMessage | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [folderOpen, setFolderOpen] = useState(false);
+  const [liveTools, setLiveTools] = useState<LiveTool[]>([]);
+  const [liveApprovals, setLiveApprovals] = useState<LiveApproval[]>([]);
   const end = useRef<HTMLDivElement>(null);
   const inFlight = useRef<AbortController | null>(null);
 
@@ -283,12 +311,32 @@ function Conversation({ id, base }: { id: string; base: string }) {
     const controller = new AbortController();
     inFlight.current = controller;
     setStreaming('');
+    setLiveTools([]);
+    setLiveApprovals([]);
     try {
       await client.sendMessage(
         id,
         { text, model: model || undefined },
         (d) => setStreaming((s) => s + d),
-        controller.signal
+        controller.signal,
+        (event) => {
+          if (event.type === 'tool') {
+            setLiveTools((list) =>
+              event.status === 'running'
+                ? [...list, { id: event.id, name: event.name, status: 'running' }]
+                : list.map((t) => (t.id === event.id ? { ...t, status: event.status } : t))
+            );
+          } else if (event.type === 'approval') {
+            setLiveApprovals((list) => [...list, { approval: event.approval }]);
+            live.invalidate(['approvals']);
+          } else if (event.type === 'approval_decided') {
+            setLiveApprovals((list) =>
+              list.map((a) =>
+                a.approval.id === event.id ? { ...a, decided: true, approved: event.approved } : a
+              )
+            );
+          }
+        }
       );
       await reload();
     } catch (e) {
@@ -300,9 +348,16 @@ function Conversation({ id, base }: { id: string; base: string }) {
     } finally {
       inFlight.current = null;
       setStreaming('');
+      setLiveTools([]);
+      setLiveApprovals([]);
       setBusy(false);
     }
   };
+
+  const decided = (approvalId: number, approved: boolean) =>
+    setLiveApprovals((list) =>
+      list.map((a) => (a.approval.id === approvalId ? { ...a, decided: true, approved } : a))
+    );
 
   const promote = async (messageId: number, index: number) => {
     try {
@@ -360,9 +415,22 @@ function Conversation({ id, base }: { id: string; base: string }) {
         />
         <span className="page-hint chat-mode-hint">
           {s.mode === 'managed'
-            ? 'Managed adds your prompt, skills and memory.'
+            ? 'Managed adds your prompt, skills, memory and tools.'
             : 'Raw sends the conversation as it is.'}
         </span>
+        {s.mode === 'managed' && (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={FolderOpen}
+            onClick={() => setFolderOpen(true)}
+            title={s.workspace ?? undefined}
+          >
+            {s.workspace
+              ? `${s.workspace.split('/').filter(Boolean).at(-1)} · ${permissionLabel(s.permissionMode)}`
+              : 'No folder'}
+          </Button>
+        )}
         <Select
           aria-label="Model"
           value={model}
@@ -419,6 +487,9 @@ function Conversation({ id, base }: { id: string; base: string }) {
             ) : (
               <p className="chat-text">{m.content}</p>
             )}
+            {m.meta?.drafts?.map((d) => (
+              <DraftCard key={d.id} sessionId={id} draftId={d.id} />
+            ))}
             <MetaLine meta={m.meta} />
           </article>
         ))}
@@ -432,6 +503,7 @@ function Conversation({ id, base }: { id: string; base: string }) {
             ) : (
               <ProgressLine label="Waiting for the answer" />
             )}
+            <LiveActivity tools={liveTools} approvals={liveApprovals} onDecided={decided} />
           </article>
         )}
         {busy && comparing && <ProgressLine label="Waiting for every model" />}
@@ -492,7 +564,18 @@ function Conversation({ id, base }: { id: string; base: string }) {
           </Button>
         )}
       </div>
-      <Inspector message={inspect} onClose={() => setInspect(null)} />
+      <Inspector
+        message={inspect}
+        sessionId={id}
+        question={questionFor(s.messages, inspect)}
+        onClose={() => setInspect(null)}
+      />
+      <FolderDialog
+        open={folderOpen}
+        session={s}
+        onClose={() => setFolderOpen(false)}
+        onSaved={() => void reload()}
+      />
       <Dialog
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
@@ -511,6 +594,14 @@ function Conversation({ id, base }: { id: string; base: string }) {
       />
     </section>
   );
+}
+
+/** The user message an answer replies to. */
+export function questionFor(messages: ChatMessage[], answer: ChatMessage | null): string {
+  if (!answer) return '';
+  const at = messages.findIndex((m) => m.id === answer.id);
+  for (let i = at - 1; i >= 0; i--) if (messages[i].role === 'user') return messages[i].content;
+  return '';
 }
 
 export function ChatScreen({ parts, base }: ModuleProps) {

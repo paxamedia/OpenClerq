@@ -429,3 +429,66 @@ describe('routing', () => {
     expect(JSON.parse(String(calls[1][1]?.body))).toEqual({ model: 'anthropic/claude-sonnet-4-5' });
   });
 });
+
+describe('managed chat and drafts', () => {
+  it('hands tool activity, approvals and drafts to onEvent, and text to onDelta', async () => {
+    const approval = {
+      id: 3,
+      runId: 'run_1',
+      tool: 'fs.write',
+      tier: 'medium',
+      reason: 'r',
+      requestedAt: 't',
+    };
+    stubFetch(() =>
+      sse([
+        frame({ type: 'start', runId: 'run_1' }),
+        frame({ type: 'tool', id: 'c1', name: 'fs.write', status: 'running' }),
+        frame({ type: 'approval', approval }),
+        frame({ type: 'approval_decided', id: 3, approved: true }),
+        frame({ type: 'draft', draft: { id: 'drf_1', name: 'x', summary: null } }),
+        frame({ type: 'delta', text: 'done' }),
+        frame({ type: 'done', runId: 'run_1', message }),
+      ])
+    );
+    const events: string[] = [];
+    const deltas: string[] = [];
+    await gateway.sendMessage(
+      'ses_1',
+      { text: 'hi' },
+      (d) => deltas.push(d),
+      undefined,
+      (e) => events.push(e.type)
+    );
+    expect(events).toEqual(['tool', 'approval', 'approval_decided', 'draft']);
+    expect(deltas).toEqual(['done']);
+  });
+
+  it('reaches the mode diff, the drafts and a run’s tool calls by id', async () => {
+    stubFetch(() => Response.json({}));
+    await gateway.modeDiff('ses 1', { text: 'hi' });
+    await gateway.drafts('ses 1');
+    await gateway.draft('ses 1', 'drf 1');
+    await gateway.dryRunDraft('ses 1', 'drf 1');
+    await gateway.saveDraft('ses 1', 'drf 1');
+    await gateway.runToolCalls('run 1');
+    await gateway.updateSession('ses 1', { workspace: '/tmp/x', permissionMode: 'default' });
+    expect(
+      calls.map(
+        ([url, init]) => `${init?.method ?? 'GET'} ${url.replace('http://127.0.0.1:18790', '')}`
+      )
+    ).toEqual([
+      'POST /sessions/ses%201/mode-diff',
+      'GET /sessions/ses%201/drafts',
+      'GET /sessions/ses%201/drafts/drf%201',
+      'POST /sessions/ses%201/drafts/drf%201/dry-run',
+      'POST /sessions/ses%201/drafts/drf%201/save',
+      'GET /runs/run%201/tool-calls',
+      'POST /sessions/ses%201/update',
+    ]);
+    expect(JSON.parse(String(calls[6][1]?.body))).toEqual({
+      workspace: '/tmp/x',
+      permissionMode: 'default',
+    });
+  });
+});

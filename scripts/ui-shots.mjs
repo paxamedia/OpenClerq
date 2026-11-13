@@ -36,6 +36,7 @@ const PAGES = [
   ['module', '/m/notes'],
   ['chat', '/m/chat/ses_1'],
   ['chat-compare', '/m/chat/ses_2'],
+  ['chat-managed', '/m/chat/ses_3'],
   ['settings', '/settings/general'],
   ['settings-models', '/settings/models'],
   ['settings-triggers', '/settings/triggers'],

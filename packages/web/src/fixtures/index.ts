@@ -9,6 +9,7 @@ import type {
   Approval,
   ArtifactInfo,
   AutomationSummary,
+  ChatDraft,
   ChatMessage,
   ChatSession,
   ProviderInfo,
@@ -507,7 +508,86 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
             },
           ],
         },
+        {
+          id: 'ses_3',
+          title: 'Weekday CI triage',
+          mode: 'managed',
+          model: null,
+          workspace: '/Users/me/code/shop',
+          permissionMode: 'acceptEdits',
+          createdAt: iso(now - 3 * H),
+          updatedAt: iso(now - 3 * H),
+          messageCount: 2,
+          messages: [
+            {
+              id: 5,
+              role: 'user',
+              content:
+                'Every weekday morning check the shop repo for failing CI on main and summarise what broke.',
+              createdAt: iso(now - 3 * H),
+            },
+            {
+              id: 6,
+              role: 'assistant',
+              content:
+                'I drafted weekday-ci-triage. It runs Monday to Friday at 08:00 and only reports; it pushes nothing.',
+              createdAt: iso(now - 3 * H + 12_000),
+              meta: {
+                mode: 'managed',
+                provider: 'anthropic',
+                model: 'claude-sonnet-5-5',
+                tokensIn: 6120,
+                tokensOut: 540,
+                costUsd: 0.0265,
+                latencyMs: 11_800,
+                toolCalls: 3,
+                runId: 'run_chat02',
+                drafts: [{ id: 'drf_1', name: 'weekday-ci-triage' }],
+              },
+            },
+          ],
+        },
       ];
+
+  const drafts: ChatDraft[] = [
+    {
+      id: 'drf_1',
+      sessionId: 'ses_3',
+      runId: 'run_chat02',
+      name: 'weekday-ci-triage',
+      source: [
+        'name: weekday-ci-triage',
+        'on:',
+        '  schedule: "0 8 * * 1-5"',
+        'targets:',
+        '  repos: [local:~/code/shop]',
+        'agent:',
+        '  driver: claude-code',
+        'prompt: Check CI on main and summarise what broke.',
+        'publish:',
+        '  push: false',
+        'budget:',
+        '  max_usd_per_run: 1.00',
+        '',
+      ].join('\n'),
+      summary: {
+        name: 'weekday-ci-triage',
+        schedule: '0 8 * * 1-5',
+        nextRunAt: nextFirings('0 8 * * 1-5', 1, new Date(now))[0]?.toISOString() ?? null,
+        repo: 'local:~/code/shop',
+        driver: 'claude-code',
+        model: null,
+        push: false,
+        pullRequest: 'none',
+        pushApproval: 'manual',
+        maxUsdPerRun: 1,
+        maxUsdPerMonth: null,
+      },
+      automationId: null,
+      savedAt: null,
+      createdAt: iso(now - 3 * H + 10_000),
+    },
+  ];
 
   const providers: ProviderInfo[] = [
     {
@@ -1106,6 +1186,93 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
       return { runId: 'run_chat', message };
     },
     compare: () => ok({ runId: 'run_cmp', messageId: 4, columns: [] }),
+    modeDiff: (id: string, input: { text: string }) => {
+      const s = sessions.find((x) => x.id === id);
+      const messages = [
+        ...(s?.messages ?? []).map((m) => ({ role: m.role, content: m.content })),
+        { role: 'user', content: input.text },
+      ];
+      return ok({
+        raw: {
+          system: null,
+          messages,
+          tools: [],
+          memory: null,
+          model: 'anthropic/claude-sonnet-5-5',
+          fallbackModels: [],
+        },
+        managed: {
+          system:
+            'You are Clerq…\n\n<memory>\n- [preference] tone: British English\n</memory>\n\nYou can use tools in this conversation.',
+          messages,
+          skill: null,
+          memory: { text: '<memory>…</memory>', count: 1 },
+          tools: [
+            { name: 'memory.search', modelName: 'search_memory', risk: 'read', decision: 'allow' },
+            { name: 'memory.write', modelName: 'save_memory', risk: 'write', decision: 'allow' },
+            {
+              name: 'automation.draft',
+              modelName: 'draft_automation',
+              risk: 'read',
+              decision: 'allow',
+            },
+          ],
+          model: 'anthropic/claude-sonnet-5-5',
+          chosen: false,
+          fallbackModels: ['openai/gpt-5-mini'],
+          workspace: s?.workspace ?? null,
+          permissionMode: s?.permissionMode ?? 'acceptEdits',
+        },
+      });
+    },
+    drafts: (id: string) => ok({ drafts: drafts.filter((d) => d.sessionId === id) }),
+    draft: (id: string, draftId: string) => {
+      const d = drafts.find((x) => x.sessionId === id && x.id === draftId);
+      return d ? ok(d) : Promise.reject(new Error('No draft with that id.'));
+    },
+    dryRunDraft: (_id: string, draftId: string) =>
+      ok({
+        draftId,
+        nextRunAt: nextFirings('0 8 * * 1-5', 1, new Date(now))[0]?.toISOString() ?? null,
+        nextFirings: nextFirings('0 8 * * 1-5', 10, new Date(now)).map((d) => d.toISOString()),
+        repo: { target: 'local:~/code/shop', path: '/Users/me/code/shop' },
+        driver: { id: 'claude-code', available: true },
+        checks: [
+          { level: 'ok', message: 'No push: the run only reports.' },
+          {
+            level: 'warning',
+            message:
+              'The agent and the gates run without isolation (profile "native"), with your account\'s access to files and the network.',
+          },
+        ],
+        ready: true,
+        timeZone: 'Europe/Tallinn',
+        estimate: {
+          perRunUsd: 0.42,
+          perMonthUsd: 9.24,
+          basedOnRuns: 12,
+          firingsPerMonth: 22,
+          capPerRunUsd: 1,
+          capPerMonthUsd: null,
+          note: 'Average of the last 12 finished runs of claude-code.',
+        },
+        executed: false,
+      }),
+    saveDraft: (_id: string, draftId: string) => {
+      const d = drafts.find((x) => x.id === draftId);
+      if (d) {
+        d.automationId = `aut_${draftId}`;
+        d.savedAt = iso(now);
+      }
+      return ok({
+        id: `aut_${draftId}`,
+        name: d?.name ?? draftId,
+        enabled: false,
+        authoredBy: `chat ${d?.sessionId ?? ''}`,
+        source: d?.source ?? '',
+      });
+    },
+    runToolCalls: () => ok({ toolCalls: [] }),
     promote: (id: string, messageId: number, index: number) => {
       const m = sessions.find((s) => s.id === id)?.messages.find((x) => x.id === messageId);
       if (m?.meta) m.meta.chosen = index;
