@@ -63,6 +63,8 @@ export interface RunRecord {
   parentRunId?: string;
   /** The session the run belongs to (a sub-agent's own transcript). */
   sessionId?: string;
+  /** What the sub-agents it started cost, on top of `costUsd`. Absent when it started none that cost anything. */
+  childCostUsd?: number;
 }
 
 /** A sub-agent a run started, as the parent's detail lists it. */
@@ -84,9 +86,12 @@ const RUN_COLUMNS = `runs.*, (
   WHERE s.run_id = runs.id AND s.kind = 'llm' AND s.status IN ('ok', 'unaccounted') AND s.cost_usd IS NULL
 ) AS unpriced_calls, (
   SELECT name FROM automations a WHERE a.id = runs.automation_id
-) AS automation_name`;
+) AS automation_name, (
+  SELECT COALESCE(SUM(c.cost_usd), 0) FROM runs c WHERE c.parent_run_id = runs.id
+) AS child_cost_usd`;
 
 function rowToRun(r: Record<string, unknown>): RunRecord {
+  const childCost = Math.round(Number(r.child_cost_usd ?? 0) * 1e6) / 1e6;
   return {
     id: String(r.id),
     status: r.status as RunStatus,
@@ -110,6 +115,7 @@ function rowToRun(r: Record<string, unknown>): RunRecord {
     modelOverride: r.model_override ? String(r.model_override) : undefined,
     parentRunId: r.parent_run_id ? String(r.parent_run_id) : undefined,
     sessionId: r.session_id ? String(r.session_id) : undefined,
+    ...(childCost > 0 ? { childCostUsd: childCost } : {}),
   };
 }
 
@@ -633,6 +639,17 @@ export function listRuns(limit = 50, opts: { since?: string } = {}): RunRecord[]
   return getStore()
     .prepare(`SELECT ${RUN_COLUMNS} FROM runs ${where} ORDER BY created_at DESC LIMIT ?`)
     .all(...params)
+    .map(rowToRun);
+}
+
+/** A repository's runs, newest first. A sub-agent's run is listed under its parent, not here. */
+export function listRepoRuns(repoId: string, limit = 20): RunRecord[] {
+  return getStore()
+    .prepare(
+      `SELECT ${RUN_COLUMNS} FROM runs
+       WHERE repo_id = ? AND parent_run_id IS NULL ORDER BY created_at DESC, rowid DESC LIMIT ?`
+    )
+    .all(repoId, limit)
     .map(rowToRun);
 }
 

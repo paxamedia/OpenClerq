@@ -176,6 +176,11 @@ export interface RunSummary {
   parentRunId?: string;
   /** The session holding the run's transcript (a sub-agent's task and answer). */
   sessionId?: string;
+  /**
+   * What the sub-agents it started cost, on top of `costUsd`. Absent when it
+   * started none (or none that cost anything), and from an older gateway.
+   */
+  childCostUsd?: number;
 }
 
 /** A sub-agent a run started, as the run's detail lists it. */
@@ -245,8 +250,44 @@ export interface RunDetail extends RunSummary {
   artifacts: ArtifactInfo[];
   /** The sub-agents it started, oldest first. Absent from an older gateway. */
   children?: ChildRunSummary[];
-  /** What they cost, on top of `costUsd`. */
-  childCostUsd?: number;
+}
+
+/**
+ * A repository an automation targets, as GET /repos lists it. A row is made the
+ * first time a run of an automation naming it is queued.
+ */
+export interface RepoSummary {
+  id: string;
+  kind: 'local' | 'github' | 'gitlab';
+  /** `owner/name` for a remote, the folder's name for a local repository. */
+  name: string;
+  /** The https URL of a remote; null for a local repository. */
+  url: string | null;
+  /**
+   * Where it is on this computer: the repository (`repository`) or a remote's
+   * clone in the workspace cache (`clone`). Null for a remote no run has
+   * cloned yet. `exists: false` is a folder that has gone since.
+   */
+  path: { value: string; exists: boolean; role: 'repository' | 'clone' } | null;
+  /** The vault secret it is reached with: its name, never its value. */
+  credential: { secret: string; present: boolean } | null;
+  /** The automations whose spec targets it now. */
+  automations: Array<{ id: string; name: string; enabled: boolean }>;
+  /** Runs waiting for a place, and runs using it now (an approval wait counts). */
+  runs: { queued: number; running: number };
+  lastRun: {
+    id: string;
+    status: string;
+    createdAt: string;
+    startedAt?: string;
+    finishedAt?: string;
+  } | null;
+  createdAt: string;
+}
+
+/** One repository, with its latest 20 runs, newest first. */
+export interface RepoDetail extends RepoSummary {
+  recentRuns: RunSummary[];
 }
 
 export interface DriverInfo {
@@ -1103,6 +1144,15 @@ export const gateway = {
 
   drivers(): Promise<{ drivers: DriverInfo[] }> {
     return fetchJson('/drivers');
+  },
+
+  /** The repositories automations target. Read-only. */
+  repos(): Promise<{ repos: RepoSummary[] }> {
+    return fetchJson('/repos');
+  },
+
+  repo(id: string): Promise<RepoDetail> {
+    return fetchJson(`/repos/${encodeURIComponent(id)}`);
   },
 
   automations(): Promise<{ automations: AutomationSummary[] }> {

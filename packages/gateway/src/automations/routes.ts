@@ -37,6 +37,7 @@ import { vaultCredentials } from './credentials.js';
 import { profileProblem } from './isolation.js';
 import { hasQueuedRun, runningAutomations, startAutomationRun } from './queue.js';
 import { checkModels, judgeChain, modelChoiceProblem, planModels } from './model-chain.js';
+import { mountRepoRoutes } from './repos.js';
 import {
   lastMissedSlots,
   nextRunOf,
@@ -448,4 +449,7 @@ export function mountAutomationRoutes(
     if (!artifact) return res.status(404).json({ error: 'artifact_not_found' });
     res.json(artifact);
   });
+
+  // The repositories these automations target, read-only.
+  mountRepoRoutes(app, deps);
 }

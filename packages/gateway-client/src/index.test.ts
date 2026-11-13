@@ -411,6 +411,26 @@ describe('memory', () => {
   });
 });
 
+describe('repositories', () => {
+  it('reads the list and one repository by an encoded id', async () => {
+    stubFetch(() => Response.json({ repos: [] }));
+    await gateway.repos();
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/repos');
+    expect(calls[0][1]?.method).toBeUndefined();
+    stubFetch(() => Response.json({ id: 'repo_a/b', recentRuns: [] }));
+    await gateway.repo('repo_a/b');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/repos/repo_a%2Fb');
+    expect((calls[0][1]?.headers as Record<string, string>).Authorization).toBe(
+      'Bearer test-token-123'
+    );
+  });
+
+  it('carries a refusal’s status', async () => {
+    stubFetch(() => Response.json({ error: 'repo_not_found' }, { status: 404 }));
+    await expect(gateway.repo('repo_x')).rejects.toMatchObject({ status: 404 });
+  });
+});
+
 describe('routing', () => {
   it('reads and sets the default fallback chain', async () => {
     stubFetch(() => Response.json({ fallback: ['openai/gpt-5-mini'] }));
