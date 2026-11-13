@@ -23,16 +23,40 @@ export class PathContainmentError extends Error {
   }
 }
 
-/** Resolve symlinks for the deepest existing portion of an absolute path. */
-function realpathNearest(target: string): string {
+/** Links followed before giving up, as the operating system does (ELOOP). */
+const MAX_LINKS = 40;
+
+/**
+ * Resolve symlinks for the deepest existing portion of an absolute path.
+ *
+ * A link whose target does not exist cannot be realpath'd, but writing through
+ * it creates its target: `root/link -> ../outside/new` would create
+ * `outside/new`. So a dangling link met on the way is followed by hand, with
+ * readlink, and the path is resolved again from where it points.
+ */
+function realpathNearest(target: string, links = 0): string {
+  if (links > MAX_LINKS) {
+    throw new PathContainmentError('Path passes through too many symbolic links.');
+  }
   let current = path.resolve(target);
   const trailing: string[] = [];
+  const rest = () => [...trailing].reverse();
 
   for (;;) {
     try {
       const real = fs.realpathSync.native(current);
-      return trailing.length > 0 ? path.join(real, ...trailing.reverse()) : real;
+      return trailing.length > 0 ? path.join(real, ...rest()) : real;
     } catch {
+      let link: string | undefined;
+      try {
+        if (fs.lstatSync(current).isSymbolicLink()) link = fs.readlinkSync(current);
+      } catch {
+        // Not there at all: keep walking up.
+      }
+      if (link !== undefined) {
+        const pointsAt = path.resolve(path.dirname(current), link);
+        return realpathNearest(path.join(pointsAt, ...rest()), links + 1);
+      }
       const parent = path.dirname(current);
       if (parent === current) return path.resolve(target); // reached the filesystem root
       trailing.push(path.basename(current));
