@@ -43,6 +43,7 @@ const TRIGGERS: Record<string, string> = {
 const STATUS_FILTERS = [
   { value: '', label: 'Any status' },
   { value: 'running', label: 'Running' },
+  { value: 'queued', label: 'Queued' },
   { value: 'awaiting_approval', label: 'Needs approval' },
   { value: 'done', label: 'Done' },
   { value: 'failed', label: 'Failed' },
@@ -58,6 +59,8 @@ export function runName(r: RunSummary): string {
 function matchesStatus(r: RunSummary, status: string | null): boolean {
   if (!status) return true;
   if (status === 'running') return ACTIVE.has(r.status) || r.status === 'queued';
+  // Waiting for a place, a retry's backoff, or a gateway to pick it up.
+  if (status === 'queued') return r.status === 'queued' || r.status === 'leased';
   return r.status === status;
 }
 
@@ -232,7 +235,7 @@ export function stepLabel(step: RunStep): string {
   const output = (step.output ?? {}) as Record<string, unknown>;
   switch (step.kind) {
     case 'gate':
-      return `Gate: ${String(input.run ?? '')}`;
+      return `Gate: ${String(input.run ?? input.assert ?? '')}`;
     case 'git': {
       const action = String(input.action ?? '');
       const words: Record<string, string> = {

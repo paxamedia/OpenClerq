@@ -188,6 +188,27 @@ describe('figures', () => {
     } as RunDetail;
     expect(pipeline(gateFailed).gates).toBe('failed');
 
+    // A gate that failed before the agent escalated to another model does not
+    // mark a run that went on to pass.
+    const escalated = {
+      ...waiting,
+      steps: [
+        ...waiting.steps.slice(0, 3),
+        { seq: 3, kind: 'gate', status: 'failed', createdAt: '' },
+        {
+          seq: 4,
+          kind: 'tool',
+          input: { name: 'agent.escalate' },
+          status: 'warning',
+          createdAt: '',
+        },
+        { seq: 5, kind: 'llm', createdAt: '' },
+        git('commit'),
+        { seq: 6, kind: 'gate', status: 'passed', createdAt: '' },
+      ],
+    } as RunDetail;
+    expect(pipeline(escalated).gates).toBe('done');
+
     const done = {
       ...waiting,
       status: 'done',

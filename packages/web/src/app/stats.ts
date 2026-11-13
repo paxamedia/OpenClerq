@@ -119,7 +119,18 @@ export function pipeline(run: RunDetail): Record<StageId, StageState> {
     push: has('push'),
     pr: has('pull_request'),
   };
-  const gateFailed = steps.some((s) => s.kind === 'gate' && /fail/.test(s.status ?? ''));
+  // A gate that failed before the agent was escalated to another model was
+  // dealt with by the next attempt; only the latest attempt's gates count.
+  const lastEscalation = steps.reduce(
+    (at, s, i) =>
+      s.kind === 'tool' && (s.input as { name?: unknown } | undefined)?.name === 'agent.escalate'
+        ? i
+        : at,
+    -1
+  );
+  const gateFailed = steps
+    .slice(lastEscalation + 1)
+    .some((s) => s.kind === 'gate' && /fail/.test(s.status ?? ''));
 
   const out = {} as Record<StageId, StageState>;
   const order = STAGES.map((s) => s.id);

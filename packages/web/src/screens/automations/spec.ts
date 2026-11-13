@@ -64,7 +64,7 @@ export function withSchedule(source: string, cron: string): string {
 export function gatesOf(source: string): string[] {
   const block = /^gates\s*:\s*\n((?:[ \t]+.*\n?)*)/m.exec(source);
   if (!block) return [];
-  return [...block[1].matchAll(/-\s*run\s*:\s*(.+?)\s*$/gm)].map((m) =>
+  return [...block[1].matchAll(/-\s*(?:run|assert)\s*:\s*(.+?)\s*$/gm)].map((m) =>
     m[1].replace(/^['"]|['"]$/g, '')
   );
 }

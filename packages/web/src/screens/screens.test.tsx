@@ -51,6 +51,16 @@ describe('automation specs', () => {
     expect(s.perMonth).toBe('20');
   });
 
+  it('lists diff assertions among the gates', () => {
+    const source =
+      "name: x\ngates:\n  - run: pnpm test\n  - assert: diff.files_changed <= 5\n  - assert: 'diff.touches_only [docs/]'\n";
+    expect(gatesOf(source)).toEqual([
+      'pnpm test',
+      'diff.files_changed <= 5',
+      'diff.touches_only [docs/]',
+    ]);
+  });
+
   it('rewrites only the schedule line', () => {
     const next = withSchedule(TEMPLATE, '30 6 * * 1-5');
     expect(scheduleOf(next)).toBe('30 6 * * 1-5');

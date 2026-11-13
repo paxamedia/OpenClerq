@@ -197,6 +197,20 @@ export interface AutomationSummary {
   /** Why a spec saved by an earlier release no longer passes; it needs editing. */
   problem: string | null;
   running: boolean;
+  /** A run is waiting in the queue: for a place under the limit, or a retry's backoff. */
+  queued?: boolean;
+  /** The spec's `on.catch_up`. */
+  catchUp?: boolean;
+  /** The latest schedule slots skipped because nobody was awake for them. */
+  missedSlots?: {
+    count: number;
+    capped: boolean;
+    first: string;
+    last: string | null;
+    reason: 'catch_up_off' | 'paused';
+    noticed: string;
+    at: string;
+  } | null;
   monthSpendUsd: number;
   /** The spec's `budget.max_usd_per_month`, or null when it sets none. */
   monthBudgetUsd: number | null;
@@ -817,7 +831,8 @@ export const gateway = {
   },
 
   /** Start a run now. Resolves once the run exists; follow it with run(). */
-  runAutomation(id: string): Promise<{ runId: string }> {
+  /** `queued` is true when the run waits for a place under the limit on runs at once. */
+  runAutomation(id: string): Promise<{ runId: string; queued?: boolean }> {
     return fetchJson(`/automations/${encodeURIComponent(id)}/run`, { method: 'POST', body: '{}' });
   },
 
