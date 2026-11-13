@@ -564,7 +564,12 @@ async function runGate(
     },
     command,
     args,
-    { signal, onSpawn: (spawned) => watch.onSpawn({ ...spawned, command }) }
+    {
+      signal,
+      onSpawn: (spawned) => watch.onSpawn({ ...spawned, command }),
+      // A daemon a gate forked would otherwise outlive the run, unseen.
+      reapGroup: true,
+    }
   ).finally(watch.done);
   const passed = r.code === 0 && !r.timedOut && !r.cancelled;
   completeRunStep(runId, seq, {

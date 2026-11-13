@@ -233,6 +233,67 @@ describe('native execution', () => {
     expect(r.stdout.trim()).toBe('still ran');
   });
 
+  describe('reapGroup', () => {
+    /** A shell that leaves a sleeper behind, away from the output pipes, and prints its pid. */
+    const leaves = `sleep 60 >/dev/null 2>&1 & echo $!`;
+    const stillThere = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const gone = async (pid: number) => {
+      for (const end = Date.now() + 3_000; Date.now() < end; ) {
+        if (!stillThere(pid)) return true;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return !stillThere(pid);
+    };
+
+    it('leaves what a command started alone by default', async () => {
+      const r = await exec(spec(), 'sh', ['-c', leaves]);
+      const stray = Number(r.stdout.trim());
+      try {
+        expect(stray).toBeGreaterThan(1);
+        expect(stillThere(stray)).toBe(true);
+      } finally {
+        process.kill(stray, 'SIGKILL');
+      }
+    });
+
+    it('stops what a command left running in its group once it exits', async () => {
+      const r = await exec(spec(), 'sh', ['-c', leaves], { reapGroup: true });
+      const stray = Number(r.stdout.trim());
+      expect(r.code).toBe(0);
+      expect(stray).toBeGreaterThan(1);
+      expect(await gone(stray)).toBe(true);
+    });
+
+    it('stops a straggler that holds the output open, instead of waiting for it', async () => {
+      // The sleeper shares stdout, so without the reap the run would not end
+      // until it did.
+      const started = Date.now();
+      const r = await exec(spec(), 'sh', ['-c', 'sleep 60 & echo $!'], { reapGroup: true });
+      const stray = Number(r.stdout.trim());
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(await gone(stray)).toBe(true);
+    });
+
+    it('kills a straggler that ignores the request to stop', async () => {
+      const stubborn = `(trap '' TERM; sleep 60 >/dev/null 2>&1) & echo $!`;
+      const r = await exec(spec(), 'sh', ['-c', stubborn], { reapGroup: true });
+      expect(await gone(Number(r.stdout.trim()))).toBe(true);
+    });
+
+    it('does not touch anything when the group is already empty', async () => {
+      const r = await exec(spec(), 'echo', ['clean'], { reapGroup: true });
+      expect(r).toMatchObject({ code: 0, timedOut: false, cancelled: false });
+      expect(r.stdout.trim()).toBe('clean');
+    });
+  });
+
   it('truncates output beyond the cap instead of buffering it all', async () => {
     const r = await exec({ ...spec(), limits: { maxOutputBytes: 512 } }, 'sh', [
       '-c',

@@ -649,4 +649,27 @@ describe('agent drivers', () => {
     expect(rows[1].pgid).toBe(rows[1].pid);
     expect(rows.every((r) => r.ended_at !== null)).toBe(true);
   });
+
+  it('stops what a gate left running when the gate finishes', async () => {
+    const pidFile = path.join(root, 'stray.pid');
+    const id = await create(
+      'stray-gate',
+      `  - run: 'sleep 60 & echo $! > ${pidFile}'\npublish:\n  push: false`
+    );
+    const run = await waitForRun(await start(id), finished, 20_000);
+    expect(run.status).toBe('done');
+    const stray = Number(fs.readFileSync(pidFile, 'utf8').trim());
+    expect(stray).toBeGreaterThan(1);
+    let alive = true;
+    for (let i = 0; i < 100 && alive; i++) {
+      try {
+        process.kill(stray, 0);
+        await new Promise((r) => setTimeout(r, 25));
+      } catch {
+        alive = false;
+      }
+    }
+    if (alive) process.kill(stray, 'SIGKILL');
+    expect(alive).toBe(false);
+  });
 });

@@ -142,6 +142,13 @@ export interface ExecOptions {
    * here are swallowed: bookkeeping must not stop the command it describes.
    */
   onSpawn?: (process: { pid: number; pgid: number }) => void;
+  /**
+   * When the process exits, stop whatever it left running in its process
+   * group: a dev server an agent started, a daemon a gate forked. They are
+   * asked to stop, then killed after a short grace. Off by default, because a
+   * command run on a user's behalf may be meant to leave something running.
+   */
+  reapGroup?: boolean;
 }
 
 /** Variables a process needs to start and find its tools, and nothing else. */
@@ -347,6 +354,43 @@ function spawnSyncQuiet(cmd: string, args: string[]): boolean {
     return false;
   }
   void args;
+}
+
+/** Whether any process is left in the group. */
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: it exists, and is not ours to signal.
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** The grace a group gets between being asked to stop and being killed. */
+const REAP_GRACE_MS = 1_000;
+
+/**
+ * Stop what is left of a process group whose leader has exited: ask, wait a
+ * short while, then kill. Does nothing when the group is empty, which is the
+ * usual case.
+ */
+async function reapGroup(pgid: number): Promise<void> {
+  if (!groupAlive(pgid)) return;
+  try {
+    process.kill(-pgid, 'SIGTERM');
+  } catch {
+    return;
+  }
+  for (const end = Date.now() + REAP_GRACE_MS; Date.now() < end; ) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    if (!groupAlive(pgid)) return;
+  }
+  try {
+    process.kill(-pgid, 'SIGKILL');
+  } catch {
+    /* gone in the meantime */
+  }
 }
 
 /**
@@ -579,6 +623,14 @@ export async function exec(
       // Escalate if it ignores the polite request.
       setTimeout(() => killTree('SIGKILL'), 2000).unref?.();
     };
+
+    // Children that outlive their parent keep its output pipes open, and the
+    // process is not "closed" until they are shut, so this runs on exit.
+    if (options.reapGroup) {
+      child.once('exit', () => {
+        void reapGroup(child.pid as number);
+      });
+    }
 
     const timer = setTimeout(() => {
       timedOut = true;

@@ -83,6 +83,11 @@ case "$FAKE_MODE" in
     printf '%s\n' "{\"type\":\"item.completed\",\"item\":{\"id\":\"i\",\"type\":\"agent_message\",\"text\":\"key=$CODEX_API_KEY openai=$OPENAI_API_KEY\"}}"
     printf '%s\n' '{"type":"turn.completed","usage":{}}'
     ;;
+  stray)
+    sleep 60 &
+    printf '%s\n' "{\"type\":\"item.completed\",\"item\":{\"id\":\"i\",\"type\":\"agent_message\",\"text\":\"stray=$!\"}}"
+    printf '%s\n' '{"type":"turn.completed","usage":{}}'
+    ;;
   slow)
     printf '%s\n' '{"type":"thread.started","thread_id":"t-1"}'
     sleep 30
@@ -410,6 +415,23 @@ describe.skipIf(isWindows)('codex driver', () => {
       if (e.type === 'started') break;
     }
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('stops what the agent left running once it has finished', async () => {
+    const result = finished(await runFake('stray').events);
+    expect(result.ok).toBe(true);
+    const stray = Number(/stray=(\d+)/.exec(result.summary)?.[1]);
+    expect(stray).toBeGreaterThan(1);
+    for (const end = Date.now() + 3_000; Date.now() < end; ) {
+      try {
+        process.kill(stray, 0);
+      } catch {
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    process.kill(stray, 'SIGKILL');
+    throw new Error('the agent’s background process outlived the run');
   });
 
   it('reports the process it started, so a crashed gateway can find it', async () => {

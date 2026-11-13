@@ -144,6 +144,8 @@ export async function* runCli(options: {
       for (const event of parser.consume(line, which)) push(event);
     },
     onSpawn: input.onSpawn ? (spawned) => input.onSpawn?.({ ...spawned, command: bin }) : undefined,
+    // A dev server the agent started would otherwise outlive the run, unseen.
+    reapGroup: true,
   })
     .then(
       (result) => push({ type: 'finished', result: parser.finish(result) }),
