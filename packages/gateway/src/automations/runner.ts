@@ -683,6 +683,18 @@ async function runAgent(
     }
   }
   if (!result) {
+    // Nothing was reported, but the attempt may still have spent: say so on
+    // the run, whose cost then reads as a lower bound.
+    if (modelCalls === 0)
+      recordModelCall({
+        provider: driver.id,
+        model: model ?? attempt.model ?? 'default',
+        prompt: attempt.prompt,
+        status: 'unaccounted',
+        error: `${driver.id} ended without reporting a result.`,
+        costUsd: null,
+        latencyMs: 0,
+      });
     throw new TransientFailure(`${driver.id} ended without reporting a result.`, 'driver_crash');
   }
 
@@ -693,7 +705,12 @@ async function runAgent(
       provider: driver.id,
       model: model ?? attempt.model ?? 'default',
       prompt: attempt.prompt,
-      status: result.ok ? 'ok' : 'error',
+      // A crashed attempt that reported no cost may still have spent.
+      status: result.ok
+        ? 'ok'
+        : result.crashed && result.costUsd === null
+          ? 'unaccounted'
+          : 'error',
       text: result.summary,
       error: result.ok ? undefined : result.summary,
       tokensIn: result.tokensIn,

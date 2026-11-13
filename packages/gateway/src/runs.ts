@@ -58,7 +58,7 @@ export interface RunRecord {
 /** Selects a run with `unpriced_calls`, the input `costKnown` is derived from. */
 const RUN_COLUMNS = `runs.*, (
   SELECT COUNT(*) FROM run_steps s
-  WHERE s.run_id = runs.id AND s.kind = 'llm' AND s.status = 'ok' AND s.cost_usd IS NULL
+  WHERE s.run_id = runs.id AND s.kind = 'llm' AND s.status IN ('ok', 'unaccounted') AND s.cost_usd IS NULL
 ) AS unpriced_calls, (
   SELECT name FROM automations a WHERE a.id = runs.automation_id
 ) AS automation_name`;
@@ -658,7 +658,11 @@ export interface ModelCallRecord {
   provider: string;
   model: string;
   prompt: string;
-  status: 'ok' | 'error';
+  /**
+   * `unaccounted`: the call (or a failed agent attempt) may have cost
+   * something that nobody reported, so the run's cost is a lower bound.
+   */
+  status: 'ok' | 'error' | 'unaccounted';
   text?: string;
   error?: string;
   tokensIn?: number;

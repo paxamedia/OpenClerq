@@ -93,6 +93,7 @@ const crash: Behaviour = () => ({
   ok: false,
   crashed: true,
   exitCode: null,
+  costUsd: null,
   summary: 'claude exited with code none before reporting a result.',
 });
 
@@ -813,6 +814,12 @@ describe('retries', () => {
     expect(retry).toHaveLength(1);
     expect(retry[0].output).toMatchObject({ cause: 'driver_crash' });
     expect(calls).toHaveLength(2);
+    // The crashed attempt reported no cost, so the run's is a lower bound.
+    expect(run).toMatchObject({ costUsd: 0.25, costKnown: false });
+    expect((run.steps as Step[]).filter((s) => s.kind === 'llm').map((s) => s.status)).toEqual([
+      'unaccounted',
+      'ok',
+    ]);
   });
 
   it('gives up once the retries are used up', async () => {
