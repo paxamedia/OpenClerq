@@ -53,7 +53,9 @@ import {
   TriggerConfigError,
   type TriggerSource,
 } from './triggers.js';
-import { listMemory, getMemory, setMemory, deleteMemory, searchMemory } from './memory-layer.js';
+import { mountMemoryRoutes } from './memory-routes.js';
+import { memoryBlock } from './memory-context.js';
+import { pruneExpired } from './memory-layer.js';
 import { initStore } from './store.js';
 import {
   recordRun,
@@ -507,54 +509,7 @@ export function createGateway(config: GatewayConfig = {}): {
     }
   });
 
-  app.get('/memory', (_req, res) => {
-    try {
-      const entries = listMemory();
-      res.json({ entries });
-    } catch (e) {
-      logger.error('memory list error', { err: e instanceof Error ? e.message : String(e) });
-      res.status(500).json({ error: 'memory_list_failed' });
-    }
-  });
-
-  app.get('/memory/:key', (req: Request, res: Response) => {
-    const key = typeof req.params?.key === 'string' ? req.params.key : '';
-    if (!key) return res.status(400).json({ error: 'key required' });
-    try {
-      const entry = getMemory(key);
-      if (!entry) return res.status(404).json({ error: 'memory_not_found', key });
-      res.json(entry);
-    } catch (e) {
-      logger.error('memory get error', { key, err: e instanceof Error ? e.message : String(e) });
-      res.status(500).json({ error: 'memory_get_failed' });
-    }
-  });
-
-  app.post('/memory', (req: Request, res: Response) => {
-    const body = req.body as { key?: string; value?: unknown };
-    const key = typeof body?.key === 'string' ? body.key.trim() : '';
-    if (!key) return res.status(400).json({ error: 'key required' });
-    try {
-      setMemory(key, body.value);
-      res.json({ ok: true });
-    } catch (e) {
-      logger.error('memory set error', { key, err: e instanceof Error ? e.message : String(e) });
-      res.status(500).json({ error: 'memory_set_failed' });
-    }
-  });
-
-  app.delete('/memory/:key', (req: Request, res: Response) => {
-    const key = typeof req.params?.key === 'string' ? req.params.key : '';
-    if (!key) return res.status(400).json({ error: 'key required' });
-    try {
-      const ok = deleteMemory(key);
-      if (!ok) return res.status(404).json({ error: 'memory_not_found', key });
-      res.json({ ok: true });
-    } catch (e) {
-      logger.error('memory delete error', { key, err: e instanceof Error ? e.message : String(e) });
-      res.status(500).json({ error: 'memory_delete_failed' });
-    }
-  });
+  mountMemoryRoutes(app);
 
   app.get('/approvals', (_req: Request, res: Response) => {
     try {
@@ -998,6 +953,8 @@ export function createGateway(config: GatewayConfig = {}): {
         skillName: typeof body?.skillName === 'string' ? body.skillName : skill?.meta.name,
         skillInstructions: skill?.body,
         history: sessionId ? conversation(sessionId) : undefined,
+        // What a managed turn would carry from memory, under the memory policy.
+        memory: savedNotes(question)?.text,
       });
       res.json(preview);
     } catch (e) {
@@ -1130,7 +1087,24 @@ export function createGateway(config: GatewayConfig = {}): {
       model: opts.model,
       dryRun: opts.dryRun,
       history: opts.history,
+      memory: savedNotes(message),
     });
+  }
+
+  /**
+   * The saved notes a managed turn may read (memory policy: every type unless
+   * the user chose fewer). Memory that cannot be read is no memory, never a
+   * failed answer. The console's raw mode does not come through here.
+   */
+  function savedNotes(message: string) {
+    try {
+      return memoryBlock(message.trim()) ?? undefined;
+    } catch (e) {
+      logger.warn('Could not read memory for a prompt', {
+        err: e instanceof Error ? e.message : String(e),
+      });
+      return undefined;
+    }
   }
 
   app.post('/task', async (req: Request, res: Response) => {
@@ -1187,6 +1161,8 @@ export function createGateway(config: GatewayConfig = {}): {
     logger.info('Gateway started', { host, port, url: `http://${host}:${port}` });
     try {
       await initStore(config.dbPath);
+      // Records past their expiry are removed; reads skip them either way.
+      pruneExpired();
     } catch (e) {
       logger.error('Store failed to open; memory and run history are unavailable', {
         err: e instanceof Error ? e.message : String(e),

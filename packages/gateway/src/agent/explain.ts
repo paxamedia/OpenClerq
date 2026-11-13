@@ -25,6 +25,8 @@ export interface ExplainRequest {
   skillInstructions?: string;
   /** Optional: earlier turns of a conversation, sent before the question. */
   history?: ChatMessage[];
+  /** Optional: saved notes the reader may read (the `<memory>` block), added to the system prompt. */
+  memory?: string;
   /** Optional: model override (use when user has multiple models) */
   model?: string;
   /** Stops the model call, e.g. when the client that asked has gone. */
@@ -42,7 +44,7 @@ export interface ContextPreview {
 
 type PromptInput = Pick<
   ExplainRequest,
-  'question' | 'context' | 'skillSlug' | 'skillName' | 'skillInstructions' | 'history'
+  'question' | 'context' | 'skillSlug' | 'skillName' | 'skillInstructions' | 'history' | 'memory'
 >;
 
 /** Cut instructions to the cap without splitting a surrogate pair. */
@@ -75,6 +77,7 @@ function buildPrompt(req: PromptInput): { systemPrompt: string; userContent: str
         `\n\n<skill_instructions>\n${capInstructions(instructions)}\n</skill_instructions>`;
     }
   }
+  if (req.memory) systemPrompt += `\n\n${req.memory}`;
   return { systemPrompt, userContent };
 }
 

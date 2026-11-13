@@ -25,6 +25,8 @@ export interface TaskRequest {
   model?: string;
   /** Optional: earlier turns of a chat conversation. /task leaves it empty. */
   history?: ChatMessage[];
+  /** Optional: the saved notes the reader may read, as the prompt's `<memory>` block, and how many. */
+  memory?: { text: string; count: number };
   /** When true: parse intent, show trace, but do not call LLM or run calc. */
   dryRun?: boolean;
 }
@@ -56,6 +58,12 @@ export async function runTask(req: TaskRequest): Promise<TaskResponse> {
 
   if (dryRun) {
     trace.push({ step: 'skill_select', detail: skillSlug ?? 'auto' });
+    if (req.memory) {
+      trace.push({
+        step: 'memory',
+        detail: `${req.memory.count} saved note${req.memory.count === 1 ? '' : 's'}`,
+      });
+    }
     const calcIntent = parseCalculationIntent(trimmed);
     if (calcIntent) {
       trace.push({ step: 'calculation', detail: `would run: ${calcIntent.expression}` });
@@ -90,6 +98,12 @@ export async function runTask(req: TaskRequest): Promise<TaskResponse> {
   }
 
   trace.push({ step: 'skill_select', detail: skillSlug ?? 'auto' });
+  if (req.memory) {
+    trace.push({
+      step: 'memory',
+      detail: `${req.memory.count} saved note${req.memory.count === 1 ? '' : 's'}`,
+    });
+  }
 
   let context: Record<string, unknown> | undefined;
   const calcIntent = parseCalculationIntent(trimmed);
@@ -115,6 +129,7 @@ export async function runTask(req: TaskRequest): Promise<TaskResponse> {
     skillName,
     skillInstructions,
     history: req.history,
+    memory: req.memory?.text,
     model: req.model,
   });
   trace[trace.length - 1].duration_ms = Date.now() - t0;
