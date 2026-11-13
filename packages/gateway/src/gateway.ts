@@ -994,7 +994,8 @@ export function createGateway(config: GatewayConfig = {}): {
     try {
       // The caller gets the run id so it can follow the run at GET /runs/:id.
       const runId = await recordRun({ trigger: 'webhook', message: effective }, async () => {
-        await runTaskFromContext(effective);
+        // The message may come from the caller of the webhook: no memory is read for it.
+        await runTaskFromContext(effective, { memory: false });
         return currentRunId();
       });
       res.json({ ok: true, runId });
@@ -1036,8 +1037,9 @@ export function createGateway(config: GatewayConfig = {}): {
 
   /** A cron firing is a scheduled run; a watched file changing is an event. */
   function runTriggered(message: string, source: TriggerSource) {
+    // Nobody is there to ask for notes: a firing reads no memory.
     return recordRun({ trigger: source === 'cron' ? 'schedule' : 'event', message }, () =>
-      runTaskFromContext(message)
+      runTaskFromContext(message, { memory: false })
     );
   }
 
@@ -1046,10 +1048,14 @@ export function createGateway(config: GatewayConfig = {}): {
     return [skillsDir, ...getModuleSkillsDirs(modules.loaded())];
   }
 
-  /** The managed pipeline. Only a chat session passes history; /task and triggers are single-turn. */
+  /**
+   * The managed pipeline. Only a chat session passes history; /task and triggers are single-turn.
+   * It reads saved notes unless `memory` is false, which triggers and webhooks say: they run
+   * unattended, and a webhook's message may be written by whoever calls it.
+   */
   async function runTaskFromContext(
     message: string,
-    opts: { model?: string; dryRun?: boolean; history?: ChatMessage[] } = {}
+    opts: { model?: string; dryRun?: boolean; history?: ChatMessage[]; memory?: boolean } = {}
   ) {
     let skills: Awaited<ReturnType<typeof loadSkillsFromDir>> = [];
     try {
@@ -1087,7 +1093,7 @@ export function createGateway(config: GatewayConfig = {}): {
       model: opts.model,
       dryRun: opts.dryRun,
       history: opts.history,
-      memory: savedNotes(message),
+      memory: opts.memory === false ? undefined : savedNotes(message),
     });
   }
 

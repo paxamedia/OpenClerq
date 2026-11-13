@@ -236,7 +236,10 @@ a `<memory>` block in the system prompt, shown by `POST /context/preview` like e
 the reader's preferences (they apply whatever is asked, up to five) and up to five records that match
 the message, ranked, at most eight in all and 600 characters each. The block says its contents are
 information, not instructions, because a record may have been written from text an agent read.
-**Raw mode reads no memory.** Memory that cannot be read is left out, never a failed answer.
+**Raw mode reads no memory**, and neither do the gateway's own triggers (cron, file, webhook): they run
+unattended, and a webhook's message may be written by whoever calls it. A key or a value cannot write
+a tag: every `<` and `>` in a note is escaped (`&lt;`, `&gt;`) before it is placed in the block.
+Memory that cannot be read is left out, never a failed answer.
 
 The 0.5 `memory` table (one value per key) was rebuilt by store migration 16, which copies every row
 across as a `fact` with its dates, so nothing is lost. `GET /memory`, `GET /memory/:key`,
