@@ -140,55 +140,160 @@ export class Workspace {
       .filter(Boolean);
   }
 
+  /**
+   * Whether the worktree's content differs from the run's commit so far (the
+   * base, before the first): read from the files themselves into a private
+   * index, never from the worktree's own index, which an agent can rewrite.
+   */
   async hasChanges(): Promise<boolean> {
-    return (await this.status()).length > 0;
+    const parent = this.head ?? this.baseSha;
+    const { tree } = await this.snapshot(parent);
+    return tree !== (await this.treeOf(parent));
+  }
+
+  /** The run's commit, once `commitAll` has made it. */
+  head: string | undefined;
+
+  /** The ref the run's commit goes on: its branch, or HEAD when detached. */
+  private get ref(): string {
+    return this.detached ? 'HEAD' : `refs/heads/${this.branch}`;
+  }
+
+  private async treeOf(commit: string): Promise<string> {
+    return (await git(['rev-parse', `${commit}^{tree}`], this.opts())).stdout.trim();
   }
 
   /**
-   * Stage everything and commit.
+   * The worktree's files as a tree, built in an index of the gateway's own
+   * (in a directory no sandbox can write), started from `parent`, with the
+   * submodule entries it would add. Nothing the agent left in the worktree's
+   * index, HEAD or merge state takes part.
+   */
+  private async snapshot(parent: string): Promise<{ tree: string; gitlinks: string[] }> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-index-'));
+    const env = { ...this.env, GIT_INDEX_FILE: path.join(dir, 'index') };
+    try {
+      await git(['read-tree', parent], { ...this.opts(), env });
+      await git(['add', '--all'], { ...this.opts(), env });
+      const index = await git(['ls-files', '--stage', '-z'], { ...this.opts(), env });
+      const tree = (await git(['write-tree'], { ...this.opts(), env })).stdout.trim();
+      return { tree, gitlinks: await this.newGitlinks(index.stdout) };
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Commit the worktree's content as the run's one commit, on the base.
    *
-   * A trailer marks the commit as machine-generated, so such commits can be
-   * found in the history later. Returns null when there was
-   * nothing to commit — a no-op run should not produce an empty commit.
+   * Made with plumbing: the tree from a private index (`snapshot`), a commit
+   * whose only parent is the base (`commit-tree -p`), and the branch moved to
+   * it only from the value it had just before (`update-ref` with the old
+   * value). A merge the agent set up (MERGE_HEAD), a commit of its own or a
+   * rewritten index adds nothing to it: the branch is the base plus this one
+   * commit, so what is diffed, scanned and pushed is all there is. An agent's
+   * own commits are folded into it.
+   *
+   * A trailer marks the commit as machine-generated. Returns null when there
+   * is nothing to commit; a no-op run should not produce an empty commit.
    */
   async commitAll(
     message: string,
     opts?: { author?: string; email?: string; trailer?: string }
   ): Promise<string | null> {
-    if (!(await this.hasChanges())) return null;
-
-    await git(['add', '--all'], this.opts());
+    const { tree, gitlinks } = await this.snapshot(this.baseSha);
     // A nested repository staged as a gitlink would be pushed as a submodule
     // pointer, and is how an agent gets git to run its config: refused.
-    const added = await this.newGitlinks();
-    if (added.length > 0) {
-      await git(['reset', '--quiet'], this.opts({ allowFailure: true }));
+    if (gitlinks.length > 0) {
       throw new WorkspaceError(
-        `The changes add a nested git repository (a submodule entry) at ${added
+        `The changes add a nested git repository (a submodule entry) at ${gitlinks
           .slice(0, 5)
           .join(', ')}, which is not committed or pushed. Remove it from the worktree.`
       );
     }
+    if (tree === (await this.treeOf(this.baseSha))) return null;
 
     const trailer = opts?.trailer ?? 'Generated-by: OpenClerq';
     const full = `${message.trim()}\n\n${trailer}\n`;
-
-    await git(['commit', '--no-verify', '--no-gpg-sign', '-m', full], {
-      ...this.opts(),
-      env: {
-        ...this.env,
-        GIT_AUTHOR_NAME: opts?.author ?? 'OpenClerq',
-        GIT_AUTHOR_EMAIL: opts?.email ?? 'openclerq@localhost',
-        GIT_COMMITTER_NAME: opts?.author ?? 'OpenClerq',
-        GIT_COMMITTER_EMAIL: opts?.email ?? 'openclerq@localhost',
-      },
-    });
-    return headSha(this.path);
+    const who = {
+      GIT_AUTHOR_NAME: opts?.author ?? 'OpenClerq',
+      GIT_AUTHOR_EMAIL: opts?.email ?? 'openclerq@localhost',
+      GIT_COMMITTER_NAME: opts?.author ?? 'OpenClerq',
+      GIT_COMMITTER_EMAIL: opts?.email ?? 'openclerq@localhost',
+    };
+    const commit = (
+      await git(['commit-tree', '--no-gpg-sign', tree, '-p', this.baseSha, '-m', full], {
+        ...this.opts(),
+        env: { ...this.env, ...who },
+      })
+    ).stdout.trim();
+    // Only from the value read now: anything that moves it meanwhile fails this.
+    const before = (await git(['rev-parse', '--verify', this.ref], this.opts())).stdout.trim();
+    await git(['update-ref', '-m', 'OpenClerq run commit', this.ref, commit, before], this.opts());
+    this.head = commit;
+    await this.clearOperationState();
+    // The worktree's own index, in step with the commit (for gates and the agent's next attempt).
+    await git(['read-tree', commit], this.opts({ allowFailure: true }));
+    return commit;
   }
 
-  /** Diff against the commit this workspace started from. */
+  /**
+   * Remove what a merge, cherry-pick, revert, rebase or bisect in progress
+   * leaves in the worktree's git entry, so no later git command picks it up.
+   */
+  async clearOperationState(): Promise<void> {
+    const { adminDir } = await this.gitDirs();
+    for (const name of [
+      'MERGE_HEAD',
+      'MERGE_MSG',
+      'MERGE_MODE',
+      'MERGE_RR',
+      'AUTO_MERGE',
+      'CHERRY_PICK_HEAD',
+      'REVERT_HEAD',
+      'BISECT_LOG',
+      'BISECT_START',
+      'BISECT_TERMS',
+      'BISECT_EXPECTED_REV',
+      'sequencer',
+      'rebase-merge',
+      'rebase-apply',
+    ]) {
+      fs.rmSync(path.join(adminDir, name), { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Check the branch is the base plus exactly the run's commit, with the base
+   * as its only parent: what was diffed and scanned is all that would be pushed.
+   */
+  async verifyHistory(): Promise<void> {
+    if (!this.head) throw new WorkspaceError('There is no run commit to publish.');
+    const tip = (await git(['rev-parse', '--verify', this.ref], this.opts())).stdout.trim();
+    if (tip !== this.head) {
+      throw new WorkspaceError(
+        `The branch was moved after the run's commit (${tip}); not published.`
+      );
+    }
+    const lines = (
+      await git(['rev-list', '--parents', `${this.baseSha}..${this.head}`], this.opts())
+    ).stdout
+      .trim()
+      .split('\n')
+      .filter(Boolean);
+    if (lines.length !== 1 || lines[0] !== `${this.head} ${this.baseSha}`) {
+      throw new WorkspaceError(
+        "The branch is not the base plus the run's one commit; not published."
+      );
+    }
+  }
+
+  /** Diff of the run's commit (HEAD before it exists) against the base. */
   async diffStat(): Promise<DiffStat> {
-    const r = await git(['diff', '--numstat', ...SAFE_DIFF, `${this.baseSha}..HEAD`], this.opts());
+    const r = await git(
+      ['diff', '--numstat', ...SAFE_DIFF, `${this.baseSha}..${this.head ?? 'HEAD'}`],
+      this.opts()
+    );
     const files: string[] = [];
     let insertions = 0;
     let deletions = 0;
@@ -203,23 +308,29 @@ export class Workspace {
   }
 
   /**
-   * Full patch against the base commit, for review or as a run artifact.
-   * `text` shows every file as text, binary or marked `-diff` in
+   * Full patch of the run's commit against the base, for review or as a run
+   * artifact. `text` shows every file as text, binary or marked `-diff` in
    * `.gitattributes`, which is what a scan for secrets needs.
    */
   async diff(options: { text?: boolean } = {}): Promise<string> {
     const r = await git(
-      ['diff', ...SAFE_DIFF, ...(options.text ? ['--text'] : []), `${this.baseSha}..HEAD`],
+      [
+        'diff',
+        ...SAFE_DIFF,
+        ...(options.text ? ['--text'] : []),
+        `${this.baseSha}..${this.head ?? 'HEAD'}`,
+      ],
       this.opts()
     );
     return r.stdout;
   }
 
   /**
-   * Gitlinks (mode 160000, a submodule's commit) in the index that the base
-   * commit does not have, by path.
+   * Gitlinks (mode 160000, a submodule's commit) that the base commit does not
+   * have, by path: in `indexListing` (`ls-files --stage -z`), or the
+   * worktree's own index.
    */
-  async newGitlinks(): Promise<string[]> {
+  async newGitlinks(indexListing?: string): Promise<string[]> {
     // Both list "<mode> …<TAB><path>", one entry per NUL.
     const links = (text: string) =>
       new Set(
@@ -228,10 +339,10 @@ export class Workspace {
           .filter((e) => e.startsWith('160000 '))
           .map((e) => e.slice(e.indexOf('\t') + 1))
       );
-    const index = await git(['ls-files', '--stage', '-z'], this.opts());
+    const index = indexListing ?? (await git(['ls-files', '--stage', '-z'], this.opts())).stdout;
     const base = await git(['ls-tree', '-r', '-z', this.baseSha], this.opts());
     const before = links(base.stdout);
-    return [...links(index.stdout)].filter((p) => !before.has(p));
+    return [...links(index)].filter((p) => !before.has(p));
   }
 
   async push(remote = 'origin', opts?: { force?: boolean; setUpstream?: boolean }): Promise<void> {
@@ -245,7 +356,8 @@ export class Workspace {
     // --force-with-lease refuses to overwrite work that arrived since we last
     // fetched; plain --force would discard it silently.
     if (opts?.force) args.push('--force-with-lease');
-    args.push(remote, this.branch);
+    // The run's commit itself, not whatever the branch points at by now.
+    args.push(remote, this.head ? `${this.head}:refs/heads/${this.branch}` : this.branch);
     await git(args, this.opts());
   }
 

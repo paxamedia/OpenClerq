@@ -510,3 +510,81 @@ describe('git after an agent (hardened)', () => {
     }
   });
 });
+
+describe('the run commit (plumbing)', () => {
+  const id = ['-c', 'user.name=a', '-c', 'user.email=a@a'];
+
+  it('ignores a merge the agent set up: one parent, the base, and nothing else pushed', async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'm' });
+    try {
+      // A private commit, never part of the diff, made the parent of a "merge".
+      fs.writeFileSync(path.join(ws.path, 'hidden.txt'), 'history the scan never sees\n');
+      await git([...id, 'add', 'hidden.txt'], { cwd: ws.path });
+      const tree = (await git(['write-tree'], { cwd: ws.path })).stdout.trim();
+      const hidden = (
+        await git([...id, 'commit-tree', tree, '-p', ws.baseSha, '-m', 'private'], { cwd: ws.path })
+      ).stdout.trim();
+      await git(['rm', '-q', '--cached', 'hidden.txt'], { cwd: ws.path });
+      fs.rmSync(path.join(ws.path, 'hidden.txt'));
+      const { adminDir } = await ws.gitDirs();
+      fs.writeFileSync(path.join(adminDir, 'MERGE_HEAD'), `${hidden}\n`);
+      fs.writeFileSync(path.join(ws.path, 'real.txt'), 'work\n');
+
+      const sha = (await ws.commitAll('x')) as string;
+      const parents = (await git(['rev-list', '--parents', '-n', '1', sha], { cwd: ws.path }))
+        .stdout;
+      expect(parents.trim()).toBe(`${sha} ${ws.baseSha}`);
+      expect(fs.existsSync(path.join(adminDir, 'MERGE_HEAD'))).toBe(false);
+      await expect(ws.verifyHistory()).resolves.toBeUndefined();
+      expect(await ws.diff()).toContain('real.txt');
+      expect(await ws.diff()).not.toContain('hidden.txt');
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it("folds the agent's own commits into the one run commit", async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'f' });
+    try {
+      fs.writeFileSync(path.join(ws.path, 'a.txt'), 'a\n');
+      await git([...id, 'add', '.'], { cwd: ws.path });
+      await git([...id, 'commit', '-qm', 'agent'], { cwd: ws.path });
+      fs.writeFileSync(path.join(ws.path, 'b.txt'), 'b\n');
+      const sha = (await ws.commitAll('x')) as string;
+      expect(
+        (
+          await git(['rev-list', '--count', `${ws.baseSha}..${sha}`], { cwd: ws.path })
+        ).stdout.trim()
+      ).toBe('1');
+      expect((await ws.diffStat()).files.sort()).toEqual(['a.txt', 'b.txt']);
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it("commits the files as they are, whatever the worktree's index says", async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'i' });
+    try {
+      fs.writeFileSync(path.join(ws.path, 'README.md'), 'changed on disk\n');
+      // The index is told the file is unchanged and must not be looked at.
+      await git(['update-index', '--assume-unchanged', 'README.md'], { cwd: ws.path });
+      expect(await ws.hasChanges()).toBe(true);
+      await ws.commitAll('x');
+      expect(await ws.diff()).toContain('changed on disk');
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it('refuses to publish a branch moved after the commit', async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'v' });
+    try {
+      fs.writeFileSync(path.join(ws.path, 'x.txt'), 'x\n');
+      await ws.commitAll('x');
+      await git(['update-ref', 'refs/heads/v', ws.baseSha], { cwd: ws.path });
+      await expect(ws.verifyHistory()).rejects.toThrow(/moved after the run's commit/);
+    } finally {
+      await ws.dispose();
+    }
+  });
+});
