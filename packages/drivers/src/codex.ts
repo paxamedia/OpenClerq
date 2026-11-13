@@ -24,6 +24,7 @@
  * does not know, so a newer CLI that adds more still parses.
  */
 
+import path from 'node:path';
 import type { ExecResult } from '@clerq/sandbox';
 import {
   apiErrorIn,
@@ -37,6 +38,7 @@ import {
   num,
   probe,
   runCli,
+  stateEnv,
 } from './cli.js';
 import { locate } from './locate.js';
 import type {
@@ -482,7 +484,11 @@ export function codex(options: CodexOptions = {}): Driver {
       bin,
       args: buildCodexArgs(input),
       input: held,
-      env: cliEnv(bin, input.env, home()),
+      env: cliEnv(
+        bin,
+        input.env,
+        stateEnv(input.stateHome, (h) => ({ CODEX_HOME: path.join(h, '.codex') }), home())
+      ),
       parser: new CodexStream(input.model, unsupported(input)),
     });
   }

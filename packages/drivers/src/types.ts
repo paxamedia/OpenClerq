@@ -218,6 +218,14 @@ export interface DriverRunInput {
   sandbox?: SandboxOptions;
   /** Plain environment variables, PATH among them. */
   env?: Record<string, string>;
+  /**
+   * A CLI keeps its state (config, sessions, caches, sign-in) here instead of
+   * in the user's home: HOME and the CLI's own config-directory variable point
+   * into it, whatever the gateway's environment says. Given under a sandbox
+   * profile, so a run never writes the user's real CLI state; the run's key
+   * comes in `secrets`.
+   */
+  stateHome?: string;
   /** Environment variables redacted from everything the agent prints. */
   secrets?: Record<string, string>;
   signal?: AbortSignal;

@@ -6,23 +6,25 @@
  * is not exercised here.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  agentStatePaths,
+  BUILTIN_TOOLS,
   buildCodexArgs,
   claudeCode,
   codex,
   cursorAgent,
   DRIVER_CAPABILITIES,
-  DRIVER_IDS,
   type DriverEvent,
   type DriverRunInput,
 } from './index.js';
 
 const isMac = process.platform === 'darwin';
+// sandbox-exec starts slower on a loaded machine than the 5s default allows.
+vi.setConfig({ testTimeout: 20_000 });
 let dir: string;
 let fakeCodex: string;
 let fakeClaude: string;
@@ -211,50 +213,94 @@ describe('what each driver declares', () => {
     expect(DRIVER_CAPABILITIES.builtin.providerHosts).toEqual([]);
   });
 
-  it('lists only what each CLI may write; the rest of its state stays read-only', () => {
-    const home = '/home/u';
-    const claude = agentStatePaths('claude-code', home, {});
-    expect(claude.readDirs).toEqual(['/home/u/.claude']);
-    expect(claude.writeDirs).toEqual(
-      expect.arrayContaining(['/home/u/.claude/todos', '/home/u/Library/Caches/claude-cli-nodejs'])
-    );
-    expect(claude.writeFiles).toEqual([
-      '/home/u/.claude/.credentials.json',
-      '/home/u/.claude.json',
-    ]);
-    // Nothing that carries code or instructions is writable.
-    const writable = [...claude.writeDirs, ...claude.writeFiles].join(' ');
-    for (const carrier of [
-      'settings',
-      'hooks',
-      'commands',
-      'agents',
-      'plugins',
-      'skills',
-      'projects',
-      'CLAUDE.md',
-      'local',
-    ]) {
-      expect(writable).not.toContain(`/.claude/${carrier}`);
+  it("points a CLI at the run's own state directory, never the user's, when given one", async () => {
+    const stateHome = fs.mkdtempSync(path.join(dir, 'state-'));
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = '/the/users/own/claude';
+    try {
+      const log = path.join(logs, `log-${Math.random().toString(36).slice(2)}`);
+      await collect(
+        claudeCode({ bin: fakeClaude }).run({
+          prompt: 'x',
+          cwd: workdir(),
+          stateHome,
+          env: { FAKE_LOG: log },
+        })
+      );
+      const env = fs.readFileSync(`${log}.env`, 'utf8');
+      expect(env).toContain(`HOME=${stateHome}\n`);
+      expect(env).toContain(`CLAUDE_CONFIG_DIR=${path.join(stateHome, '.claude')}\n`);
+      expect(env).not.toContain('/the/users/own/claude');
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = saved;
     }
-    expect(agentStatePaths('claude-code', home, { CLAUDE_CONFIG_DIR: '/cfg' }).writeFiles).toEqual([
-      '/cfg/.credentials.json',
-      '/cfg/.claude.json',
-    ]);
-    const codex = agentStatePaths('codex', home, { CODEX_HOME: '/c' });
-    expect(codex.readDirs).toEqual(['/c']);
-    expect([...codex.writeDirs, ...codex.writeFiles].join(' ')).not.toMatch(
-      /config\.toml|rules|skills|AGENTS/
-    );
-    const cursor = agentStatePaths('cursor-agent', home, {});
-    expect([...cursor.writeDirs, ...cursor.writeFiles].join(' ')).not.toMatch(
-      /extensions|hooks\.json|cli-config\.json|mcp\.json|rules/
-    );
-    for (const id of DRIVER_IDS) expect(agentStatePaths(id, home, {})).toBeTruthy();
-    expect(agentStatePaths('builtin', home, {})).toEqual({
-      readDirs: [],
-      writeDirs: [],
-      writeFiles: [],
-    });
   });
+});
+
+describe.skipIf(!isMac)("the builtin agent's file tools under seatbelt (macOS)", () => {
+  const ctxFor = (cwd: string) => ({
+    cwd,
+    signal: new AbortController().signal,
+    deadline: Date.now() + 120_000,
+    sandbox: { profile: 'seatbelt' as const, network: 'none' as const },
+    env: { PATH: process.env.PATH ?? '' },
+  });
+  const tool = (name: string) => BUILTIN_TOOLS.find((t) => t.definition.name === name)!;
+
+  it('reads, lists, writes and edits through the sandbox', async () => {
+    const cwd = fs.realpathSync.native(workdir());
+    const ctx = ctxFor(cwd);
+    expect(
+      await tool('write_file').run({ path: 'src/a.ts', content: 'export const a = 1;\n' }, ctx)
+    ).toMatchObject({
+      isError: false,
+    });
+    expect(
+      await tool('edit_file').run({ path: 'src/a.ts', old_text: '= 1', new_text: '= 2' }, ctx)
+    ).toMatchObject({ isError: false });
+    expect((await tool('read_file').run({ path: 'src/a.ts' }, ctx)).output).toContain(
+      'export const a = 2;'
+    );
+    expect((await tool('list_files').run({ depth: 2 }, ctx)).output).toBe('src/\nsrc/a.ts');
+    await expect(tool('read_file').run({ path: '../x' }, ctx)).rejects.toThrow(/outside/);
+  });
+
+  it('cannot write outside the worktree through a link, whatever the gateway checked', async () => {
+    const cwd = fs.realpathSync.native(workdir());
+    const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-out-')));
+    fs.symlinkSync(outside, path.join(cwd, 'd'));
+    const r = await tool('write_file')
+      .run({ path: 'd/planted.txt', content: 'x' }, ctxFor(cwd))
+      .catch((e: Error) => ({ output: e.message, isError: true }));
+    expect(r.isError).toBe(true);
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it('lands no write outside while another process swaps a directory on the path for a link', async () => {
+    const cwd = fs.realpathSync.native(workdir());
+    const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-out-')));
+    fs.mkdirSync(path.join(cwd, 'd'));
+    // The reviewer's race: d is renamed away and a link to outside put in its place, over and over.
+    const racer = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const fs=require('fs');process.chdir(${JSON.stringify(cwd)});const end=Date.now()+20000;
+         while(Date.now()<end){try{fs.renameSync('d','dold');fs.symlinkSync(${JSON.stringify(outside)},'d');fs.unlinkSync('d');fs.renameSync('dold','d')}catch{}}`,
+      ],
+      { stdio: 'ignore' }
+    );
+    try {
+      const ctx = ctxFor(cwd);
+      for (let i = 0; i < 60; i++) {
+        await tool('write_file')
+          .run({ path: `d/f${i}`, content: 'x' }, ctx)
+          .catch(() => undefined);
+      }
+    } finally {
+      racer.kill('SIGKILL');
+    }
+    expect(fs.readdirSync(outside)).toEqual([]);
+  }, 60_000);
 });

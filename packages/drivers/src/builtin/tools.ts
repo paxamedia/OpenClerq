@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ToolDescriptor } from '@clerq/policy';
-import { exec, resolveWithinRoot } from '@clerq/sandbox';
+import { exec, PathContainmentError, resolveWithinRoot } from '@clerq/sandbox';
 import { truncateOutput, type ToolDefinition } from '@clerq/providers';
 import type { SandboxOptions, SpawnedProcess } from '../types.js';
 
@@ -168,6 +168,191 @@ async function writeContained(abs: string, content: string, create: boolean): Pr
   }
 }
 
+/** What a file tool needs of the worktree. */
+interface FileOps {
+  stat(rel: string): Promise<{ type: 'file' | 'dir' | 'other' | 'missing'; size: number }>;
+  /** The file's text; the caller has checked its size. */
+  read(rel: string): Promise<string>;
+  /** Entries under `rel`, `depth` levels down, `.git` left out, as paths relative to the worktree. */
+  list(rel: string, depth: number): Promise<Array<{ rel: string; dir: boolean }>>;
+  write(rel: string, content: string, create: boolean): Promise<void>;
+}
+
+/** A path the agent gave, trimmed and normalised; "" and "." mean the worktree. */
+function cleanRel(rel: string | undefined): string {
+  const p = (rel ?? '.').trim();
+  return path.normalize(p || '.').replace(/\/+$/, '') || '.';
+}
+
+/**
+ * A path for a command run in the sandbox, checked lexically first: no
+ * absolute path, no `..`, no NUL; the kernel is then the boundary for what it
+ * resolves to. `./` in front, so a name starting with a dash is not an option.
+ */
+function sandboxArg(rel: string): string {
+  if (rel.includes('\0')) throw new ToolInputError('A path cannot contain a NUL byte.');
+  if (path.isAbsolute(rel) || rel === '..' || rel.startsWith(`..${path.sep}`)) {
+    throw new PathContainmentError(`"${rel}" is outside the configured root.`);
+  }
+  return `./${rel}`;
+}
+
+/**
+ * Under the native profile: in the gateway, through the canonical containment
+ * check and a write that does not follow a link at its last step. That check
+ * cannot be atomic: a process changing the tree meanwhile (swapping a
+ * directory on the path for a link) can make a write land outside. Native
+ * promises no isolation, and this is part of that.
+ */
+function nativeOps(ctx: ToolContext): FileOps {
+  return {
+    async stat(rel) {
+      const abs = within(ctx.cwd, rel);
+      try {
+        const st = await fs.promises.stat(abs);
+        return {
+          type: st.isFile() ? 'file' : st.isDirectory() ? 'dir' : 'other',
+          size: st.size,
+        };
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { type: 'missing', size: 0 };
+        throw e;
+      }
+    },
+    async read(rel) {
+      return (await fs.promises.readFile(within(ctx.cwd, rel))).toString('utf8');
+    },
+    async list(rel, depth) {
+      const root = within(ctx.cwd, rel);
+      const out: Array<{ rel: string; dir: boolean }> = [];
+      const walk = async (dir: string, level: number): Promise<void> => {
+        const entries = (await fs.promises.readdir(dir, { withFileTypes: true })).sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+        for (const e of entries) {
+          if (e.name === '.git') continue;
+          if (out.length > MAX_LIST_ENTRIES) return;
+          const abs = path.join(dir, e.name);
+          out.push({ rel: relative(ctx.cwd, abs), dir: e.isDirectory() });
+          if (e.isDirectory() && level < depth) await walk(abs, level + 1);
+        }
+      };
+      await walk(root, 1);
+      return out;
+    },
+    async write(rel, content, create) {
+      const abs = within(ctx.cwd, rel);
+      await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+      // Created after the check, so a link planted in between could still point
+      // out; check the real path once more now that the directories exist.
+      resolveWithinRoot(ctx.cwd, relative(ctx.cwd, abs));
+      await writeContained(abs, content, create);
+    },
+  };
+}
+
+/**
+ * Under seatbelt or container: every file operation is a small shell command
+ * run through the sandbox, with the agent's path as an argument (never part of
+ * the script), so the kernel decides what it reaches, as for the agent's own
+ * commands: no write outside what the profile allows, whatever links or races
+ * the path meets on the way.
+ */
+function sandboxedOps(ctx: ToolContext): FileOps {
+  const sh = async (script: string, args: string[], input?: string, maxBytes = 1_048_576) => {
+    assertRoot(ctx.cwd);
+    let ended: (() => void) | undefined;
+    try {
+      const r = await exec(
+        {
+          ...ctx.sandbox,
+          profile: ctx.sandbox.profile ?? 'native',
+          cwd: ctx.cwd,
+          env: ctx.env,
+          limits: {
+            wallMs: Math.max(1_000, Math.min(60_000, ctx.deadline - Date.now())),
+            maxOutputBytes: maxBytes,
+          },
+        },
+        '/bin/sh',
+        ['-c', script, 'sh', ...args],
+        {
+          signal: ctx.signal,
+          ...(input === undefined ? {} : { input }),
+          onSpawn: ctx.onProcess
+            ? (spawned) => {
+                ended = ctx.onProcess?.({ ...spawned, command: '/bin/sh' });
+              }
+            : undefined,
+          reapGroup: true,
+        }
+      );
+      for (const w of r.warnings) ctx.warnings?.add(w);
+      if (r.cancelled) throw new ToolInputError('Cancelled.');
+      if (r.timedOut) throw new ToolInputError('The file operation timed out.');
+      return r;
+    } finally {
+      ended?.();
+    }
+  };
+  const arg = sandboxArg;
+  return {
+    async stat(rel) {
+      const r = await sh(
+        'if [ -d "$1" ]; then echo dir; elif [ -f "$1" ]; then echo file; wc -c < "$1"; ' +
+          'elif [ -e "$1" ] || [ -L "$1" ]; then echo other; else echo missing; fi',
+        [arg(rel)]
+      );
+      if (r.code !== 0) throw new ToolInputError(r.stderr.trim() || `Cannot read ${rel}.`);
+      const [type, size] = r.stdout.trim().split(/\s+/);
+      return { type: type as 'file' | 'dir' | 'other' | 'missing', size: Number(size) || 0 };
+    },
+    async read(rel) {
+      const r = await sh('cat -- "$1"', [arg(rel)], undefined, MAX_READ_BYTES + 1);
+      if (r.code !== 0) throw new ToolInputError(r.stderr.trim() || `Cannot read ${rel}.`);
+      return r.stdout;
+    },
+    async list(rel, depth) {
+      const r = await sh(
+        'find "$1" -mindepth 1 -maxdepth "$2" -name .git -prune -o ' +
+          "-type d -exec printf 'd %s\\0' {} + -o -exec printf 'f %s\\0' {} +",
+        [arg(rel), String(depth)],
+        undefined,
+        8 * 1_048_576
+      );
+      if (r.code !== 0) throw new ToolInputError(r.stderr.trim() || `Cannot list ${rel}.`);
+      return r.stdout
+        .split('\0')
+        .filter((e) => e.length > 2)
+        .map((e) => ({ rel: path.normalize(e.slice(2)), dir: e[0] === 'd' }))
+        .sort((a, b) => a.rel.localeCompare(b.rel))
+        .slice(0, MAX_LIST_ENTRIES + 1);
+    },
+    async write(rel, content, create) {
+      const r = await sh(
+        'if [ -L "$1" ]; then exit 5; fi; if [ -e "$1" ] && [ ! -f "$1" ]; then exit 6; fi; ' +
+          'mkdir -p -- "$(dirname -- "$1")" || exit 7; if [ "$2" = create ]; then set -C; fi; ' +
+          'cat > "$1"',
+        [arg(rel), create ? 'create' : 'replace'],
+        content
+      );
+      if (r.code === 0) return;
+      const why: Record<number, string> = {
+        5: `${rel} is a link; it is not written through.`,
+        6: `${rel} exists and is not a file.`,
+        7: `Cannot create the directories for ${rel}.`,
+      };
+      throw new ToolInputError(
+        why[r.code ?? -1] ?? (r.stderr.trim() || `Cannot write ${rel} (exit ${r.code}).`)
+      );
+    },
+  };
+}
+
+function opsFor(ctx: ToolContext): FileOps {
+  return (ctx.sandbox.profile ?? 'native') === 'native' ? nativeOps(ctx) : sandboxedOps(ctx);
+}
+
 /** Run a command in the worktree through the sandbox. */
 async function command(
   ctx: ToolContext,
@@ -235,20 +420,22 @@ const readFile: BuiltinTool = {
   },
   async run(input, ctx) {
     const rel = str(input, 'path', true);
-    const abs = within(ctx.cwd, rel);
-    const stat = await fs.promises.stat(abs);
-    if (!stat.isFile()) return { output: `${rel} is not a file.`, isError: true };
+    const ops = opsFor(ctx);
+    const target = cleanRel(rel);
+    const stat = await ops.stat(target);
+    if (stat.type === 'missing') return { output: `${rel} does not exist.`, isError: true };
+    if (stat.type !== 'file') return { output: `${rel} is not a file.`, isError: true };
     if (stat.size > MAX_READ_BYTES) {
       return {
         output: `${rel} is ${stat.size} bytes, over the ${MAX_READ_BYTES}-byte limit. Use search_files or run_shell (head, sed -n) to read part of it.`,
         isError: true,
       };
     }
-    const buf = await fs.promises.readFile(abs);
-    if (buf.subarray(0, 8_000).includes(0)) {
+    const text = await ops.read(target);
+    if (text.slice(0, 8_000).includes('\0')) {
       return { output: `${rel} looks binary (${stat.size} bytes); not shown.`, isError: true };
     }
-    const lines = buf.toString('utf8').split('\n');
+    const lines = text.split('\n');
     if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
     const offset = int(input, 'offset', 1, Number.MAX_SAFE_INTEGER) ?? 1;
     const limit = int(input, 'limit', 1, 5_000) ?? DEFAULT_READ_LINES;
@@ -304,30 +491,14 @@ const listFiles: BuiltinTool = {
     },
   },
   async run(input, ctx) {
-    const root = within(ctx.cwd, str(input, 'path'));
+    const target = cleanRel(str(input, 'path'));
     const depth = int(input, 'depth', 1, 4) ?? 1;
-    const stat = await fs.promises.stat(root);
-    if (!stat.isDirectory())
-      return { output: `${relative(ctx.cwd, root)} is not a directory.`, isError: true };
-    const out: string[] = [];
-    let cut = false;
-    const walk = async (dir: string, level: number): Promise<void> => {
-      const entries = (await fs.promises.readdir(dir, { withFileTypes: true })).sort((a, b) =>
-        a.name.localeCompare(b.name)
-      );
-      for (const e of entries) {
-        if (e.name === '.git') continue;
-        if (out.length >= MAX_LIST_ENTRIES) {
-          cut = true;
-          return;
-        }
-        const abs = path.join(dir, e.name);
-        const rel = relative(ctx.cwd, abs);
-        out.push(e.isDirectory() ? `${rel}/` : rel);
-        if (e.isDirectory() && level < depth) await walk(abs, level + 1);
-      }
-    };
-    await walk(root, 1);
+    const ops = opsFor(ctx);
+    const stat = await ops.stat(target);
+    if (stat.type !== 'dir') return { output: `${target} is not a directory.`, isError: true };
+    const entries = await ops.list(target, depth);
+    const cut = entries.length > MAX_LIST_ENTRIES;
+    const out = entries.slice(0, MAX_LIST_ENTRIES).map((e) => (e.dir ? `${e.rel}/` : e.rel));
     if (out.length === 0) return { output: '(empty directory)', isError: false };
     return {
       output: `${out.join('\n')}${cut ? `\n[Stopped at ${MAX_LIST_ENTRIES} entries. List a subdirectory to see more.]` : ''}`,
@@ -395,18 +566,16 @@ const writeFile: BuiltinTool = {
   async run(input, ctx) {
     const rel = str(input, 'path', true);
     const content = str(input, 'content', true);
-    const abs = within(ctx.cwd, rel);
-    const existed = fs.existsSync(abs);
-    if (existed && !(await fs.promises.stat(abs)).isFile()) {
+    const target = cleanRel(rel);
+    const ops = opsFor(ctx);
+    const stat = await ops.stat(target);
+    const existed = stat.type !== 'missing';
+    if (existed && stat.type !== 'file') {
       return { output: `${rel} exists and is not a file.`, isError: true };
     }
-    await fs.promises.mkdir(path.dirname(abs), { recursive: true });
-    // Created after the check, so a link planted in between could still point
-    // out; check the real path once more now that the directories exist.
-    resolveWithinRoot(ctx.cwd, relative(ctx.cwd, abs));
-    await writeContained(abs, content, !existed);
+    await ops.write(target, content, !existed);
     return {
-      output: `${existed ? 'Replaced' : 'Created'} ${relative(ctx.cwd, abs)} (${Buffer.byteLength(content)} bytes).`,
+      output: `${existed ? 'Replaced' : 'Created'} ${target} (${Buffer.byteLength(content)} bytes).`,
       isError: false,
     };
   },
@@ -437,9 +606,15 @@ const editFile: BuiltinTool = {
     const newText = str(input, 'new_text', true);
     if (!oldText)
       return { output: 'old_text is empty; use write_file to create a file.', isError: true };
-    const abs = within(ctx.cwd, rel);
-    if (!fs.existsSync(abs)) return { output: `${rel} does not exist.`, isError: true };
-    const text = await fs.promises.readFile(abs, 'utf8');
+    const target = cleanRel(rel);
+    const ops = opsFor(ctx);
+    const stat = await ops.stat(target);
+    if (stat.type === 'missing') return { output: `${rel} does not exist.`, isError: true };
+    if (stat.type !== 'file') return { output: `${rel} is not a file.`, isError: true };
+    if (stat.size > MAX_READ_BYTES) {
+      return { output: `${rel} is over the ${MAX_READ_BYTES}-byte limit.`, isError: true };
+    }
+    const text = await ops.read(target);
     const count = text.split(oldText).length - 1;
     if (count === 0) {
       return {
@@ -453,7 +628,7 @@ const editFile: BuiltinTool = {
         isError: true,
       };
     }
-    await writeContained(abs, text.split(oldText).join(newText), false);
+    await ops.write(target, text.split(oldText).join(newText), false);
     return {
       output: `Edited ${rel}: ${count} replacement${count === 1 ? '' : 's'}.`,
       isError: false,

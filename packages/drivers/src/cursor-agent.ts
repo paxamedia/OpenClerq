@@ -23,6 +23,7 @@
  * fields and events it does not know.
  */
 
+import path from 'node:path';
 import type { ExecResult } from '@clerq/sandbox';
 import {
   apiErrorIn,
@@ -36,6 +37,7 @@ import {
   num,
   probe,
   runCli,
+  stateEnv,
 } from './cli.js';
 import { locate } from './locate.js';
 import type {
@@ -412,7 +414,11 @@ export function cursorAgent(options: CursorAgentOptions = {}): Driver {
       bin,
       args: buildCursorArgs(input),
       input,
-      env: cliEnv(bin, input.env, home()),
+      env: cliEnv(
+        bin,
+        input.env,
+        stateEnv(input.stateHome, (h) => ({ XDG_CONFIG_HOME: path.join(h, '.config') }), home())
+      ),
       parser: new CursorStream(unsupported(input)),
     });
   }

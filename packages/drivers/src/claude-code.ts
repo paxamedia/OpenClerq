@@ -7,6 +7,7 @@
  * one by accident would move the user's runs onto API billing.
  */
 
+import path from 'node:path';
 import type { ExecResult } from '@clerq/sandbox';
 import {
   apiErrorIn,
@@ -18,6 +19,7 @@ import {
   num,
   probe,
   runCli,
+  stateEnv,
 } from './cli.js';
 import { locate } from './locate.js';
 import type {
@@ -274,7 +276,14 @@ export function claudeCode(options: ClaudeCodeOptions = {}): Driver {
       // An unattended run should not update the CLI under itself.
       DISABLE_AUTOUPDATER: '1',
     };
-    if (process.env.CLAUDE_CONFIG_DIR) extra.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+    Object.assign(
+      extra,
+      stateEnv(
+        input.stateHome,
+        (home) => ({ CLAUDE_CONFIG_DIR: path.join(home, '.claude') }),
+        process.env.CLAUDE_CONFIG_DIR ? { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR } : {}
+      )
+    );
     // Under an egress allowlist, telemetry and error reporting would only be
     // refused at the proxy: the CLI is asked not to try.
     if (Array.isArray(input.sandbox?.network) || input.sandbox?.network === 'none') {

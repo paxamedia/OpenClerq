@@ -44,6 +44,19 @@ export function apiErrorIn(lines: readonly string[]): string | undefined {
   return undefined;
 }
 
+/**
+ * The variables that point a CLI at a state directory of the run's (see
+ * `DriverRunInput.stateHome`), or `fromGateway` (the user's own overrides)
+ * when it runs on the user's state.
+ */
+export function stateEnv(
+  stateHome: string | undefined,
+  inHome: (home: string) => Record<string, string>,
+  fromGateway: Record<string, string>
+): Record<string, string> {
+  return stateHome ? { HOME: stateHome, ...inHome(stateHome) } : fromGateway;
+}
+
 /** Whether the agent runs inside a container image, where the CLI is the image's own. */
 export function inContainer(input: Pick<DriverRunInput, 'sandbox'>): boolean {
   return input.sandbox?.profile === 'container';
