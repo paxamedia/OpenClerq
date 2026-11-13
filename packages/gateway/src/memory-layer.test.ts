@@ -512,6 +512,123 @@ describe('summarising', () => {
     expect(listRecords({ status: 'superseded' })).toEqual([]);
   });
 
+  describe('what a summary keeps of its sources', () => {
+    const fold = (key: string) => consolidate({ key }, summarise('folded'));
+    const lapse = (id: string, at: string) =>
+      getStore().prepare('UPDATE memory SET expires_at = ? WHERE id = ?').run(at, id);
+
+    it('lapses with the latest source when every source lapses, so a note set to expire is not kept for good', async () => {
+      addRecord({ key: 'k', value: 'a', expiresAt: '2098-01-01T00:00:00Z' });
+      addRecord({ key: 'k', value: 'b', expiresAt: '2099-06-01T00:00:00Z' });
+      addRecord({ key: 'k', value: 'c', expiresAt: '2098-12-31T00:00:00Z' });
+      const { record } = await fold('k');
+      expect(record.expiresAt).toBe('2099-06-01T00:00:00.000Z');
+    });
+
+    it('never lapses when any source does not', async () => {
+      addRecord({ key: 'k', value: 'a', expiresAt: '2098-01-01T00:00:00Z' });
+      addRecord({ key: 'k', value: 'b' });
+      expect((await fold('k')).record.expiresAt).toBeUndefined();
+    });
+
+    it('is agent-derived when any source was written by an agent, and when a summary of one is folded again', async () => {
+      addRecord({ key: 'k', value: 'from a person' });
+      addRecord({ key: 'k', value: 'from an agent', origin: 'agent' });
+      const first = (await fold('k')).record;
+      expect(first).toMatchObject({ origin: 'consolidation', agentDerived: true });
+
+      addRecord({ key: 'k', value: 'later, from a person' });
+      const second = (await fold('k')).record;
+      // Nothing in the newest note is an agent's, but the summary folded into this one is.
+      expect(second.agentDerived).toBe(true);
+
+      addRecord({ key: 'clean', value: 'a' });
+      addRecord({ key: 'clean', value: 'b' });
+      expect((await fold('clean')).record.agentDerived).toBeUndefined();
+      expect(addRecord({ key: 'x', value: 1, origin: 'agent' }).agentDerived).toBe(true);
+      expect(addRecord({ key: 'y', value: 1 }).agentDerived).toBeUndefined();
+    });
+
+    it('keeps the session the sources were learned in, when they agree', async () => {
+      addRecord({ key: 'same', value: 'a', sourceSession: 'ses_1' });
+      addRecord({ key: 'same', value: 'b', sourceSession: 'ses_1' });
+      expect((await fold('same')).record.sourceSession).toBe('ses_1');
+      addRecord({ key: 'mixed', value: 'a', sourceSession: 'ses_1' });
+      addRecord({ key: 'mixed', value: 'b', sourceSession: 'ses_2' });
+      expect((await fold('mixed')).record.sourceSession).toBeUndefined();
+    });
+  });
+
+  describe('deleting, expiring and undoing a summary reach everything below it', () => {
+    /** a and b folded into s1; s1 and c folded into s2. */
+    async function nested() {
+      const a = addRecord({ key: 'k', value: 'a' });
+      const b = addRecord({ key: 'k', value: 'b' });
+      const s1 = (await consolidate({ key: 'k' }, summarise('a and b'))).record;
+      const c = addRecord({ key: 'k', value: 'c' });
+      const s2 = (await consolidate({ key: 'k' }, summarise('a, b and c'))).record;
+      return { a, b, c, s1, s2 };
+    }
+    const ids = () =>
+      listRecords({ status: 'all', includeExpired: true })
+        .map((r) => r.id)
+        .sort();
+
+    it('deleting the top summary deletes its sources and theirs', async () => {
+      const t = await nested();
+      expect(ids()).toHaveLength(5);
+      expect(deleteRecord(t.s2.id)).toBe(true);
+      expect(ids()).toEqual([]);
+      expect(searchRecords('a').hits).toEqual([]);
+    });
+
+    it('deleting a summary inside another takes its own sources, and leaves the one above', async () => {
+      const t = await nested();
+      expect(deleteRecord(t.s1.id)).toBe(true);
+      expect(ids()).toEqual([t.c.id, t.s2.id].sort());
+    });
+
+    it('expiring the top summary removes everything below it, so nothing is left superseded and out of reach', async () => {
+      const t = await nested();
+      getStore()
+        .prepare('UPDATE memory SET expires_at = ? WHERE id = ?')
+        .run(new Date(Date.now() - 1000).toISOString(), t.s2.id);
+      expect(pruneExpired()).toBe(5);
+      expect(listRecords({ status: 'all', includeExpired: true })).toEqual([]);
+    });
+
+    it('expiring a source on its own removes it, and undoing the summary restores what is left', async () => {
+      const a = addRecord({ key: 'k', value: 'a' });
+      const b = addRecord({ key: 'k', value: 'b' });
+      const { record } = await consolidate({ key: 'k' }, summarise('a and b'));
+      getStore()
+        .prepare('UPDATE memory SET expires_at = ? WHERE id = ?')
+        .run(new Date(Date.now() - 1000).toISOString(), a.id);
+      expect(pruneExpired()).toBe(1);
+      expect(getRecord(record.id)).not.toBeNull();
+      expect(unconsolidate(record.id)).toEqual({ restored: [b.id] });
+    });
+
+    it('refuses to undo a summary that is itself folded into another', async () => {
+      const t = await nested();
+      expect(refused(() => unconsolidate(t.s1.id))).toMatchObject({
+        code: 'cannot_consolidate',
+        message: expect.stringMatching(/folded into a later summary\. Undo that one first/),
+      });
+      // Nothing changed; undoing from the top works, one level at a time.
+      expect(listMemory({ key: 'k' }).map((r) => r.id)).toEqual([t.s2.id]);
+      expect(unconsolidate(t.s2.id).restored.sort()).toEqual([t.c.id, t.s1.id].sort());
+      expect(unconsolidate(t.s1.id).restored.sort()).toEqual([t.a.id, t.b.id].sort());
+      expect(listMemory({ key: 'k' })).toHaveLength(3);
+    });
+
+    it('forgetting a key forgets the whole tree', async () => {
+      await nested();
+      expect(deleteMemory('k')).toBe(true);
+      expect(ids()).toEqual([]);
+    });
+  });
+
   it('only undoes a summary', () => {
     const r = addRecord({ key: 'k', value: 1 });
     expect(refused(() => unconsolidate(r.id)).code).toBe('cannot_consolidate');

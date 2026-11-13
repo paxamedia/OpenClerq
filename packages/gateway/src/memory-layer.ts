@@ -43,6 +43,12 @@ export interface MemoryRecord {
   value: unknown;
   /** Who wrote it: a person, an agent, an import of older data, or a summary the model made. */
   origin: MemoryOrigin;
+  /**
+   * True when an agent wrote this record, or any record folded into it by a
+   * summary did: text an agent read can end up in a note, and folding it into
+   * a summary does not make it a person's.
+   */
+  agentDerived?: true;
   /** The chat session or run it was learned in. */
   sourceSession?: string;
   /** How sure the writer was, from 0 to 1. */
@@ -81,7 +87,7 @@ const DEFAULT_LIST_LIMIT = 500;
 const MAX_LIST_LIMIT = 1_000;
 
 const COLUMNS =
-  'seq, id, type, key, value, origin, source_session, confidence, status, superseded_by, created_at, updated_at, expires_at';
+  'seq, id, type, key, value, origin, agent_derived, source_session, confidence, status, superseded_by, created_at, updated_at, expires_at';
 
 function parseValue(raw: unknown): unknown {
   if (typeof raw !== 'string') return raw;
@@ -100,6 +106,7 @@ function rowToRecord(r: Record<string, unknown>): MemoryRecord {
     key: String(r.key),
     value: parseValue(r.value),
     origin: String(r.origin) as MemoryOrigin,
+    ...(Number(r.agent_derived) === 1 ? { agentDerived: true as const } : {}),
     ...(r.source_session ? { sourceSession: String(r.source_session) } : {}),
     ...(r.confidence === null || r.confidence === undefined
       ? {}
@@ -240,6 +247,7 @@ function insertRow(
     key: string;
     valueJson: string;
     origin: MemoryOrigin;
+    agentDerived: boolean;
     sourceSession: string | null;
     confidence: number | null;
     expiresAt: string | null;
@@ -250,8 +258,8 @@ function insertRow(
   const res = db
     .prepare(
       `INSERT INTO memory
-         (id, type, key, value, origin, source_session, confidence, status, created_at, updated_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
+         (id, type, key, value, origin, agent_derived, source_session, confidence, status, created_at, updated_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
     )
     .run(
       rec.id,
@@ -259,6 +267,7 @@ function insertRow(
       rec.key,
       rec.valueJson,
       rec.origin,
+      rec.agentDerived ? 1 : 0,
       rec.sourceSession,
       rec.confidence,
       now,
@@ -270,6 +279,28 @@ function insertRow(
     key: rec.key,
     text: memoryText(rec.valueJson),
   });
+}
+
+/**
+ * `ids` and every record folded into them by a summary, at any depth: what a
+ * summary stands for is its sources, and theirs if they are summaries too.
+ */
+function withSources(ids: string[]): string[] {
+  const db = getStore();
+  const all = new Set(ids);
+  let frontier = [...ids];
+  while (frontier.length > 0) {
+    const next = db
+      .prepare(
+        `SELECT id FROM memory WHERE superseded_by IN (${frontier.map(() => '?').join(', ')})`
+      )
+      .all(...frontier)
+      .map((r) => String(r.id))
+      .filter((id) => !all.has(id));
+    for (const id of next) all.add(id);
+    frontier = next;
+  }
+  return [...all];
 }
 
 /** Delete rows by id, and their index entries. The caller holds the transaction. */
@@ -299,7 +330,7 @@ export function addRecord(input: NewRecord): MemoryRecord {
     expiresAt: checkExpiry(input.expiresAt),
   };
   const now = new Date().toISOString();
-  getStore().transaction(() => insertRow(rec, now));
+  getStore().transaction(() => insertRow({ ...rec, agentDerived: rec.origin === 'agent' }, now));
   announce('created', { id: rec.id, key, type: rec.type });
   return getRecord(rec.id) as MemoryRecord;
 }
@@ -375,18 +406,14 @@ export function updateRecord(id: string, patch: RecordPatch): MemoryRecord {
 }
 
 /**
- * Delete a record. A summary takes the records folded into it along: they say
- * the same, and deleting one is meant to forget it.
+ * Delete a record. A summary takes everything folded into it along, at any
+ * depth: it says the same, and deleting one is meant to forget it.
  */
 export function deleteRecord(id: string): boolean {
   const db = getStore();
   const row = db.prepare('SELECT key, type FROM memory WHERE id = ?').get(id);
   if (!row) return false;
-  const sources = db
-    .prepare('SELECT id FROM memory WHERE superseded_by = ?')
-    .all(id)
-    .map((r) => String(r.id));
-  db.transaction(() => deleteRows([id, ...sources]));
+  db.transaction(() => deleteRows(withSources([id])));
   announce('deleted', { id, key: String(row.key), type: String(row.type) as MemoryType });
   return true;
 }
@@ -399,7 +426,7 @@ export function deleteMemory(key: string): boolean {
     .all(key)
     .map((r) => String(r.id));
   if (ids.length === 0) return false;
-  db.transaction(() => deleteRows(ids));
+  db.transaction(() => deleteRows(withSources(ids)));
   announce('deleted', { key, ids });
   return true;
 }
@@ -584,16 +611,22 @@ export function searchMemory(query: string, limit = 50): MemoryEntry[] {
 let lastPrune = 0;
 const PRUNE_EVERY_MS = 3_600_000;
 
-/** Remove records past their expiry, summaries and the records behind them included. */
+/**
+ * Remove records past their expiry. A summary that has expired takes everything
+ * folded into it along, at any depth. A record folded into a summary that has
+ * not expired goes on its own expiry, and undoing the summary then restores
+ * what is left.
+ */
 export function pruneExpired(): number {
   lastPrune = Date.now();
   const db = getStore();
   const now = new Date().toISOString();
-  const ids = db
+  const expired = db
     .prepare('SELECT id FROM memory WHERE expires_at IS NOT NULL AND expires_at <= ?')
     .all(now)
     .map((r) => String(r.id));
-  if (ids.length === 0) return 0;
+  if (expired.length === 0) return 0;
+  const ids = withSources(expired);
   const n = db.transaction(() => deleteRows(ids));
   audit(db, { actor: 'system', action: 'memory.expired', detail: { removed: n } });
   announce('expired', { ids });
@@ -691,6 +724,17 @@ export async function consolidate(
   }
 
   const confidences = before.flatMap((r) => (r.confidence === undefined ? [] : [r.confidence]));
+  // The summary lives as long as what it says: until the latest source lapses,
+  // and for good when any source does not. Otherwise a note set to expire would be
+  // forgotten while its words went on in a summary that never does.
+  const lapses = before.map((r) => (r.expiresAt ? Date.parse(r.expiresAt) : null));
+  const expiresAt = lapses.every((t): t is number => t !== null)
+    ? new Date(Math.max(...lapses)).toISOString()
+    : null;
+  // Where it was learned, when the sources agree.
+  const sessions = new Set(before.map((r) => r.sourceSession ?? null));
+  const sourceSession = sessions.size === 1 ? ([...sessions][0] ?? null) : null;
+  const agentDerived = before.some((r) => r.origin === 'agent' || r.agentDerived === true);
   const id = newId();
   const now = new Date().toISOString();
   db.transaction(() => {
@@ -714,10 +758,11 @@ export async function consolidate(
         key,
         valueJson: checkValue(summary),
         origin: 'consolidation',
-        sourceSession: null,
+        agentDerived,
+        sourceSession,
         // A model's summary is no more certain than the least certain record in it.
         confidence: confidences.length ? Math.min(...confidences) : null,
-        expiresAt: null,
+        expiresAt,
       },
       now
     );
@@ -746,12 +791,20 @@ export async function consolidate(
  */
 export function unconsolidate(id: string, actor = 'operator'): { restored: string[] } {
   const db = getStore();
-  const row = db.prepare('SELECT key, type, origin FROM memory WHERE id = ?').get(id);
+  const row = db.prepare('SELECT key, type, origin, status FROM memory WHERE id = ?').get(id);
   if (!row) throw new MemoryError('memory_not_found', `No memory record ${id}.`);
   if (String(row.origin) !== 'consolidation') {
     throw new MemoryError(
       'cannot_consolidate',
       `${id} is not a summary, so there is nothing to undo.`
+    );
+  }
+  // Undoing a summary that is itself folded into another would put its records back beside
+  // the summary that already stands for them: that one is undone first.
+  if (String(row.status) !== 'active') {
+    throw new MemoryError(
+      'cannot_consolidate',
+      `${id} is itself folded into a later summary. Undo that one first.`
     );
   }
   const restored = db

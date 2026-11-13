@@ -85,7 +85,7 @@ describe('migration 16: memory records', () => {
     // The old table had no checks: a type nobody defined and a confidence out of range.
     insert.run('odd', 'null', 'weird', null, 5, '2026-03-01', '2026-03-01', null);
 
-    expect(migrate(old).slice(-1)).toEqual([16]);
+    expect(migrate(old).slice(-2)).toEqual([16, 17]);
 
     const rows = old.prepare('SELECT * FROM memory ORDER BY created_at').all();
     expect(rows).toHaveLength(3);
@@ -102,6 +102,8 @@ describe('migration 16: memory records', () => {
     expect(rows.map((r) => r.type)).toEqual(['fact', 'fact', 'fact']);
     expect(rows[2].confidence).toBeNull();
     expect(rows.every((r) => r.origin === 'import' && r.status === 'active')).toBe(true);
+    // Nothing from before was written by an agent.
+    expect(rows.every((r) => r.agent_derived === 0)).toBe(true);
     expect(new Set(rows.map((r) => r.id)).size).toBe(3);
     expect(rows.every((r) => /^mem_[0-9a-f]{16}$/.test(String(r.id)))).toBe(true);
     old.close();
@@ -141,6 +143,25 @@ describe('migration 16: memory records', () => {
       ).run(`m_${type}`, type);
     }
     expect(db.prepare('SELECT COUNT(*) AS n FROM memory').get()?.n).toBe(5);
+  });
+
+  it('marks a record an agent wrote as agent-derived, for databases that already hold one', async () => {
+    const old = await oldDatabase();
+    migrate(old);
+    // Migration 17 on its own, over a table that already has an agent's record.
+    old.exec('DROP TABLE memory');
+    old.exec(
+      "CREATE TABLE memory (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, origin TEXT, status TEXT DEFAULT 'active', key TEXT, value TEXT)"
+    );
+    old.exec(
+      "INSERT INTO memory (id, origin, key, value) VALUES ('a', 'agent', 'k', '1'), ('u', 'user', 'k', '2')"
+    );
+    old.exec(MIGRATIONS.find((m) => m.id === 17)?.sql as string);
+    expect(old.prepare('SELECT id, agent_derived FROM memory ORDER BY id').all()).toEqual([
+      { id: 'a', agent_derived: 1 },
+      { id: 'u', agent_derived: 0 },
+    ]);
+    old.close();
   });
 
   it('is applied once', () => {

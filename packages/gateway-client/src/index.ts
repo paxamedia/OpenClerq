@@ -199,6 +199,8 @@ export interface MemoryRecord {
   value: unknown;
   /** Who wrote it: a person, an agent, an import of older data, or a summary the model made. */
   origin: 'user' | 'agent' | 'import' | 'consolidation';
+  /** True when an agent wrote this record, or any record folded into it by a summary did. */
+  agentDerived?: true;
   /** The chat session or run it was learned in. */
   sourceSession?: string;
   /** How sure the writer was, from 0 to 1. */

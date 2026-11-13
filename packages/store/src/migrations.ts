@@ -519,4 +519,15 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_memory_superseded ON memory(superseded_by) WHERE superseded_by IS NOT NULL;
     `,
   },
+  {
+    id: 17,
+    name: 'memory_agent_derived',
+    // Whether a memory record, or any record folded into it by a summary, was
+    // written by an agent. A summary keeps the flag of what it summarises, so
+    // text an agent read does not lose where it came from by being folded.
+    sql: `
+      ALTER TABLE memory ADD COLUMN agent_derived INTEGER NOT NULL DEFAULT 0;
+      UPDATE memory SET agent_derived = 1 WHERE origin = 'agent';
+    `,
+  },
 ];

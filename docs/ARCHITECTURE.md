@@ -216,12 +216,17 @@ the same transaction (no triggers, so a SQLite without FTS5 still opens the file
 does not match the table.
 
 **Summarising.** `POST /memory/consolidate { key, type?, model? }` has a model fold the records of
-one key and type into one record (`origin: consolidation`, confidence the lowest of its sources). It
+one key and type into one record (`origin: consolidation`; confidence the lowest of its sources; the
+latest source expiry when every source expires, none when any does not; the session when the sources
+share one; `agentDerived` when any source was written by an agent, or is a summary of one). It
 is a run of its own, so its cost is recorded, and an entry in the audit log names the model and the
 records. Nothing is deleted: the records stay as `superseded`, pointing at the summary, and
 `POST /memory/records/:id/unconsolidate` brings them back. It is refused for fewer than two records,
 for several types without one named, for an empty summary, and when a record changed while the model
-was writing. Deleting a summary deletes the records behind it.
+was writing, and an undo is refused for a summary that is itself folded into a later one (undo from the
+top). Deleting a summary, or its expiry, removes everything folded into it, at any depth; a record
+folded into a summary that has not expired goes on its own expiry, and undoing the summary then
+restores what is left.
 
 **Retrieval is decided by policy.** Each type is its own tool in the `memory` group of
 `packages/policy`: `memory.read.<type>` and `memory.write.<type>`. A reader may read the types its
