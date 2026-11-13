@@ -160,7 +160,7 @@ pnpm build:core
 └─────────────────────────────────────────────────────────┘
 ```
 
-_Desktop UI:_ a rail of pages, a ⌘K palette that searches every module, and a status bar with connection, running runs and month spend. **Home** charts runs, success rate and spend, and lists next runs and what needs you. **Inbox** holds approvals and module items in one list. **Automations** run Claude Code on a schedule in a git worktree, check the result with your gates, and open a draft pull request once you approve the push. **Runs** shows each run's pipeline, steps and diff. **Records** are the people and organisations modules share. **Chat** talks to any configured model, raw or managed, and compares models side by side. Modules add pages, Home tiles and record panels. At phone width the same screens use bottom tabs.
+_Desktop UI:_ a rail of pages, a ⌘K palette that searches every module, and a status bar with connection, running runs and month spend. **Home** charts runs, success rate and spend, and lists next runs and what needs you. **Inbox** holds approvals and module items in one list. **Automations** run a coding agent (Claude Code, Codex or Cursor) on a schedule in a git worktree, check the result with your gates, and open a draft pull request once you approve the push. **Runs** shows each run's pipeline, steps and diff. **Records** are the people and organisations modules share. **Chat** talks to any configured model, raw or managed, and compares models side by side. Modules add pages, Home tiles and record panels. At phone width the same screens use bottom tabs.
 
 ## Quick Start
 

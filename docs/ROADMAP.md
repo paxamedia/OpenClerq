@@ -201,9 +201,9 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 
 ### 0.6b — Agents and automations
 
-- [ ] `codex` and `cursor-agent` drivers
+- [x] `codex` and `cursor-agent` drivers
 - [ ] Seatbelt and container profiles for automation runs, with egress limited to the spec's hosts; remote repositories
-- [ ] Kill agent processes a crashed gateway left behind
+- [x] Kill agent processes a crashed gateway left behind
 - [ ] Tool calling in `packages/providers` — the `builtin` driver needs it
 - [ ] `builtin` driver — real tool-calling loop, every call through `packages/policy`
 - [ ] Context management — token estimation, rolling history, compaction, pinned context, tool-output truncation

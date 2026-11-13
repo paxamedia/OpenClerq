@@ -15,7 +15,7 @@ For where this architecture is going, see [ROADMAP.md](ROADMAP.md).
 | Desktop app      | Tauri v2 + React    | Native UI on macOS and Windows                          |
 | Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration |
 | Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration           |
-| Agent drivers    | `packages/drivers`  | Run a coding agent's CLI (Claude Code) in a workspace   |
+| Agent drivers    | `packages/drivers`  | Run a coding agent's CLI (Claude Code, Codex, Cursor)   |
 | Interface        | `packages/web`      | Shell, screens, charts and components, for any host app |
 | Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                            |
 | Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets               |
@@ -81,7 +81,7 @@ one for every vendor that speaks `/chat/completions`.
 Choose one with `CLERQ_LLM_PROVIDER`, or name a qualified model such as
 `CLERQ_MODEL=deepseek/deepseek-chat`. The `model` field on `/task` and `/explain` takes either a
 bare model id for the configured provider or a qualified reference to any other. Cursor has no
-public model API and is not a provider; it arrives in 0.6 as an agent CLI driver.
+public model API and is not a provider; it is an agent CLI driver, `cursor-agent`.
 
 Base URLs, model ids and prices are data. To change them, copy the built-in registry to
 `~/.clerq/providers.yaml` (or point `CLERQ_PROVIDERS_FILE` at a copy). The gateway reloads that
@@ -160,18 +160,48 @@ preparing → executing → verifying → publishing → done
 ```
 
 - **preparing** — a new branch in a fresh `git worktree`, started from origin's copy of the base branch (fetched first; the local branch if the fetch fails). The user's checkout is never touched.
-- **executing** — the `claude-code` driver runs `claude -p` in the worktree under the user's own sign-in, with a minimal environment: no gateway token, and no API key unless the spec names a vault secret. Its tool calls become run steps, and the cost it reports goes on the run.
+- **executing** — the spec's driver runs the agent's CLI in the worktree under the user's own sign-in, with a minimal environment: no gateway token, and no API key unless the spec names a vault secret (handed over as the variable that CLI reads). Its tool calls become run steps, and the cost it reports goes on the run. The process it starts, and each gate's, is recorded with the run; see [Agent drivers](#agent-drivers).
 - **verifying** — the agent's changes are committed, then each gate runs in the worktree. The first failure ends the run.
 - **publishing** — push, then a draft pull request on GitHub. The push waits in the approvals inbox unless the spec sets `approvals.push: auto`, and an automation's first push always waits.
 
 `packages/policy` decides each action first: running the agent, a gate, committing, pushing,
 opening the PR. Anything the spec does not ask to publish is denied. The diff and the agent's
 output stay with the run, and the worktree is removed afterwards. A run interrupted by a restart
-is marked failed and its worktree removed. New automations are saved disabled. Each automation
+is marked failed and its worktree removed, once anything it left running has been stopped. New automations are saved disabled. Each automation
 runs once at a time, and at most `CLERQ_MAX_CONCURRENT_RUNS` (default 2) run at once; a firing
 beyond that is skipped, not queued. `max_usd_per_run` becomes the CLI's own budget, and reaching
 `max_usd_per_month` pauses the automation. The kill switch pauses automation schedules with the
 triggers.
+
+#### Agent drivers
+
+A driver runs one agent CLI and reports what it did as the same stream of events, so the run view
+does not care which agent produced a run. `agent.driver` takes one of three:
+
+| Driver         | Runs                                             | Sandbox and permissions                                                                                                                    | Cost |
+| -------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ---- |
+| `claude-code`  | `claude -p`, streaming JSON                      | `agent.permission_mode`; `allowed_tools` in Claude Code's syntax                                                                           | yes  |
+| `codex`        | `codex exec --json`, JSONL events                | Codex's own sandbox: `workspace-write` for `acceptEdits`, `read-only` for every other mode. Its network stays as `~/.codex` sets it        | none |
+| `cursor-agent` | `cursor-agent -p`, `--output-format stream-json` | Agent mode edits the workspace and runs only commands on the user's own allowlist; `plan` and `default` map to Cursor's plan and ask modes | none |
+
+None of them is ever started with its "run everything" switch. Codex and Cursor report no cost and
+have no spend limit, so a spec that sets `budget.max_usd_per_run` or `budget.max_usd_per_month` for
+them is refused when it is saved, as is `agent.allowed_tools`, which neither CLI takes; a run's
+time limit (`sandbox.timeout`) is the bound. `agent.api_key_secret` is handed to the CLI as
+`ANTHROPIC_API_KEY`, `CODEX_API_KEY` or `CURSOR_API_KEY`. `GET /drivers` lists each driver with
+its version and, where the CLI says, whether it is signed in; a spec that does not bring its own
+key needs it to be. Install paths: `CLERQ_CLAUDE_BIN`, `CLERQ_CODEX_BIN`, `CLERQ_CURSOR_BIN`.
+
+Every agent and gate process leads its own process group, so it would outlive a gateway that
+crashed. The gateway records each one (pid, group, the OS's start time, command) in
+`run_processes`, beside the run, and closes the record when the process exits. On the next start,
+before interrupted runs are marked failed and their worktrees removed, it stops what is still
+running, after checking the pid still belongs to what was recorded: a process is stopped only if
+its start time matches and, for an agent, its command line still names the CLI. What remains of a
+group whose leader has already exited (a server the agent started) is stopped too, if none of it
+is older than the leader was. A reused pid is left alone, and so is anything started by a gateway
+that is still running. This needs `ps` with
+`lstart` (macOS, procps); where there is none, nothing is stopped.
 
 In this release the agent and the gates run with the `native` profile, without isolation, and a
 spec must say so to run. See [SECURITY.md](SECURITY.md).
