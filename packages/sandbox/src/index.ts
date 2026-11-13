@@ -48,6 +48,7 @@ import {
   type EgressSidecar,
 } from './container.js';
 import { SandboxError } from './errors.js';
+export { findStragglers, stopStragglers, type Straggler } from './stragglers.js';
 export { resolveWithinRoot, PathContainmentError } from './paths.js';
 export { SandboxError } from './errors.js';
 export {
@@ -165,6 +166,12 @@ export interface SandboxSpec {
   runtime?: string;
   /** Container: the egress proxy's image, which needs `node`. Default node:24-alpine. */
   egressImage?: string;
+  /**
+   * A file handed to the command, open, as descriptor 3, so that what it
+   * leaves running (and inherits the descriptor) can be found afterwards with
+   * `findStragglers`. The caller creates it, outside anything writable.
+   */
+  tagFile?: string;
 }
 
 /** The container a command ran in, by name: what stops it is the runtime, not a signal. */
@@ -221,6 +228,8 @@ export interface ExecOptions {
    * Under the container profile the container is removed whatever this says.
    */
   reapGroup?: boolean;
+  /** Written to the command's standard input, which is closed after it. Default: none. */
+  input?: string;
 }
 
 /** Variables a process needs to start and find its tools, and nothing else. */
@@ -310,8 +319,9 @@ function canonical(p: string): string {
 /**
  * The mach services a sandboxed command may look up: directory services
  * (users, groups), logging, notifications, temp-dir lookup, network
- * configuration and DNS, certificate trust, the keychain (an agent CLI's
- * sign-in on macOS), and preferences (cfprefsd enforces the sandbox on writes).
+ * configuration and DNS, certificate trust, and preferences (cfprefsd
+ * enforces the sandbox on writes). Not the keychain: an agent CLI under a
+ * profile signs in with a key it is given, not with the user's keychain.
  */
 const MACH_SERVICES = [
   'com.apple.system.opendirectoryd.libinfo',
@@ -325,8 +335,6 @@ const MACH_SERVICES = [
   'com.apple.dnssd.service',
   'com.apple.trustd',
   'com.apple.trustd.agent',
-  'com.apple.SecurityServer',
-  'com.apple.securityd.xpc',
   'com.apple.cfprefsd.daemon',
   'com.apple.cfprefsd.agent',
 ];
@@ -353,10 +361,14 @@ function sbplPath(p: string): string {
   return JSON.stringify(p);
 }
 
-/** A path prefix as an SBPL regular expression, matching it and anything longer. */
+/**
+ * A file as an SBPL regular expression: the file itself, and its siblings
+ * that add a suffix after a dot (`x.json.tmp.12`, `x.json.lock`) as an atomic
+ * rewrite makes them. Anchored at both ends, and never across a `/`.
+ */
 function sbplPrefix(p: string): string {
   sbplPath(p);
-  return `#"^${p.replace(/[.*+?^${}()|[\]]/g, '\\$&')}"`;
+  return `#"^${p.replace(/[.*+?^${}()|[\]]/g, '\\$&')}(\\.[^/]*)?$"`;
 }
 
 /** Reject paths that would let a caller escape the workspace by construction. */
@@ -694,6 +706,27 @@ export async function exec(
     if (container) await removeContainer(container.runtime, container.name);
   };
 
+  // Opened for the spawn only: the child keeps its own copy.
+  let tagFd: number | undefined;
+  if (spec.tagFile) {
+    try {
+      tagFd = fs.openSync(spec.tagFile, 'r');
+    } catch (e) {
+      await teardown();
+      throw new SandboxError(`Cannot open the tag file ${spec.tagFile}: ${(e as Error).message}`);
+    }
+  }
+  const closeTag = () => {
+    if (tagFd !== undefined) {
+      try {
+        fs.closeSync(tagFd);
+      } catch {
+        /* closed */
+      }
+      tagFd = undefined;
+    }
+  };
+
   return new Promise<ExecResult>((resolve, reject) => {
     let child;
     try {
@@ -709,13 +742,25 @@ export async function exec(
         // Own process group, so the timeout can kill descendants too rather
         // than orphaning them.
         detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [
+          options.input === undefined ? 'ignore' : 'pipe',
+          'pipe',
+          'pipe',
+          ...(tagFd === undefined ? [] : [tagFd]),
+        ],
       });
     } catch (e) {
+      closeTag();
       void teardown().then(() =>
         reject(new SandboxError(`Could not start sandbox: ${e instanceof Error ? e.message : e}`))
       );
       return;
+    }
+
+    closeTag();
+    if (options.input !== undefined && child.stdin) {
+      child.stdin.on('error', () => undefined);
+      child.stdin.end(options.input);
     }
 
     if (child.pid !== undefined) {
@@ -806,9 +851,12 @@ export async function exec(
 
     // Children that outlive their parent keep its output pipes open, and the
     // process is not "closed" until they are shut, so this runs on exit.
+    // Awaited before the result is returned: nothing of the group may still be
+    // running when the caller goes on (to commit, say).
+    let reaping: Promise<void> = Promise.resolve();
     if (options.reapGroup) {
       child.once('exit', () => {
-        void reapGroup(child.pid as number);
+        reaping = reapGroup(child.pid as number);
       });
     }
 
@@ -832,6 +880,7 @@ export async function exec(
       emitLines('err', '', true);
       // Before resolving, so nothing of the command is left when the caller
       // goes on to remove its worktree.
+      await reaping;
       await teardown();
       const egress = proxy
         ? { allowed: proxy.allowed, denied: [...proxy.denied] }

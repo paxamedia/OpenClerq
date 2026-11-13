@@ -20,6 +20,8 @@ import {
   removeContainer,
   parseEgressLog,
   EGRESS_SIDECAR_SCRIPT,
+  findStragglers,
+  stopStragglers,
   type SandboxSpec,
 } from './index.js';
 
@@ -609,3 +611,105 @@ describe('egress proxy script for the container profile', () => {
     }
   });
 });
+
+describe('what a command leaves behind', () => {
+  let work: string;
+  beforeEach(() => {
+    work = fs.mkdtempSync(path.join(root, 'left-'));
+  });
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it('has stopped the rest of the group by the time exec returns', async () => {
+    const r = await exec({ profile: 'native', cwd: work }, 'sh', ['-c', 'sleep 30 & echo $!'], {
+      reapGroup: true,
+    });
+    expect(alive(Number(r.stdout.trim()))).toBe(false);
+  });
+
+  it('passes input on standard input', async () => {
+    const r = await exec({ profile: 'native', cwd: work }, 'sh', ['-c', 'cat > got.txt'], {
+      input: 'line one\nline two\n',
+    });
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(path.join(work, 'got.txt'), 'utf8')).toBe('line one\nline two\n');
+  });
+
+  // perl is in macOS and most Linux base systems; it calls setsid() without a helper.
+  const SETSID = (body: string) =>
+    `/usr/bin/perl -MPOSIX -e 'POSIX::setsid(); close STDOUT; close STDERR; close STDIN; ${body}' & sleep 1; echo started`;
+
+  it.skipIf(process.platform === 'win32')(
+    'finds a process that left the group with setsid and the directories, by its tag file, and stops it',
+    async () => {
+      const tagFile = path.join(fs.mkdtempSync(path.join(root, 'tag-')), 'run.tag');
+      fs.writeFileSync(tagFile, '');
+      const r = await exec(
+        { profile: isMac ? 'seatbelt' : 'native', cwd: work, network: 'none', tagFile },
+        '/bin/sh',
+        ['-c', SETSID('chdir "/"; sleep 4; open F, ">", "' + work + '/survivor.txt"; close F')],
+        { reapGroup: true }
+      );
+      expect(r.stdout.trim()).toBe('started');
+      // Not by the worktree (it left it), but by the descriptor it inherited.
+      expect(await findStragglers({ dirs: [work] })).toEqual([]);
+      const found = (await findStragglers({ tagFile, dirs: [work] })) ?? [];
+      expect(found).toHaveLength(1);
+      const done = await stopStragglers({ tagFile, dirs: [work] });
+      expect(done?.stopped.map((s) => s.pid)).toEqual(found.map((s) => s.pid));
+      expect(done?.remaining).toEqual([]);
+      await new Promise((resolve) => setTimeout(resolve, 4_500));
+      expect(fs.existsSync(path.join(work, 'survivor.txt'))).toBe(false);
+    },
+    15_000
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'finds one that closed its descriptors by its working directory',
+    async () => {
+      await exec({ profile: 'native', cwd: work }, '/bin/sh', ['-c', SETSID('sleep 20')], {
+        reapGroup: true,
+      });
+      const done = await stopStragglers({ dirs: [work] });
+      expect(done?.stopped).toHaveLength(1);
+      expect(done?.remaining).toEqual([]);
+      expect(alive((done?.stopped ?? [])[0].pid)).toBe(false);
+    },
+    15_000
+  );
+});
+
+describe.skipIf(!isMac)(
+  'seatbelt: a writable file is that file and its dotted siblings only (macOS)',
+  () => {
+    it('does not let a file rule cover longer names or paths below it', async () => {
+      const dir = fs.mkdtempSync(path.join(root, 'pref-'));
+      const work = path.join(dir, 'w');
+      fs.mkdirSync(work);
+      const file = path.join(dir, 'state.json');
+      const spec: SandboxSpec = {
+        profile: 'seatbelt',
+        cwd: work,
+        network: 'none',
+        allowWritePrefix: [file],
+      };
+      const tryWrite = async (p: string) =>
+        (
+          await exec(spec, 'sh', [
+            '-c',
+            `mkdir -p "$(dirname "${p}")" 2>/dev/null; echo x > "${p}"`,
+          ])
+        ).code;
+      expect(await tryWrite(file)).toBe(0);
+      expect(await tryWrite(`${file}.tmp.12`)).toBe(0);
+      expect(await tryWrite(`${file}X`)).not.toBe(0);
+      expect(await tryWrite(`${file}.d/evil`)).not.toBe(0);
+    });
+  }
+);
