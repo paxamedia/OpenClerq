@@ -142,7 +142,12 @@ export function builtin(options: BuiltinOptions = {}): Driver {
     try {
       registry = registryOf();
     } catch (e) {
-      return { id: ID, available: false, reason: e instanceof Error ? e.message : String(e) };
+      return {
+        id: ID,
+        available: false,
+        reasonKind: 'invalid',
+        reason: e instanceof Error ? e.message : String(e),
+      };
     }
     const providers = registry.providers.map((p) => {
       const local = !p.authEnv;
@@ -174,7 +179,9 @@ export function builtin(options: BuiltinOptions = {}): Driver {
     }
 
     const problem = qualified(opts.model);
-    if (problem) return { id: ID, available: false, providers, reason: problem };
+    if (problem) {
+      return { id: ID, available: false, providers, reasonKind: 'invalid', reason: problem };
+    }
     let provider: ProviderSpec;
     let model: ModelSpec;
     try {
@@ -184,6 +191,7 @@ export function builtin(options: BuiltinOptions = {}): Driver {
         id: ID,
         available: false,
         providers,
+        reasonKind: 'invalid',
         reason: e instanceof Error ? e.message : String(e),
       };
     }
@@ -198,11 +206,17 @@ export function builtin(options: BuiltinOptions = {}): Driver {
       return {
         ...base,
         available: false,
+        reasonKind: 'no_key',
         reason: `${provider.label} needs ${provider.authEnv}: set it for the gateway, or name a vault secret in agent.api_key_secret.`,
       };
     }
     if (opts.budget && !priced(provider, model)) {
-      return { ...base, available: false, unpriced: true, reason: unpricedReason(provider, model) };
+      return {
+        ...base,
+        available: false,
+        reasonKind: 'unpriced',
+        reason: unpricedReason(provider, model),
+      };
     }
     if (!provider.authEnv) {
       // A local server: check something answers, so a run does not fail on its first call.
@@ -215,6 +229,7 @@ export function builtin(options: BuiltinOptions = {}): Driver {
         return {
           ...base,
           available: false,
+          reasonKind: 'unreachable',
           reason: `Nothing answers at ${provider.baseUrl} (${provider.label}): ${e instanceof Error ? e.message : String(e)}. Start it, or point the registry at it.`,
         };
       }

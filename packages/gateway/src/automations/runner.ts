@@ -62,7 +62,7 @@ import { watchProcess } from '../agent-processes.js';
 import { isAssertion, type AutomationSpec, type GateSpec } from './spec.js';
 import { diffFiles, evaluateAssertion, type DiffFile } from './diff-assert.js';
 import { retryPlan, transientCause, TransientFailure } from './retry.js';
-import { checkModels, judgeChain, keyAppliesTo, planModels } from './model-chain.js';
+import { checkModels, isSpecFault, judgeChain, keyAppliesTo, planModels } from './model-chain.js';
 import { recordFallback } from '../routing.js';
 import { memoryBlock } from '../memory-context.js';
 import {
@@ -302,7 +302,7 @@ async function execute(
       // A fallback model that cannot be used now is skipped when its turn comes.
       status: check.availability.available
         ? 'ok'
-        : check.role === 'fallback' && !check.availability.unpriced
+        : check.role === 'fallback' && !isSpecFault(check.availability)
           ? 'warning'
           : 'error',
     })

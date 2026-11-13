@@ -9,6 +9,8 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { audit } from '@clerq/store';
+import type { Registry } from '@clerq/providers';
+import { getRegistry } from '../agent/llm-provider.js';
 import { getStore } from '../store.js';
 import { cancelQueuedRun } from '../runs.js';
 import { parseSpec, SpecError, type AutomationSpec } from './spec.js';
@@ -37,6 +39,21 @@ export class AutomationError extends Error {
   ) {
     super(message);
     this.name = 'AutomationError';
+  }
+}
+
+/**
+ * The registry a spec being saved or previewed is checked against: the
+ * gateway's, which is what the builtin agent resolves models in. A stored spec
+ * is not re-checked when it is read, so editing providers.yaml never makes the
+ * list of automations fail; a run checks again before it starts. A registry that
+ * cannot be read is no check here (the run says why).
+ */
+export function specRegistry(): Registry | undefined {
+  try {
+    return getRegistry();
+  } catch {
+    return undefined;
   }
 }
 
@@ -105,7 +122,7 @@ function assertNameFree(name: string, exceptId?: string): void {
  * separate, deliberate act, so whatever wrote the spec cannot also arm it.
  */
 export function createAutomation(source: string, actor = 'operator'): Automation {
-  const spec = parseSpec(source);
+  const spec = parseSpec(source, { registry: specRegistry() });
   assertNameFree(spec.name);
   const id = `aut_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
@@ -134,7 +151,7 @@ export function createAutomation(source: string, actor = 'operator'): Automation
 /** Replace an automation's spec. Whether it is enabled does not change. */
 export function updateAutomation(id: string, source: string, actor = 'operator'): Automation {
   requireAutomation(id);
-  const spec = parseSpec(source);
+  const spec = parseSpec(source, { registry: specRegistry() });
   assertNameFree(spec.name, id);
   const c = columnsOf(spec);
   const db = getStore();

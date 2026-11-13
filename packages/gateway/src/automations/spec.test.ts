@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { parseRegistry } from '@clerq/providers';
 import { parseSpec, parseDuration, SpecError } from './spec.js';
 import { nextRunOf } from './scheduler.js';
 
@@ -249,6 +250,57 @@ on:
         MINIMAL.replace('driver: claude-code', 'driver: claude-code\n  model:\n    fallback: [7]')
       ).message
     ).toMatch(/Each fallback model must be a model name/);
+  });
+
+  describe('against a registry', () => {
+    const registry = parseRegistry(
+      'providers:\n  - id: fake\n    label: Fake\n    adapter: anthropic\n    baseUrl: https://f.invalid\n    models:\n      - id: small\n  - id: other\n    label: Other\n    adapter: openai-compat\n    baseUrl: https://o.invalid\n    models: []\n'
+    );
+    const builtin = (model: string) =>
+      MINIMAL.replace('driver: claude-code', `driver: builtin\n  model:\n${model}`);
+
+    it('refuses a provider it does not know, in the primary, an escalation and a fallback, by line', () => {
+      const primary = (() => {
+        try {
+          parseSpec(builtin('    primary: fakee/small'), { registry });
+        } catch (e) {
+          return e as SpecError;
+        }
+        throw new Error('expected a SpecError');
+      })();
+      expect(primary.message).toMatch(
+        /Unknown provider "fakee" in "fakee\/small"\. Known: fake, other\./
+      );
+      expect([primary.line, primary.column]).toEqual([8, 14]);
+
+      for (const key of ['escalate', 'fallback']) {
+        let err: SpecError | undefined;
+        try {
+          parseSpec(builtin(`    primary: fake/small\n    ${key}: [other/x, nope/y]`), {
+            registry,
+          });
+        } catch (e) {
+          err = e as SpecError;
+        }
+        expect(err?.message, key).toMatch(/Unknown provider "nope" in "nope\/y"/);
+        expect([err?.line, err?.column], key).toEqual([9, 25]);
+      }
+    });
+
+    it('allows a model id the registry does not list, and a provider with no models listed', () => {
+      expect(
+        parseSpec(builtin('    primary: fake/brand-new-model'), { registry }).agent.model
+      ).toBe('fake/brand-new-model');
+      expect(parseSpec(builtin('    primary: other/anything'), { registry }).agent.model).toBe(
+        'other/anything'
+      );
+    });
+
+    it('checks nothing without a registry, and nothing for a CLI, whose model is the CLI’s own', () => {
+      expect(parseSpec(builtin('    primary: nobody/x')).agent.model).toBe('nobody/x');
+      const cli = MINIMAL.replace('driver: claude-code', 'driver: claude-code\n  model: nobody/x');
+      expect(parseSpec(cli, { registry }).agent.model).toBe('nobody/x');
+    });
   });
 
   it('reads memory.read, and checks each type by line', () => {

@@ -137,7 +137,8 @@ async function* runScripted(input: DriverRunInput): AsyncIterable<DriverEvent> {
 }
 
 /** The builtin agent over a scripted model API, for provider errors and pricing. */
-const MODEL_REGISTRY = parseRegistry(`
+/** The model registry, as YAML: the gateway checks a spec's models against it as well as the agent. */
+const MODEL_REGISTRY_YAML = `
 providers:
   - id: fake
     label: Fake
@@ -151,7 +152,8 @@ providers:
         outputPerM: 2
       - id: unpriced
         context: 200000
-`);
+`;
+const MODEL_REGISTRY = parseRegistry(MODEL_REGISTRY_YAML);
 let modelStatuses: number[] = [];
 const fakeModel = (async () => {
   const status = modelStatuses.shift() ?? 200;
@@ -172,6 +174,7 @@ const builtinDriver = builtin({ registry: () => MODEL_REGISTRY, fetch: fakeModel
 // ---------------------------------------------------------------------------
 
 let root: string;
+let savedProvidersFile: string | undefined;
 let dbFile: string;
 const repos: Record<string, string> = {};
 
@@ -304,6 +307,9 @@ const past = () => new Date(Date.now() - 60_000).toISOString();
 
 beforeAll(async () => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-queue-')));
+  savedProvidersFile = process.env.CLERQ_PROVIDERS_FILE;
+  fs.writeFileSync(path.join(root, 'providers.yaml'), MODEL_REGISTRY_YAML);
+  process.env.CLERQ_PROVIDERS_FILE = path.join(root, 'providers.yaml');
   dbFile = path.join(root, 'clerq.db');
   deps.workspaceCacheDir = path.join(root, 'cache');
   repos.a = makeRepo('repo-a');
@@ -314,6 +320,8 @@ beforeAll(async () => {
 }, 20_000);
 
 afterAll(() => {
+  if (savedProvidersFile === undefined) delete process.env.CLERQ_PROVIDERS_FILE;
+  else process.env.CLERQ_PROVIDERS_FILE = savedProvidersFile;
   stopAutomationSchedules();
   stopAutomationQueue();
   closeStore();

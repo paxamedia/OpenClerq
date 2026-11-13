@@ -93,7 +93,8 @@ async function* runScripted(id: string, input: DriverRunInput): AsyncIterable<Dr
  * The builtin agent is the real driver, over a scripted model: each reply is
  * the next Messages API response, so no request leaves the process.
  */
-const MODEL_REGISTRY = parseRegistry(`
+/** The model registry, as YAML: the gateway checks a spec's models against it as well as the agent. */
+const MODEL_REGISTRY_YAML = `
 providers:
   - id: fake
     label: Fake
@@ -117,7 +118,8 @@ providers:
         context: 200000
         inputPerM: 1
         outputPerM: 2
-`);
+`;
+const MODEL_REGISTRY = parseRegistry(MODEL_REGISTRY_YAML);
 let modelReplies: Array<Array<Record<string, unknown>>> = [];
 const modelRequests: Array<{ key?: string; body: Record<string, unknown> }> = [];
 const fakeModel = (async (_url: string, init: RequestInit) => {
@@ -151,6 +153,7 @@ const fakeForge: Fetcher = async (url, init) => {
 };
 
 let root: string;
+let savedProvidersFile: string | undefined;
 let repo: string;
 let bare: string;
 let baseUrl: string;
@@ -279,6 +282,9 @@ function remoteBranches(): string[] {
 
 beforeAll(async () => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-aut-')));
+  savedProvidersFile = process.env.CLERQ_PROVIDERS_FILE;
+  fs.writeFileSync(path.join(root, 'providers.yaml'), MODEL_REGISTRY_YAML);
+  process.env.CLERQ_PROVIDERS_FILE = path.join(root, 'providers.yaml');
   bare = path.join(root, 'origin.git');
   repo = path.join(root, 'app');
   sh(root, 'init', '-q', '--bare', '-b', 'main', bare);
@@ -320,6 +326,8 @@ beforeAll(async () => {
 }, 20_000);
 
 afterAll(async () => {
+  if (savedProvidersFile === undefined) delete process.env.CLERQ_PROVIDERS_FILE;
+  else process.env.CLERQ_PROVIDERS_FILE = savedProvidersFile;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -869,6 +877,35 @@ describe('builtin driver', () => {
     expect(moved.body.checks.map((c) => c.message).join('\n')).toMatch(
       /fake\/priced is unavailable \(Fake needs FAKE_AUTOMATION_MODEL_KEY.*a run would start with other\/m/
     );
+  });
+
+  it('refuses a provider the registry does not know when saving, previewing or choosing a model for a run', async () => {
+    const typo = builtinSpec(
+      'builtin-typo',
+      '  model:\n    primary: fakee/priced\n    fallback: [fake/priced]\n'
+    );
+    const saved = await save(typo);
+    expect(saved.status).toBe(400);
+    expect(saved.body).toMatchObject({ error: 'invalid_spec', line: 7 });
+    expect(saved.body.message).toMatch(
+      /Unknown provider "fakee" in "fakee\/priced"\. Known: fake, other\./
+    );
+
+    const preview = await json<{ error: string; line: number }>('/automations/preview', {
+      method: 'POST',
+      body: JSON.stringify({ spec: typo }),
+    });
+    expect(preview.status).toBe(400);
+    expect(preview.body).toMatchObject({ error: 'invalid_spec', line: 7 });
+
+    const fine = await save(builtinSpec('builtin-chosen', '  model: fake/priced\n'));
+    const run = await json<{ error: string; message: string }>(`/automations/${fine.body.id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ model: 'fakee/priced' }),
+    });
+    expect(run.status).toBe(400);
+    expect(run.body).toMatchObject({ error: 'invalid_model' });
+    expect(run.body.message).toMatch(/Unknown provider "fakee"/);
   });
 
   it('refuses a routing strategy with a plain reason, by line', async () => {

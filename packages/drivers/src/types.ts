@@ -19,11 +19,19 @@ export interface DriverAvailability {
   /** Model providers and whether each has what it needs (builtin only). */
   providers?: Array<{ id: string; label: string; ready: boolean; local: boolean; reason?: string }>;
   /**
-   * Why a model is refused, when the reason is that it has no price and the
-   * run has a budget in dollars (builtin only). Unlike a missing key, that is
-   * a fault in the spec, which no other model in a chain can make up for.
+   * What kind of fault `reason` is, when the driver can say (builtin only):
+   *
+   *  - `no_key`      the model's provider has no key
+   *  - `unreachable` a local server does not answer
+   *  - `unpriced`    the run has a budget in dollars and the model has no price
+   *  - `invalid`     the model reference itself is wrong: an unknown provider, one
+   *                  that does not name its provider, a registry that cannot be read
+   *
+   * Another model can stand in for the first two. It cannot for the others, which
+   * are faults in the spec: a caller that has a chain of models must not hide them
+   * by moving on.
    */
-  unpriced?: boolean;
+  reasonKind?: 'no_key' | 'unreachable' | 'unpriced' | 'invalid';
 }
 
 /** What `detect` is told about the run it is checking for. */

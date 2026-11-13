@@ -32,6 +32,7 @@ import {
   stopAutomationQueue,
 } from './queue.js';
 import { fallbackCandidates, interruptedPrompt, policyFor, type RunnerDeps } from './runner.js';
+import { judgeChain, type ModelPlan } from './model-chain.js';
 import { parseSpec } from './spec.js';
 import { addRecord, clearMemory } from '../memory-layer.js';
 import { readableMemoryTypes } from '@clerq/policy';
@@ -54,8 +55,9 @@ type Behaviour = (input: DriverRunInput) => Promise<Partial<DriverResult>> | Par
 let behaviour: Record<string, Behaviour> = {};
 let fallbackBehaviour: Behaviour = () => ({});
 let costPerCall = 0.25;
-/** Models `detect` reports unavailable, with the reason. */
+/** Models `detect` reports unavailable, with the reason, and what kind of fault it says it is. */
 let unavailable: Record<string, string> = {};
+let unavailableKind: DriverAvailability['reasonKind'] = 'no_key';
 
 const write =
   (file: string, text: string): Behaviour =>
@@ -85,7 +87,7 @@ function scripted(id: string): Driver {
     id,
     async detect(options): Promise<DriverAvailability> {
       const reason = options?.model ? unavailable[options.model] : undefined;
-      if (reason) return { id, available: false, reason };
+      if (reason) return { id, available: false, reason, reasonKind: unavailableKind };
       return { id, available: true, version: 'test', path: `/fake/${id}` };
     },
     run: (input) => runScripted(input),
@@ -126,7 +128,8 @@ async function* runScripted(input: DriverRunInput): AsyncIterable<DriverEvent> {
 // The builtin agent, over a model API that answers from a script
 // ---------------------------------------------------------------------------
 
-const MODEL_REGISTRY = parseRegistry(`
+/** The model registry, as YAML: the gateway checks a spec's models against it as well as the agent. */
+const MODEL_REGISTRY_YAML = `
 providers:
   - id: fake
     label: Fake
@@ -154,11 +157,21 @@ providers:
         context: 200000
         inputPerM: 1
         outputPerM: 2
-`);
+  - id: local
+    label: Local
+    adapter: openai-compat
+    baseUrl: http://local.invalid/v1
+    authEnv: null
+    models:
+      - id: m
+`;
+const MODEL_REGISTRY = parseRegistry(MODEL_REGISTRY_YAML);
 /** Status per model id, call by call; a model not listed answers 200. */
 let modelStatuses: Record<string, number[]> = {};
 const modelRequests: Array<{ model: string; headers: Record<string, string> }> = [];
 const fakeModel = (async (url: string, init: RequestInit) => {
+  // The probe of a local server that is not running.
+  if (url.endsWith('/models')) throw new TypeError('fetch failed');
   const body = JSON.parse(String(init.body)) as { model: string };
   modelRequests.push({ model: body.model, headers: init.headers as Record<string, string> });
   const status = modelStatuses[body.model]?.shift() ?? 200;
@@ -193,6 +206,7 @@ const builtinDriver = builtin({ registry: () => MODEL_REGISTRY, fetch: fakeModel
 // ---------------------------------------------------------------------------
 
 let root: string;
+let savedProvidersFile: string | undefined;
 let repo: string;
 let vaultKey: string | undefined;
 
@@ -278,6 +292,9 @@ const fallbackEvents = () => events.filter((e) => e.name === 'model.fallback');
 
 beforeAll(async () => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-routing-')));
+  savedProvidersFile = process.env.CLERQ_PROVIDERS_FILE;
+  fs.writeFileSync(path.join(root, 'providers.yaml'), MODEL_REGISTRY_YAML);
+  process.env.CLERQ_PROVIDERS_FILE = path.join(root, 'providers.yaml');
   deps.workspaceCacheDir = path.join(root, 'cache');
   repo = path.join(root, 'repo');
   sh(root, 'init', '-q', '-b', 'main', repo);
@@ -291,6 +308,8 @@ beforeAll(async () => {
 }, 20_000);
 
 afterAll(() => {
+  if (savedProvidersFile === undefined) delete process.env.CLERQ_PROVIDERS_FILE;
+  else process.env.CLERQ_PROVIDERS_FILE = savedProvidersFile;
   unsubscribe?.();
   stopAutomationQueue();
   closeStore();
@@ -304,6 +323,7 @@ beforeEach(() => {
   fallbackBehaviour = write('OUT.md', 'x\n');
   costPerCall = 0.25;
   unavailable = {};
+  unavailableKind = 'no_key';
   modelStatuses = {};
   modelRequests.length = 0;
   vaultKey = undefined;
@@ -672,6 +692,149 @@ describe('fallback for the builtin agent', () => {
     expect(run.status).toBe('failed');
     expect(modelRequests.map((r) => r.model)).toEqual(['second']);
     expect(fallbackEvents()).toHaveLength(0);
+  });
+});
+
+describe('a primary that cannot be used, and why', () => {
+  const builtinOf = (primary: string, fallback: string, extra = '') =>
+    automation(extra, {
+      driver: `builtin\n  model:\n    primary: ${primary}\n    fallback: [${fallback}]`,
+    });
+
+  it('starts with the fallback when the primary’s provider has no key', async () => {
+    delete process.env.FAKE_ROUTING_KEY;
+    const run = await waitFor(enqueue(builtinOf('fake/priced', 'other/m')), finished);
+    expect(run.status).toBe('done');
+    expect(modelRequests.map((r) => r.model)).toEqual(['m']);
+    expect(fallbackEvents()[0].payload).toMatchObject({
+      from: 'fake/priced',
+      to: 'other/m',
+      reason: expect.stringContaining('FAKE_ROUTING_KEY'),
+    });
+  });
+
+  it('starts with the fallback when a local server is not running', async () => {
+    const run = await waitFor(enqueue(builtinOf('local/m', 'fake/priced')), finished);
+    expect(run.status).toBe('done');
+    expect(modelRequests.map((r) => r.model)).toEqual(['priced']);
+    expect(String((fallbackEvents()[0].payload as { reason: string }).reason)).toMatch(
+      /Nothing answers at http:\/\/local\.invalid/
+    );
+  });
+
+  it('does not hide a provider the registry does not know behind the fallback', async () => {
+    // Saved while the registry knew it; the registry has since lost it, or the spec was never checked.
+    const ghost = path.join(root, 'ghost.yaml');
+    fs.writeFileSync(
+      ghost,
+      `${MODEL_REGISTRY_YAML}  - id: ghost\n    label: Ghost\n    adapter: openai-compat\n    baseUrl: https://ghost.invalid/v1\n    authEnv: null\n    models:\n      - id: x\n`
+    );
+    const known = process.env.CLERQ_PROVIDERS_FILE;
+    process.env.CLERQ_PROVIDERS_FILE = ghost;
+    const a = builtinOf('ghost/x', 'fake/priced');
+    process.env.CLERQ_PROVIDERS_FILE = known;
+
+    const run = await waitFor(enqueue(a), finished);
+    expect(run.status).toBe('failed');
+    expect(run.exitReason).toMatch(/Unknown provider "ghost"/);
+    expect(modelRequests).toHaveLength(0);
+    expect(fallbackEvents()).toHaveLength(0);
+    expect(named(run, 'model.fallback')).toHaveLength(0);
+  });
+
+  it('does not move off a primary that is unpriced under a dollar budget either', async () => {
+    const run = await waitFor(
+      enqueue(builtinOf('fake/unpriced', 'fake/priced', 'budget:\n  max_usd_per_run: 1')),
+      finished
+    );
+    expect(run.status).toBe('failed');
+    expect(run.exitReason).toMatch(/fake\/unpriced has no price/);
+    expect(modelRequests).toHaveLength(0);
+  });
+
+  it('does not move off a CLI that is missing or signed out, which no other model helps', async () => {
+    unavailable = { main: 'claude is not signed in.' };
+    unavailableKind = undefined;
+    const run = await waitFor(enqueue(automation()), finished);
+    expect(run.status).toBe('failed');
+    expect(run.exitReason).toBe('claude is not signed in.');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a fallback model that is a fault in the spec, and only warns about one that is merely down', async () => {
+    unavailable = { backup: 'backup is down.' };
+    unavailableKind = 'invalid';
+    const refused = await waitFor(enqueue(automation()), finished);
+    expect(refused.status).toBe('failed');
+    expect(refused.exitReason).toBe('Fallback model backup: backup is down.');
+    expect(calls).toHaveLength(0);
+
+    unavailableKind = 'unreachable';
+    const warned = await waitFor(enqueue(automation()), finished);
+    expect(warned.status).toBe('done');
+    expect(named(warned, 'driver.detect').map((s) => s.status)).toEqual(['ok', 'warning', 'ok']);
+  });
+});
+
+describe('judging the chain', () => {
+  const available = { id: 'builtin', available: true } as const;
+  const down = (kind?: DriverAvailability['reasonKind']): DriverAvailability => ({
+    id: 'builtin',
+    available: false,
+    reason: `down (${kind})`,
+    reasonKind: kind,
+  });
+  const chain = (
+    primary: DriverAvailability,
+    fallback: DriverAvailability,
+    plan: Partial<ModelPlan> = {}
+  ) => {
+    const p: ModelPlan = {
+      primary: 'a/p',
+      escalate: [],
+      fallback: ['a/f'],
+      strict: false,
+      ...plan,
+    };
+    return judgeChain(p, [
+      { model: 'a/p', role: 'primary', availability: primary },
+      ...(p.fallback.length
+        ? [{ model: 'a/f', role: 'fallback' as const, availability: fallback }]
+        : []),
+    ]);
+  };
+
+  it('moves off a primary only for a missing key or a server that is not running', () => {
+    for (const kind of ['no_key', 'unreachable'] as const) {
+      const v = chain(down(kind), available);
+      expect(v.errors, kind).toEqual([]);
+      expect(v.start).toBe('a/f');
+      expect(v.movedOff).toMatchObject({ from: 'a/p', to: 'a/f' });
+    }
+    for (const kind of ['invalid', 'unpriced', undefined] as const) {
+      const v = chain(down(kind), available);
+      expect(v.errors, String(kind)).toEqual([`down (${kind})`]);
+      expect(v.movedOff, String(kind)).toBeUndefined();
+    }
+  });
+
+  it('never moves off a primary a person chose', () => {
+    const v = chain(down('no_key'), available, { fallback: [], strict: true });
+    expect(v.errors).toEqual(['down (no_key)']);
+  });
+
+  it('errors on a fallback that is a fault in the spec, and warns about one that is down', () => {
+    expect(chain(available, down('invalid')).errors).toEqual([
+      'Fallback model a/f: down (invalid)',
+    ]);
+    expect(chain(available, down('unpriced')).errors).toEqual([
+      'Fallback model a/f: down (unpriced)',
+    ]);
+    for (const kind of ['no_key', 'unreachable', undefined] as const) {
+      const v = chain(available, down(kind));
+      expect(v.errors, String(kind)).toEqual([]);
+      expect(v.warnings, String(kind)).toHaveLength(1);
+    }
   });
 });
 

@@ -20,6 +20,7 @@ import {
   listAutomations,
   monthSpendUsd,
   setAutomationEnabled,
+  specRegistry,
   updateAutomation,
   type Automation,
 } from './store.js';
@@ -281,7 +282,7 @@ export function mountAutomationRoutes(
       const body = (req.body ?? {}) as { id?: unknown };
       res.json(
         await preview(
-          parseSpec(specText(req)),
+          parseSpec(specText(req), { registry: specRegistry() }),
           deps,
           typeof body.id === 'string' ? body.id : undefined
         )
@@ -356,7 +357,7 @@ export function mountAutomationRoutes(
             .json({ error: 'invalid_model', message: 'model must be a model name.' });
         }
         model = body.model.trim();
-        const problem = a.spec ? modelChoiceProblem(a.spec, model) : undefined;
+        const problem = a.spec ? modelChoiceProblem(a.spec, model, specRegistry()) : undefined;
         if (problem) return res.status(400).json({ error: 'invalid_model', message: problem });
       }
       const { runId, queued } = startAutomationRun(a, 'manual', deps, { model });

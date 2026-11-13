@@ -13,6 +13,7 @@
  */
 
 import { DRIVER_CAPABILITIES, type Driver, type DriverAvailability } from '@clerq/drivers';
+import type { Registry } from '@clerq/providers';
 import type { AutomationSpec } from './spec.js';
 
 export type ModelRole = 'primary' | 'escalation' | 'fallback';
@@ -74,13 +75,23 @@ export function keyAppliesTo(spec: AutomationSpec, model: string | undefined) {
 }
 
 /** What is wrong with a model a person names for one run, or undefined when it is usable. */
-export function modelChoiceProblem(spec: AutomationSpec, model: string): string | undefined {
+export function modelChoiceProblem(
+  spec: AutomationSpec,
+  model: string,
+  registry?: Registry
+): string | undefined {
   const caps = DRIVER_CAPABILITIES[spec.agent.driver];
   if (!caps.models) {
     return `${caps.label}'s CLI cannot be told which model to use, so a run of this automation cannot be given one.`;
   }
-  if (spec.agent.driver === 'builtin' && providerOf(model) === undefined) {
-    return `"${model}" must name the provider too, as provider/model (e.g. anthropic/${model || 'claude-sonnet-4-5'}).`;
+  if (spec.agent.driver === 'builtin') {
+    const provider = providerOf(model);
+    if (provider === undefined) {
+      return `"${model}" must name the provider too, as provider/model (e.g. anthropic/${model || 'claude-sonnet-4-5'}).`;
+    }
+    if (registry && !registry.providers.some((p) => p.id === provider)) {
+      return `Unknown provider "${provider}" in "${model}". Known: ${registry.providers.map((p) => p.id).join(', ')}.`;
+    }
   }
   return undefined;
 }
@@ -140,17 +151,33 @@ export interface ChainVerdict {
 const reasonOf = (c: ModelCheck) => c.availability.reason ?? 'It is unavailable.';
 
 /**
+ * The model cannot be used because of what the spec says, not because of how
+ * things are right now: it has no price under a dollar budget, or the
+ * reference is wrong (an unknown provider, a missing provider). No other model
+ * makes that up, and moving on would hide it.
+ */
+export function isSpecFault(a: DriverAvailability): boolean {
+  return a.reasonKind === 'unpriced' || a.reasonKind === 'invalid';
+}
+
+/** Another model may stand in: the provider has no key here, or a local server is not running. */
+function standsIn(a: DriverAvailability): boolean {
+  return a.reasonKind === 'no_key' || a.reasonKind === 'unreachable';
+}
+
+/**
  * What the checks mean for the run.
  *
- *  - The primary unavailable: an error, unless the plan has a fallback model
- *    that is available; the run then starts with that one.
+ *  - The primary unavailable because its provider has no key, or a local server
+ *    does not answer: an error, unless the plan has a fallback model that is
+ *    available; the run then starts with that one. Any other reason (an unknown
+ *    provider, a typo; no price under a dollar budget; a CLI that is missing or
+ *    signed out) is a fault no fallback makes up for: an error.
  *  - An escalation model unavailable, or unpriced under a dollar budget: an
  *    error. The run would find out only after spending on the first model.
- *  - A fallback model unpriced under a dollar budget: an error, since using
- *    it would break the budget. Otherwise unavailable only means it is skipped
- *    when the time comes, which is a warning.
- *  - A primary that is unpriced under a dollar budget is the spec's fault,
- *    which no fallback makes up for: an error.
+ *  - A fallback model that is a fault in the spec (unknown provider, unpriced
+ *    under a dollar budget): an error. Otherwise unavailable only means it is
+ *    skipped when the time comes, which is a warning.
  */
 export function judgeChain(plan: ModelPlan, checks: ModelCheck[]): ChainVerdict {
   const errors: string[] = [];
@@ -161,9 +188,9 @@ export function judgeChain(plan: ModelPlan, checks: ModelCheck[]): ChainVerdict 
   const primary = checks.find((c) => c.role === 'primary');
   const fallbacks = checks.filter((c) => c.role === 'fallback');
   if (primary && !primary.availability.available) {
-    const usable = primary.availability.unpriced
-      ? undefined
-      : fallbacks.find((c) => c.availability.available);
+    const usable = standsIn(primary.availability)
+      ? fallbacks.find((c) => c.availability.available)
+      : undefined;
     if (usable) {
       start = usable.model;
       movedOff = {
@@ -179,7 +206,7 @@ export function judgeChain(plan: ModelPlan, checks: ModelCheck[]): ChainVerdict 
     if (c.availability.available) continue;
     if (c.role === 'escalation') errors.push(`Escalation model ${c.model}: ${reasonOf(c)}`);
     if (c.role === 'fallback') {
-      if (c.availability.unpriced) errors.push(`Fallback model ${c.model}: ${reasonOf(c)}`);
+      if (isSpecFault(c.availability)) errors.push(`Fallback model ${c.model}: ${reasonOf(c)}`);
       else warnings.push(`Fallback model ${c.model}: ${reasonOf(c)} It is skipped when needed.`);
     }
   }

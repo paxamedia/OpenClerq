@@ -9,6 +9,7 @@
 
 import cron from 'node-cron';
 import { DRIVER_CAPABILITIES, DRIVER_IDS, allowedToolProblem, type DriverId } from '@clerq/drivers';
+import type { Registry } from '@clerq/providers';
 import { MEMORY_TYPES, isMemoryType, type MemoryType } from '@clerq/policy';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
 import { AssertionSyntaxError, parseAssertion, type DiffAssertion } from './diff-assert.js';
@@ -269,8 +270,20 @@ class Reader {
   }
 }
 
+export interface ParseOptions {
+  /**
+   * The model registry. With it, a builtin agent's models are checked against
+   * it: a provider the registry does not know is refused, with the line. A model
+   * id the registry does not list is allowed, as everywhere else: new ids appear
+   * before providers.yaml does, and a wrong one is the provider's 404 at the first
+   * call (which never falls back to another model). Without a registry nothing
+   * is checked here; a run checks again before it starts.
+   */
+  registry?: Registry;
+}
+
 /** Parse and validate a spec. Throws SpecError with the line it refers to. */
-export function parseSpec(source: string): AutomationSpec {
+export function parseSpec(source: string, options: ParseOptions = {}): AutomationSpec {
   if (typeof source !== 'string' || !source.trim()) {
     throw new SpecError('The spec is empty.');
   }
@@ -452,9 +465,29 @@ export function parseSpec(source: string): AutomationSpec {
         );
       }
     };
+    // A provider that is not in the registry is a typo, or a registry that lost it: a
+    // fault in the spec, found now rather than by a run that quietly used another.
+    const known = (ref: string, path: Array<string | number>) => {
+      const providers = options.registry?.providers;
+      if (!providers) return;
+      const providerId = ref.slice(0, ref.indexOf('/'));
+      if (!providers.some((p) => p.id === providerId)) {
+        r.fail(
+          path,
+          `Unknown provider "${providerId}" in "${ref}". Known: ${providers.map((p) => p.id).join(', ')}.`
+        );
+      }
+    };
     qualified(model, modelPath);
-    escalate.forEach((m, i) => qualified(m, ['agent', 'model', 'escalate', i]));
-    fallback.forEach((m, i) => qualified(m, ['agent', 'model', 'fallback', i]));
+    known(model, modelPath);
+    escalate.forEach((m, i) => {
+      qualified(m, ['agent', 'model', 'escalate', i]);
+      known(m, ['agent', 'model', 'escalate', i]);
+    });
+    fallback.forEach((m, i) => {
+      qualified(m, ['agent', 'model', 'fallback', i]);
+      known(m, ['agent', 'model', 'fallback', i]);
+    });
   }
   const allowedTools = r.get(['agent', 'allowed_tools']) ?? [];
   if (
