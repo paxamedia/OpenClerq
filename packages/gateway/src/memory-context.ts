@@ -115,11 +115,18 @@ export function retrieveMemory(
   return { records, readable };
 }
 
+/**
+ * Text from a record, made safe to sit inside the block: no `<` or `>` survives,
+ * so nothing in a key or a value can write a tag, close the block or open another.
+ * Applied to every key and value alike; the reader sees `&lt;` where it was.
+ */
+export function escapeNote(text: string): string {
+  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function renderValue(value: unknown): string {
-  const text = (typeof value === 'string' ? value : JSON.stringify(value))
-    // A note cannot close the block it is shown in.
-    .replace(/<\/?memory[^>]*>/gi, '');
-  return text.length > MAX_RECORD_CHARS ? `${text.slice(0, MAX_RECORD_CHARS)}…` : text;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return escapeNote(text.length > MAX_RECORD_CHARS ? `${text.slice(0, MAX_RECORD_CHARS)}…` : text);
 }
 
 /**
@@ -135,7 +142,7 @@ export function memoryBlock(
   if (records.length === 0) return null;
   const lines = records.map(
     (r) =>
-      `- [${r.type}] ${r.key.replace(/\s+/g, ' ')}: ${renderValue(r.value).replace(/\n+/g, ' ')}`
+      `- [${r.type}] ${escapeNote(r.key.replace(/\s+/g, ' '))}: ${renderValue(r.value).replace(/\n+/g, ' ')}`
   );
   return {
     count: records.length,
