@@ -86,8 +86,8 @@ describe('what the list says about queueing and missed times', () => {
     // aut_tests is running with another run queued behind it.
     expect(markup).toContain('Running');
     expect(markup).toContain('Next one queued');
-    // aut_deps and aut_docs catch up; aut_docs also missed two times.
-    expect(markup).toContain('Catches up when it wakes');
+    // aut_deps catches up; aut_docs does not, and missed two times.
+    expect(markup.match(/Catches up when it wakes/g)).toHaveLength(1);
     expect(markup).toContain('Missed 2 times');
     // aut_licence was drafted in a chat.
     expect(markup).toContain('From a chat');
@@ -98,9 +98,15 @@ describe('what the list says about queueing and missed times', () => {
     const markup = page(screen(['aut_docs']), await held());
     expect(markup).toContain('Missed times');
     expect(markup).toContain('skipped, because catch-up is off for this automation');
+    expect(markup).toContain('A time missed while the computer slept is skipped.');
+  });
+
+  it('says a schedule catches up when it does', async () => {
+    const markup = page(screen(['aut_deps']), await held());
     expect(markup).toContain(
       'Catches up: a time missed while the computer slept runs once when it wakes.'
     );
+    expect(markup).not.toContain('Missed times');
   });
 
   it('says a run is waiting on an automation’s page', async () => {

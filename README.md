@@ -194,6 +194,7 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 | POST     | /explain         | AI explanation (body: question, optional context). Uses configured LLM.                                            |
 | POST     | /task            | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`.            |
 | POST     | /automations     | Save an automation from its YAML spec (body: `spec`). It starts disabled. `POST /automations/:id/run` runs it now. |
+| GET      | /repos           | Repositories automations target, with what runs against them. `/repos/:id` adds the latest runs.                   |
 
 ## Project Structure
 

@@ -218,7 +218,8 @@ the list must name `sessions.spawn` too. Only the builtin driver takes the key.
 
 - **Its own run.** Each sub-agent is a run (trigger `subagent`, `parentRunId` set) with a session
   holding its task and answer, recorded like any builtin run: steps, `tool_calls`, cost. It is
-  listed in `GET /runs`; `GET /runs/:id` of the parent lists its `children` and `childCostUsd`.
+  listed in `GET /runs`; `GET /runs/:id` of the parent lists its `children` and `childCostUsd`, and
+  `GET /runs` gives the parent's `childCostUsd` too. The run page shows them as a tree under the parent.
   Its run events (`run.*`, `model.*`, `tool.*`, `approval.requested`) carry `parentRunId`.
 - **Narrower policy, never wider.** Its rules are the parent's cut down to what the call asks for,
   tool by tool the stricter of the two; without `tools` it gets the read-only tools. A tool the

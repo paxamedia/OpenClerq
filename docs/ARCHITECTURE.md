@@ -649,6 +649,15 @@ config. A public repository clones without one. The diff stored with the run, an
 redacted of the vault values the run holds; a diff that contained one makes the push wait for
 approval.
 
+`GET /repos` and `GET /repos/:id` read the `repos` rows (made when a run of an automation naming the
+repository is first queued) and nothing else: the kind, a name (`owner/name` or the folder's), the
+URL, the path (the repository itself, or a remote's clone; null before the first clone) with
+whether it exists on disk, the name of the vault secret and whether the vault holds it (its value
+is never read into an answer), the automations whose spec targets it now, runs queued and running,
+and the last run; the detail adds the latest 20 runs. A folder that has gone is listed with
+`exists: false`. The routes are behind the same token check as every other, and a scoped token
+reaches them only if its scopes name them.
+
 ---
 
 ## 4. Gateway
@@ -672,6 +681,7 @@ The gateway is the control plane. Endpoints:
 | Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                                                                                                                     |
 | Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`, `GET \| PUT /routing`                                                                                                              |
 | Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                                                                                                                |
+| Repos       | `GET /repos`, `GET /repos/:id`                                                                                                                                                                                          |
 | Automations | `GET \| POST /automations`, `POST /automations/preview`, `GET \| PUT \| DELETE /automations/:id`, `POST /automations/:id/run\|enable\|disable`, `GET /drivers`, `GET /runs/:id/artifacts/:id`                           |
 | Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                                            |
 | Records     | `GET \| POST /records`, `POST /records/resolve`, `GET \| PATCH \| DELETE /records/:id`, `POST /records/:id/merge`, `GET /records/:id/activities`, `POST \| DELETE /records/links`, `GET /links`, `POST /activities`     |
@@ -759,7 +769,7 @@ and host.
 
 - **Shell** — rail (bottom tabs at phone width), top bar with breadcrumb and actions, status bar,
   ⌘K palette over `/search`, and a hash router: every page is a route such as `#/runs/<id>`.
-- **Core pages** — Home, Inbox (approvals and module items), Runs, Records, Developer, Settings.
+- **Core pages** — Home, Inbox (approvals and module items), Runs, Repos, Records, Developer, Settings.
 - **Modules** — pages under `#/m/<id>/…`. Bundled modules (Automations, Chat) register through
   the slot contract; modules the gateway runs appear from `GET /modules` and their `nav`
   extensions, with their UI in a frame.

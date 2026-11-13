@@ -12,8 +12,9 @@ import { Checkbox, Switch } from '../../ui/Choice';
 import { EmptyState } from '../../ui/Display';
 import { Input, Select } from '../../ui/Field';
 import { Dialog } from '../../ui/Modal';
-import { StatusTag, type Tone } from '../../ui/Status';
+import type { Tone } from '../../ui/Status';
 import { Table } from '../../ui/Table';
+import { cx } from '../../ui/cx';
 import { useToast } from '../../ui/Toast';
 import { useClient } from '../../app/client';
 import { errorMessage } from '../../app/format';
@@ -406,11 +407,24 @@ export function MemorySection() {
                   {
                     key: 'key',
                     header: 'Key',
-                    cell: (e) => (
-                      <code className={e.status === 'superseded' ? 'settings-folded' : undefined}>
-                        {e.key}
-                      </code>
-                    ),
+                    cell: (e) => {
+                      const o = originOf(e);
+                      return (
+                        <span className="settings-keycell">
+                          <code
+                            className={e.status === 'superseded' ? 'settings-folded' : undefined}
+                          >
+                            {e.key}
+                          </code>
+                          <span
+                            className={cx('settings-origin', o.tone === 'warn' && 'tone-text-warn')}
+                            title={o.title}
+                          >
+                            {o.label} · <When at={e.createdAt} />
+                          </span>
+                        </span>
+                      );
+                    },
                     sortValue: (e) => e.key,
                     width: 'md',
                   },
@@ -420,21 +434,6 @@ export function MemorySection() {
                     cell: (e) => e.type,
                     sortValue: (e) => e.type,
                     width: 'sm',
-                  },
-                  {
-                    key: 'origin',
-                    header: 'Written by',
-                    hideOnPhone: true,
-                    cell: (e) => {
-                      const o = originOf(e);
-                      return (
-                        <span title={o.title}>
-                          <StatusTag tone={o.tone}>{o.label}</StatusTag>
-                        </span>
-                      );
-                    },
-                    sortValue: (e) => originOf(e).label,
-                    width: 'lg',
                   },
                   {
                     key: 'value',
@@ -452,17 +451,9 @@ export function MemorySection() {
                     ),
                   },
                   {
-                    key: 'at',
-                    header: 'Added',
-                    hideOnPhone: true,
-                    cell: (e) => <When at={e.createdAt} />,
-                    sortValue: (e) => e.createdAt,
-                    width: 'sm',
-                  },
-                  {
                     key: 'actions',
                     header: <span className="ui-sr-only">Actions</span>,
-                    width: 'lg',
+                    width: 'md',
                     cell: (e) =>
                       e.status === 'superseded' ? (
                         <span className="page-muted">Folded into a summary</span>

@@ -123,8 +123,9 @@ export function ChainEditor({
   return (
     <>
       <p className="page-hint">{FALLBACK_WARNING}</p>
-      <p className="page-hint">{FALLBACK_WHEN}</p>
-      <p className="page-hint">{FALLBACK_STRICT}</p>
+      <p className="page-hint">
+        {FALLBACK_WHEN} {FALLBACK_STRICT}
+      </p>
       {draft.length ? (
         <ol className="settings-chain" aria-label="Fallback models, in order">
           <li className="settings-chain-default">

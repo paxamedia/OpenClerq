@@ -157,7 +157,7 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         problem: null,
         running: a.id === 'aut_tests',
         queued: a.id === 'aut_tests',
-        catchUp: a.id === 'aut_deps' || a.id === 'aut_docs',
+        catchUp: a.id === 'aut_deps',
         missedSlots:
           a.id === 'aut_docs'
             ? {

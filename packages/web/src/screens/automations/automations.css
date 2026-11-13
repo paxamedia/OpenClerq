@@ -249,3 +249,7 @@
   margin: 0;
   color: var(--ink-2);
 }
+
+.aut-name-sub.tone-text-warn {
+  color: var(--warn);
+}

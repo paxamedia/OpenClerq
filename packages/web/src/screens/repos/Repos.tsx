@@ -25,7 +25,7 @@ import './repos.css';
 export const reposPath = (id?: string) => (id ? `/repos/${encodeURIComponent(id)}` : '/repos');
 
 const KIND_WORD: Record<RepoSummary['kind'], string> = {
-  local: 'On this computer',
+  local: 'Local folder',
   github: 'GitHub',
   gitlab: 'GitLab',
 };

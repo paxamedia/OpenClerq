@@ -161,7 +161,7 @@
 
 .settings-value {
   display: block;
-  max-width: 360px;
+  max-width: 300px;
   overflow: hidden;
   font: var(--type-code);
   text-overflow: ellipsis;
@@ -285,4 +285,16 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+}
+
+.settings-keycell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-1) 0;
+}
+
+.settings-origin {
+  color: var(--ink-3);
+  font: var(--type-secondary);
 }
