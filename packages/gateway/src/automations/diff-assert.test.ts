@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   AssertionSyntaxError,
+  diffFiles,
   evaluateAssertion,
   globToRegExp,
   parseAssertion,
@@ -165,5 +170,64 @@ describe('parseNumstat', () => {
       { path: 'img.png', added: null, removed: null },
     ]);
     expect(parseNumstat('')).toEqual([]);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('diffFiles', () => {
+  it('reads a real repository, with spaces, newlines and renames in paths', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-diff-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', args, {
+        cwd: dir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 't',
+          GIT_AUTHOR_EMAIL: 't@t',
+          GIT_COMMITTER_NAME: 't',
+          GIT_COMMITTER_EMAIL: 't@t',
+        },
+      }).trim();
+    try {
+      git('init', '-q', '-b', 'main');
+      const body = Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n') + '\n';
+      fs.mkdirSync(path.join(dir, 'docs'));
+      fs.writeFileSync(path.join(dir, 'docs', 'old name.md'), body);
+      fs.writeFileSync(path.join(dir, 'keep.txt'), 'a\n');
+      git('add', '.');
+      git('commit', '-q', '-m', 'base');
+      const base = git('rev-parse', 'HEAD');
+
+      git('mv', 'docs/old name.md', 'docs/new name.md');
+      fs.writeFileSync(path.join(dir, 'keep.txt'), 'a\nb\nc\n');
+      fs.writeFileSync(path.join(dir, 'odd\nname\twith tab.txt'), 'x\n');
+      fs.writeFileSync(path.join(dir, 'logo.png'), Buffer.from([0, 1, 2, 0, 255, 0]));
+      git('add', '.');
+      git('commit', '-q', '-m', 'change');
+
+      const files = await diffFiles(dir, base);
+      const byPath = new Map(files.map((f) => [f.path, f]));
+      expect(files).toHaveLength(4);
+      expect(byPath.get('docs/new name.md')).toEqual({
+        path: 'docs/new name.md',
+        oldPath: 'docs/old name.md',
+        added: 0,
+        removed: 0,
+      });
+      expect(byPath.get('keep.txt')).toMatchObject({ added: 2, removed: 0 });
+      expect(byPath.get('odd\nname\twith tab.txt')).toMatchObject({ added: 1, removed: 0 });
+      expect(byPath.get('logo.png')).toMatchObject({ added: null, removed: null });
+
+      expect(evaluateAssertion(parseAssertion('diff.files_changed == 4'), files).passed).toBe(true);
+      expect(
+        evaluateAssertion(parseAssertion("diff.touches_none_of ['docs/old name.md']"), files)
+      ).toMatchObject({ passed: false, offending: ['docs/old name.md'] });
+      expect(
+        evaluateAssertion(parseAssertion('diff.touches_only [docs/, keep.txt, *.png, odd*]'), files)
+          .passed
+      ).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
