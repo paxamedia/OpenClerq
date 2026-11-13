@@ -145,7 +145,7 @@ function finished(events: DriverEvent[]) {
 
 describe('driver registry', () => {
   it('knows every driver, and what each CLI can honour', () => {
-    expect(DRIVER_IDS).toEqual(['claude-code', 'codex', 'cursor-agent']);
+    expect(DRIVER_IDS).toEqual(['claude-code', 'codex', 'cursor-agent', 'builtin']);
     for (const id of DRIVER_IDS) {
       expect(getDriver(id).id).toBe(id);
       expect(DRIVER_CAPABILITIES[id].apiKeyEnv).toMatch(/_API_KEY$/);
@@ -160,7 +160,12 @@ describe('driver registry', () => {
       budgetLimit: false,
       allowedTools: false,
     });
-    expect(() => getDriver('nope')).toThrow(/Known: claude-code, codex, cursor-agent/);
+    expect(DRIVER_CAPABILITIES.builtin).toMatchObject({
+      budgetLimit: true,
+      reportsCost: true,
+      allowedTools: true,
+    });
+    expect(() => getDriver('nope')).toThrow(/Known: claude-code, codex, cursor-agent, builtin/);
   });
 });
 

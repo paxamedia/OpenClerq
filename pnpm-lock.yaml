@@ -82,6 +82,12 @@ importers:
 
   packages/drivers:
     dependencies:
+      '@clerq/policy':
+        specifier: workspace:^
+        version: link:../policy
+      '@clerq/providers':
+        specifier: workspace:^
+        version: link:../providers
       '@clerq/sandbox':
         specifier: workspace:^
         version: link:../sandbox

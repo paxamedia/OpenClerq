@@ -1,7 +1,7 @@
 {
   "name": "@clerq/drivers",
   "version": "0.5.1",
-  "description": "Agent drivers: run a coding agent's CLI in a workspace and normalise what it does",
+  "description": "Agent drivers: run a coding agent, its CLI or the builtin tool loop, in a workspace and normalise what it does",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,6 +17,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@clerq/policy": "workspace:^",
+    "@clerq/providers": "workspace:^",
     "@clerq/sandbox": "workspace:^"
   },
   "devDependencies": {

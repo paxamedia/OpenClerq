@@ -14,6 +14,10 @@ export interface DriverAvailability {
   signedIn?: boolean;
   /** Why it cannot run, in words a user can act on. */
   reason?: string;
+  /** The model a run would use, as the driver resolved it (builtin only). */
+  model?: string;
+  /** Model providers and whether each has what it needs (builtin only). */
+  providers?: Array<{ id: string; label: string; ready: boolean; local: boolean; reason?: string }>;
 }
 
 /** What `detect` is told about the run it is checking for. */
@@ -29,6 +33,44 @@ export interface DetectOptions {
    */
   permissionMode?: 'acceptEdits' | 'default' | 'dontAsk' | 'plan';
   model?: string;
+  /**
+   * The spec sets a US-dollar budget. A driver that cannot price the model it
+   * would use says so, rather than run with a budget it cannot keep.
+   */
+  budget?: boolean;
+}
+
+/** A tool call the agent wants to make that policy says a person must approve. */
+export interface ToolApprovalRequest {
+  toolCallId: string;
+  /** The tool as policy names it, e.g. `runtime.shell` or `git.push`. */
+  tool: string;
+  risk: 'read' | 'write' | 'network' | 'execute' | 'external';
+  /** Why approval is needed, from the policy decision. */
+  reason: string;
+  input: unknown;
+}
+
+/** One model call an in-process driver made, with what it cost. */
+export interface ModelCallInfo {
+  /** `turn` for an agent turn; `compaction` for summarising older context. */
+  purpose: 'turn' | 'compaction';
+  provider: string;
+  model: string;
+  /** The agent turn this call belongs to, from 1. */
+  turn: number;
+  ok: boolean;
+  error?: string;
+  /** Why the model stopped, normalised (end_turn, tool_use, max_tokens, refusal, other). */
+  stopReason?: string;
+  toolCalls: number;
+  /** The text the model wrote, if any. */
+  text: string;
+  tokensIn: number;
+  tokensOut: number;
+  /** US dollars; null when the model has no price in the registry. */
+  costUsd: number | null;
+  latencyMs: number;
 }
 
 /** A process a driver started, as the operating system knows it. */
@@ -65,6 +107,16 @@ export interface DriverRunInput {
    * that a process still running after this one dies can be found and stopped.
    */
   onSpawn?: (process: SpawnedProcess) => void;
+  /**
+   * In-process drivers: a command one of the agent's tools started. Returns a
+   * function the driver calls when the command has ended.
+   */
+  onToolProcess?: (process: SpawnedProcess) => () => void;
+  /**
+   * In-process drivers: asked when policy says a tool call needs a person.
+   * Resolves true to run the call. Without it, such a call is refused.
+   */
+  onApproval?: (request: ToolApprovalRequest) => Promise<boolean>;
 }
 
 /**
@@ -75,8 +127,31 @@ export type DriverEvent =
   | { type: 'started'; model?: string; tools?: string[] }
   | { type: 'text'; text: string }
   | { type: 'tool_call'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; id: string; output: string; isError: boolean }
+  | {
+      type: 'tool_result';
+      id: string;
+      output: string;
+      isError: boolean;
+      /** Refused by policy, or by the person asked. */
+      denied?: boolean;
+      /** Whether a person was asked, and what they said. Only drivers that ask set it. */
+      approval?: 'not_required' | 'approved' | 'denied';
+    }
   | { type: 'log'; stream: 'stdout' | 'stderr'; line: string }
+  /** A model call the driver made itself, so its tokens and cost are recorded one by one. */
+  | { type: 'model_call'; call: ModelCallInfo }
+  /** Older context was summarised or dropped to fit the model's window. */
+  | {
+      type: 'context';
+      action: 'compacted';
+      method: 'summary' | 'dropped';
+      compactedMessages: number;
+      keptMessages: number;
+      tokensBefore: number;
+      tokensAfter: number;
+      summary?: string;
+      error?: string;
+    }
   | { type: 'finished'; result: DriverResult };
 
 export interface DriverResult {

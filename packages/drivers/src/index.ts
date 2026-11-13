@@ -1,15 +1,17 @@
 /**
  * Agent drivers.
  *
- * A driver runs a coding agent's own CLI — Claude Code, Codex, Cursor's
- * cursor-agent — inside a sandbox, in a workspace prepared by the caller, and
- * reports what it did as a stream of events in one shape for every agent. The
- * agent runs under the user's own account with its vendor.
+ * A driver runs a coding agent in a workspace prepared by the caller, and
+ * reports what it did as a stream of events in one shape for every agent.
+ * Three run a vendor's own CLI — Claude Code, Codex, Cursor's cursor-agent —
+ * inside a sandbox, under the user's own account with that vendor. `builtin`
+ * is OpenClerq's own tool loop, over any model in the provider registry.
  */
 
 import { claudeCode } from './claude-code.js';
 import { codex } from './codex.js';
 import { cursorAgent } from './cursor-agent.js';
+import { builtin, BUILTIN_KEY_ENV } from './builtin/driver.js';
 import type { Driver, DriverCapabilities } from './types.js';
 
 export * from './types.js';
@@ -27,9 +29,24 @@ export {
   type CursorAgentOptions,
 } from './cursor-agent.js';
 export { locate, commonBinDirs } from './locate.js';
+export {
+  builtin,
+  priced,
+  BUILTIN_KEY_ENV,
+  DEFAULT_MAX_TURNS,
+  SYSTEM_PROMPT,
+  type BuiltinOptions,
+} from './builtin/driver.js';
+export {
+  builtinPolicy,
+  offeredTools,
+  allowedToolProblem,
+  BUILTIN_MAX_CALLS,
+} from './builtin/policy.js';
+export { BUILTIN_TOOLS, shellDescriptor, type BuiltinTool } from './builtin/tools.js';
 
 /** The drivers this release ships, by id. */
-export const DRIVER_IDS = ['claude-code', 'codex', 'cursor-agent'] as const;
+export const DRIVER_IDS = ['claude-code', 'codex', 'cursor-agent', 'builtin'] as const;
 export type DriverId = (typeof DRIVER_IDS)[number];
 
 /**
@@ -58,6 +75,15 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
     apiKeyEnv: 'CURSOR_API_KEY',
     label: 'Cursor',
   },
+  // Its cost is the registry price of each call; an unpriced cloud model with a
+  // budget is refused when the spec is checked (see detect's `budget` option).
+  builtin: {
+    budgetLimit: true,
+    reportsCost: true,
+    allowedTools: true,
+    apiKeyEnv: BUILTIN_KEY_ENV,
+    label: 'the builtin agent',
+  },
 };
 
 export function getDriver(id: string): Driver {
@@ -68,6 +94,8 @@ export function getDriver(id: string): Driver {
       return codex();
     case 'cursor-agent':
       return cursorAgent();
+    case 'builtin':
+      return builtin();
     default:
       throw new Error(`Unknown driver "${id}". Known: ${DRIVER_IDS.join(', ')}.`);
   }
