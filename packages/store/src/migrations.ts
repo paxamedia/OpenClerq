@@ -421,4 +421,30 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE runs ADD COLUMN owner_start TEXT;
     `,
   },
+  {
+    id: 13,
+    name: 'tool_calls',
+    // Every tool call an agent made in a run, one row each, beside the run
+    // step that shows it: what was called, with what, how it ended, and
+    // whether a person was asked. approval_state is null when the driver does
+    // not say (a CLI agent decides for itself); otherwise not_required,
+    // approved or denied.
+    sql: `
+      CREATE TABLE tool_calls (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id         TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        step_seq       INTEGER,
+        call_id        TEXT,
+        name           TEXT NOT NULL,
+        input          TEXT,
+        output         TEXT,
+        status         TEXT NOT NULL CHECK (status IN ('running','ok','error','denied')),
+        duration_ms    INTEGER,
+        approval_state TEXT CHECK (approval_state IN ('not_required','approved','denied')),
+        created_at     TEXT NOT NULL,
+        finished_at    TEXT
+      );
+      CREATE INDEX idx_tool_calls_run ON tool_calls(run_id, id);
+    `,
+  },
 ];

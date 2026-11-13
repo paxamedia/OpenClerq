@@ -141,6 +141,28 @@ export function resolveTarget(modelOverride?: string): Target {
   };
 }
 
+/**
+ * The registry the builtin agent resolves its models in: the gateway's, with
+ * the configured provider's endpoint override applied, on the same terms as a
+ * chat call. `keyOptional` is true for that provider when it was moved to a
+ * self-hosted endpoint.
+ */
+export function agentRegistry(): {
+  registry: Registry;
+  keyOptional: (providerId: string) => boolean;
+} {
+  try {
+    const target = resolveTarget();
+    return {
+      registry: target.registry,
+      keyOptional: (id) => target.keyOptional && id === target.provider.id,
+    };
+  } catch {
+    // A misconfigured chat provider is the chat's problem, not the agent's.
+    return { registry: getRegistry(), keyOptional: () => false };
+  }
+}
+
 export interface ChatCallOptions {
   /** The conversation to send. */
   messages: ChatMessage[];

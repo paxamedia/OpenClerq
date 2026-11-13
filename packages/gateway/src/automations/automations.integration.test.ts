@@ -12,10 +12,18 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Driver, DriverAvailability, DriverEvent, DriverRunInput } from '@clerq/drivers';
+import {
+  builtin,
+  type Driver,
+  type DriverAvailability,
+  type DriverEvent,
+  type DriverRunInput,
+} from '@clerq/drivers';
+import { parseRegistry } from '@clerq/providers';
 import type { Fetcher } from '@clerq/workspaces';
 import { createGateway } from '../gateway.js';
 import { getStore } from '../store.js';
+import { listToolCalls } from '../runs.js';
 
 const TOKEN = 'automations-test-token-0123456789';
 const FORGE_TOKEN = 'ghp_fake-forge-token-for-tests-000';
@@ -80,6 +88,44 @@ async function* runScripted(id: string, input: DriverRunInput): AsyncIterable<Dr
     },
   };
 }
+
+/**
+ * The builtin agent is the real driver, over a scripted model: each reply is
+ * the next Messages API response, so no request leaves the process.
+ */
+const MODEL_REGISTRY = parseRegistry(`
+providers:
+  - id: fake
+    label: Fake
+    adapter: anthropic
+    baseUrl: https://fake.invalid/v1
+    authEnv: FAKE_AUTOMATION_MODEL_KEY
+    models:
+      - id: priced
+        context: 200000
+        inputPerM: 1
+        outputPerM: 2
+      - id: unpriced
+        context: 200000
+`);
+let modelReplies: Array<Array<Record<string, unknown>>> = [];
+const modelRequests: Array<{ key?: string; body: Record<string, unknown> }> = [];
+const fakeModel = (async (_url: string, init: RequestInit) => {
+  const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+  modelRequests.push({ key: (init.headers as Record<string, string>)['x-api-key'], body });
+  const content = modelReplies.shift() ?? [{ type: 'text', text: 'Done.' }];
+  return {
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        content,
+        stop_reason: content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn',
+        usage: { input_tokens: 10_000, output_tokens: 1_000 },
+      }),
+  } as Response;
+}) as unknown as typeof fetch;
+const builtinDriver = builtin({ registry: () => MODEL_REGISTRY, fetch: fakeModel });
 
 const pullRequests: Array<{ url: string; body: Record<string, unknown>; auth?: string }> = [];
 const fakeForge: Fetcher = async (url, init) => {
@@ -244,7 +290,7 @@ beforeAll(async () => {
     dbPath: ':memory:',
     modulesDir: '/nonexistent-modules-dir-xyz',
     automations: {
-      driverFor: (id) => scripted(id),
+      driverFor: (id) => (id === 'builtin' ? builtinDriver : scripted(id)),
       fetcher: fakeForge,
       getSecret: (name) => secrets[name],
       workspaceCacheDir: path.join(root, 'cache'),
@@ -549,7 +595,12 @@ describe('agent drivers', () => {
       drivers: Array<{ id: string; available: boolean; reason?: string }>;
     }>('/drivers');
     expect(status).toBe(200);
-    expect(body.drivers.map((d) => d.id)).toEqual(['claude-code', 'codex', 'cursor-agent']);
+    expect(body.drivers.map((d) => d.id)).toEqual([
+      'claude-code',
+      'codex',
+      'cursor-agent',
+      'builtin',
+    ]);
     expect(body.drivers.find((d) => d.id === 'codex')).toMatchObject({
       available: false,
       reason: expect.stringContaining('codex login'),
@@ -600,7 +651,7 @@ describe('agent drivers', () => {
     });
     expect(lastDetect).toEqual({
       id: 'codex',
-      options: { apiKey: false, permissionMode: 'acceptEdits', model: 'sonnet' },
+      options: { apiKey: false, permissionMode: 'acceptEdits', model: 'sonnet', budget: false },
     });
 
     // With a key for the CLI, its own sign-in is not what the run depends on.
@@ -608,7 +659,7 @@ describe('agent drivers', () => {
     await preview(codexSpec('\n  api_key_secret: CODEX_API_KEY'));
     expect(lastDetect).toEqual({
       id: 'codex',
-      options: { apiKey: true, permissionMode: 'acceptEdits', model: 'sonnet' },
+      options: { apiKey: true, permissionMode: 'acceptEdits', model: 'sonnet', budget: false },
     });
   });
 
@@ -627,7 +678,12 @@ describe('agent drivers', () => {
     expect(run.status).toBe('done');
     expect(lastDetect).toEqual({
       id: 'codex',
-      options: { apiKey: true, permissionMode: 'acceptEdits', model: 'gpt-5-codex' },
+      options: {
+        apiKey: true,
+        permissionMode: 'acceptEdits',
+        model: 'gpt-5-codex',
+        budget: false,
+      },
     });
     expect(lastAgentInput?.secrets).toEqual({ CODEX_API_KEY: 'sk-test-openai-key-000000' });
     expect(lastAgentInput).toMatchObject({ model: 'gpt-5-codex', permissionMode: 'acceptEdits' });
@@ -680,5 +736,185 @@ describe('agent drivers', () => {
     }
     if (alive) process.kill(stray, 'SIGKILL');
     expect(alive).toBe(false);
+  });
+});
+
+describe('builtin driver', () => {
+  const builtinSpec = (name: string, agent: string, extra = '') =>
+    spec(name, extra).replace(
+      '  driver: claude-code\n  model: sonnet\n',
+      `  driver: builtin\n${agent}`
+    );
+  const save = (source: string) =>
+    json<{ id: string; error?: string; message?: string; line?: number }>('/automations', {
+      method: 'POST',
+      body: JSON.stringify({ spec: source }),
+    });
+
+  beforeEach(() => {
+    process.env.FAKE_AUTOMATION_MODEL_KEY = 'fake-env-key';
+    modelReplies = [];
+    modelRequests.length = 0;
+  });
+
+  it('is accepted with a provider/model, and refused without one, by line', async () => {
+    const ok = await save(builtinSpec('builtin-saved', '  model: fake/priced\n'));
+    expect(ok.status).toBe(201);
+
+    const bare = await save(builtinSpec('builtin-bare', '  model: priced\n'));
+    expect(bare.status).toBe(400);
+    expect(bare.body).toMatchObject({ error: 'invalid_spec', line: 6 });
+    expect(bare.body.message).toContain('as provider/model');
+
+    const tools = await save(
+      builtinSpec('builtin-tools', '  model: fake/priced\n  allowed_tools: [group:fs, Bash]\n')
+    );
+    expect(tools.status).toBe(400);
+    expect(tools.body.message).toContain('"Bash" names none of the builtin agent');
+  });
+
+  it('previews an unpriced model with a dollar budget as a problem', async () => {
+    const out = await json<{ ready: boolean; checks: Array<{ level: string; message: string }> }>(
+      '/automations/preview',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          spec: builtinSpec(
+            'builtin-unpriced',
+            '  model: fake/unpriced\n',
+            'budget:\n  max_usd_per_run: 2'
+          ),
+        }),
+      }
+    );
+    expect(out.body.ready).toBe(false);
+    expect(out.body.checks.find((c) => c.level === 'error')?.message).toContain(
+      'fake/unpriced has no price in providers.yaml'
+    );
+  });
+
+  it('runs the tool loop in the worktree and records each model call, tool call and its cost', async () => {
+    secrets = { GITHUB_TOKEN: FORGE_TOKEN, MODEL_KEY: 'vault-model-key' };
+    modelReplies = [
+      [
+        { type: 'text', text: 'Writing the file.' },
+        {
+          type: 'tool_use',
+          id: 'w1',
+          name: 'write_file',
+          input: { path: 'CHANGED.md', content: 'by builtin\n' },
+        },
+      ],
+      [
+        {
+          type: 'tool_use',
+          id: 's1',
+          name: 'run_shell',
+          input: { command: 'test -f CHANGED.md && echo present' },
+        },
+      ],
+      [{ type: 'text', text: 'Added CHANGED.md.' }],
+    ];
+    const created = await save(
+      builtinSpec(
+        'builtin-run',
+        '  model: fake/priced\n  api_key_secret: MODEL_KEY\n',
+        'publish:\n  push: false\nbudget:\n  max_usd_per_run: 5'
+      )
+    );
+    expect(created.status).toBe(201);
+    const runId = await start(created.body.id);
+    const run = await waitForRun(runId, finished);
+
+    expect(run.status).toBe('done');
+    expect(modelRequests.map((r) => r.key)).toEqual([
+      'vault-model-key',
+      'vault-model-key',
+      'vault-model-key',
+    ]);
+    // Three calls of 10k in at $1/M and 1k out at $2/M.
+    expect(run.costUsd).toBeCloseTo(3 * 0.012, 9);
+    const llm = run.steps.filter((s) => s.kind === 'llm' && s.status === 'ok');
+    expect(llm.map((s) => s.input?.prompt)).toEqual([
+      'Agent turn 1',
+      'Agent turn 2',
+      'Agent turn 3',
+    ]);
+    expect(
+      run.steps.filter((s) => s.kind === 'tool').map((s) => [s.input?.name, s.status])
+    ).toEqual(
+      expect.arrayContaining([
+        ['fs.write', 'ok'],
+        ['runtime.shell', 'ok'],
+      ])
+    );
+    expect(listToolCalls(runId).map((c) => [c.name, c.status, c.approvalState])).toEqual([
+      ['fs.write', 'ok', 'not_required'],
+      ['runtime.shell', 'ok', 'not_required'],
+    ]);
+    expect(sh(repo, 'show', `${run.branch}:CHANGED.md`)).toBe('by builtin');
+    // The command it ran is recorded with the run, like a gate.
+    const rows = getStore()
+      .prepare('SELECT kind, command, ended_at FROM run_processes WHERE run_id = ? ORDER BY id')
+      .all(runId);
+    expect(rows[0]).toMatchObject({ kind: 'gate', command: '/bin/sh' });
+    expect(rows.every((r) => r.ended_at !== null)).toBe(true);
+  });
+
+  it('waits in the approvals inbox for a write in default mode, then carries on', async () => {
+    modelReplies = [
+      [
+        {
+          type: 'tool_use',
+          id: 'w1',
+          name: 'write_file',
+          input: { path: 'CHANGED.md', content: 'approved\n' },
+        },
+      ],
+      [{ type: 'text', text: 'Done.' }],
+    ];
+    const created = await save(
+      builtinSpec(
+        'builtin-approve',
+        '  model: fake/priced\n  permission_mode: default\n',
+        'publish:\n  push: false'
+      )
+    );
+    const runId = await start(created.body.id);
+    await waitForRun(runId, (r) => r.status === 'awaiting_approval' || finished(r));
+    const { body } = await json<{
+      approvals: Array<{ id: number; runId: string; tool: string; tier: string }>;
+    }>('/approvals');
+    const pending = body.approvals.find((a) => a.runId === runId);
+    expect(pending).toMatchObject({ tool: 'fs.write', tier: 'medium' });
+    expect((await api(`/approvals/${pending?.id}/approve`, { method: 'POST' })).status).toBe(200);
+
+    const run = await waitForRun(runId, finished);
+    expect(run.status).toBe('done');
+    expect(listToolCalls(runId)[0]).toMatchObject({
+      name: 'fs.write',
+      status: 'ok',
+      approvalState: 'approved',
+    });
+  });
+
+  it('can be cancelled while it waits for an approval', async () => {
+    modelReplies = [
+      [{ type: 'tool_use', id: 's1', name: 'run_shell', input: { command: 'echo hi' } }],
+    ];
+    const created = await save(
+      builtinSpec(
+        'builtin-cancel',
+        '  model: fake/priced\n  permission_mode: default\n',
+        'publish:\n  push: false'
+      )
+    );
+    const runId = await start(created.body.id);
+    await waitForRun(runId, (r) => r.status === 'awaiting_approval' || finished(r));
+    expect((await api(`/runs/${runId}/cancel`, { method: 'POST' })).status).toBe(200);
+    const run = await waitForRun(runId, finished);
+    expect(run.status).toBe('cancelled');
+    const { body } = await json<{ approvals: Array<{ runId: string }> }>('/approvals');
+    expect(body.approvals.some((a) => a.runId === runId)).toBe(false);
   });
 });

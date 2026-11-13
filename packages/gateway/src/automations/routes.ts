@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Express, Request, Response } from 'express';
-import { DRIVER_IDS, getDriver } from '@clerq/drivers';
+import { DRIVER_IDS } from '@clerq/drivers';
 import { git, isRepo, defaultBranch, pruneWorktrees } from '@clerq/workspaces';
 import { logger } from '../logger.js';
 import { getStore } from '../store.js';
@@ -33,7 +33,9 @@ import {
 } from './store.js';
 import {
   AutomationBusy,
+  defaultDriver,
   githubProject,
+  hasBudget,
   policyFor,
   runningAutomations,
   startAutomationRun,
@@ -147,10 +149,11 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
     }
   }
 
-  const driver = await (deps.driverFor ?? getDriver)(spec.agent.driver).detect({
+  const driver = await (deps.driverFor ?? defaultDriver)(spec.agent.driver).detect({
     apiKey: Boolean(spec.agent.apiKeySecret),
     permissionMode: spec.agent.permissionMode,
     model: spec.agent.model,
+    budget: hasBudget(spec),
   });
   if (!driver.available)
     checks.push({ level: 'error', message: driver.reason ?? 'The driver is unavailable.' });
@@ -310,7 +313,7 @@ export function mountAutomationRoutes(
   app.get('/drivers', async (_req, res) => {
     try {
       const drivers = await Promise.all(
-        DRIVER_IDS.map((id) => (deps.driverFor ?? getDriver)(id).detect())
+        DRIVER_IDS.map((id) => (deps.driverFor ?? defaultDriver)(id).detect())
       );
       res.json({ drivers });
     } catch (e) {

@@ -313,6 +313,88 @@ export function completeRunStep(
     );
 }
 
+export type ToolCallStatus = 'running' | 'ok' | 'error' | 'denied';
+export type ApprovalState = 'not_required' | 'approved' | 'denied';
+
+/** Record a tool call an agent started, beside the step that shows it. Returns its row id. */
+export function addToolCall(
+  runId: string,
+  call: { stepSeq?: number; callId?: string; name: string; input?: unknown }
+): number {
+  const res = getStore()
+    .prepare(
+      `INSERT INTO tool_calls (run_id, step_seq, call_id, name, input, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 'running', ?)`
+    )
+    .run(
+      runId,
+      call.stepSeq ?? null,
+      call.callId ?? null,
+      call.name,
+      call.input === undefined ? null : JSON.stringify(call.input),
+      new Date().toISOString()
+    );
+  return Number(res.lastInsertRowid);
+}
+
+/** How a tool call ended. */
+export function completeToolCall(
+  id: number,
+  done: {
+    output?: string;
+    status: Exclude<ToolCallStatus, 'running'>;
+    durationMs?: number;
+    approval?: ApprovalState;
+  }
+): void {
+  getStore()
+    .prepare(
+      `UPDATE tool_calls SET output = ?, status = ?, duration_ms = ?, approval_state = ?, finished_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      done.output ?? null,
+      done.status,
+      done.durationMs ?? null,
+      done.approval ?? null,
+      new Date().toISOString(),
+      id
+    );
+}
+
+export interface ToolCallRecord {
+  id: number;
+  stepSeq?: number;
+  callId?: string;
+  name: string;
+  input?: unknown;
+  output?: string;
+  status: ToolCallStatus;
+  durationMs?: number;
+  approvalState: ApprovalState | null;
+}
+
+/** A run's tool calls, in the order they were made. */
+export function listToolCalls(runId: string): ToolCallRecord[] {
+  return getStore()
+    .prepare(
+      `SELECT id, step_seq, call_id, name, input, output, status, duration_ms, approval_state
+       FROM tool_calls WHERE run_id = ? ORDER BY id`
+    )
+    .all(runId)
+    .map((r) => ({
+      id: Number(r.id),
+      stepSeq: r.step_seq === null ? undefined : Number(r.step_seq),
+      callId: r.call_id === null ? undefined : String(r.call_id),
+      name: String(r.name),
+      input: r.input ? JSON.parse(String(r.input)) : undefined,
+      output: r.output === null ? undefined : String(r.output),
+      status: String(r.status) as ToolCallStatus,
+      durationMs: r.duration_ms === null ? undefined : Number(r.duration_ms),
+      approvalState: r.approval_state === null ? null : (String(r.approval_state) as ApprovalState),
+    }));
+}
+
 /** Newest first. `since` keeps runs created at or after that ISO time. */
 export function listRuns(limit = 50, opts: { since?: string } = {}): RunRecord[] {
   const where = opts.since ? 'WHERE created_at >= ?' : '';

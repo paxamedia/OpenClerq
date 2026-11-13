@@ -8,7 +8,7 @@
  */
 
 import cron from 'node-cron';
-import { DRIVER_CAPABILITIES, DRIVER_IDS, type DriverId } from '@clerq/drivers';
+import { DRIVER_CAPABILITIES, DRIVER_IDS, allowedToolProblem, type DriverId } from '@clerq/drivers';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
 
 export type PermissionMode = 'acceptEdits' | 'default' | 'dontAsk' | 'plan';
@@ -270,6 +270,24 @@ export function parseSpec(source: string): AutomationSpec {
   } else {
     model = r.text(['agent', 'model']);
   }
+  // The builtin agent calls a model API itself, so it has to know whose.
+  if (driver === 'builtin') {
+    const modelPath =
+      typeof rawModel === 'object' && rawModel ? ['agent', 'model', 'primary'] : ['agent', 'model'];
+    if (!model) {
+      r.fail(
+        ['agent'],
+        'The builtin driver needs "agent.model" as provider/model, e.g. anthropic/claude-sonnet-4-5.'
+      );
+    }
+    const slash = model.indexOf('/');
+    if (slash <= 0 || slash === model.length - 1) {
+      r.fail(
+        modelPath,
+        `"${model}" must name the provider too, as provider/model (e.g. anthropic/${model}).`
+      );
+    }
+  }
   const allowedTools = r.get(['agent', 'allowed_tools']) ?? [];
   if (
     !Array.isArray(allowedTools) ||
@@ -283,6 +301,12 @@ export function parseSpec(source: string): AutomationSpec {
       `"agent.allowed_tools" is not supported by the ${driver} driver: ${caps.label}'s CLI takes no tool list. ` +
         'Limit the agent with "agent.permission_mode" instead.'
     );
+  }
+  if (driver === 'builtin') {
+    allowedTools.forEach((rule, i) => {
+      const problem = allowedToolProblem(String(rule).trim());
+      if (problem) r.fail(['agent', 'allowed_tools', i], problem);
+    });
   }
 
   const prompt = r.text(['prompt'], true);

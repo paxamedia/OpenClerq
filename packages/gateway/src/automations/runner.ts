@@ -10,10 +10,12 @@
 
 import {
   DRIVER_CAPABILITIES,
+  builtin,
   getDriver,
   type Driver,
   type DriverResult,
   type DriverRunInput,
+  type ToolApprovalRequest,
 } from '@clerq/drivers';
 import {
   guard,
@@ -42,9 +44,12 @@ import {
   addRunStep,
   completeRunStep,
   addArtifact,
+  addToolCall,
+  completeToolCall,
   RunCancelled,
 } from '../runs.js';
-import { requestApproval, waitForDecision, decide } from '../approvals.js';
+import { requestApproval, waitForDecision, decide, tierFor } from '../approvals.js';
+import { agentRegistry } from '../agent/llm-provider.js';
 import { emit } from '../events.js';
 import { logger } from '../logger.js';
 import { watchProcess } from '../agent-processes.js';
@@ -87,6 +92,25 @@ const TOOLS = {
   push: { name: 'git.push', risk: 'external' },
   pullRequest: { name: 'forge.pull_request', risk: 'external' },
 } satisfies Record<string, ToolDescriptor>;
+
+/**
+ * The driver for an id. The builtin agent resolves models in the gateway's
+ * registry, with the same endpoint override a chat call gets.
+ */
+export function defaultDriver(id: string): Driver {
+  if (id === 'builtin') {
+    return builtin({
+      registry: () => agentRegistry().registry,
+      keyOptional: (providerId) => agentRegistry().keyOptional(providerId),
+    });
+  }
+  return getDriver(id);
+}
+
+/** True when the spec sets a budget in US dollars. */
+export function hasBudget(spec: AutomationSpec): boolean {
+  return spec.budget.maxUsdPerRun !== undefined || spec.budget.maxUsdPerMonth !== undefined;
+}
 
 /** What this run may do, from its spec. Anything else is denied. */
 export function policyFor(spec: AutomationSpec, firstPush: boolean): PolicyRules {
@@ -217,12 +241,13 @@ async function execute(
   const rules = policyFor(spec, firstPush);
   const budget = new RunBudget(rules);
 
-  const driver = (deps.driverFor ?? getDriver)(spec.agent.driver);
+  const driver = (deps.driverFor ?? defaultDriver)(spec.agent.driver);
   // A key from the vault stands in for the CLI's own sign-in, so it is not checked.
   const availability = await driver.detect({
     apiKey: Boolean(spec.agent.apiKeySecret),
     permissionMode: spec.agent.permissionMode,
     model: spec.agent.model,
+    budget: hasBudget(spec),
   });
   addRunStep(runId, {
     kind: 'tool',
@@ -456,10 +481,13 @@ async function runAgent(
   secrets: Record<string, string> | undefined,
   onSpawn: DriverRunInput['onSpawn']
 ): Promise<DriverResult> {
-  const pending = new Map<string, { seq: number; started: number }>();
+  const pending = new Map<string, { seq: number; row: number; started: number }>();
   const log: string[] = [];
   let model: string | undefined;
   let result: DriverResult | undefined;
+  // A driver that reports its model calls one by one has them recorded as they
+  // happen; for one that does not, its own total is recorded at the end.
+  let modelCalls = 0;
 
   for await (const event of driver.run({
     prompt: spec.prompt,
@@ -474,6 +502,13 @@ async function runAgent(
     secrets,
     signal,
     onSpawn,
+    // A command the builtin agent ran is a shell, like a gate.
+    onToolProcess: (spawned) => {
+      const watch = watchProcess(runId, 'gate');
+      watch.onSpawn(spawned);
+      return watch.done;
+    },
+    onApproval: (request) => approveToolCall(request, spec, runId, signal),
   })) {
     switch (event.type) {
       case 'started':
@@ -490,18 +525,24 @@ async function runAgent(
           input: { name: event.name, input: event.input },
           status: 'running',
         });
-        pending.set(event.id, { seq, started: Date.now() });
+        const row = addToolCall(runId, {
+          stepSeq: seq,
+          callId: event.id,
+          name: event.name,
+          input: event.input,
+        });
+        pending.set(event.id, { seq, row, started: Date.now() });
         emit('tool.started', { name: event.name }, { runId, toolCallId: event.id });
         break;
       }
       case 'tool_result': {
         const call = pending.get(event.id);
         if (call) {
-          completeRunStep(runId, call.seq, {
-            output: { text: tail(event.output, 16_000) },
-            status: event.isError ? 'error' : 'ok',
-            durationMs: Date.now() - call.started,
-          });
+          const status = event.denied ? 'denied' : event.isError ? 'error' : 'ok';
+          const durationMs = Date.now() - call.started;
+          const output = tail(event.output, 16_000);
+          completeRunStep(runId, call.seq, { output: { text: output }, status, durationMs });
+          completeToolCall(call.row, { output, status, durationMs, approval: event.approval });
           pending.delete(event.id);
         }
         emit(event.isError ? 'tool.failed' : 'tool.completed', {}, { runId, toolCallId: event.id });
@@ -511,6 +552,38 @@ async function runAgent(
         log.push(`[${event.stream}] ${event.line}`);
         if (log.length > 500) log.shift();
         break;
+      case 'model_call': {
+        modelCalls += 1;
+        const c = event.call;
+        recordModelCall({
+          provider: c.provider,
+          model: c.model,
+          prompt:
+            c.purpose === 'turn'
+              ? `Agent turn ${c.turn}`
+              : `Summary of earlier context, before turn ${c.turn + 1}`,
+          status: c.ok ? 'ok' : 'error',
+          text:
+            c.text ||
+            (c.toolCalls ? `${c.toolCalls} tool call${c.toolCalls === 1 ? '' : 's'}` : ''),
+          error: c.error,
+          tokensIn: c.tokensIn,
+          tokensOut: c.tokensOut,
+          costUsd: c.costUsd,
+          latencyMs: c.latencyMs,
+        });
+        break;
+      }
+      case 'context': {
+        const { type: _type, action: _action, ...record } = event;
+        addRunStep(runId, {
+          kind: 'tool',
+          input: { name: 'context.compact', method: event.method },
+          output: record,
+          status: event.method === 'summary' ? 'ok' : 'warning',
+        });
+        break;
+      }
       case 'finished':
         result = event.result;
         break;
@@ -520,18 +593,19 @@ async function runAgent(
 
   // The CLI's own account of what the run cost. On a subscription it is the
   // API-equivalent price, which is still the right measure for a budget.
-  recordModelCall({
-    provider: driver.id,
-    model: model ?? spec.agent.model ?? 'default',
-    prompt: spec.prompt,
-    status: result.ok ? 'ok' : 'error',
-    text: result.summary,
-    error: result.ok ? undefined : result.summary,
-    tokensIn: result.tokensIn,
-    tokensOut: result.tokensOut,
-    costUsd: result.costUsd,
-    latencyMs: result.durationMs,
-  });
+  if (modelCalls === 0)
+    recordModelCall({
+      provider: driver.id,
+      model: model ?? spec.agent.model ?? 'default',
+      prompt: spec.prompt,
+      status: result.ok ? 'ok' : 'error',
+      text: result.summary,
+      error: result.ok ? undefined : result.summary,
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
+      costUsd: result.costUsd,
+      latencyMs: result.durationMs,
+    });
   if (result.permissionDenials.length > 0 || result.warnings.length > 0) {
     addRunStep(runId, {
       kind: 'tool',
@@ -543,6 +617,46 @@ async function runAgent(
   if (log.length > 0) addArtifact(runId, 'log', log.join('\n'), 'agent.log');
   emit('agent.turn.completed', { ok: result.ok }, { runId });
   return result;
+}
+
+/**
+ * A tool call the agent wants to make that policy says a person must approve:
+ * it waits in the approvals inbox like a push does, and the run shows as
+ * awaiting approval meanwhile. Unanswered by the spec's approval timeout, or
+ * cancelled, it is refused.
+ */
+async function approveToolCall(
+  request: ToolApprovalRequest,
+  spec: AutomationSpec,
+  runId: string,
+  signal: AbortSignal
+): Promise<boolean> {
+  if (signal.aborted) return false;
+  setRunStatus(runId, 'awaiting_approval');
+  emit('tool.approval_required', { name: request.tool }, { runId, toolCallId: request.toolCallId });
+  const pending = requestApproval({
+    runId,
+    tool: request.tool,
+    tier: tierFor(request.risk),
+    reason: `The agent wants to run ${request.tool}. ${request.reason}`,
+    arguments: { automation: spec.name, toolCallId: request.toolCallId, input: request.input },
+  });
+  const approved = await Promise.race([
+    waitForDecision(pending.id, spec.approvals.timeoutMs),
+    new Promise<boolean>((resolve) => {
+      if (signal.aborted) resolve(false);
+      else signal.addEventListener('abort', () => resolve(false), { once: true });
+    }),
+  ]);
+  if (!approved) {
+    // Settle it, so a request nobody answered does not linger in the inbox.
+    decide(pending.id, {
+      decision: 'denied',
+      decidedBy: signal.aborted ? 'cancelled' : 'timeout',
+    });
+  }
+  if (!signal.aborted) setRunStatus(runId, 'executing');
+  return approved;
 }
 
 async function runGate(
