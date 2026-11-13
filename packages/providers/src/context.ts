@@ -182,6 +182,8 @@ export interface ConversationOptions {
 
 /** How much of the budget the most recent turns may keep through a compaction. */
 const KEEP_SHARE = 0.3;
+/** Compaction is skipped unless it frees at least this share of the budget. */
+const MIN_FREE_SHARE = 0.15;
 /** Characters of a tool result shown to the summariser. */
 const TRANSCRIPT_RESULT_CHARS = 1_500;
 
@@ -204,6 +206,11 @@ export class Conversation {
   readonly budget: number;
   private readonly tools: ToolDefinition[];
   private history: ConversationMessage[] = [];
+  /** What compaction has summarised so far, carried into every later summary. */
+  private summary: string | null = null;
+  private summarised = 0;
+  /** Messages dropped without a summary. */
+  private dropped = 0;
   private sentLength = 0;
   private calibration: { length: number; tokens: number } | null = null;
 
@@ -218,14 +225,37 @@ export class Conversation {
     this.history.push(message);
   }
 
-  /** The history after the pinned turns. */
+  /** The history after the pinned turns and any context note. */
   get turns(): readonly ConversationMessage[] {
     return this.history;
   }
 
-  /** Everything to send, pinned first. */
+  /**
+   * The note that stands for compacted history: the summary, and a word on
+   * anything dropped. Kept apart from the history, so a later drop can never
+   * throw away a summary that was paid for.
+   */
+  private note(): ConversationMessage | null {
+    const parts: string[] = [];
+    if (this.summary) {
+      parts.push(
+        `[Context note: ${this.summarised} earlier messages were summarised to save room. ` +
+          `Re-read any file you need exact contents of.]\n\n${this.summary}`
+      );
+    }
+    if (this.dropped > 0) {
+      parts.push(
+        `[Context note: ${this.dropped} earlier messages were removed to save room. ` +
+          'Re-read any file you need, and check git status for what has changed so far.]'
+      );
+    }
+    return parts.length ? { role: 'user', content: parts.join('\n\n') } : null;
+  }
+
+  /** Everything to send: pinned turns, the context note if any, then the history. */
   messages(): ConversationMessage[] {
-    return [...this.pinned, ...this.history];
+    const note = this.note();
+    return [...this.pinned, ...(note ? [note] : []), ...this.history];
   }
 
   /** The messages for the next request; remembers what was sent, for `recordUsage`. */
@@ -293,27 +323,36 @@ export class Conversation {
 
   /**
    * Fold the older history into a summary written by `summarise`, which is
-   * given a transcript of it. The latest rounds are kept as they were, minus
-   * their opaque reasoning, which a vendor may refuse once the turns before it
-   * have changed. When `summarise` throws, or is null, the older history is
-   * dropped instead, with a note saying so. Returns null when there is nothing to compact.
+   * given the previous summary and a transcript of the turns since. The latest
+   * rounds are kept as they were, minus their opaque reasoning, which a vendor
+   * may refuse once the turns before it have changed. When `summarise` throws,
+   * or is null, the older history is dropped instead and the previous summary
+   * stays.
+   *
+   * Returns null, doing nothing, when there is nothing older than the latest
+   * round, or when folding it away would free less than `minFreeTokens`
+   * (default 15% of the budget): a conversation whose pinned task or latest
+   * round alone is near the budget would otherwise pay for a summary every turn.
    */
   async compact(
     summarise: ((transcript: string) => Promise<string>) | null,
-    opts: { keepTokens?: number } = {}
+    opts: { keepTokens?: number; minFreeTokens?: number } = {}
   ): Promise<CompactionRecord | null> {
     const cut = this.cutPoint(opts.keepTokens ?? Math.floor(this.budget * KEEP_SHARE));
     if (cut === null) return null;
-    const before = this.estimate();
     const older = this.history.slice(0, cut);
+    const freed = older.reduce((n, m) => n + estimateMessageTokens(m), 0);
+    if (freed < (opts.minFreeTokens ?? Math.floor(this.budget * MIN_FREE_SHARE))) return null;
+    const before = this.estimate();
     const kept = this.history.slice(cut).map(stripReasoning);
 
     let summary: string | undefined;
     let error: string | undefined;
-    if (summarise)
+    if (summarise) {
       try {
+        const earlier = this.summary ? `EARLIER SUMMARY:\n${this.summary}\n\n` : '';
         // The summariser's own request has to fit as well.
-        const transcript = truncateOutput(renderTranscript(older), {
+        const transcript = truncateOutput(`${earlier}${renderTranscript(older)}`, {
           maxChars: Math.max(4_000, this.budget * 2),
           tailShare: 0.5,
         }).text;
@@ -322,21 +361,15 @@ export class Conversation {
       } catch (e) {
         error = e instanceof Error ? e.message : String(e);
       }
+    }
 
-    const note: ConversationMessage = summary
-      ? {
-          role: 'user',
-          content:
-            `[Context note: ${older.length} earlier messages were summarised to save room. ` +
-            `Re-read any file you need exact contents of.]\n\n${summary}`,
-        }
-      : {
-          role: 'user',
-          content:
-            `[Context note: ${older.length} earlier messages were removed to save room. ` +
-            'Re-read any file you need, and check git status for what has changed so far.]',
-        };
-    this.history = [note, ...kept];
+    if (summary) {
+      this.summary = summary;
+      this.summarised += older.length;
+    } else {
+      this.dropped += older.length;
+    }
+    this.history = kept;
     this.calibration = null;
     return {
       method: summary ? 'summary' : 'dropped',
@@ -349,9 +382,14 @@ export class Conversation {
     };
   }
 
-  /** Drop the older history without a summary: the rolling fallback. */
-  trim(opts: { keepTokens?: number } = {}): Promise<CompactionRecord | null> {
-    return this.compact(null, opts);
+  /**
+   * Drop the older history without a summary: the rolling fallback when the
+   * request would not fit otherwise. Any earlier summary is kept.
+   */
+  trim(
+    opts: { keepTokens?: number; minFreeTokens?: number } = {}
+  ): Promise<CompactionRecord | null> {
+    return this.compact(null, { minFreeTokens: 0, ...opts });
   }
 }
 

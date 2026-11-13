@@ -176,7 +176,50 @@ describe('Conversation', () => {
       { keepTokens: 400 }
     );
     expect(record).toMatchObject({ method: 'dropped', error: 'rate limited' });
-    expect(String(c.turns[0].content)).toContain('earlier messages were removed');
+    expect(String(c.messages()[1].content)).toContain('earlier messages were removed');
+  });
+
+  it('never drops a summary that was paid for: a later drop keeps it, a later summary builds on it', async () => {
+    const c = new Conversation({ system: '', pinned, budget: 2_000 });
+    for (let n = 1; n <= 4; n++) for (const m of round(n, 1_000)) c.append(m);
+    await c.compact(async () => 'SUMMARY-ONE', { keepTokens: 400 });
+    for (let n = 5; n <= 8; n++) for (const m of round(n, 1_000)) c.append(m);
+    const dropped = await c.trim({ keepTokens: 400 });
+    expect(dropped?.method).toBe('dropped');
+    const note = String(c.messages()[1].content);
+    expect(note).toContain('SUMMARY-ONE');
+    expect(note).toContain('earlier messages were removed');
+
+    for (let n = 9; n <= 12; n++) for (const m of round(n, 1_000)) c.append(m);
+    let transcript = '';
+    await c.compact(
+      async (t) => {
+        transcript = t;
+        return 'SUMMARY-TWO';
+      },
+      { keepTokens: 400 }
+    );
+    expect(transcript.startsWith('EARLIER SUMMARY:\nSUMMARY-ONE')).toBe(true);
+    expect(String(c.messages()[1].content)).toContain('SUMMARY-TWO');
+    expect(
+      c.messages().filter((m) => m.role === 'user' && String(m.content).includes('[Context note'))
+    ).toHaveLength(1);
+  });
+
+  it('skips compaction that would free too little, so a near-budget task is not summarised every turn', async () => {
+    // The pinned task alone is most of the budget; each round is small.
+    const big: ConversationMessage[] = [{ role: 'user', content: 'x'.repeat(4 * 1_800) }];
+    const c = new Conversation({ system: '', pinned: big, budget: 2_000 });
+    for (let n = 1; n <= 3; n++) for (const m of round(n, 40)) c.append(m);
+    expect(c.overBudget(0.8)).toBe(true);
+    let calls = 0;
+    const record = await c.compact(async () => {
+      calls += 1;
+      return 'summary';
+    });
+    expect(record).toBeNull();
+    expect(calls).toBe(0);
+    expect(c.turns).toHaveLength(6);
   });
 
   it('trims without a model call, as a rolling window', async () => {
