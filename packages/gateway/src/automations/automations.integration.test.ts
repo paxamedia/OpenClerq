@@ -898,6 +898,67 @@ describe('builtin driver', () => {
     });
   });
 
+  it('closes the approval and keeps the run failed when the agent runs out of time while waiting', async () => {
+    modelReplies = [
+      [
+        {
+          type: 'tool_use',
+          id: 'w1',
+          name: 'write_file',
+          input: { path: 'CHANGED.md', content: 'late\n' },
+        },
+      ],
+    ];
+    const created = await save(
+      builtinSpec(
+        'builtin-deadline',
+        '  model: fake/priced\n  permission_mode: default\n',
+        'publish:\n  push: false'
+      ).replace('  profile: native', '  profile: native\n  timeout: 2s')
+    );
+    expect(created.status).toBe(201);
+    const runId = await start(created.body.id);
+    await waitForRun(runId, (r) => r.status === 'awaiting_approval' || finished(r));
+    const run = await waitForRun(runId, finished, 10_000);
+    expect(run.status).toBe('failed');
+    expect(run.exitReason).toMatch(/Timed out/);
+    const { body } = await json<{ approvals: Array<{ runId: string }> }>('/approvals');
+    expect(body.approvals.some((a) => a.runId === runId)).toBe(false);
+    const decided = getStore()
+      .prepare('SELECT decision, decided_by FROM approvals WHERE run_id = ?')
+      .all(runId);
+    expect(decided).toEqual([{ decision: 'denied', decided_by: 'agent-stopped' }]);
+    // Nothing flips the finished run back to executing afterwards.
+    await new Promise((r) => setTimeout(r, 200));
+    expect((await json<{ status: string }>(`/runs/${runId}`)).body.status).toBe('failed');
+  });
+
+  it('keeps vault values the run uses out of its stored steps and tool calls', async () => {
+    modelReplies = [
+      [
+        {
+          type: 'tool_use',
+          id: 's1',
+          name: 'run_shell',
+          input: { command: `touch CHANGED.md; printf '%s' '${FORGE_TOKEN}'` },
+        },
+      ],
+      [{ type: 'text', text: 'Done.' }],
+    ];
+    const created = await save(
+      builtinSpec('builtin-scrub', '  model: fake/priced\n', 'publish:\n  pull_request: none')
+    );
+    const runId = await start(created.body.id);
+    const waited = await waitForRun(runId, (r) => r.status === 'awaiting_approval' || finished(r));
+    if (finished(waited)) throw new Error(`run ended: ${waited.status} ${waited.exitReason}`);
+    await api(`/approvals/${await approvalFor(runId)}/deny`, { method: 'POST' });
+    const run = await waitForRun(runId, finished);
+    expect(run.status).toBe('cancelled');
+    const stored = JSON.stringify({ steps: run.steps, calls: listToolCalls(runId) });
+    expect(stored).not.toContain(FORGE_TOKEN);
+    expect(listToolCalls(runId)[0].output).toContain('«redacted»');
+  });
+
   it('can be cancelled while it waits for an approval', async () => {
     modelReplies = [
       [{ type: 'tool_use', id: 's1', name: 'run_shell', input: { command: 'echo hi' } }],

@@ -12,7 +12,9 @@ import {
   DRIVER_CAPABILITIES,
   builtin,
   getDriver,
+  redactDeep,
   type Driver,
+  type DriverEvent,
   type DriverResult,
   type DriverRunInput,
   type ToolApprovalRequest,
@@ -40,6 +42,7 @@ import {
   currentRunId,
   currentRunSignal,
   setRunStatus,
+  setRunStatusIf,
   setRunFields,
   addRunStep,
   completeRunStep,
@@ -345,9 +348,10 @@ async function execute(
     // crashes. Recording it lets the next gateway find it and stop it.
     const agentProcess = watchProcess(runId, 'agent');
     const result = await guard(rules, TOOLS.agent, budget, () =>
-      runAgent(driver, spec, ws, runId, signal, deps, apiKey, agentProcess.onSpawn).finally(
-        agentProcess.done
-      )
+      runAgent(driver, spec, ws, runId, signal, deps, apiKey, agentProcess.onSpawn, {
+        ...apiKey,
+        ...(token ? { FORGE_TOKEN: token } : {}),
+      }).finally(agentProcess.done)
     );
     if (!result.ok) throw new Error(result.summary);
 
@@ -479,7 +483,9 @@ async function runAgent(
   signal: AbortSignal,
   deps: RunnerDeps,
   secrets: Record<string, string> | undefined,
-  onSpawn: DriverRunInput['onSpawn']
+  onSpawn: DriverRunInput['onSpawn'],
+  /** Vault values this run uses, taken out of everything it stores. */
+  inUse: Record<string, string>
 ): Promise<DriverResult> {
   const pending = new Map<string, { seq: number; row: number; started: number }>();
   const log: string[] = [];
@@ -489,7 +495,7 @@ async function runAgent(
   // happen; for one that does not, its own total is recorded at the end.
   let modelCalls = 0;
 
-  for await (const event of driver.run({
+  for await (const raw of driver.run({
     prompt: spec.prompt,
     cwd: ws.path,
     model: spec.agent.model,
@@ -510,6 +516,7 @@ async function runAgent(
     },
     onApproval: (request) => approveToolCall(request, spec, runId, signal),
   })) {
+    const event = scrub(raw, inUse);
     switch (event.type) {
       case 'started':
         model = event.model;
@@ -619,6 +626,12 @@ async function runAgent(
   return result;
 }
 
+/** An event with the run's secret values taken out, before any of it is stored. */
+function scrub(event: DriverEvent, inUse: Record<string, string>): DriverEvent {
+  if (Object.keys(inUse).length === 0) return event;
+  return redactDeep(event, inUse) as DriverEvent;
+}
+
 /**
  * A tool call the agent wants to make that policy says a person must approve:
  * it waits in the approvals inbox like a push does, and the run shows as
@@ -631,7 +644,9 @@ async function approveToolCall(
   runId: string,
   signal: AbortSignal
 ): Promise<boolean> {
-  if (signal.aborted) return false;
+  // The run's signal (cancel, kill switch) and the agent's own (its time limit).
+  const stopped = AbortSignal.any([signal, request.signal]);
+  if (stopped.aborted) return false;
   setRunStatus(runId, 'awaiting_approval');
   emit('tool.approval_required', { name: request.tool }, { runId, toolCallId: request.toolCallId });
   const pending = requestApproval({
@@ -641,21 +656,32 @@ async function approveToolCall(
     reason: `The agent wants to run ${request.tool}. ${request.reason}`,
     arguments: { automation: spec.name, toolCallId: request.toolCallId, input: request.input },
   });
+  // Nobody can approve a call after the agent has run out of time.
+  const waitMs = Math.max(0, Math.min(spec.approvals.timeoutMs, request.deadline - Date.now()));
+  let onStop: (() => void) | undefined;
   const approved = await Promise.race([
-    waitForDecision(pending.id, spec.approvals.timeoutMs),
+    waitForDecision(pending.id, waitMs),
     new Promise<boolean>((resolve) => {
-      if (signal.aborted) resolve(false);
-      else signal.addEventListener('abort', () => resolve(false), { once: true });
+      onStop = () => resolve(false);
+      stopped.addEventListener('abort', onStop, { once: true });
     }),
-  ]);
+  ]).finally(() => {
+    if (onStop) stopped.removeEventListener('abort', onStop);
+  });
   if (!approved) {
     // Settle it, so a request nobody answered does not linger in the inbox.
     decide(pending.id, {
       decision: 'denied',
-      decidedBy: signal.aborted ? 'cancelled' : 'timeout',
+      decidedBy: signal.aborted
+        ? 'cancelled'
+        : // The wait may end on its timer a moment before the agent's own signal does.
+          request.signal.aborted || Date.now() >= request.deadline
+          ? 'agent-stopped'
+          : 'timeout',
     });
   }
-  if (!signal.aborted) setRunStatus(runId, 'executing');
+  // Only a run still waiting goes back to work; a finished one keeps its state.
+  setRunStatusIf(runId, 'awaiting_approval', 'executing');
   return approved;
 }
 

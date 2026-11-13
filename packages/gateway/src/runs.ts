@@ -140,6 +140,19 @@ export function setRunStatus(id: string, status: RunStatus): void {
   emit('run.status', { status }, { runId: id });
 }
 
+/**
+ * Move a run from `from` to `to`, and only from `from`: a run that has moved on
+ * since (finished, cancelled) is left as it is. Returns whether it moved.
+ */
+export function setRunStatusIf(id: string, from: RunStatus, to: RunStatus): boolean {
+  const res = getStore()
+    .prepare('UPDATE runs SET status = ? WHERE id = ? AND status = ?')
+    .run(to, id, from);
+  if (Number(res.changes) === 0) return false;
+  emit('run.status', { status: to }, { runId: id });
+  return true;
+}
+
 /** Record what a run produced along the way. */
 export function setRunFields(
   id: string,
