@@ -375,23 +375,59 @@ export class Workspace {
     return { commonDir, adminDir, gitFile: path.join(this.path, '.git') };
   }
 
-  /** Remove the worktree. Safe to call twice. */
+  /**
+   * Remove the worktree and its entry in the git directory. Safe to call twice.
+   *
+   * Each is first renamed, within its own parent, to a name no sandbox may
+   * write (a sandbox's write rules are by path), and only then deleted: a
+   * process the run left behind can no longer change what is being deleted,
+   * so it cannot swap a directory for a link in the middle of the deletion
+   * and have it follow the link. The deletion itself (`fs.rm`) removes links,
+   * never what they point at.
+   */
   async dispose(): Promise<void> {
     if (!this.isWorktree) return;
+    let adminDir: string | undefined;
     try {
-      await git(['worktree', 'remove', '--force', this.path], {
-        cwd: this.repoRoot,
-        allowFailure: true,
-        harden: true,
-      });
+      adminDir = (await this.gitDirs()).adminDir;
     } catch {
-      /* best effort */
+      /* no git entry to remove */
     }
-    try {
-      if (fs.existsSync(this.path)) fs.rmSync(this.path, { recursive: true, force: true });
-    } catch {
-      /* best effort */
+    for (const dir of [this.path, adminDir]) {
+      if (!dir) continue;
+      try {
+        const st = fs.lstatSync(dir);
+        if (st.isSymbolicLink()) {
+          fs.unlinkSync(dir);
+          continue;
+        }
+        const aside = `${dir}.removed-${crypto.randomBytes(4).toString('hex')}`;
+        fs.renameSync(dir, aside);
+        fs.rmSync(aside, { recursive: true, force: true });
+      } catch {
+        /* gone already, or best effort */
+      }
     }
+    await git(['worktree', 'prune'], { cwd: this.repoRoot, allowFailure: true, harden: true });
+  }
+
+  /**
+   * A fresh, detached checkout of `commit` in a worktree of its own, cut from
+   * the same repository: what the gates run on, so they test the commit that
+   * is published and nothing a process left behind by the run changes after
+   * it. Dispose of it like any workspace.
+   */
+  async checkout(commit: string, cacheDir?: string): Promise<Workspace> {
+    const root = path.join(cacheDir ?? defaultCacheDir(), '.worktrees');
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    const dir = fs.mkdtempSync(path.join(root, 'gate-'));
+    fs.rmdirSync(dir);
+    await git(['worktree', 'add', '--detach', dir, commit], {
+      cwd: this.repoRoot,
+      env: this.env,
+      harden: true,
+    });
+    return new Workspace(dir, this.repoRoot, commit, commit, this.env, true, true, this.baseRef);
   }
 }
 

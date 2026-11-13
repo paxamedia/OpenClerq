@@ -588,3 +588,40 @@ describe('the run commit (plumbing)', () => {
     }
   });
 });
+
+describe('gate checkouts and removal', () => {
+  it('checks out the commit itself, whatever the worktree holds by now', async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'g2' });
+    try {
+      fs.writeFileSync(path.join(ws.path, 'OUT.md'), 'good\n');
+      const sha = (await ws.commitAll('x')) as string;
+      fs.writeFileSync(path.join(ws.path, 'OUT.md'), 'rewritten after the commit\n');
+      const gate = await ws.checkout(sha, cacheDir);
+      try {
+        expect(fs.readFileSync(path.join(gate.path, 'OUT.md'), 'utf8')).toBe('good\n');
+        expect((await git(['rev-parse', 'HEAD'], { cwd: gate.path })).stdout.trim()).toBe(sha);
+      } finally {
+        await gate.dispose();
+      }
+      expect(fs.existsSync(gate.path)).toBe(false);
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it('removes a worktree without following a link in it', async () => {
+    const outside = fs.mkdtempSync(path.join(tmp, 'outside-'));
+    fs.writeFileSync(path.join(outside, 'keep.txt'), 'keep\n');
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'rm' });
+    fs.symlinkSync(outside, path.join(ws.path, 'link'));
+    const { adminDir } = await ws.gitDirs();
+    fs.symlinkSync(outside, path.join(adminDir, 'link'));
+    await ws.dispose();
+    expect(fs.existsSync(ws.path)).toBe(false);
+    expect(fs.existsSync(adminDir)).toBe(false);
+    expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('keep\n');
+    expect(fs.readdirSync(path.dirname(ws.path)).filter((n) => n.includes('.removed-'))).toEqual(
+      []
+    );
+  });
+});
