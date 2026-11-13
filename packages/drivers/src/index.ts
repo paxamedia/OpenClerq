@@ -36,15 +36,24 @@ export {
   DEFAULT_MAX_TURNS,
   redactDeep,
   SYSTEM_PROMPT,
+  SUBAGENT_SYSTEM_PROMPT,
   type BuiltinOptions,
 } from './builtin/driver.js';
 export {
   builtinPolicy,
   offeredTools,
   allowedToolProblem,
+  subagentPolicy,
   BUILTIN_MAX_CALLS,
+  BUILTIN_UNIVERSE,
+  SUBAGENT_DEFAULT_TOOLS,
 } from './builtin/policy.js';
-export { BUILTIN_TOOLS, shellDescriptor, type BuiltinTool } from './builtin/tools.js';
+export {
+  BUILTIN_TOOLS,
+  SPAWN_AGENT,
+  shellDescriptor,
+  type BuiltinTool,
+} from './builtin/tools.js';
 
 /** The drivers this release ships, by id. */
 export const DRIVER_IDS = ['claude-code', 'codex', 'cursor-agent', 'builtin'] as const;
@@ -61,6 +70,7 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
     allowedTools: true,
     models: true,
     midRunModelSwitch: false,
+    subagents: false,
     apiKeyEnv: 'ANTHROPIC_API_KEY',
     label: 'Claude Code',
   },
@@ -70,6 +80,7 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
     allowedTools: false,
     models: true,
     midRunModelSwitch: false,
+    subagents: false,
     apiKeyEnv: 'CODEX_API_KEY',
     label: 'Codex',
   },
@@ -79,6 +90,7 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
     allowedTools: false,
     models: true,
     midRunModelSwitch: false,
+    subagents: false,
     apiKeyEnv: 'CURSOR_API_KEY',
     label: 'Cursor',
   },
@@ -90,6 +102,7 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
     allowedTools: true,
     models: true,
     midRunModelSwitch: true,
+    subagents: true,
     apiKeyEnv: BUILTIN_KEY_ENV,
     label: 'the builtin agent',
   },

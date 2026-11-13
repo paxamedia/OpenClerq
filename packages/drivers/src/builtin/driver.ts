@@ -44,10 +44,13 @@ import type {
 import { builtinPolicy, offeredTools } from './policy.js';
 import {
   BUILTIN_TOOLS,
+  MAX_RESULT_CHARS,
+  SPAWN_AGENT,
   shellDescriptor,
   ToolInputError,
   type BuiltinTool,
   type ToolContext,
+  type ToolOutcome,
 } from './tools.js';
 
 const ID = 'builtin';
@@ -95,6 +98,17 @@ export const SYSTEM_PROMPT = [
   'Nobody will answer questions during the run; make reasonable choices and say what you assumed.',
   'A tool result may be cut short; it says so and how to see the rest.',
   'When the task is done, stop calling tools and reply with a short summary of what you changed and why.',
+].join(' ');
+
+/** The system prompt of a sub-agent started with `sessions.spawn`. */
+export const SUBAGENT_SYSTEM_PROMPT = [
+  "You are a sub-agent of a coding agent, working in a git worktree of the user's repository.",
+  'You have one task, given below, and the tools your policy allows; paths are relative to the repository root.',
+  'Other agents may be working in the same worktree at the same time: change only what your task asks you to.',
+  'Do not commit, push or open pull requests. You cannot start sub-agents.',
+  'Nobody will answer questions; make reasonable choices and say what you assumed.',
+  'When you are done, stop calling tools and reply with your answer: what you found or changed, concisely,',
+  'with the file paths and details the agent that started you needs. That reply is all it will see.',
 ].join(' ');
 
 /** `value` with every string in it redacted of the run's secret values. */
@@ -363,13 +377,13 @@ async function* runLoop(
   );
   const signal = controller.signal;
 
-  const rules = builtinPolicy(input.permissionMode, input.allowedTools);
+  const rules = input.policy ?? builtinPolicy(input.permissionMode, input.allowedTools);
   const budget = new RunBudget(rules);
-  const tools = offeredTools(rules);
+  const tools = offeredTools(rules, { spawn: Boolean(input.onSubagent) });
   const byModelName = new Map<string, BuiltinTool>(tools.map((t) => [t.definition.name, t]));
   const budgetOf = (a: Active) => contextBudget(a.model, { maxOutputTokens: a.maxOutput }).budget;
   const conversation = new Conversation({
-    system: options.system ?? SYSTEM_PROMPT,
+    system: input.system ?? options.system ?? SYSTEM_PROMPT,
     pinned: [{ role: 'user', content: `Task:\n${input.prompt}` }],
     budget: budgetOf(active),
     tools: tools.map((t) => t.definition),
@@ -386,7 +400,34 @@ async function* runLoop(
     env: input.env ?? { PATH: process.env.PATH ?? '' },
     onProcess: input.onToolProcess,
     warnings,
+    ...(input.onSubagent ? { spawn: spawnSubagent } : {}),
   };
+
+  /** A sub-agent for one `sessions.spawn` call, its answer as the call's result. */
+  async function spawnSubagent(
+    request: { task: string; tools?: string[]; model?: string },
+    toolCallId: string
+  ): Promise<ToolOutcome> {
+    const outcome = await (input.onSubagent as NonNullable<DriverRunInput['onSubagent']>)({
+      ...request,
+      toolCallId,
+      parentRules: rules,
+      signal,
+      deadline,
+    });
+    const answer = outcome.answer.trim() || '(The sub-agent gave no answer.)';
+    const shown =
+      answer.length > MAX_RESULT_CHARS
+        ? `${answer.slice(0, MAX_RESULT_CHARS)}\n[Answer cut at ${MAX_RESULT_CHARS} characters.]`
+        : answer;
+    return {
+      output: `${outcome.ok ? '' : 'The sub-agent did not finish: '}${shown}\n\n[${outcome.trace}]`,
+      isError: !outcome.ok,
+    };
+  }
+
+  /** What other agents sharing the run's budget have spent or hold. */
+  const othersUsd = () => input.sharedBudget?.othersUsd() ?? 0;
 
   const finish = (ok: boolean, summary: string): DriverEvent => ({
     type: 'finished',
@@ -431,9 +472,13 @@ async function* runLoop(
       messages: ReturnType<Conversation['messages']>;
       withTools: boolean;
       maxTokens: number;
+      /** The most the call may cost, held from a shared budget while it runs. */
+      holdUsd: number;
     }
   ): Promise<{ result?: CallResult; info: ModelCallInfo }> => {
     const t0 = Date.now();
+    const release = input.sharedBudget?.hold(request.holdUsd);
+    let cost = 0;
     try {
       const result = await call(
         registry,
@@ -453,7 +498,10 @@ async function* runLoop(
       totals.tokensIn += result.usage.inputTokens;
       totals.tokensOut += result.usage.outputTokens;
       if (result.costUsd === null) totals.unknownCost = true;
-      else totals.spent += result.costUsd;
+      else {
+        totals.spent += result.costUsd;
+        cost = result.costUsd;
+      }
       return {
         result,
         info: {
@@ -490,6 +538,8 @@ async function* runLoop(
           latencyMs: Date.now() - t0,
         },
       };
+    } finally {
+      release?.(cost);
     }
   };
 
@@ -528,12 +578,19 @@ async function* runLoop(
    * its output at the full limit the call is allowed, since that is what it
    * may cost.
    */
+  const callCost = (inputTokens: number, outputTokens: number): number =>
+    estimateCost(active.model, { inputTokens, outputTokens }) ?? 0;
+  /**
+   * With a shared budget, what the other agents have spent or hold counts too,
+   * so a parent and its sub-agents together stay within it.
+   */
   const overBudget = (inputTokens: number, outputTokens: number): string | undefined => {
     const max = input.maxBudgetUsd;
     if (max === undefined) return undefined;
-    const next = estimateCost(active.model, { inputTokens, outputTokens }) ?? 0;
-    if (totals.spent + next <= max) return undefined;
-    return `Stopped: the next model call would pass the run's budget of $${max.toFixed(2)} ($${totals.spent.toFixed(4)} spent).`;
+    const others = othersUsd();
+    if (totals.spent + others + callCost(inputTokens, outputTokens) <= max) return undefined;
+    const spent = totals.spent + others;
+    return `Stopped: the next model call would pass the run's budget of $${max.toFixed(2)} ($${spent.toFixed(4)} spent${others > 0 ? ', sub-agents and parent together' : ''}).`;
   };
 
   try {
@@ -568,6 +625,10 @@ async function* runLoop(
               messages: [{ role: 'user', content: prompt }],
               withTools: false,
               maxTokens: SUMMARY_MAX_TOKENS,
+              holdUsd: callCost(
+                estimateTokens(SUMMARY_SYSTEM) + estimateTokens(prompt),
+                SUMMARY_MAX_TOKENS
+              ),
             });
             outbox.push({ type: 'model_call', call: info });
             if (result) return result.text;
@@ -609,6 +670,7 @@ async function* runLoop(
         messages: conversation.forRequest(),
         withTools: true,
         maxTokens: active.maxOutput,
+        holdUsd: callCost(conversation.estimate(), active.maxOutput),
       });
       outbox.push({ type: 'model_call', call: info });
       if (!result) {
@@ -631,10 +693,10 @@ async function* runLoop(
         conversation.append({ role: 'assistant', content: result.content });
       if (result.text.trim()) yield { type: 'text', text: result.text };
 
-      if (input.maxBudgetUsd !== undefined && totals.spent >= input.maxBudgetUsd) {
+      if (input.maxBudgetUsd !== undefined && totals.spent + othersUsd() >= input.maxBudgetUsd) {
         yield finish(
           false,
-          `Stopped: the run's budget of $${input.maxBudgetUsd.toFixed(2)} is spent ($${totals.spent.toFixed(4)}).`
+          `Stopped: the run's budget of $${input.maxBudgetUsd.toFixed(2)} is spent ($${(totals.spent + othersUsd()).toFixed(4)}).`
         );
         return;
       }
@@ -683,8 +745,15 @@ async function* runLoop(
       // Every call gets a result, in one user turn, in the order made.
       const results: ContentBlock[] = [];
       const cut = result.stopReason === 'max_tokens';
-      for (const [i, tc] of result.toolCalls.entries()) {
-        if (budget.stats.calls >= (rules.maxCallsPerRun ?? Infinity)) {
+      const calls = result.toolCalls;
+      const isSpawn = (tc: ToolCall) => byModelName.get(tc.name) === SPAWN_AGENT;
+      for (let i = 0; i < calls.length; ) {
+        // Spawn calls side by side in one reply run at the same time; every
+        // other call runs alone, in order. The batch is checked against the
+        // call limit as a whole, before any of it starts.
+        let end = i + 1;
+        if (isSpawn(calls[i])) while (end < calls.length && isSpawn(calls[end])) end += 1;
+        if (budget.stats.calls + (end - i) > (rules.maxCallsPerRun ?? Infinity)) {
           yield finish(
             false,
             `Stopped: the run reached its limit of ${rules.maxCallsPerRun} tool calls.`
@@ -692,13 +761,22 @@ async function* runLoop(
           return;
         }
         // The last call of a reply cut off at the output limit may be incomplete.
-        const outcome = yield* redacted(runTool(tc, cut && i === result.toolCalls.length - 1));
-        results.push({
-          type: 'tool_result',
-          toolUseId: tc.id,
-          content: outcome.output,
-          isError: outcome.isError,
-        });
+        const unfinished = (k: number) => cut && k === calls.length - 1;
+        const outcomes =
+          end - i === 1
+            ? [yield* redacted(runTool(calls[i], unfinished(i)))]
+            : yield* together(
+                calls.slice(i, end).map((tc, k) => redacted(runTool(tc, unfinished(i + k))))
+              );
+        for (const [k, outcome] of outcomes.entries()) {
+          results.push({
+            type: 'tool_result',
+            toolUseId: calls[i + k].id,
+            content: outcome.output,
+            isError: outcome.isError,
+          });
+        }
+        i = end;
         const halted = stopped();
         if (halted) {
           yield halted;
@@ -710,6 +788,32 @@ async function* runLoop(
   } finally {
     clearTimeout(timer);
     input.signal?.removeEventListener('abort', onAbort);
+  }
+
+  /**
+   * Several tool calls at the same time: each one's call event as it starts,
+   * then, once all have ended, the rest of their events in the order the
+   * calls were made. Returns their outcomes, in that order.
+   */
+  async function* together(
+    runs: Array<AsyncGenerator<DriverEvent, { output: string; isError: boolean }>>
+  ): AsyncGenerator<DriverEvent, Array<{ output: string; isError: boolean }>> {
+    const firsts = await Promise.all(runs.map((r) => r.next()));
+    for (const first of firsts) if (!first.done) yield first.value;
+    const rests = await Promise.all(
+      runs.map(async (r, k) => {
+        const events: DriverEvent[] = [];
+        const first = firsts[k];
+        if (first.done) return { events, outcome: first.value };
+        for (;;) {
+          const next = await r.next();
+          if (next.done) return { events, outcome: next.value };
+          events.push(next.value);
+        }
+      })
+    );
+    for (const rest of rests) yield* rest.events;
+    return rests.map((r) => r.outcome);
   }
 
   function redactValue(value: unknown): unknown {
@@ -783,7 +887,7 @@ async function* runLoop(
         rules,
         descriptor,
         budget,
-        () => tool.run((tc.input ?? {}) as Record<string, unknown>, ctx),
+        () => tool.run((tc.input ?? {}) as Record<string, unknown>, { ...ctx, toolCallId: tc.id }),
         // Without someone to ask, guard refuses the call as needing approval.
         onApproval &&
           (async (verdict) => {

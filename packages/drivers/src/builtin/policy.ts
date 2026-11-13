@@ -8,9 +8,16 @@
  * `gh pr create`) always waits for approval, in every mode that allows commands.
  */
 
-import { evaluate, ruleMatches, type PolicyRules } from '@clerq/policy';
+import {
+  evaluate,
+  narrowRules,
+  ruleMatches,
+  SPAWN_TOOL,
+  type PolicyRules,
+  type ToolDescriptor,
+} from '@clerq/policy';
 import type { DriverRunInput } from '../types.js';
-import { BUILTIN_TOOLS } from './tools.js';
+import { BUILTIN_TOOLS, SPAWN_AGENT, type BuiltinTool } from './tools.js';
 
 export type PermissionMode = NonNullable<DriverRunInput['permissionMode']>;
 
@@ -18,13 +25,13 @@ export type PermissionMode = NonNullable<DriverRunInput['permissionMode']>;
 export const BUILTIN_MAX_CALLS = 400;
 
 const READ = ['fs.read', 'fs.list', 'fs.search', 'git.status', 'git.diff'];
-const EVERYTHING = [...READ, 'fs.write', 'fs.edit', 'runtime.shell', 'git.push'];
+const EVERYTHING = [...READ, 'fs.write', 'fs.edit', 'runtime.shell', 'git.push', SPAWN_TOOL.name];
 
 /**
  * The rules for one run.
  *
  *   acceptEdits  everything in the worktree, without asking; a push waits
- *   default      reads freely; writes and commands wait for approval
+ *   default      reads freely; writes, commands and sub-agents wait for approval
  *   dontAsk      reads only; nothing is asked, the rest is refused
  *   plan         reads only
  *
@@ -67,17 +74,49 @@ export function builtinPolicy(
   return { allow, approvalRequired, maxCallsPerRun: BUILTIN_MAX_CALLS };
 }
 
-function descriptorOf(name: string) {
-  if (name === 'git.push') return { name, risk: 'external' as const };
+function descriptorOf(name: string): ToolDescriptor {
+  if (name === 'git.push') return { name, risk: 'external' };
+  if (name === SPAWN_TOOL.name) return SPAWN_TOOL;
   const tool = BUILTIN_TOOLS.find((t) => t.name === name);
-  return { name, risk: tool?.risk ?? ('execute' as const) };
+  return { name, risk: tool?.risk ?? 'execute' };
 }
 
-/** The tools the model is shown: those the policy does not refuse outright. */
-export function offeredTools(rules: PolicyRules) {
-  return BUILTIN_TOOLS.filter(
-    (t) => evaluate(rules, { name: t.name, risk: t.risk }).decision !== 'deny'
+/** Every tool the builtin agent's policy decides on, as policy sees each. */
+export const BUILTIN_UNIVERSE: readonly ToolDescriptor[] = [
+  ...BUILTIN_TOOLS.map((t) => ({ name: t.name, risk: t.risk })),
+  { name: 'git.push', risk: 'external' },
+  SPAWN_TOOL,
+];
+
+/**
+ * The tools the model is shown: those the policy does not refuse outright.
+ * `sessions.spawn` only when the run can start sub-agents (`spawn`).
+ */
+export function offeredTools(
+  rules: PolicyRules,
+  opts: { spawn?: boolean } = {}
+): readonly BuiltinTool[] {
+  const tools = opts.spawn ? [...BUILTIN_TOOLS, SPAWN_AGENT] : BUILTIN_TOOLS;
+  return tools.filter((t) => evaluate(rules, { name: t.name, risk: t.risk }).decision !== 'deny');
+}
+
+/** What a sub-agent gets when its spawn call names no tools: reading, nothing else. */
+export const SUBAGENT_DEFAULT_TOOLS = ['risk:read'];
+
+/**
+ * A sub-agent's rules: the parent's, cut down to the tools the spawn call
+ * asks for (by default the read-only ones), tool by tool the stricter of the
+ * two. Never wider than the parent's. It never has `sessions.spawn`, so a
+ * sub-agent cannot start sub-agents of its own (one level deep).
+ */
+export function subagentPolicy(parent: PolicyRules, requested?: string[]): PolicyRules {
+  const asked = requested && requested.length > 0 ? requested : SUBAGENT_DEFAULT_TOOLS;
+  const rules = narrowRules(
+    parent,
+    { allow: asked, deny: [SPAWN_TOOL.name] },
+    BUILTIN_UNIVERSE
   );
+  return { ...rules, deny: [...(rules.deny ?? []), SPAWN_TOOL.name] };
 }
 
 /**
@@ -85,7 +124,7 @@ export function offeredTools(rules: PolicyRules) {
  * undefined when it names at least one of its tools.
  */
 export function allowedToolProblem(rule: string): string | undefined {
-  const names = [...BUILTIN_TOOLS.map((t) => t.name), 'git.push'];
+  const names = [...BUILTIN_TOOLS.map((t) => t.name), 'git.push', SPAWN_TOOL.name];
   if (names.some((n) => ruleMatches(rule, descriptorOf(n)))) return undefined;
   return `"${rule}" names none of the builtin agent's tools (${BUILTIN_TOOLS.map((t) => t.name).join(', ')}).`;
 }

@@ -1,3 +1,4 @@
+import type { PolicyRules } from '@clerq/policy';
 import type { SandboxSpec } from '@clerq/sandbox';
 
 /** Whether a driver's CLI can run on this machine. */
@@ -107,6 +108,55 @@ export interface SpawnedProcess {
   command: string;
 }
 
+/**
+ * A budget in US dollars that several agents spend from at once: a parent run
+ * and its sub-agents. Each agent checks, before every model call, that what it
+ * has spent, plus what the others have spent or hold for calls in flight, plus
+ * the most the call may cost, stays within the run's `maxBudgetUsd`.
+ */
+export interface SharedBudget {
+  /** What the other agents sharing the budget have spent, and hold for calls in flight. */
+  othersUsd(): number;
+  /**
+   * Hold `usd` for a call about to be made. Returns the release, called with
+   * what the call cost (0 when it failed or has no price).
+   */
+  hold(usd: number): (costUsd: number) => void;
+}
+
+/** What an agent asks for when it starts a sub-agent (`sessions.spawn`). */
+export interface SubagentRequest {
+  /** The parent's tool call that asked for it. */
+  toolCallId: string;
+  /** What the sub-agent is to do, in the parent's words. */
+  task: string;
+  /**
+   * The tools it asks for, as policy rules (`fs.read`, `group:fs`, `risk:read`).
+   * Omitted: the read-only tools.
+   */
+  tools?: string[];
+  /** A model of its own, as provider/model; used as named, with no fallback. */
+  model?: string;
+  /** The rules the parent runs under, which the sub-agent's are cut from. */
+  parentRules: PolicyRules;
+  /** Aborts when the parent stops (cancelled, or out of time). */
+  signal: AbortSignal;
+  /** Epoch ms when the parent's own time limit runs out. */
+  deadline: number;
+}
+
+/** How a sub-agent ended, as the parent is told. */
+export interface SubagentOutcome {
+  ok: boolean;
+  /** Its final answer, or why it stopped. */
+  answer: string;
+  /** A line or two on what it did: its run, tool calls, turns, cost. */
+  trace: string;
+  runId?: string;
+  sessionId?: string;
+  costUsd: number | null;
+}
+
 export interface DriverRunInput {
   prompt: string;
   /** The workspace the agent works in. */
@@ -150,6 +200,24 @@ export interface DriverRunInput {
    * Resolves true to run the call. Without it, such a call is refused.
    */
   onApproval?: (request: ToolApprovalRequest) => Promise<boolean>;
+  /**
+   * In-process drivers: start a sub-agent and wait for its answer. The agent is
+   * offered `sessions.spawn` only when this is given and its policy allows it.
+   * A sub-agent's own run is never given one, so agents nest one level deep.
+   */
+  onSubagent?: (request: SubagentRequest) => Promise<SubagentOutcome>;
+  /**
+   * In-process drivers: a budget `maxBudgetUsd` is shared with other agents
+   * (a parent and its sub-agents). Without it the budget is this agent's alone.
+   */
+  sharedBudget?: SharedBudget;
+  /**
+   * In-process drivers: the rules to run under, in place of those made from
+   * `permissionMode` and `allowedTools`. A sub-agent's narrowed policy.
+   */
+  policy?: PolicyRules;
+  /** In-process drivers: the system prompt, in place of the driver's own. */
+  system?: string;
 }
 
 /**
@@ -263,6 +331,12 @@ export interface DriverCapabilities {
    * cannot: the caller starts a new attempt with the next model instead.
    */
   midRunModelSwitch: boolean;
+  /**
+   * The agent can start sub-agents through OpenClerq (`sessions.spawn`). Only
+   * builtin: the CLIs have sub-agent features of their own, which run inside
+   * the CLI and are not seen or limited by OpenClerq's policy.
+   */
+  subagents: boolean;
   /** The environment variable the CLI reads an API key from. */
   apiKeyEnv: string;
   /** What the CLI is, in a sentence a user can read. */

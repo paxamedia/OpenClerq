@@ -33,6 +33,13 @@ export interface ToolContext {
   onProcess?: (process: SpawnedProcess) => () => void;
   /** Isolation warnings from the sandbox, collected for the run's result. */
   warnings?: Set<string>;
+  /** The tool call being run, for a tool that reports it onward (`sessions.spawn`). */
+  toolCallId?: string;
+  /** Start a sub-agent and wait for its answer. Absent when the run cannot. */
+  spawn?: (
+    request: { task: string; tools?: string[]; model?: string },
+    toolCallId: string
+  ) => Promise<ToolOutcome>;
 }
 
 export interface ToolOutcome {
@@ -509,6 +516,78 @@ export const BUILTIN_TOOLS: readonly BuiltinTool[] = [
   gitStatus,
   gitDiff,
 ];
+
+/** Characters of a sub-agent's task. */
+const MAX_TASK_CHARS = 20_000;
+
+/**
+ * `sessions.spawn`: a sub-agent with a task of its own, in the same worktree,
+ * under a policy cut from this agent's (read-only unless it asks for more, and
+ * never more than this agent has). It answers with its final message. Not in
+ * BUILTIN_TOOLS: it is offered only to a run that can start sub-agents.
+ */
+export const SPAWN_AGENT: BuiltinTool = {
+  name: 'sessions.spawn',
+  risk: 'write',
+  definition: {
+    name: 'spawn_agent',
+    description:
+      'Start a sub-agent on a self-contained part of the task (research a question across the code, review a file, ' +
+      'try an approach) and get back its final answer. It sees the same repository but none of this conversation, ' +
+      'so the task must say everything it needs. By default it can only read; name tools (e.g. ["fs.write", ' +
+      '"fs.edit", "runtime.shell"]) to let it change files, which it can only do where you can. Several spawn_agent ' +
+      'calls in one reply run at the same time (at most 4 at once); sub-agents that write in parallel can overwrite ' +
+      "each other's changes, so give them separate files. A sub-agent cannot start sub-agents of its own. Its cost " +
+      "counts against this run's budget.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'What the sub-agent is to do and what to report back, in full.',
+        },
+        tools: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Tools it may use, as policy names or rules (fs.read, fs.write, fs.edit, runtime.shell, group:fs, ' +
+            'risk:read). Default: the read-only tools.',
+        },
+        model: {
+          type: 'string',
+          description:
+            'A model of its own, as provider/model. Default: the model this run is using.',
+        },
+      },
+      required: ['task'],
+    },
+  },
+  async run(input, ctx) {
+    if (!ctx.spawn || !ctx.toolCallId) {
+      return { output: 'This run cannot start sub-agents.', isError: true };
+    }
+    const task = str(input, 'task', true).trim();
+    if (!task) throw new ToolInputError('"task" must say what the sub-agent is to do.');
+    if (task.length > MAX_TASK_CHARS) {
+      throw new ToolInputError(`"task" is over ${MAX_TASK_CHARS} characters; shorten it.`);
+    }
+    let tools: string[] | undefined;
+    if (input.tools !== undefined && input.tools !== null) {
+      if (
+        !Array.isArray(input.tools) ||
+        input.tools.some((t) => typeof t !== 'string' || !t.trim())
+      ) {
+        throw new ToolInputError('"tools" must be a list of tool names or rules.');
+      }
+      tools = (input.tools as string[]).map((t) => t.trim());
+    }
+    const model = str(input, 'model')?.trim() || undefined;
+    return ctx.spawn(
+      { task, ...(tools ? { tools } : {}), ...(model ? { model } : {}) },
+      ctx.toolCallId
+    );
+  },
+};
 
 /**
  * What a shell command is, for policy. A command that publishes — `git push`,
