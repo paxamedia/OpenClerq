@@ -474,6 +474,7 @@ describe.skipIf(isWindows)('codex driver', () => {
     const result = finished(await runFake('no_turn').events);
     expect(result.ok).toBe(false);
     expect(result.summary).toMatch(/before finishing the turn/);
+    expect(result.crashed).toBe(true);
   });
 
   it('reports a crash with its stderr', async () => {

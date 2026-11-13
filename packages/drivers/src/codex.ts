@@ -326,6 +326,7 @@ export class CodexStream {
       return {
         ...base,
         ok: false,
+        crashed: true,
         summary: `codex exited with code ${run.code ?? 'none'} before finishing the turn.${
           tail ? `\n${tail}` : ''
         }`,

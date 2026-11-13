@@ -246,6 +246,8 @@ describe.skipIf(isWindows)('claude-code driver', () => {
     const result = finished(await runFake('budget').events);
     expect(result).toMatchObject({ ok: false, costUsd: 0.5 });
     expect(result.summary).toBe('Stopped: max budget usd.');
+    // A stop the CLI reported is not a crash.
+    expect(result.crashed).toBeUndefined();
   });
 
   it('reports a crash with its stderr', async () => {
@@ -253,6 +255,7 @@ describe.skipIf(isWindows)('claude-code driver', () => {
     expect(result.ok).toBe(false);
     expect(result.exitCode).toBe(2);
     expect(result.summary).toContain('boom: something broke');
+    expect(result.crashed).toBe(true);
   });
 
   it('stops the agent when the signal aborts', async () => {

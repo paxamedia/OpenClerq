@@ -490,6 +490,7 @@ describe.skipIf(isWindows)('cursor-agent driver', () => {
     const result = finished(await runFake('no_result').events);
     expect(result.ok).toBe(false);
     expect(result.summary).toMatch(/before reporting a result/);
+    expect(result.crashed).toBe(true);
   });
 
   it('reports a crash with its stderr', async () => {

@@ -181,6 +181,7 @@ export class ClaudeStream {
       return {
         ...base,
         ok: false,
+        crashed: true,
         summary: `claude exited with code ${run.code ?? 'none'} before reporting a result.${
           tail ? `\n${tail}` : ''
         }`,

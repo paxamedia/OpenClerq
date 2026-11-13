@@ -175,6 +175,11 @@ export interface DriverResult {
   permissionDenials: Array<{ tool: string; input?: unknown }>;
   /** Isolation warnings from the sandbox. */
   warnings: string[];
+  /**
+   * The agent's process ended without reporting a result: a crash, not a
+   * decision. A run may be retried after one.
+   */
+  crashed?: boolean;
 }
 
 /**
@@ -199,6 +204,11 @@ export interface DriverCapabilities {
   reportsCost: boolean;
   /** The CLI takes a list of tools the agent may use, in its own syntax. */
   allowedTools: boolean;
+  /**
+   * The CLI can be told which model to use, so a spec can name one and
+   * escalate to others when the gates fail.
+   */
+  models: boolean;
   /** The environment variable the CLI reads an API key from. */
   apiKeyEnv: string;
   /** What the CLI is, in a sentence a user can read. */

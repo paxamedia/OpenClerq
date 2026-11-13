@@ -293,6 +293,7 @@ export class CursorStream {
       return {
         ...base,
         ok: false,
+        crashed: true,
         summary: `cursor-agent exited with code ${run.code ?? 'none'} before reporting a result.${
           tail ? `\n${tail}` : ''
         }`,
