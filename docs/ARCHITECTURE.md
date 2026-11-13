@@ -497,18 +497,24 @@ that would free too little to be worth it; the task stays pinned, a later drop n
 earlier summary, and each compaction is recorded as a `context.compact` step.
 
 The builtin agent can start sub-agents with `sessions.spawn` (`spawn_agent`), in automation runs
-only. A sub-agent is a run of its own, linked to its parent (`runs.parent_run_id`, store migration
+whose spec turns them on (`agent.subagents.enabled`, or `sessions.spawn` named in
+`agent.allowed_tools`). A sub-agent is a run of its own, linked to its parent (`runs.parent_run_id`, store migration
 18; reported with trigger `subagent`, while the column keeps the parent's trigger because its CHECK
 predates sub-agents and rebuilding `runs` would cascade), with a session for its transcript that is
 not listed among the chats. Its policy is `narrowRules(parent, requested)` in `packages/policy`:
 tool by tool the stricter decision, so it is never wider than the parent's, and it always denies
-`sessions.spawn`; the gateway also refuses a spawn from a run that has a parent. Without `tools`
-it may only read. Spawn calls in one reply run together, at most four per parent run (a fifth
-waits); all work in the parent's worktree. The run's remaining budget is one pool (`SpendPool`,
+`sessions.spawn`. Depth 1 is enforced by withholding the spawn hook (`DriverRunInput.onSubagent`)
+from a sub-agent's run, so the tool is never offered, and by that deny; `spawnRefusal()` in the
+gateway is a backstop that a sub-agent's run does not reach. Without `tools` it may only read.
+Spawn calls in one reply run together, at most four per parent run (a fifth waits), each reported
+as it ends; all work in the parent's worktree. A model named in the call must be in the spec's
+chain, the run's chosen model or `agent.subagents.models`. The run's remaining budget (with only a
+monthly budget, the month's) is one pool (`SpendPool`,
 `automations/subagents.ts`) that every agent checks and holds against before each model call
 (`DriverRunInput.sharedBudget`); sub-agents' cost counts toward the parent's run budget and the
 automation's month. Each sub-agent's run is linked to the parent's signal and deadline, so
-cancelling or timing out the parent stops it. Its approvals name the parent run. A model named in
+cancelling or timing out the parent stops it. Its approvals name the parent run, and the parent
+waits (`awaiting_approval`) until no approval of it or its sub-agents is undecided. A model named in
 the call is strict; otherwise it inherits the parent's current model and remaining fallbacks. See
 [TOOLS.md](TOOLS.md#51-sub-agents-sessionsspawn). The CLI drivers' own sub-agent features run inside
 the CLI and are outside OpenClerq's policy and records.
