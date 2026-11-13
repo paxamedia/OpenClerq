@@ -77,6 +77,32 @@ function diffStat(run: RunDetail | undefined) {
     | undefined;
 }
 
+/**
+ * Where an approval came from, as links: the run that started the sub-agent
+ * asking, and the chat that is waiting for the answer. Nothing when it is
+ * neither.
+ */
+export function ApprovalOrigin({ approval }: { approval: Approval }) {
+  if (!approval.parentRunId && !approval.sessionId) return null;
+  return (
+    <span className="approvals-origin">
+      {approval.parentRunId && (
+        <span>
+          Sub-agent of run{' '}
+          <Link className="page-link" to={`/runs/${encodeURIComponent(approval.parentRunId)}`}>
+            {approval.parentRunId}
+          </Link>
+        </span>
+      )}
+      {approval.sessionId && (
+        <Link className="page-link" to={`/m/chat/${encodeURIComponent(approval.sessionId)}`}>
+          Open the chat
+        </Link>
+      )}
+    </span>
+  );
+}
+
 export function ApprovalDetail({
   approval,
   onDecide,
@@ -121,6 +147,21 @@ export function ApprovalDetail({
                     </Link>
                   ),
                   mono: true,
+                },
+              ]
+            : []),
+          ...(approval.sessionId
+            ? [
+                {
+                  label: 'Asked in',
+                  value: (
+                    <Link
+                      className="page-link"
+                      to={`/m/chat/${encodeURIComponent(approval.sessionId)}`}
+                    >
+                      A chat
+                    </Link>
+                  ),
                 },
               ]
             : []),
@@ -546,11 +587,12 @@ export function Inbox({ id }: { id: string | null }) {
                 <ul className="approvals-list" aria-label="Waiting for you">
                   {list.map((x) => {
                     const kind = KIND[x.kind];
+                    const asked = approvalOf(x);
                     return (
-                      <li key={x.id}>
+                      <li key={x.id} className={cx('approvals-row', x === selected && 'is-active')}>
                         <button
                           type="button"
-                          className={cx('approvals-item', x === selected && 'is-active')}
+                          className="approvals-item"
                           aria-current={x === selected ? 'true' : undefined}
                           onClick={() =>
                             phone ? navigate(`/inbox/${encodeURIComponent(x.id)}`) : select(x)
@@ -566,6 +608,7 @@ export function Inbox({ id }: { id: string | null }) {
                             {x.moduleId && <span className="page-muted">{x.moduleId}</span>}
                           </span>
                         </button>
+                        {asked && <ApprovalOrigin approval={asked} />}
                       </li>
                     );
                   })}

@@ -154,6 +154,21 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         repo: a.repo,
         problem: null,
         running: a.id === 'aut_tests',
+        queued: a.id === 'aut_tests',
+        catchUp: a.id === 'aut_deps' || a.id === 'aut_docs',
+        missedSlots:
+          a.id === 'aut_docs'
+            ? {
+                count: 2,
+                capped: false,
+                first: iso(now - 2 * D - 4 * H),
+                last: iso(now - D - 4 * H),
+                reason: 'catch_up_off' as const,
+                noticed: 'wake',
+                at: iso(now - 10 * H),
+              }
+            : null,
+        authoredBy: a.id === 'aut_licence' ? 'chat ses_3' : null,
         monthSpendUsd: 0,
         monthBudgetUsd: a.cap,
         lastRun: null,
@@ -931,6 +946,25 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
           reason: 'docs-links wants to open a draft pull request on example/site.',
           requestedAt: iso(now - 3 * H),
         },
+        {
+          id: 43,
+          runId: 'run_subs_c',
+          parentRunId: 'run_subs01',
+          tool: 'runtime.shell',
+          tier: 'medium',
+          reason:
+            'A sub-agent of run run_subs01 wants to run: pnpm why express (checks the lockfile for duplicates).',
+          requestedAt: iso(now - 6 * 60_000),
+        },
+        {
+          id: 44,
+          runId: 'run_chat02',
+          sessionId: 'ses_3',
+          tool: 'memory.write.preference',
+          tier: 'low',
+          reason: 'A chat wants to save a note: “CI triage is read-only”.',
+          requestedAt: iso(now - 2 * H),
+        },
       ];
 
   const sessions: Array<ChatSession & { messages: ChatMessage[] }> = opts.empty
@@ -1539,7 +1573,11 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
             title:
               a.tool === 'git.push'
                 ? 'Approve push for weekly-deps'
-                : 'Approve pull request for docs-links',
+                : a.tool === 'runtime.shell'
+                  ? 'Approve a command from a sub-agent of flaky-tests'
+                  : a.tool.startsWith('memory.write')
+                    ? 'Approve saving a note from a chat'
+                    : 'Approve pull request for docs-links',
             body: a.reason,
             ref: null,
             link: null,

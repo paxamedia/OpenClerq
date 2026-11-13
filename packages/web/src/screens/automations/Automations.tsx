@@ -4,7 +4,7 @@
  */
 
 import { useState } from 'react';
-import { Ellipsis, Pencil, Play, Plus, Trash2, Workflow } from 'lucide-react';
+import { Cpu, Ellipsis, Pencil, Play, Plus, Trash2, Workflow } from 'lucide-react';
 import type { RunSummary } from '@clerq/gateway-client';
 import { Button, IconButton } from '../../ui/Button';
 import { Switch } from '../../ui/Choice';
@@ -35,7 +35,9 @@ import {
 } from '../../shell/layout';
 import { useNow, When } from '../common';
 import { AutomationEditor } from './Editor';
+import { RunWithModel } from './RunWithModel';
 import { gatesOf } from './spec';
+import { catchUpWords, missedSince, missedWords, runNow } from './words';
 import './automations.css';
 
 const runPath = (id: string) => `/runs/${encodeURIComponent(id)}`;
@@ -118,7 +120,14 @@ function AutomationList({ base }: { base: string }) {
       sortValue: (a) => a.name,
       cell: (a) => (
         <span className="aut-name">
-          <span className="aut-name-title">{a.name}</span>
+          <span className="aut-name-line">
+            <span className="aut-name-title">{a.name}</span>
+            {a.authoredBy && (
+              <StatusTag tone="warn" className="aut-from-chat">
+                From a chat
+              </StatusTag>
+            )}
+          </span>
           {a.problem ? (
             <span className="aut-name-sub tone-text-warn">{a.problem}</span>
           ) : a.description ? (
@@ -131,18 +140,43 @@ function AutomationList({ base }: { base: string }) {
       key: 'schedule',
       hideOnPhone: true,
       header: 'Schedule',
-      cell: scheduleWords,
+      cell: (a) => (
+        <span className="aut-name">
+          <span>{scheduleWords(a)}</span>
+          {a.schedule && a.catchUp && !a.problem ? (
+            <span className="aut-name-sub" title={catchUpWords(a) ?? undefined}>
+              Catches up when it wakes
+            </span>
+          ) : null}
+          {a.missedSlots ? (
+            <span
+              className="aut-name-sub tone-text-warn"
+              title={`${missedWords(a.missedSlots)} ${missedSince(a.missedSlots)}`}
+            >
+              Missed {a.missedSlots.count}
+              {a.missedSlots.capped ? '+' : ''} {a.missedSlots.count === 1 ? 'time' : 'times'}
+            </span>
+          ) : null}
+        </span>
+      ),
       sortValue: scheduleWords,
       width: 'md',
     },
     {
       key: 'next',
       header: 'Next run',
-      width: 'sm',
+      width: 'md',
       sortValue: (a) => (a.enabled && a.nextFirings[0] ? Date.parse(a.nextFirings[0]) : null),
       cell: (a) =>
-        a.running ? (
-          <StatusTag tone="accent">Running</StatusTag>
+        a.running || a.queued ? (
+          <span className="aut-state">
+            {a.running && <StatusTag tone="accent">Running</StatusTag>}
+            {a.queued && (
+              <StatusTag tone="muted" className="aut-queued">
+                {a.running ? 'Next one queued' : 'Queued'}
+              </StatusTag>
+            )}
+          </span>
         ) : a.enabled && !a.problem && a.nextFirings[0] ? (
           <When at={a.nextFirings[0]} now={now} />
         ) : (
@@ -245,6 +279,7 @@ function AutomationDetail({ id, tab, base }: { id: string; tab: Tab; base: strin
   const { run, busy } = useRunNow();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [choosing, setChoosing] = useState(false);
   const now = useNow();
 
   const a = automations.data?.find((x) => x.id === id);
@@ -304,14 +339,20 @@ function AutomationDetail({ id, tab, base }: { id: string; tab: Tab; base: strin
               variant="primary"
               icon={Play}
               busy={busy === a.id || a.running}
-              disabled={Boolean(a.problem)}
+              disabled={runNow(a).disabled}
               onClick={() => run(a)}
             >
-              {a.running ? 'Running' : 'Run now'}
+              {runNow(a).label}
             </Button>
             <Menu
               label="More actions"
               items={[
+                {
+                  label: 'Run with a chosen model…',
+                  icon: Cpu,
+                  disabled: Boolean(a.problem) || a.running || a.queued,
+                  onSelect: () => setChoosing(true),
+                },
                 {
                   label: 'Delete',
                   icon: Trash2,
@@ -351,7 +392,22 @@ function AutomationDetail({ id, tab, base }: { id: string; tab: Tab; base: strin
                       'Off: these times are when it would run.'
                     )}
                   </p>
+                  <p className="page-hint">{catchUpWords(a)}</p>
                 </>
+              ) : null}
+              {a.missedSlots ? (
+                <div className="aut-missed" role="status">
+                  <StatusTag tone="warn">Missed times</StatusTag>
+                  <p>
+                    {missedWords(a.missedSlots)} {missedSince(a.missedSlots)} Noticed{' '}
+                    <When at={a.missedSlots.at} now={now} />.
+                  </p>
+                </div>
+              ) : null}
+              {a.queued ? (
+                <p className="page-hint">
+                  A run is waiting{a.running ? ' behind the one going now' : ''}. {QUEUED_NOTE}
+                </p>
               ) : null}
             </Section>
             <Section title="Cost per run">
@@ -453,6 +509,7 @@ function AutomationDetail({ id, tab, base }: { id: string; tab: Tab; base: strin
           />
         )}
       </Tabs>
+      <RunWithModel automation={a} open={choosing} onClose={() => setChoosing(false)} />
       <Dialog
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}

@@ -12,6 +12,16 @@
   list-style: none;
 }
 
+.approvals-row {
+  border-bottom: var(--line-width) solid var(--line);
+  border-left: var(--focus-width) solid transparent;
+}
+
+.approvals-row.is-active {
+  border-left-color: var(--warn);
+  background: var(--surface-2);
+}
+
 .approvals-item {
   display: flex;
   flex-direction: column;
@@ -20,8 +30,6 @@
   width: 100%;
   padding: var(--space-3) var(--space-4);
   border: 0;
-  border-bottom: var(--line-width) solid var(--line);
-  border-left: var(--focus-width) solid transparent;
   background: none;
   color: var(--ink);
   font: inherit;
@@ -33,9 +41,14 @@
   background: var(--surface-2);
 }
 
-.approvals-item.is-active {
-  border-left-color: var(--warn);
-  background: var(--surface-2);
+/* Where an approval came from: a sub-agent's parent run, a chat. Under the row's button, as links cannot sit inside one. */
+.approvals-origin {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  padding: 0 var(--space-4) var(--space-3);
+  color: var(--ink-3);
+  font: var(--type-secondary);
 }
 
 .approvals-item:focus-visible {
