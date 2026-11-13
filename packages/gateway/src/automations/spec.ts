@@ -533,7 +533,11 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
   // allowed_tools also turns them on; a wildcard or a group does not.
   const subagentsNode = r.get(['agent', 'subagents']);
   const spawnNamed = (allowedTools as string[]).some((t) => t.trim() === SPAWN_TOOL.name);
-  let subagents = { enabled: spawnNamed, maxConcurrent: SUBAGENT_MAX_CONCURRENT, models: [] as string[] };
+  let subagents = {
+    enabled: spawnNamed,
+    maxConcurrent: SUBAGENT_MAX_CONCURRENT,
+    models: [] as string[],
+  };
   if (subagentsNode !== undefined && subagentsNode !== null) {
     r.keys(['agent', 'subagents'], ['enabled', 'max_concurrent', 'models']);
     if (!caps.subagents) {
