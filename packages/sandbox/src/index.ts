@@ -55,6 +55,8 @@ export {
   containerName,
   removeContainer,
   resolveRuntime,
+  runtimeCall,
+  listLabelled,
   parseEgressLog,
   EGRESS_SIDECAR_SCRIPT,
   DEFAULT_EGRESS_IMAGE,

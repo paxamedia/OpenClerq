@@ -389,3 +389,39 @@ export async function startEgressSidecar(
     },
   };
 }
+
+/** Containers and networks carrying `label`, with the label's value. */
+export async function listLabelled(
+  runtime: string,
+  label: string
+): Promise<{
+  containers: Array<{ name: string; value: string }>;
+  networks: Array<{ name: string; value: string }>;
+}> {
+  const read = (text: string) =>
+    text
+      .split('\n')
+      .map((l) => l.trim().split('\t'))
+      .filter((p) => p.length === 2 && p[0] && p[1])
+      .map(([name, value]) => ({ name, value }));
+  const containers = await runtimeCall(runtime, [
+    'ps',
+    '-a',
+    '--filter',
+    `label=${label}`,
+    '--format',
+    `{{.Names}}\t{{.Label "${label}"}}`,
+  ]);
+  const networks = await runtimeCall(runtime, [
+    'network',
+    'ls',
+    '--filter',
+    `label=${label}`,
+    '--format',
+    `{{.Name}}\t{{.Label "${label}"}}`,
+  ]);
+  return {
+    containers: containers.code === 0 ? read(containers.stdout) : [],
+    networks: networks.code === 0 ? read(networks.stdout) : [],
+  };
+}
