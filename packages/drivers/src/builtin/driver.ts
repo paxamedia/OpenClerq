@@ -385,21 +385,33 @@ async function* runLoop(
       subagents: Boolean(input.onSubagent),
     });
   const budget = new RunBudget(rules);
-  const tools = offeredTools(rules, { spawn: Boolean(input.onSubagent) });
+  const repository = input.repositoryTools !== false;
+  const tools = offeredTools(rules, {
+    spawn: Boolean(input.onSubagent),
+    repository,
+    extra: input.extraTools,
+  });
   const byModelName = new Map<string, BuiltinTool>(tools.map((t) => [t.definition.name, t]));
   const budgetOf = (a: Active) => contextBudget(a.model, { maxOutputTokens: a.maxOutput }).budget;
+  // A task is pinned; a conversation's turns roll like the rest of the history.
   const conversation = new Conversation({
     system: input.system ?? options.system ?? SYSTEM_PROMPT,
-    pinned: [{ role: 'user', content: `Task:\n${input.prompt}` }],
+    pinned: input.history ? [] : [{ role: 'user', content: `Task:\n${input.prompt}` }],
     budget: budgetOf(active),
     tools: tools.map((t) => t.definition),
   });
+  if (input.history) {
+    for (const turn of input.history) {
+      if (turn.content.trim()) conversation.append({ role: turn.role, content: turn.content });
+    }
+    conversation.append({ role: 'user', content: input.prompt });
+  }
 
   const totals: Totals = { spent: 0, unknownCost: false, tokensIn: 0, tokensOut: 0, turns: 0 };
   const denials: DriverResult['permissionDenials'] = [];
   const warnings = new Set<string>();
-  // Resolved and pinned once: see pinRoot.
-  const root = pinRoot(input.cwd);
+  // Resolved and pinned once: see pinRoot. Without repository tools there is no worktree.
+  const root = repository ? pinRoot(input.cwd) : input.cwd;
   const ctx: ToolContext = {
     cwd: root,
     signal,
@@ -803,7 +815,7 @@ async function* runLoop(
   } finally {
     clearTimeout(timer);
     input.signal?.removeEventListener('abort', onAbort);
-    unpinRoot(root);
+    if (repository) unpinRoot(root);
   }
 
   /**
@@ -899,7 +911,9 @@ async function* runLoop(
       ? { name: tc.name, risk: 'execute' }
       : tool.name === 'runtime.shell'
         ? shellDescriptor(String((tc.input as { command?: unknown })?.command ?? ''))
-        : { name: tool.name, risk: tool.risk };
+        : tool.describe && tc.input && typeof tc.input === 'object'
+          ? tool.describe(tc.input as Record<string, unknown>)
+          : { name: tool.name, risk: tool.risk };
     yield { type: 'tool_call', id: tc.id, name: descriptor.name, input: tc.input };
 
     let approval: 'not_required' | 'approved' | 'denied' = 'not_required';

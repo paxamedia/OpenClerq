@@ -263,6 +263,22 @@ export interface DriverRunInput {
   policy?: PolicyRules;
   /** In-process drivers: the system prompt, in place of the driver's own. */
   system?: string;
+  /**
+   * In-process drivers: earlier turns of a conversation. With it, `prompt` is
+   * the latest user turn of that conversation rather than a pinned task: the
+   * turns roll and may be summarised like the rest of the history.
+   */
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /**
+   * In-process drivers: offer the repository tools (files, search, shell, git)
+   * in `cwd`. Default true. False: none of them, and `cwd` is not used.
+   */
+  repositoryTools?: boolean;
+  /**
+   * In-process drivers: tools of the caller's own, offered beside the
+   * driver's and decided by the same policy (`policy`), call by call.
+   */
+  extraTools?: readonly import('./builtin/tools.js').BuiltinTool[];
 }
 
 /**

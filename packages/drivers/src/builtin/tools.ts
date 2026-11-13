@@ -54,6 +54,11 @@ export interface BuiltinTool {
   risk: ToolDescriptor['risk'];
   definition: ToolDefinition;
   run(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolOutcome>;
+  /**
+   * How policy sees one call, when that depends on its input (writing a memory
+   * record of one type is `memory.write.<type>`). Default: `name` and `risk`.
+   */
+  describe?(input: Record<string, unknown>): ToolDescriptor;
 }
 
 /** Characters of one tool result the model is given. */

@@ -48,7 +48,15 @@ export {
   BUILTIN_UNIVERSE,
   SUBAGENT_DEFAULT_TOOLS,
 } from './builtin/policy.js';
-export { BUILTIN_TOOLS, SPAWN_AGENT, shellDescriptor, type BuiltinTool } from './builtin/tools.js';
+export {
+  BUILTIN_TOOLS,
+  SPAWN_AGENT,
+  MAX_RESULT_CHARS,
+  shellDescriptor,
+  type BuiltinTool,
+  type ToolContext,
+  type ToolOutcome,
+} from './builtin/tools.js';
 
 /** The drivers this release ships, by id. */
 export const DRIVER_IDS = ['claude-code', 'codex', 'cursor-agent', 'builtin'] as const;

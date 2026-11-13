@@ -104,9 +104,19 @@ export const BUILTIN_UNIVERSE: readonly ToolDescriptor[] = [
  */
 export function offeredTools(
   rules: PolicyRules,
-  opts: { spawn?: boolean } = {}
+  opts: {
+    spawn?: boolean;
+    /** False: no repository tools (a chat with no folder attached). Default true. */
+    repository?: boolean;
+    /** Tools of the caller's own, offered on the same terms. */
+    extra?: readonly BuiltinTool[];
+  } = {}
 ): readonly BuiltinTool[] {
-  const tools = opts.spawn ? [...BUILTIN_TOOLS, SPAWN_AGENT] : BUILTIN_TOOLS;
+  const tools = [
+    ...(opts.repository === false ? [] : BUILTIN_TOOLS),
+    ...(opts.spawn ? [SPAWN_AGENT] : []),
+    ...(opts.extra ?? []),
+  ];
   return tools.filter((t) => evaluate(rules, { name: t.name, risk: t.risk }).decision !== 'deny');
 }
 

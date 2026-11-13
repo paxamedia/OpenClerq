@@ -878,3 +878,88 @@ describe.skipIf(isWindows)('builtin driver: a worktree swapped under it', () => 
     }
   });
 });
+
+describe('builtin driver: conversations and tools of the caller', () => {
+  const memoryTool = {
+    name: 'memory.write',
+    risk: 'write' as const,
+    definition: {
+      name: 'save_note',
+      description: 'Save a note.',
+      inputSchema: {
+        type: 'object',
+        properties: { type: { type: 'string' }, text: { type: 'string' } },
+        required: ['type', 'text'],
+      },
+    },
+    describe: (input: Record<string, unknown>) => ({
+      name: `memory.write.${String(input.type)}`,
+      risk: 'write' as const,
+    }),
+    run: async (input: Record<string, unknown>) => ({
+      output: `saved ${String(input.text)}`,
+      isError: false,
+    }),
+  };
+
+  it('carries earlier turns as rolling history, with the new message last and no pinned task', async () => {
+    const model = scriptedModel([{ content: [text('Hello again.')] }]);
+    const { result } = await run(model.fetchImpl, {
+      prompt: 'And now?',
+      history: [
+        { role: 'user', content: 'Hi' },
+        { role: 'assistant', content: 'Hello.' },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(model.requests[0].messages).toEqual([
+      { role: 'user', content: 'Hi' },
+      { role: 'assistant', content: 'Hello.' },
+      { role: 'user', content: 'And now?' },
+    ]);
+  });
+
+  it('offers no repository tools when told not to, and needs no worktree', async () => {
+    const model = scriptedModel([
+      { content: [use('t1', 'read_file', { path: 'README.md' })] },
+      { content: [text('Could not.')] },
+    ]);
+    const { events, result } = await run(model.fetchImpl, {
+      cwd: '',
+      repositoryTools: false,
+      history: [],
+    });
+    expect(result.ok).toBe(true);
+    expect(model.requests[0].tools).toBeUndefined();
+    expect(toolResults(events)[0]).toMatchObject({ isError: true });
+    expect(toolResults(events)[0].output).toContain('There is no tool "read_file"');
+  });
+
+  it('runs a caller tool through policy as its input describes it', async () => {
+    const model = scriptedModel([
+      {
+        content: [
+          use('t1', 'save_note', { type: 'fact', text: 'one' }),
+          use('t2', 'save_note', { type: 'preference', text: 'two' }),
+        ],
+      },
+      { content: [text('Saved one.')] },
+    ]);
+    const { events, result } = await run(model.fetchImpl, {
+      cwd: '',
+      repositoryTools: false,
+      history: [],
+      extraTools: [memoryTool],
+      policy: { allow: ['memory.write', 'memory.write.fact'] },
+    });
+    expect(result.ok).toBe(true);
+    expect((model.requests[0].tools as Block[]).map((t) => t.name)).toEqual(['save_note']);
+    const calls = events
+      .filter((e) => e.type === 'tool_call')
+      .map((e) => (e as { name: string }).name);
+    expect(calls).toEqual(['memory.write.fact', 'memory.write.preference']);
+    const results = toolResults(events);
+    expect(results[0]).toMatchObject({ isError: false, output: 'saved one' });
+    expect(results[1]).toMatchObject({ isError: true, denied: true });
+  });
+});
