@@ -156,3 +156,33 @@ Always:
 - Restrict what the tool can access (paths, hosts, commands).
 - Keep the interface small and auditable.
 - Treat tools as **powerful local capabilities**: they are what makes OpenClerq an effective local MCS.
+
+---
+
+## 5. Agent tools (builtin driver)
+
+The `builtin` agent driver (see [ARCHITECTURE.md](ARCHITECTURE.md#agent-drivers)) gives the model
+its own tool set for repository work. These are separate from the gateway tools above: they act
+only in the automation run's worktree and are not reachable over HTTP. The model sees the name in
+the second column; policy rules, run steps, `tool_calls` rows and `agent.allowed_tools` use the
+first.
+
+| Policy name     | Model sees     | Risk      | Does                                                                                       |
+| --------------- | -------------- | --------- | ------------------------------------------------------------------------------------------ |
+| `fs.read`       | `read_file`    | `read`    | A text file with line numbers, 400 lines at a time; `offset` and `limit` page through it   |
+| `fs.list`       | `list_files`   | `read`    | A directory, up to four levels deep, without `.git`; at most 1,000 entries                 |
+| `fs.search`     | `search_files` | `read`    | `git grep -E` over tracked and untracked files, skipping ignored ones                      |
+| `fs.write`      | `write_file`   | `write`   | Creates or replaces a file, with its directories                                           |
+| `fs.edit`       | `edit_file`    | `write`   | Replaces exact text, once unless `replace_all`                                             |
+| `runtime.shell` | `run_shell`    | `execute` | `/bin/sh -c` in the worktree; 120 s by default, up to 30 min; exit code, stdout and stderr |
+| `git.status`    | `git_status`   | `read`    | `git status --short --branch`                                                              |
+| `git.diff`      | `git_diff`     | `read`    | `git diff HEAD`, for one path or as a `--stat` summary                                     |
+
+- Every path is resolved inside the worktree by the same check as `fs.read` above: no absolute
+  paths, no `..` out of it, no symlink that leads outside.
+- Commands get the sandbox's minimal environment (`PATH`, `HOME`, the user and locale), never the
+  gateway token or the model's API key. Anything a command leaves running in its process group is stopped when it exits.
+- A result longer than 30,000 characters keeps its start and end, with a marker in the middle
+  saying how much was cut and how to get the rest (read with `offset`, narrow the search).
+- A `run_shell` command that publishes (`git push`, `gh pr create|merge`, `gh release create`,
+  `gh repo create`) is judged as `git.push` (risk `external`) and waits for approval.

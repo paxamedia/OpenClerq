@@ -204,9 +204,9 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [x] `codex` and `cursor-agent` drivers
 - [ ] Seatbelt and container profiles for automation runs, with egress limited to the spec's hosts; remote repositories
 - [x] Kill agent processes a crashed gateway left behind
-- [ ] Tool calling in `packages/providers` — the `builtin` driver needs it
-- [ ] `builtin` driver — real tool-calling loop, every call through `packages/policy`
-- [ ] Context management — token estimation, rolling history, compaction, pinned context, tool-output truncation
+- [x] Tool calling in `packages/providers` — the `builtin` driver needs it
+- [x] `builtin` driver — real tool-calling loop, every call through `packages/policy`
+- [x] Context management — token estimation, rolling history, compaction, pinned context, tool-output truncation
 - [ ] Durable queue with leases; missed-schedule catch-up on wake from sleep
 - [ ] Fair scheduling across repos
 - [ ] Retry with backoff; model escalation on gate failure

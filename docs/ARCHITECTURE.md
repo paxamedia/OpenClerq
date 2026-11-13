@@ -15,7 +15,7 @@ For where this architecture is going, see [ROADMAP.md](ROADMAP.md).
 | Desktop app      | Tauri v2 + React    | Native UI on macOS and Windows                          |
 | Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration |
 | Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration           |
-| Agent drivers    | `packages/drivers`  | Run a coding agent's CLI (Claude Code, Codex, Cursor)   |
+| Agent drivers    | `packages/drivers`  | Run a coding agent: a vendor CLI, or the builtin loop   |
 | Interface        | `packages/web`      | Shell, screens, charts and components, for any host app |
 | Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                            |
 | Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets               |
@@ -87,6 +87,23 @@ Base URLs, model ids and prices are data. To change them, copy the built-in regi
 `~/.clerq/providers.yaml` (or point `CLERQ_PROVIDERS_FILE` at a copy). The gateway reloads that
 file when it changes. `CLERQ_LLM_BASE_URL` moves only the `openai` provider and
 `CLERQ_OLLAMA_URL` only `ollama`, so a leftover value can never redirect another vendor's key.
+
+Both adapters take tool definitions and return the model's tool calls in one shape
+(`ToolDefinition`, `ContentBlock`, `ToolCall` and a normalised `stopReason` in
+`@clerq/providers`), buffered or streamed: Anthropic's `tool_use` / `tool_result` blocks and
+`input_json_delta` fragments, and the chat-completions `tools` / `tool_calls` / `role: "tool"`
+messages and indexed argument fragments. Tool input that is not valid JSON is flagged, never
+guessed at. A model's own reasoning (Anthropic `thinking` blocks, `reasoning_content`) is kept
+opaque and handed back unchanged to the adapter that produced it. Each call still carries its
+tokens and cost, and an unpriced cloud model's cost is unknown, not zero. A server that refuses
+`max_tokens` and names `max_completion_tokens` (OpenAI's reasoning models) is retried once with it.
+
+`@clerq/providers` also manages context for a long conversation: a token estimate (the provider's
+count once a call reports one; until then one token per four ASCII characters and one per other
+character, which errs high), a budget from the model's context window in the registry less room
+for the answer, pinned turns that are never compacted, compaction that folds older turns into a
+summary written by the model (or drops them with a note when that fails) while keeping the latest
+rounds whole, and tool-output truncation that keeps the start and end and says how to get the rest.
 
 `GET /health` reports `llm.provider`, `llm.model`, and `llm.mode`: `local` when the model runs on
 this machine, `api` when calls leave it. `GET /providers` lists every provider with its readiness
@@ -160,7 +177,7 @@ preparing → executing → verifying → publishing → done
 ```
 
 - **preparing** — a new branch in a fresh `git worktree`, started from origin's copy of the base branch (fetched first; the local branch if the fetch fails). The user's checkout is never touched.
-- **executing** — the spec's driver runs the agent's CLI in the worktree under the user's own sign-in, with a minimal environment: no gateway token, and no API key unless the spec names a vault secret (handed over as the variable that CLI reads). Its tool calls become run steps, and the cost it reports goes on the run. The process it starts, and each gate's, is recorded with the run; see [Agent drivers](#agent-drivers).
+- **executing** — the spec's driver runs the agent in the worktree: a vendor CLI under the user's own sign-in, or the builtin loop in the gateway, with a minimal environment: no gateway token, and no API key unless the spec names a vault secret (handed over as the variable that CLI reads). Its tool calls become run steps, and the cost it reports goes on the run. The process it starts, and each gate's, is recorded with the run; see [Agent drivers](#agent-drivers).
 - **verifying** — the agent's changes are committed, then each gate runs in the worktree. The first failure ends the run.
 - **publishing** — push, then a draft pull request on GitHub. The push waits in the approvals inbox unless the spec sets `approvals.push: auto`, and an automation's first push always waits.
 
@@ -169,32 +186,34 @@ opening the PR. Anything the spec does not ask to publish is denied. The diff an
 output stay with the run, and the worktree is removed afterwards. A run interrupted by a restart
 is marked failed and its worktree removed, once anything it left running has been stopped. New automations are saved disabled. Each automation
 runs once at a time, and at most `CLERQ_MAX_CONCURRENT_RUNS` (default 2) run at once; a firing
-beyond that is skipped, not queued. `max_usd_per_run` becomes the CLI's own budget, and reaching
+beyond that is skipped, not queued. `max_usd_per_run` becomes the agent's own budget, and reaching
 `max_usd_per_month` pauses the automation. The kill switch pauses automation schedules with the
 triggers.
 
 #### Agent drivers
 
-A driver runs one agent CLI and reports what it did as the same stream of events, so the run view
-does not care which agent produced a run. `agent.driver` takes one of three:
+A driver runs one agent and reports what it did as the same stream of events, so the run view
+does not care which agent produced a run. `agent.driver` takes one of four:
 
-| Driver         | Runs                                               | Cost reported | Spend limit | `allowed_tools` |
-| -------------- | -------------------------------------------------- | ------------- | ----------- | --------------- |
-| `claude-code`  | `claude -p`, streaming JSON                        | yes           | yes         | yes             |
-| `codex`        | `codex exec --json`, JSONL events                  | no            | no          | no              |
-| `cursor-agent` | `cursor-agent --print --output-format stream-json` | no            | no          | no              |
+| Driver         | Runs                                               | Cost reported | Spend limit | `allowed_tools`      |
+| -------------- | -------------------------------------------------- | ------------- | ----------- | -------------------- |
+| `claude-code`  | `claude -p`, streaming JSON                        | yes           | yes         | yes                  |
+| `codex`        | `codex exec --json`, JSONL events                  | no            | no          | no                   |
+| `cursor-agent` | `cursor-agent --print --output-format stream-json` | no            | no          | no                   |
+| `builtin`      | OpenClerq's own tool loop, in the gateway          | yes, per call | yes         | yes, as policy rules |
 
-`agent.permission_mode` follows Claude Code's meaning: nothing is ever prompted, and whatever the
-mode does not grant is denied. Each driver maps the four modes to the nearest thing its CLI has:
+`agent.permission_mode` follows Claude Code's meaning. A CLI is never prompted: whatever the mode
+does not grant is denied. The builtin driver can ask a person through the approvals inbox, and
+does in `default` mode. Each driver maps the four modes to the nearest thing it has:
 
-| `permission_mode`       | `claude-code`                   | `codex`                     | `cursor-agent`           |
-| ----------------------- | ------------------------------- | --------------------------- | ------------------------ |
-| `acceptEdits` (default) | `--permission-mode acceptEdits` | `--sandbox workspace-write` | agent mode, no `--force` |
-| `default`               | `--permission-mode default`     | `--sandbox read-only`       | `--mode ask` (read-only) |
-| `dontAsk`               | `--permission-mode dontAsk`     | `--sandbox read-only`       | `--mode ask` (read-only) |
-| `plan`                  | `--permission-mode plan`        | `--sandbox read-only`       | `--mode plan`            |
+| `permission_mode`       | `claude-code`                   | `codex`                     | `cursor-agent`           | `builtin`                                    |
+| ----------------------- | ------------------------------- | --------------------------- | ------------------------ | -------------------------------------------- |
+| `acceptEdits` (default) | `--permission-mode acceptEdits` | `--sandbox workspace-write` | agent mode, no `--force` | every tool, without asking                   |
+| `default`               | `--permission-mode default`     | `--sandbox read-only`       | `--mode ask` (read-only) | reads; writes and commands wait in the inbox |
+| `dontAsk`               | `--permission-mode dontAsk`     | `--sandbox read-only`       | `--mode ask` (read-only) | reads only                                   |
+| `plan`                  | `--permission-mode plan`        | `--sandbox read-only`       | `--mode plan`            | reads only                                   |
 
-None of them is ever started with its "run everything" switch. In Codex's `workspace-write`
+No CLI is ever started with its "run everything" switch. In Codex's `workspace-write`
 sandbox the driver also passes `--config sandbox_workspace_write.network_access=true`, because
 Codex turns the network off there by default and OpenClerq's default is full access: an agent
 that cannot install packages or fetch what a test needs is of little use. Without network, the
@@ -213,6 +232,39 @@ the CLI's own `--help` and checks it lists every option a run of that mode and m
 (`--ephemeral`, `--trust`, `--mode` and so on). An older CLI that lacks one is reported as
 unavailable, naming the option and its version, instead of failing every run. A help screen that
 cannot be read is not held against the CLI.
+
+##### The builtin driver
+
+`builtin` runs the agent loop in the gateway's own process, over any model in the provider
+registry: `agent.model` names it as `provider/model` (`anthropic/claude-sonnet-4-5`,
+`deepseek/deepseek-chat`, `ollama/llama3.2`). Its key is the provider's usual variable, or
+`agent.api_key_secret` from the vault; the key is used for the model call only, and the commands
+the agent runs never see it. Its tools work in the run's worktree: read, list and search files,
+write and edit them, run a shell command, and `git status` / `git diff`; see
+[TOOLS.md](TOOLS.md#5-agent-tools-builtin-driver). Every path goes through the same canonical
+containment check as the gateway's `fs.read`, and each command runs through `@clerq/sandbox` as a
+process group that is stopped when it exits, with a time limit and an output cap.
+
+Every tool call is decided by `packages/policy` first. Full access is the default: in
+`acceptEdits` the agent reads, writes and runs commands in its worktree without asking. A command
+that publishes (`git push`, `gh pr create`) is judged as `git.push` and waits in the approvals
+inbox in every mode, as the run's own push does; this reads the command's words, so a script that
+pushes without saying so is not caught. In `default` mode, writes and commands wait in the inbox,
+the run shows `awaiting_approval` meanwhile, and a request nobody answers within
+`approvals.timeout` is refused. `agent.allowed_tools` takes policy rules (`fs.read`, `fs.*`,
+`group:fs`, `risk:read`) and narrows the tool set to what they name; a run makes at most 400 tool
+calls.
+
+The loop stops after 60 model turns, at `sandbox.timeout`, or when the next call would pass
+`budget.max_usd_per_run`, measured from each call's recorded cost. A spec that sets a dollar
+budget for a cloud model with no price in `providers.yaml` fails the spec check, saying so. Each
+model call is a run step with its tokens and cost, and each tool call a step and a row in
+`tool_calls` (name, input, output, status, duration and whether a person was asked). When the
+conversation nears the model's context window, older turns are summarised by the model; the task
+stays pinned, and the compaction is recorded as a `context.compact` step.
+
+`GET /drivers` lists `builtin` with each provider and whether it has a key; with a model, `detect`
+checks that model's key, its price when the spec sets a budget, and that a local server answers.
 
 When an agent or a gate exits, anything it left running in its process group (a dev server, a
 forked daemon) is stopped: asked to stop, then killed after a second. Otherwise it would outlive

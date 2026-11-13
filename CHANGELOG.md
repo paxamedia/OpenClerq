@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings in the main window: General (theme, start page, emergency stop), Models & keys with a **Test** per provider, Secrets, Skills, Memory, Triggers, Remote, Devices (pairing QR, last seen, revoke), Advanced, and modules' own settings pages. Developer: tool runner, calculator, task runner with context preview, live log, service figures.
 - Module UIs in a frame with a token bridge; module notifications as native notifications; the inbox count on the app icon; a content security policy that allows only the loopback gateway.
 - `pnpm ui:shots`: every page in both themes at three sizes, over fixture data.
+- **Tool calling in `@clerq/providers`.** `call` and `callStream` take `tools` and a conversation of text, tool-call and tool-result blocks, and return the model's `toolCalls`, its whole turn as `content` and a normalised `stopReason`, for the `anthropic` adapter (`tool_use` / `tool_result`, streamed `input_json_delta`) and `openai-compat` (`tools` / `tool_calls` / `role: "tool"`, streamed argument fragments). Tool input that is not valid JSON is flagged rather than guessed at. Anthropic `thinking` blocks and `reasoning_content` are handed back unchanged to the adapter that produced them. Tokens and cost are recorded per call as before; an unpriced cloud model's cost stays unknown.
+- **Context management** in `@clerq/providers`: token estimation (the provider's count once reported, a documented heuristic until then), a context budget from the registry's context window, a conversation with pinned turns and rolling history, compaction that has the model summarise older turns (or drops them with a note), and tool-output truncation that says how to get the rest.
+- **`builtin` agent driver.** `agent.driver: builtin` with `agent.model: <provider>/<model>` runs OpenClerq's own tool loop over any model in the registry. Its tools read, list, search, write and edit files in the run's worktree, run shell commands through the sandbox, and show `git status` and `git diff`. Every call goes through `packages/policy`: full access by default, a push from the shell waits for approval in every mode, `permission_mode: default` sends writes and commands to the approvals inbox, and `agent.allowed_tools` takes policy rules. Bounded by 60 turns, `sandbox.timeout`, 400 tool calls and `budget.max_usd_per_run` measured from recorded cost; a dollar budget for an unpriced cloud model fails the spec check. Each model call is a run step with its tokens and cost, and older context is compacted when the window fills. `GET /drivers` lists it with each provider's readiness. Tested against a scripted model only.
+- Every tool call an agent makes is also a row in the new `tool_calls` table (store migration 13), with whether a person was asked.
 
 ### Removed
 
@@ -51,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The module manifest schema accepts `config`, `coreEndpoints`, `services`, `permissions` and `extensions`.
 - `packages/sandbox` gives a command a minimal environment unless `inheritEnv` is set, streams output line by line, and stops on an abort signal.
 - In this release automations run without isolation, and a spec must say `sandbox: { profile: native }` to run.
+- An OpenAI-compatible server that refuses `max_tokens` and names `max_completion_tokens` instead (OpenAI's reasoning models) is retried once with it.
+- The canonical path-containment check moved from the gateway to `@clerq/sandbox` (`resolveWithinRoot`), so the agent drivers use the same one.
 
 ### Fixed
 
