@@ -368,10 +368,10 @@ fallback](#model-routing-and-fallback)). It is not for a gate failure and uses n
 - **Strictness.** `POST /automations/:id/run` accepts `{ "model": "…" }`: the run uses it in place
   of the spec's primary model and never falls back (the choice is stored on the run, so a retry keeps
   it). Escalation remains the spec's own policy for a failed gate.
-- **The spec's API key** (`agent.api_key_secret`) belongs to the provider of the model the run starts
-  with. A model of another provider, fallback or escalation, uses that provider's usual key from the
-  gateway's environment, and is not usable without one, so a key is never sent to a vendor it was not
-  for.
+- **The spec's API key** (`agent.api_key_secret`) belongs to the provider of the spec's own primary
+  model. A model of another provider (a fallback, an escalation, or one named for this run) uses that
+  provider's usual key from the gateway's environment, and is not usable without one, so a key is
+  never sent to a vendor it was not for.
 
 `agent.model.strategy` (`cost_aware`, `quality_first`, `race`, `consensus`) is still refused, naming
 the keys above; it is planned after 1.0.
@@ -442,8 +442,9 @@ cannot be read is not held against the CLI.
 `builtin` runs the agent loop in the gateway's own process, over any model in the provider
 registry: `agent.model` names it as `provider/model` (`anthropic/claude-sonnet-4-5`,
 `deepseek/deepseek-chat`, `ollama/llama3.2`). Its key is the provider's usual variable, or
-`agent.api_key_secret` from the vault, which is for the provider of the model the run starts with
-(another provider's model, as a fallback or an escalation, uses its own provider's usual key). The key is used for the model call and is not put in any
+`agent.api_key_secret` from the vault, which is for the provider of the spec's own primary model
+(another provider's model, as a fallback, an escalation or a model named for one run, uses its own
+provider's usual key). The key is used for the model call and is not put in any
 command's environment; under full access, though, a command runs as the gateway's user and can
 read what that user can. Tool inputs and outputs are redacted of the vault values the run uses
 before they are stored or shown to the model. Its tools work in the run's worktree: read, list and search files,

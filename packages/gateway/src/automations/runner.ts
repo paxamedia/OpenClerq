@@ -435,7 +435,7 @@ async function execute(
           ...(switchesModels && after.length > 0 ? { fallbackModels: after } : {}),
         };
         // A key from the vault is for the provider of the model it was given for.
-        const secrets = keyAppliesTo(spec, plan, model) ? apiKey : undefined;
+        const secrets = keyAppliesTo(spec, model) ? apiKey : undefined;
         try {
           result = await guard(rules, TOOLS.agent, budget, () =>
             runAgent(

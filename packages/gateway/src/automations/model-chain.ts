@@ -61,14 +61,16 @@ function providerOf(model: string | undefined): string | undefined {
 /**
  * Whether the spec's own API key (`agent.api_key_secret`) applies to `model`.
  * A CLI reads its key itself, whatever the model. The builtin agent's key is
- * for the provider of the model the run starts with: another provider's model
- * uses that provider's usual key, so a key never goes to a vendor it was not
- * given for.
+ * for the provider of the spec's own primary model: a model of another
+ * provider (a fallback, an escalation, one a person named for this run) uses
+ * that provider's usual key, so a key never goes to a vendor it was not given
+ * for.
  */
-export function keyAppliesTo(spec: AutomationSpec, plan: ModelPlan, model: string | undefined) {
+export function keyAppliesTo(spec: AutomationSpec, model: string | undefined) {
   if (!spec.agent.apiKeySecret) return false;
   if (spec.agent.driver !== 'builtin') return true;
-  return providerOf(model) !== undefined && providerOf(model) === providerOf(plan.primary);
+  const provider = providerOf(model);
+  return provider !== undefined && provider === providerOf(spec.agent.model);
 }
 
 /** What is wrong with a model a person names for one run, or undefined when it is usable. */
@@ -109,7 +111,7 @@ export async function checkModels(
   const checks: ModelCheck[] = [];
   for (const entry of entries) {
     const availability = await driver.detect({
-      apiKey: keyAppliesTo(spec, plan, entry.model),
+      apiKey: keyAppliesTo(spec, entry.model),
       permissionMode: spec.agent.permissionMode,
       model: entry.model,
       budget: hasBudget,

@@ -631,6 +631,21 @@ describe('fallback for the builtin agent', () => {
     expect(JSON.stringify(modelRequests[1])).not.toContain('vault-key-for-fake');
   });
 
+  it('never sends the spec’s key to the provider of a model a person named for the run', async () => {
+    vaultKey = 'vault-key-for-fake';
+    const a = automation('budget:\n  max_usd_per_run: 1', {
+      driver: 'builtin\n  model: fake/priced\n  api_key_secret: MY_KEY',
+    });
+    const run = await waitFor(enqueue(a, 'manual', 'other/m'), finished);
+    expect(run.status).toBe('done');
+    expect(modelRequests.map((r) => r.model)).toEqual(['m']);
+    expect(modelRequests[0].headers.authorization).toBe('Bearer other-key');
+    // Its own provider's model, named by hand, does get it.
+    modelRequests.length = 0;
+    await waitFor(enqueue(a, 'manual', 'fake/second'), finished);
+    expect(modelRequests[0].headers['x-api-key']).toBe('vault-key-for-fake');
+  });
+
   it('refuses before any work a fallback model with no price when the spec has a dollar budget', async () => {
     const run = await waitFor(
       enqueue(builtinSpec('[fake/unpriced]', 'budget:\n  max_usd_per_run: 1')),
