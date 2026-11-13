@@ -38,7 +38,6 @@ import {
   getRun,
   listToolCalls,
   RunCancelled,
-  setRunStatusIf,
 } from '../runs.js';
 import { addMessage, createSubagentSession } from '../chat/sessions.js';
 import type { AutomationSpec } from './spec.js';
@@ -184,6 +183,10 @@ export interface SpawnerContext {
   inherited: () => { model?: string; fallbackModels: string[] };
   /** Models found unavailable in the parent's run, shared both ways. */
   unavailable: Set<string>;
+  /** Sub-agents at once (`agent.subagents.max_concurrent`, at most 4). */
+  maxConcurrent?: number;
+  /** The models a spawn call may name; anything else is refused. */
+  allowedModels: readonly string[];
 }
 
 /** How long after the parent's deadline a sub-agent's own time limit runs out. */
@@ -231,14 +234,9 @@ function traceOf(
 export function subagentSpawner(
   ctx: SpawnerContext
 ): (request: SubagentRequest) => Promise<SubagentOutcome> {
-  const slots = new Slots(SUBAGENT_MAX_CONCURRENT);
-  /** Sub-agents waiting for approval: the parent shows as waiting while any is. */
-  let waiting = 0;
-  const parentWaiting = (on: boolean) => {
-    waiting += on ? 1 : -1;
-    if (on && waiting === 1) setRunStatusIf(ctx.parentRunId, 'executing', 'awaiting_approval');
-    if (!on && waiting === 0) setRunStatusIf(ctx.parentRunId, 'awaiting_approval', 'executing');
-  };
+  const slots = new Slots(
+    Math.min(SUBAGENT_MAX_CONCURRENT, Math.max(1, ctx.maxConcurrent ?? SUBAGENT_MAX_CONCURRENT))
+  );
 
   return async (request) => {
     const refusal = spawnRefusal(ctx.parentRunId);
@@ -280,6 +278,13 @@ export function subagentSpawner(
     const strict = Boolean(request.model);
     if (request.model) {
       model = request.model;
+      if (!ctx.allowedModels.includes(model)) {
+        throw new Error(
+          `No sub-agent started: ${model} is not one of the models this automation may use ` +
+            `(${ctx.allowedModels.join(', ') || 'none'}). Name one of them, or none to use this run's model; ` +
+            'the spec can list more in agent.subagents.models.'
+        );
+      }
       const availability = await ctx.driver.detect({
         model,
         budget: hasBudget(spec),
@@ -375,11 +380,7 @@ export function subagentSpawner(
               // cancelled); its own limit, a little later, is only a backstop, so
               // the two timers do not race.
               timeoutMs: Math.max(1_000, request.deadline - Date.now()) + BACKSTOP_MS,
-              approve: (r) =>
-                approveToolCall(r, spec, runId, signal, {
-                  runId: ctx.parentRunId,
-                  waiting: parentWaiting,
-                }),
+              approve: (r) => approveToolCall(r, spec, runId, signal, ctx.parentRunId),
               // No onSubagent: a sub-agent cannot start its own.
             }
           );

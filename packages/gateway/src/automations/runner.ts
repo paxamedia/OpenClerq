@@ -57,7 +57,13 @@ import {
   runCostWithChildren,
   runEventContext,
 } from '../runs.js';
-import { requestApproval, waitForDecision, decide, tierFor } from '../approvals.js';
+import {
+  requestApproval,
+  waitForDecision,
+  decide,
+  openApprovalsOf,
+  tierFor,
+} from '../approvals.js';
 import { agentRegistry } from '../agent/llm-provider.js';
 import { emit } from '../events.js';
 import { logger } from '../logger.js';
@@ -123,6 +129,18 @@ export function defaultDriver(id: string): Driver {
     });
   }
   return getDriver(id);
+}
+
+/** True when the spec lets the builtin agent start sub-agents. */
+export function subagentsEnabled(spec: AutomationSpec): boolean {
+  return DRIVER_CAPABILITIES[spec.agent.driver].subagents && spec.agent.subagents.enabled;
+}
+
+/** What is left of the automation's monthly budget, or undefined when it has none. */
+function monthLeftUsd(automation: Automation, spec: AutomationSpec): number | undefined {
+  const cap = spec.budget.maxUsdPerMonth;
+  if (cap === undefined) return undefined;
+  return Math.max(0, Math.round((cap - monthSpendUsd(automation.id)) * 1e6) / 1e6);
 }
 
 /** True when the spec sets a budget in US dollars. */
@@ -437,18 +455,23 @@ async function execute(
         const model = candidates[at];
         used.model = model;
         const after = candidates.slice(at + 1).filter((m): m is string => m !== undefined);
+        // Sub-agents (builtin, when the spec turns them on): what is left of the
+        // run's budget, or with only a monthly budget what is left of the month,
+        // is one pool the agent and every sub-agent of this attempt spend from,
+        // checked before each model call.
+        const withSubagents = subagentsEnabled(spec);
+        const pool = new SpendPool(
+          withSubagents ? (maxBudgetUsd ?? monthLeftUsd(automation, spec)) : maxBudgetUsd
+        );
         const attempt = {
           model,
           prompt: notes ? `${attemptPrompt}\n\n${notes}` : attemptPrompt,
-          maxBudgetUsd,
+          maxBudgetUsd: pool.capUsd,
           ...(switchesModels && after.length > 0 ? { fallbackModels: after } : {}),
         };
         // A key from the vault is for the provider of the model it was given for.
         const secrets = keyAppliesTo(spec, model) ? apiKey : undefined;
-        // Sub-agents (builtin only): what is left of the run's budget is shared
-        // by the agent and every sub-agent it starts in this attempt.
-        const pool = new SpendPool(maxBudgetUsd);
-        const subagents = DRIVER_CAPABILITIES[spec.agent.driver].subagents
+        const subagents = withSubagents
           ? {
               sharedBudget: pool.member(runId),
               onSubagent: subagentSpawner({
@@ -474,6 +497,22 @@ async function execute(
                   };
                 },
                 unavailable,
+                maxConcurrent: spec.agent.subagents.maxConcurrent,
+                // A model a sub-agent may be given by name: the spec's own chain,
+                // a model a person chose for this run, and the spec's list for
+                // sub-agents. Nothing else, so a steered agent cannot send the
+                // repository to a provider the spec never named.
+                allowedModels: [
+                  ...new Set(
+                    [
+                      spec.agent.model,
+                      chosen ?? undefined,
+                      ...spec.agent.fallback,
+                      ...spec.agent.escalate,
+                      ...spec.agent.subagents.models,
+                    ].filter((m): m is string => Boolean(m))
+                  ),
+                ],
               }),
             }
           : {};
@@ -902,14 +941,15 @@ export async function approveToolCall(
   spec: AutomationSpec,
   runId: string,
   signal: AbortSignal,
-  /** Asked by a sub-agent: the run that started it, and when the wait starts and ends. */
-  parent?: { runId: string; waiting(on: boolean): void }
+  /** Asked by a sub-agent: the run that started it, which waits too. */
+  parentRunId?: string
 ): Promise<boolean> {
+  const parent = parentRunId ? { runId: parentRunId } : undefined;
   // The run's signal (cancel, kill switch) and the agent's own (its time limit).
   const stopped = AbortSignal.any([signal, request.signal]);
   if (stopped.aborted) return false;
   setRunStatus(runId, 'awaiting_approval');
-  parent?.waiting(true);
+  if (parent) setRunStatusIf(parent.runId, 'executing', 'awaiting_approval');
   emit(
     'tool.approval_required',
     { name: request.tool },
@@ -954,9 +994,13 @@ export async function approveToolCall(
           : 'timeout',
     });
   }
-  // Only a run still waiting goes back to work; a finished one keeps its state.
-  setRunStatusIf(runId, 'awaiting_approval', 'executing');
-  parent?.waiting(false);
+  // Only a run still waiting goes back to work, and only once nothing else of
+  // it (another call of the same reply, a sub-agent) waits for a person; a
+  // finished one keeps its state.
+  if (openApprovalsOf(runId) === 0) setRunStatusIf(runId, 'awaiting_approval', 'executing');
+  if (parent && openApprovalsOf(parent.runId) === 0) {
+    setRunStatusIf(parent.runId, 'awaiting_approval', 'executing');
+  }
   return approved;
 }
 
