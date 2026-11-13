@@ -8,9 +8,11 @@
  *
  * What the CLI offers, and what that means for a run:
  *   - Isolation is Codex's own sandbox, chosen with `--sandbox`. Edits are
- *     confined to the workspace; Codex keeps the network off in that mode
- *     unless the user's ~/.codex/config.toml turns it on, and that file is
- *     read as usual.
+ *     confined to the workspace. Codex keeps the network off in that mode, but
+ *     OpenClerq's default is full access, and an agent that cannot install
+ *     packages or fetch what a test needs is of little use; so the driver
+ *     turns it on (`sandbox_workspace_write.network_access`) unless the caller
+ *     asks for no network. The user's ~/.codex/config.toml is read as usual.
  *   - There is no spend limit and no cost in the output, only token counts. A
  *     run's cost is therefore unknown (null) and `maxBudgetUsd` cannot be
  *     passed; the run's time limit is the bound.
@@ -63,16 +65,24 @@ function sandboxFor(mode: DriverRunInput['permissionMode']): 'read-only' | 'work
  * files behind.
  */
 export function buildCodexArgs(input: DriverRunInput): string[] {
+  const sandbox = sandboxFor(input.permissionMode);
   const args = [
     'exec',
     '--json',
     '--sandbox',
-    sandboxFor(input.permissionMode),
+    sandbox,
     '--skip-git-repo-check',
     '--ephemeral',
     '--color',
     'never',
   ];
+  // Only workspace-write has a network setting; read-only has none to give.
+  if (sandbox === 'workspace-write') {
+    args.push(
+      '--config',
+      `sandbox_workspace_write.network_access=${input.sandbox?.network !== 'none'}`
+    );
+  }
   if (input.model) args.push('--model', input.model);
   args.push('--', input.prompt);
   return args;

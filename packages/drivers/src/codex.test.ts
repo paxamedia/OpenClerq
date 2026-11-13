@@ -151,6 +151,26 @@ describe('buildCodexArgs', () => {
     expect(all).not.toMatch(/danger|yolo|bypass|full-auto/);
   });
 
+  it('lets the workspace-write sandbox reach the network, unless the caller asks for none', () => {
+    const net = (input: Partial<Parameters<typeof buildCodexArgs>[0]>) => {
+      const args = buildCodexArgs({ prompt: 'x', cwd: '/x', ...input });
+      return args.includes('--config') ? args[args.indexOf('--config') + 1] : null;
+    };
+    expect(net({})).toBe('sandbox_workspace_write.network_access=true');
+    expect(net({ sandbox: { profile: 'native' } })).toBe(
+      'sandbox_workspace_write.network_access=true'
+    );
+    expect(net({ sandbox: { profile: 'native', network: 'all' } })).toBe(
+      'sandbox_workspace_write.network_access=true'
+    );
+    expect(net({ sandbox: { profile: 'native', network: 'none' } })).toBe(
+      'sandbox_workspace_write.network_access=false'
+    );
+    // Read-only has no network setting to give.
+    expect(net({ permissionMode: 'plan' })).toBeNull();
+    expect(net({ permissionMode: 'dontAsk' })).toBeNull();
+  });
+
   it('uses the read-only sandbox for every mode that does not accept edits', () => {
     for (const permissionMode of ['plan', 'default', 'dontAsk'] as const) {
       const args = buildCodexArgs({ prompt: 'x', cwd: '/x', permissionMode });
@@ -329,6 +349,20 @@ describe.skipIf(isWindows)('codex driver', () => {
       expect.arrayContaining(['--model', 'o3', '--sandbox', 'read-only', '--ephemeral'])
     );
     expect(args.slice(-2)).toEqual(['--', 'do the thing']);
+  });
+
+  it('passes the network setting for the default sandbox to the CLI', async () => {
+    const { events, log } = runFake('success');
+    await events;
+    const args = fs.readFileSync(`${log}.args`, 'utf8').trim().split('\n');
+    expect(args).toEqual(
+      expect.arrayContaining([
+        '--sandbox',
+        'workspace-write',
+        '--config',
+        'sandbox_workspace_write.network_access=true',
+      ])
+    );
   });
 
   it('says what it could not pass on, rather than ignoring it', async () => {
