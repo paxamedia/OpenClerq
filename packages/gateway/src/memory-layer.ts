@@ -696,10 +696,12 @@ export async function consolidate(
   db.transaction(() => {
     // The model call took time; what it read must still be what is there.
     const after = sources();
-    if (
-      after.length !== before.length ||
-      after.some((r, i) => r.id !== before[i].id || r.updatedAt !== before[i].updatedAt)
-    ) {
+    // By what they say as well as when they were saved: two writes in one millisecond differ in their text.
+    const same = (a: MemoryRecord, b: MemoryRecord) =>
+      a.id === b.id &&
+      a.updatedAt === b.updatedAt &&
+      JSON.stringify(a.value) === JSON.stringify(b.value);
+    if (after.length !== before.length || after.some((r, i) => !same(r, before[i]))) {
       throw new MemoryError(
         'memory_changed',
         `The records of "${key}" changed while they were being summarised. Nothing was changed; try again.`

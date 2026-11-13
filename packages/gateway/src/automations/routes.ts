@@ -182,6 +182,12 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
         'A run started by hand with a model of its own never falls back.',
     });
   }
+  if (spec.memory.read.length > 0) {
+    checks.push({
+      level: 'ok',
+      message: `Saved notes of type ${spec.memory.read.join(', ')} that bear on the prompt are added to it, and sent to the model.`,
+    });
+  }
   if (spec.retry.maxRetries > 0) {
     checks.push({
       level: 'ok',

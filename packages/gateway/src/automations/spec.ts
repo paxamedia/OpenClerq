@@ -9,6 +9,7 @@
 
 import cron from 'node-cron';
 import { DRIVER_CAPABILITIES, DRIVER_IDS, allowedToolProblem, type DriverId } from '@clerq/drivers';
+import { MEMORY_TYPES, isMemoryType, type MemoryType } from '@clerq/policy';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
 import { AssertionSyntaxError, parseAssertion, type DiffAssertion } from './diff-assert.js';
 
@@ -68,6 +69,12 @@ export interface AutomationSpec {
   approvals: { push: 'manual' | 'auto'; timeoutMs: number };
   /** Further attempts after a transient failure, and the wait before the first of them. */
   retry: { maxRetries: number; backoffMs: number };
+  /**
+   * What the run may read of memory: the types whose records bear on the
+   * prompt are added to it. Empty (the default): none, so an unattended run
+   * does not send saved notes to a model unless the spec says so.
+   */
+  memory: { read: MemoryType[] };
 }
 
 /** The most `retry.max_retries` may be. */
@@ -298,6 +305,7 @@ export function parseSpec(source: string): AutomationSpec {
       'budget',
       'approvals',
       'retry',
+      'memory',
     ]
   );
 
@@ -554,6 +562,28 @@ export function parseSpec(source: string): AutomationSpec {
     r.fail(['retry', 'backoff'], '"retry.backoff" may be at most 1h; it doubles with each retry.');
   }
 
+  r.keys(['memory'], ['read']);
+  const memoryRead = r.get(['memory', 'read']);
+  let readTypes: MemoryType[] = [];
+  if (memoryRead !== undefined && memoryRead !== null) {
+    if (!Array.isArray(memoryRead) || memoryRead.length === 0) {
+      r.fail(
+        ['memory', 'read'],
+        `"memory.read" must list one or more of ${MEMORY_TYPES.join(', ')}, e.g. [preference, procedure].`
+      );
+    }
+    readTypes = memoryRead.map((t, i) => {
+      if (!isMemoryType(t)) {
+        r.fail(
+          ['memory', 'read', i],
+          `"${String(t)}" is not a kind of memory. Use ${MEMORY_TYPES.join(', ')}.`
+        );
+      }
+      if (memoryRead.indexOf(t) !== i) r.fail(['memory', 'read', i], `"${t}" is listed twice.`);
+      return t;
+    });
+  }
+
   return {
     name,
     description: r.text(['description']),
@@ -590,5 +620,6 @@ export function parseSpec(source: string): AutomationSpec {
       timeoutMs: r.duration(['approvals', 'timeout'], 24 * 3_600_000),
     },
     retry: { maxRetries, backoffMs },
+    memory: { read: readTypes },
   };
 }

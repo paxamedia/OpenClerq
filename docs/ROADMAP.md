@@ -114,7 +114,7 @@ mid-`executing` is reaped by lease expiry — no zombie holding a worktree forev
 | `tool_calls`                       | run_id, name, input, output, status, duration_ms, approval_state                                                           |
 | `artifacts`                        | run_id, kind (`diff`/`log`/`file`/`report`), path or blob, sha256                                                          |
 | `approvals`                        | run_id, step_id, requested_at, decided_by, decision, reason                                                                |
-| `memory`                           | id, type, key, value, source_session, confidence, created_at, expires_at (+ FTS index)                                     |
+| `memory`                           | id, type, key, value, origin, source_session, confidence, status, created_at, updated_at, expires_at (+ FTS5 index)        |
 | `users`, `sessions_auth`, `tokens` | GitHub identity, session cookies, scoped API tokens                                                                        |
 | `audit_log`                        | append-only: who changed what, who approved what, when                                                                     |
 
@@ -211,8 +211,8 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [x] Fair scheduling across repos
 - [x] Retry with backoff; model escalation on gate failure
 - [x] Gate `diff.*` assertions
-- [ ] Model routing and fallback chains with strictness rules (explicit user selection is strict; defaults and scheduled jobs may fall back)
-- [ ] Memory 2.0 — typed records, SQLite FTS search, summarisation, policy-controlled retrieval
+- [x] Model routing and fallback chains with strictness rules (explicit user selection is strict; defaults and scheduled jobs may fall back)
+- [x] Memory 2.0 — typed records, SQLite FTS search, summarisation, policy-controlled retrieval
 - [ ] Sub-agents — `sessions.spawn`, isolated policy, `maxConcurrent = 4`, `maxDepth = 1`
 - [ ] Repos screen
 - [ ] **Chat console — managed mode.** System prompt, skills, memory, policy-filtered tools, inline approvals, mode diff against raw
@@ -266,8 +266,8 @@ agent:
   model:
     primary: claude-sonnet-4-5
     escalate: [claude-opus-5] # a gate failed: run again with the next, same worktree
-    fallback: [deepseek-reasoner, glm-4.6]
-    strategy: cost_aware # quality_first | cost_aware | race | consensus
+    fallback: [deepseek-reasoner, glm-4.6] # the model in use is unavailable: use the next
+    strategy: cost_aware # quality_first | cost_aware | race | consensus (after 1.0)
 
 prompt: |
   Review dependency updates available in this repo.
@@ -301,6 +301,9 @@ approvals:
   push: auto
   merge: manual
   secrets_access: manual
+
+memory:
+  read: [preference, procedure] # saved notes of these types may be added to the prompt
 
 retry: # only after a crash, a provider outage or an expired lease
   max_retries: 2

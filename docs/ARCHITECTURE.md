@@ -111,16 +111,46 @@ rounds whole, and tool-output truncation that keeps the start and end and says h
 this machine, `api` when calls leave it. `GET /providers` lists every provider with its readiness
 and qualified model references, but never its endpoint URL, which may carry credentials.
 
+### Model routing and fallback
+
+"Fallback" means using the next model when the one in use is **unavailable**: its provider answered
+5xx, 429 or 408, did not answer (a connection failure or a timeout), refused the key (401, 403), or has
+no key set. It is decided from what the provider adapter reports about the failed call
+(`ProviderError.unavailable`, `isUnavailable()` in `@clerq/providers`), never from the text of an
+answer, so an agent that writes "the endpoint returned 503" is not an outage. A request the provider
+refused as malformed (400, 422), an unknown model id (404) and a cancel never fall back: another model
+would hide a mistake. Fallback is not escalation: `agent.model.escalate` runs a stronger model when
+a gate fails.
+
+A model a person chose is used as chosen; anything else may fall back:
+
+| Call                                                                                         | Falls back                                     |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `/task`, `/explain`, a session or a comparison column that names a model                     | never: it fails plainly                        |
+| A run started by hand with `{ "model": … }`                                                  | never                                          |
+| Console raw mode (one request to one model, however it was picked)                           | never                                          |
+| Managed chat, `/task`, `/explain` and gateway triggers with no model: the default model      | along the default chain (`GET`/`PUT /routing`) |
+| An automation run, scheduled or started by hand without a model, with `agent.model.fallback` | along the spec's chain                         |
+
+The default chain is a setting (`routing.fallback`, up to five `provider/model` entries), empty until
+set. Each model is tried once, in order, and the default is not tried twice. A move happens before
+any text of the answer was sent: a stream that has failed half way is not handed to another model.
+Every move is a `model.fallback` event (`from`, `to`, `reason`, `scope`; with the run and the chat
+session), a `model.fallback` step on the run, and one in `llm_fallbacks_total` in `GET /metrics`;
+the call that failed is recorded as an error step before it. A fallback sends the prompt to another
+provider, which is why the default chain is something you name, and why a run you pinned to a model is
+never moved.
+
 ### Chat console
 
 A chat message is a run with `trigger: 'manual'` in a session that has no schedule, using the
 same providers, runs, steps and cost accounting as the automation runner.
 Sessions and their transcripts live in the store.
 
-| Mode        | What the gateway adds                                                                                                  |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **Raw**     | Nothing. No system prompt, no skill selection, no memory, no tools. The exact request body is kept and is inspectable. |
-| **Managed** | The full `/task` pipeline, with earlier turns: system prompt, skill routing, calculation engine, durable transcript.   |
+| Mode        | What the gateway adds                                                                                                        |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Raw**     | Nothing. No system prompt, no skill selection, no memory, no tools. The exact request body is kept and is inspectable.       |
+| **Managed** | The full `/task` pipeline, with earlier turns: system prompt, skill routing, memory, calculation engine, durable transcript. |
 
 Raw removes OpenClerq's additions, not the vendor's: both modes call the same endpoint under
 the user's own key. Use it to tell whether an unexpected answer comes from the model or from
@@ -165,6 +195,54 @@ transaction. Cost comes from registry prices, and **unknown is not reported as f
 with no price records `costUsd: null` and marks the run `costKnown: false`, so its `costUsd` reads
 as a lower bound. Keyless local providers cost nothing. `GET /metrics` reports
 `llm_cost_usd_total` alongside `llm_unpriced_calls_total`.
+
+### Memory
+
+Memory is a store of **records**: a key, a value (any JSON), and a type, which is one of `fact`
+(something true: a rate, a name, a deadline), `preference` (how you like things done), `decision`
+(a choice and why), `procedure` (how to do something) and `note` (anything else). A key may hold any
+number of records. Each has an id, an origin (`user`, `agent`, `import` for what 0.5 left behind,
+`consolidation` for a summary), a source session, a confidence from 0 to 1, a status and `created_at`,
+`updated_at` and `expires_at`; a record past its expiry is never read, and is removed at start and when
+memory is read, at most hourly. A record holds at most 20,000 characters.
+
+**Search** is SQLite FTS5, over each record's key and the text of its value, best match first with the
+key counting three times a word in the value. Every word typed must be there, and the last one matches
+as a prefix. FTS5 is in the SQLite of Node 24 and of Bun on macOS, and the gateway checks for it
+rather than assuming: where it is missing, or nothing matches by word (a word inside a word; CJK text,
+which the tokenizer does not split), search is by substring, newest first, and the answer says which
+(`mode`). The index is derived data. It is built when the store opens, kept in step by the writes in
+the same transaction (no triggers, so a SQLite without FTS5 still opens the file), and rebuilt when it
+does not match the table.
+
+**Summarising.** `POST /memory/consolidate { key, type?, model? }` has a model fold the records of
+one key and type into one record (`origin: consolidation`, confidence the lowest of its sources). It
+is a run of its own, so its cost is recorded, and an entry in the audit log names the model and the
+records. Nothing is deleted: the records stay as `superseded`, pointing at the summary, and
+`POST /memory/records/:id/unconsolidate` brings them back. It is refused for fewer than two records,
+for several types without one named, for an empty summary, and when a record changed while the model
+was writing. Deleting a summary deletes the records behind it.
+
+**Retrieval is decided by policy.** Each type is its own tool in the `memory` group of
+`packages/policy`: `memory.read.<type>` and `memory.write.<type>`. A reader may read the types its
+rules allow (`readableMemoryTypes(rules)`: an outright allow, not one that needs approval, since nobody
+can be asked while a prompt is built). Managed chat and `/task` read under the gateway's memory policy,
+every type until `PUT /memory/policy { readTypes }` narrows it (an empty list turns memory off for
+them). An automation reads memory only when its spec says so: `memory: { read: [preference, procedure] }`
+adds `memory.read.<type>` for those types to the run's own policy rules, and the notes that bear on
+the task (found once, and added to the prompt of every attempt, an escalation's too) come from those
+types alone; what was read is a `memory.read` step. A sub-agent is given rules of its own the same way. What reaches the model is
+a `<memory>` block in the system prompt, shown by `POST /context/preview` like everything else sent:
+the reader's preferences (they apply whatever is asked, up to five) and up to five records that match
+the message, ranked, at most eight in all and 600 characters each. The block says its contents are
+information, not instructions, because a record may have been written from text an agent read.
+**Raw mode reads no memory.** Memory that cannot be read is left out, never a failed answer.
+
+The 0.5 `memory` table (one value per key) was rebuilt by store migration 16, which copies every row
+across as a `fact` with its dates, so nothing is lost. `GET /memory`, `GET /memory/:key`,
+`POST /memory` and `DELETE /memory/:key` answer as before with the record's other fields added:
+`POST /memory` still sets one `fact` under a key, in place, and `DELETE /memory/:key` forgets every
+record under it. The records themselves are under `/memory/records`.
 
 ### Automations
 
@@ -257,8 +335,46 @@ one commit. Each attempt is recorded as an `agent.escalate` step and gets only w
 checked before the run does any work, so a model that is unavailable, or unpriced while the spec
 has a budget in dollars, is refused at the spec check and before the first attempt. The model is
 handed to the driver as given: `provider/model` for the builtin agent, the CLI's `--model` value
-for the others. `agent.model.fallback`, for choosing another model when one is unavailable, is a
-separate key and not part of this release.
+for the others. Another model when one is _unavailable_ is a separate key, `agent.model.fallback`
+(below).
+
+#### Model fallback
+
+`agent.model.fallback` (up to five models, distinct from the primary and from each other) lists the
+models to use when the one in use is unavailable (see [Model routing and
+fallback](#model-routing-and-fallback)). It is not for a gate failure and uses none of the retries.
+
+- **The builtin agent** moves in the middle of its run, in the model-call step: the failed call is
+  recorded, the next model that can be used takes over (one that has no key, or no price under a
+  dollar budget, is passed over and the event says why), the conversation is fitted to its window
+  (compacted first if it no longer fits), the old model's reasoning blocks are dropped from the
+  history (a vendor may refuse reasoning another model wrote), the tool calls and results stay paired,
+  and the turn lost to the outage does not count against the turn limit. It stays on the model it moved
+  to for the rest of the attempt.
+- **A CLI agent** is started again with the next model (`--model`) at once, in the same attempt: no
+  backoff, none of `retry.max_retries` used. If the interrupted attempt changed files, the next model
+  is told so. Only a provider fault the CLI itself reported (the same classification as retries)
+  moves it on; a crash is a retry, and a refused sign-in is not helped by another model.
+- **At the start of a run** a primary that cannot be used (no key, say) is replaced by the first
+  fallback model that can, and the run says so. Every model of the chain is checked before any work,
+  by one function the spec preview uses as well: an unavailable escalation model, and a fallback or
+  primary model with no price when the spec has a dollar budget, are errors; a fallback model that
+  merely cannot be used now is a warning and is skipped when its turn comes.
+- When every model is unavailable the run fails with the last error, and with `retry.max_retries` it is
+  tried again from the primary after the backoff. A model that failed the gates is not used as the
+  fallback of a later escalation, and a model found unavailable is not tried again in the same run.
+- **Budgets** keep applying: each attempt is held to what is left of `max_usd_per_run`, and a call
+  that failed because the model was unavailable is recorded as it cost.
+- **Strictness.** `POST /automations/:id/run` accepts `{ "model": "…" }`: the run uses it in place
+  of the spec's primary model and never falls back (the choice is stored on the run, so a retry keeps
+  it). Escalation remains the spec's own policy for a failed gate.
+- **The spec's API key** (`agent.api_key_secret`) belongs to the provider of the model the run starts
+  with. A model of another provider, fallback or escalation, uses that provider's usual key from the
+  gateway's environment, and is not usable without one, so a key is never sent to a vendor it was not
+  for.
+
+`agent.model.strategy` (`cost_aware`, `quality_first`, `race`, `consensus`) is still refused, naming
+the keys above; it is planned after 1.0.
 
 #### Diff assertions
 
@@ -326,7 +442,8 @@ cannot be read is not held against the CLI.
 `builtin` runs the agent loop in the gateway's own process, over any model in the provider
 registry: `agent.model` names it as `provider/model` (`anthropic/claude-sonnet-4-5`,
 `deepseek/deepseek-chat`, `ollama/llama3.2`). Its key is the provider's usual variable, or
-`agent.api_key_secret` from the vault. The key is used for the model call and is not put in any
+`agent.api_key_secret` from the vault, which is for the provider of the model the run starts with
+(another provider's model, as a fallback or an escalation, uses its own provider's usual key). The key is used for the model call and is not put in any
 command's environment; under full access, though, a command runs as the gateway's user and can
 read what that user can. Tool inputs and outputs are redacted of the vault values the run uses
 before they are stored or shown to the model. Its tools work in the run's worktree: read, list and search files,
@@ -396,13 +513,14 @@ The gateway is the control plane. Endpoints:
 | Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                                                                                                                                             |
 | Tools       | `GET /tools`, `POST /tools/run`                                                                                                                                                                                     |
 | Calculation | `POST /calculate/eval`, `POST /filing/prep`                                                                                                                                                                         |
-| Memory      | `GET /memory`, `GET /memory/search?q=`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                                                                                                                   |
+| Memory      | `GET /memory`, `GET /memory/:key`, `POST /memory`, `DELETE /memory/:key`                                                                                                                                            |
+| Memory 2.0  | `GET /memory/search`, `GET \| POST /memory/records`, `GET \| PATCH \| DELETE /memory/records/:id`, `POST /memory/consolidate`, `POST /memory/records/:id/unconsolidate`, `GET \| PUT /memory/policy`                |
 | Runs        | `GET /runs?since=&limit=`, `GET /runs/:id`, `POST /runs/:id/cancel`                                                                                                                                                 |
 | Chat        | `GET \| POST /sessions`, `GET \| DELETE /sessions/:id`, `POST /sessions/:id/send` (SSE), `/compare`, `/promote`, `/update`                                                                                          |
 | Approvals   | `GET /approvals`, `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                                                                                                         |
 | Events      | `GET /events` (SSE), `GET /events/stream` (SSE, resumable)                                                                                                                                                          |
 | Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                                                                                                                 |
-| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`                                                                                                                                 |
+| Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`, `GET \| PUT /routing`                                                                                                          |
 | Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                                                                                                            |
 | Automations | `GET \| POST /automations`, `POST /automations/preview`, `GET \| PUT \| DELETE /automations/:id`, `POST /automations/:id/run\|enable\|disable`, `GET /drivers`, `GET /runs/:id/artifacts/:id`                       |
 | Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                                        |
@@ -475,6 +593,9 @@ All errors use one shape, and carry no PII:
 | `calculation_failed`, `explain_failed`, `task_failed`, `context_preview_failed`        | 500  | Handler error                                                               |
 | `skills_load_failed`, `skill_load_failed`, `skill_save_failed`                         | 500  | Skill read or write error                                                   |
 | `memory_list_failed`, `memory_get_failed`, `memory_set_failed`, `memory_delete_failed` | 500  | Memory store error                                                          |
+| `invalid_memory`                                                                       | 400  | A memory request that cannot be stored (key, type, value, expiry)           |
+| `cannot_consolidate`, `memory_changed`                                                 | 409  | Summarising refused, or the records changed while it ran                    |
+| `invalid_routing`, `invalid_model`                                                     | 400  | A bad default chain, or a bad model for one run                             |
 | `tools_list_failed`, `tool_run_failed`, `models_list_failed`, `providers_list_failed`  | 500  | Tool or model registry error                                                |
 
 ---

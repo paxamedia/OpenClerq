@@ -186,7 +186,7 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 | GET      | /skills/:slug    | Get skill detail (meta, body). PUT to update schemas/dependencies.                                                 |
 | GET      | /metrics         | Observability: uptime, LLM calls, latency, token usage                                                             |
 | POST     | /context/preview | Preview the LLM request (no API call). Body: `question`, optional `context`, `skillSlug`, `sessionId`              |
-| GET      | /memory          | List file-backed memory entries. POST to add; DELETE /memory/:key to remove                                        |
+| GET      | /memory          | List memory records (typed: fact, preference, decision, procedure, note). POST to set; `/memory/search?q=` to find |
 | GET      | /capabilities    | Filesystem/network restrictions. POST to save.                                                                     |
 | GET/POST | /reasoning       | Temperature, max tokens. POST to save.                                                                             |
 | GET/POST | /system-prompt   | System prompt editor. POST to save.                                                                                |

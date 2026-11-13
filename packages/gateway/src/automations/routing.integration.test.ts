@@ -31,7 +31,10 @@ import {
   startAutomationQueue,
   stopAutomationQueue,
 } from './queue.js';
-import { fallbackCandidates, interruptedPrompt, type RunnerDeps } from './runner.js';
+import { fallbackCandidates, interruptedPrompt, policyFor, type RunnerDeps } from './runner.js';
+import { parseSpec } from './spec.js';
+import { addRecord, clearMemory } from '../memory-layer.js';
+import { readableMemoryTypes } from '@clerq/policy';
 
 // ---------------------------------------------------------------------------
 // A scripted CLI agent, which can be unavailable by model
@@ -666,5 +669,89 @@ describe('candidates', () => {
     expect(fallbackCandidates(undefined, ['b'], none, none)).toEqual([undefined, 'b']);
     // The model meant for this attempt stays first even when it is known to be down.
     expect(fallbackCandidates('a', ['b'], none, new Set(['a']))).toEqual(['a', 'b']);
+  });
+});
+
+describe('memory a run may read', () => {
+  const cli = (memory: string) => automation(memory, { driver: 'claude-code\n  model: main' });
+
+  beforeEach(() => {
+    clearMemory();
+    addRecord({ key: 'tone', value: 'Keep commit messages short.', type: 'preference' });
+    addRecord({
+      key: 'tests',
+      value: 'Before you finish a task, run pnpm test.',
+      type: 'procedure',
+    });
+    addRecord({ key: 'secret', value: 'Every task touches the tests directory', type: 'fact' });
+  });
+  afterEach(() => clearMemory());
+
+  it('reads nothing unless the spec asks, so saved notes are not sent to a model unasked', async () => {
+    const run = await waitFor(enqueue(cli('')), finished);
+    expect(run.status).toBe('done');
+    expect(calls[0].prompt).not.toContain('<memory>');
+    expect(named(run, 'memory.read')).toHaveLength(0);
+  });
+
+  it('adds the notes of the types the spec names, under the run’s policy, and records it', async () => {
+    const run = await waitFor(enqueue(cli('memory:\n  read: [procedure]')), finished);
+    expect(run.status).toBe('done');
+    const prompt = calls[0].prompt;
+    expect(prompt.startsWith('task ')).toBe(true);
+    expect(prompt).toContain('<memory>');
+    expect(prompt).toContain('- [procedure] tests: Before you finish a task, run pnpm test.');
+    // Neither a type that was not named nor a preference the spec did not allow.
+    expect(prompt).not.toContain('[fact]');
+    expect(prompt).not.toContain('[preference]');
+    expect(named(run, 'memory.read')[0]).toMatchObject({
+      input: { types: ['procedure'] },
+      output: { notes: 1 },
+    });
+  });
+
+  it('carries the notes into every attempt, an escalation’s too', async () => {
+    fallbackBehaviour = write('OUT.md', 'weak\n');
+    const run = await waitFor(
+      enqueue(
+        automation(
+          'memory:\n  read: [procedure, preference]\ngates:\n  - run: grep -q strong OUT.md',
+          {
+            driver: 'claude-code\n  model:\n    primary: main\n    escalate: [strong]',
+          }
+        )
+      ),
+      finished
+    );
+    expect(run.status).toBe('failed');
+    expect(calls).toHaveLength(2);
+    for (const c of calls) {
+      expect(c.prompt).toContain('- [preference] tone:');
+      expect(c.prompt).toContain('- [procedure] tests:');
+    }
+    // The failed check follows the task, and the notes come after it.
+    expect(calls[1].prompt.indexOf('did not pass this check')).toBeLessThan(
+      calls[1].prompt.indexOf('<memory>')
+    );
+  });
+
+  it('is part of the run’s policy: only the types named are allowed', () => {
+    const spec = parseSpec(
+      [
+        'name: p',
+        'targets:',
+        '  repos: [local:/tmp/x]',
+        'agent:',
+        '  driver: claude-code',
+        'prompt: x',
+        'sandbox:',
+        '  profile: native',
+        'memory:',
+        '  read: [fact, note]',
+      ].join('\n')
+    );
+    expect(spec.memory.read).toEqual(['fact', 'note']);
+    expect(readableMemoryTypes(policyFor(spec, false))).toEqual(['fact', 'note']);
+    expect(readableMemoryTypes(policyFor({ ...spec, memory: { read: [] } }, false))).toEqual([]);
   });
 });

@@ -21,6 +21,7 @@ import {
 } from '@clerq/drivers';
 import {
   guard,
+  memoryReadRules,
   RunBudget,
   PolicyViolation,
   type PolicyRules,
@@ -63,6 +64,7 @@ import { diffFiles, evaluateAssertion, type DiffFile } from './diff-assert.js';
 import { retryPlan, transientCause, TransientFailure } from './retry.js';
 import { checkModels, judgeChain, keyAppliesTo, planModels } from './model-chain.js';
 import { recordFallback } from '../routing.js';
+import { memoryBlock } from '../memory-context.js';
 import {
   ensureLocalRepo,
   expandHome,
@@ -127,6 +129,9 @@ export function hasBudget(spec: AutomationSpec): boolean {
 /** What this run may do, from its spec. Anything else is denied. */
 export function policyFor(spec: AutomationSpec, firstPush: boolean): PolicyRules {
   const allow = [TOOLS.agent.name, TOOLS.gate.name, TOOLS.commit.name];
+  // The types of memory the spec lets the run read: memory.read.<type>, decided
+  // by the same rules as everything else the run does.
+  allow.push(...(memoryReadRules(spec.memory.read).allow ?? []));
   if (spec.publish.push) allow.push(TOOLS.push.name);
   if (spec.publish.pullRequest === 'draft') allow.push(TOOLS.pullRequest.name);
   const manual = spec.approvals.push === 'manual' || firstPush;
@@ -271,6 +276,9 @@ async function execute(
   const firstPush = spec.publish.push && !hasPushedBefore(automation.id);
   const rules = policyFor(spec, firstPush);
   const budget = new RunBudget(rules);
+  // Saved notes the spec lets this run read, found once against the task and added to
+  // the prompt of every attempt. Read under the run's own policy.
+  const notes = readNotes(runId, spec, rules);
 
   const driver = (deps.driverFor ?? defaultDriver)(spec.agent.driver);
   // The models of this run: the spec's, or the one a person named for it (which
@@ -422,7 +430,7 @@ async function execute(
         const after = candidates.slice(at + 1).filter((m): m is string => m !== undefined);
         const attempt = {
           model,
-          prompt: attemptPrompt,
+          prompt: notes ? `${attemptPrompt}\n\n${notes}` : attemptPrompt,
           maxBudgetUsd,
           ...(switchesModels && after.length > 0 ? { fallbackModels: after } : {}),
         };
@@ -964,6 +972,32 @@ async function runGate(
       gate.run,
       tail([r.stdout.trim(), r.stderr.trim()].filter(Boolean).join('\n'), 4_000)
     );
+  }
+}
+
+/**
+ * The saved notes this run may read, as the block added to its prompt, or
+ * undefined. Which types is decided by the run's policy rules; with none
+ * allowed nothing is read. What was read is a step on the run. Memory that
+ * cannot be read is left out, never a failed run.
+ */
+function readNotes(runId: string, spec: AutomationSpec, rules: PolicyRules): string | undefined {
+  if (spec.memory.read.length === 0) return undefined;
+  try {
+    const block = memoryBlock(spec.prompt, rules);
+    addRunStep(runId, {
+      kind: 'tool',
+      input: { name: 'memory.read', types: spec.memory.read },
+      output: { notes: block?.count ?? 0 },
+      status: 'ok',
+    });
+    return block?.text;
+  } catch (e) {
+    logger.warn('Could not read memory for a run', {
+      runId,
+      err: e instanceof Error ? e.message : String(e),
+    });
+    return undefined;
   }
 }
 

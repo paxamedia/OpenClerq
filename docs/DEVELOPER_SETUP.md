@@ -178,14 +178,26 @@ curl -X POST http://127.0.0.1:18790/context/preview \
   -d '{"question":"What is VAT?"}'
 ```
 
-Memory (list, add, delete):
+Memory (list, add, search, delete). A record has a type (`fact`, `preference`, `decision`, `procedure`
+or `note`); managed chats read the ones that bear on a message:
 
 ```bash
 curl -H "Authorization: Bearer $CLERQ_TOKEN" http://127.0.0.1:18790/memory
-curl -X POST http://127.0.0.1:18790/memory \
+curl -X POST http://127.0.0.1:18790/memory/records \
   -H "Authorization: Bearer $CLERQ_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"key":"test","value":{"note":"sample"}}'
+  -d '{"key":"tone","value":"Short answers, no preamble.","type":"preference"}'
+curl -H "Authorization: Bearer $CLERQ_TOKEN" "http://127.0.0.1:18790/memory/search?q=short%20answers"
+```
+
+Model fallback for chat and tasks: name the models to use, in order, when the default model is
+unavailable. A call that names a model of its own never uses them.
+
+```bash
+curl -X PUT http://127.0.0.1:18790/routing \
+  -H "Authorization: Bearer $CLERQ_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"fallback":["openai/gpt-5-mini"]}'
 ```
 
 These endpoints are meant as **examples**; you can add your own tools, skills, and calculation operations on top.

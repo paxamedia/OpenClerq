@@ -251,6 +251,21 @@ on:
     ).toMatch(/Each fallback model must be a model name/);
   });
 
+  it('reads memory.read, and checks each type by line', () => {
+    expect(parseSpec(MINIMAL).memory).toEqual({ read: [] });
+    expect(parseSpec(`${MINIMAL}memory:\n  read: [preference, procedure]\n`).memory).toEqual({
+      read: ['preference', 'procedure'],
+    });
+    const bad = errorOf(`${MINIMAL}memory:\n  read: [fact, gossip]\n`);
+    expect(bad.message).toMatch(/"gossip" is not a kind of memory\. Use fact, preference/);
+    expect([bad.line, bad.column]).toEqual([11, 16]);
+    expect(errorOf(`${MINIMAL}memory:\n  read: [fact, fact]\n`).message).toMatch(/listed twice/);
+    expect(errorOf(`${MINIMAL}memory:\n  read: []\n`).message).toMatch(/one or more of fact/);
+    expect(errorOf(`${MINIMAL}memory:\n  write: [fact]\n`).message).toMatch(
+      /Unknown key "memory.write"/
+    );
+  });
+
   it('reads diff assertions as gates, and points at the mistake in a bad one', () => {
     const spec = parseSpec(
       `${MINIMAL}gates:\n  - run: pnpm test\n  - assert: diff.files_changed <= 5\n  - assert: diff.touches_none_of [src/**, .github/**]\n`
