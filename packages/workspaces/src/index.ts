@@ -16,9 +16,18 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { git, isRepo, currentBranch, headSha, defaultBranch, GitError } from './git.js';
+import { git, isRepo, currentBranch, headSha, defaultBranch, GitError, SAFE_DIFF } from './git.js';
 
-export { git, isRepo, currentBranch, headSha, defaultBranch, GitError } from './git.js';
+export {
+  git,
+  isRepo,
+  currentBranch,
+  headSha,
+  defaultBranch,
+  GitError,
+  HARDENED_GIT,
+  SAFE_DIFF,
+} from './git.js';
 export * from './publish.js';
 export * from './forge.js';
 
@@ -114,13 +123,17 @@ export class Workspace {
     readonly baseRef: string = ''
   ) {}
 
+  /** Every git command here runs hardened: an agent has written to this worktree. */
   private opts(extra?: Partial<{ allowFailure: boolean }>) {
-    return { cwd: this.path, env: this.env, ...extra };
+    return { cwd: this.path, env: this.env, harden: true, ...extra };
   }
 
   /** Files changed relative to HEAD, staged or not, including untracked. */
   async status(): Promise<string[]> {
-    const r = await git(['status', '--porcelain=v1', '--untracked-files=all'], this.opts());
+    const r = await git(
+      ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=all'],
+      this.opts()
+    );
     return r.stdout
       .split('\n')
       .map((l) => l.slice(3).trim())
@@ -145,11 +158,22 @@ export class Workspace {
     if (!(await this.hasChanges())) return null;
 
     await git(['add', '--all'], this.opts());
+    // A nested repository staged as a gitlink would be pushed as a submodule
+    // pointer, and is how an agent gets git to run its config: refused.
+    const added = await this.newGitlinks();
+    if (added.length > 0) {
+      await git(['reset', '--quiet'], this.opts({ allowFailure: true }));
+      throw new WorkspaceError(
+        `The changes add a nested git repository (a submodule entry) at ${added
+          .slice(0, 5)
+          .join(', ')}, which is not committed or pushed. Remove it from the worktree.`
+      );
+    }
 
     const trailer = opts?.trailer ?? 'Generated-by: OpenClerq';
     const full = `${message.trim()}\n\n${trailer}\n`;
 
-    await git(['commit', '--no-verify', '-m', full], {
+    await git(['commit', '--no-verify', '--no-gpg-sign', '-m', full], {
       ...this.opts(),
       env: {
         ...this.env,
@@ -164,7 +188,7 @@ export class Workspace {
 
   /** Diff against the commit this workspace started from. */
   async diffStat(): Promise<DiffStat> {
-    const r = await git(['diff', '--numstat', `${this.baseSha}..HEAD`], this.opts());
+    const r = await git(['diff', '--numstat', ...SAFE_DIFF, `${this.baseSha}..HEAD`], this.opts());
     const files: string[] = [];
     let insertions = 0;
     let deletions = 0;
@@ -178,10 +202,36 @@ export class Workspace {
     return { filesChanged: files.length, insertions, deletions, files };
   }
 
-  /** Full patch against the base commit, for review or as a run artifact. */
-  async diff(): Promise<string> {
-    const r = await git(['diff', `${this.baseSha}..HEAD`], this.opts());
+  /**
+   * Full patch against the base commit, for review or as a run artifact.
+   * `text` shows every file as text, binary or marked `-diff` in
+   * `.gitattributes`, which is what a scan for secrets needs.
+   */
+  async diff(options: { text?: boolean } = {}): Promise<string> {
+    const r = await git(
+      ['diff', ...SAFE_DIFF, ...(options.text ? ['--text'] : []), `${this.baseSha}..HEAD`],
+      this.opts()
+    );
     return r.stdout;
+  }
+
+  /**
+   * Gitlinks (mode 160000, a submodule's commit) in the index that the base
+   * commit does not have, by path.
+   */
+  async newGitlinks(): Promise<string[]> {
+    // Both list "<mode> …<TAB><path>", one entry per NUL.
+    const links = (text: string) =>
+      new Set(
+        text
+          .split('\0')
+          .filter((e) => e.startsWith('160000 '))
+          .map((e) => e.slice(e.indexOf('\t') + 1))
+      );
+    const index = await git(['ls-files', '--stage', '-z'], this.opts());
+    const base = await git(['ls-tree', '-r', '-z', this.baseSha], this.opts());
+    const before = links(base.stdout);
+    return [...links(index.stdout)].filter((p) => !before.has(p));
   }
 
   async push(remote = 'origin', opts?: { force?: boolean; setUpstream?: boolean }): Promise<void> {
@@ -221,6 +271,7 @@ export class Workspace {
       await git(['worktree', 'remove', '--force', this.path], {
         cwd: this.repoRoot,
         allowFailure: true,
+        harden: true,
       });
     } catch {
       /* best effort */

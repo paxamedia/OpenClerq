@@ -423,3 +423,90 @@ describe('pull requests', () => {
     ).rejects.toThrow(/not JSON/);
   });
 });
+
+describe('git after an agent (hardened)', () => {
+  /**
+   * What an agent can leave in its worktree: a nested repository whose own
+   * config runs a command (core.fsmonitor) whenever git looks at it, staged as
+   * a submodule entry in the worktree's index.
+   */
+  async function plantNestedRepo(ws: { path: string }): Promise<string> {
+    const marker = path.join(tmp, `ran-${Math.random().toString(36).slice(2)}`);
+    const sub = path.join(ws.path, 'sub');
+    fs.mkdirSync(sub);
+    await git(['init', '-q'], { cwd: sub });
+    await git(
+      ['-c', 'user.name=a', '-c', 'user.email=a@a', 'commit', '-q', '--allow-empty', '-m', 'x'],
+      {
+        cwd: sub,
+      }
+    );
+    const hook = path.join(tmp, `fsmonitor-${Math.random().toString(36).slice(2)}.sh`);
+    fs.writeFileSync(hook, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+    await git(['config', 'core.fsmonitor', hook], { cwd: sub });
+    await git(['add', 'sub'], { cwd: ws.path });
+    return marker;
+  }
+
+  it('the planted repository does run code under plain git (so the test means something)', async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'p' });
+    try {
+      const marker = await plantNestedRepo(ws);
+      await git(['status', '--porcelain'], { cwd: ws.path });
+      expect(fs.existsSync(marker)).toBe(true);
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it('runs none of it through status, diff, or commit, and refuses to commit the gitlink', async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'h' });
+    try {
+      const marker = await plantNestedRepo(ws);
+      fs.writeFileSync(path.join(ws.path, 'real.txt'), 'work\n');
+      expect(await ws.hasChanges()).toBe(true);
+      expect(await ws.newGitlinks()).toEqual(['sub']);
+      await expect(ws.commitAll('x')).rejects.toThrow(/nested git repository.*at sub/);
+      await ws.diffStat();
+      await ws.diff({ text: true });
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it('refuses an untracked nested repository that `git add --all` would turn into a gitlink', async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 'u' });
+    try {
+      const sub = path.join(ws.path, 'vendor', 'lib');
+      fs.mkdirSync(sub, { recursive: true });
+      await git(['init', '-q'], { cwd: sub });
+      await git(
+        ['-c', 'user.name=a', '-c', 'user.email=a@a', 'commit', '-q', '--allow-empty', '-m', 'x'],
+        {
+          cwd: sub,
+        }
+      );
+      await expect(ws.commitAll('x')).rejects.toThrow(/vendor\/lib/);
+    } finally {
+      await ws.dispose();
+    }
+  });
+
+  it('shows a file marked -diff, or with a NUL byte, as text when asked', async () => {
+    const ws = await openWorkspace({ kind: 'local', location: local }, { cacheDir, branch: 't' });
+    try {
+      fs.writeFileSync(path.join(ws.path, '.gitattributes'), 'hidden.txt -diff\n');
+      fs.writeFileSync(path.join(ws.path, 'hidden.txt'), 'secret-value-here\n');
+      fs.writeFileSync(path.join(ws.path, 'blob.bin'), Buffer.from('a\0secret-in-binary\n'));
+      await ws.commitAll('x');
+      const plain = await ws.diff();
+      expect(plain).not.toContain('secret-value-here');
+      const text = await ws.diff({ text: true });
+      expect(text).toContain('secret-value-here');
+      expect(text).toContain('secret-in-binary');
+    } finally {
+      await ws.dispose();
+    }
+  });
+});

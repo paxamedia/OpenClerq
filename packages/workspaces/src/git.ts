@@ -27,8 +27,45 @@ export interface GitResult {
   code: number | null;
 }
 
+/**
+ * Configuration for every git command the gateway runs in a worktree after an
+ * agent has worked in it. The agent may have planted a nested repository
+ * (`sub/.git` with its own config) and staged it, or a `.gitattributes`
+ * entry; git would then run code from them on the gateway's behalf, outside
+ * any sandbox. Options given with `-c` win over every config file and reach
+ * child git processes (a submodule's) too:
+ *
+ *   core.fsmonitor=false      no filesystem-monitor command
+ *   core.hooksPath=/dev/null  no hooks, of the repository or a submodule
+ *   submodule.recurse=false   no recursing into submodules
+ *   protocol.file.allow=user  no file:// transport started on a submodule's
+ *                             behalf (a push to a local path still works)
+ *
+ * Diffs also pass `--no-ext-diff --no-textconv --ignore-submodules=all`, and
+ * status `--ignore-submodules=all`. Filter drivers (clean/smudge) are not
+ * turned off: they are defined only in config files, which a sandboxed agent
+ * cannot write (the user's own and the repository's), and the run's own LFS
+ * would break without them. Under the native profile none of this is a
+ * boundary: the agent can run anything as the user anyway.
+ */
+export const HARDENED_GIT = [
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'core.hooksPath=/dev/null',
+  '-c',
+  'submodule.recurse=false',
+  '-c',
+  'protocol.file.allow=user',
+];
+
+/** Options that keep a diff from running anything the repository names. */
+export const SAFE_DIFF = ['--no-ext-diff', '--no-textconv', '--ignore-submodules=all'];
+
 export interface GitOptions {
   cwd: string;
+  /** Prefix HARDENED_GIT: for any command in a worktree an agent has written to. */
+  harden?: boolean;
   /** Extra environment. Credentials belong here, never in the argv. */
   env?: Record<string, string>;
   timeoutMs?: number;
@@ -40,7 +77,8 @@ const DEFAULT_TIMEOUT = 120_000;
 
 export function git(args: string[], opts: GitOptions): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, {
+    const argv = opts.harden ? [...HARDENED_GIT, ...args] : args;
+    const child = spawn('git', argv, {
       cwd: opts.cwd,
       env: {
         ...process.env,
