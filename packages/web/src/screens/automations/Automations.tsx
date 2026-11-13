@@ -11,7 +11,7 @@ import { Switch } from '../../ui/Choice';
 import { CodeBlock, KeyValue } from '../../ui/Display';
 import { Dialog } from '../../ui/Modal';
 import { Menu } from '../../ui/Popover';
-import { RunStatus, StatusTag } from '../../ui/Status';
+import { QUEUED_NOTE, RunStatus, StatusTag } from '../../ui/Status';
 import { Table, type Column } from '../../ui/Table';
 import { Tabs } from '../../ui/Tabs';
 import { useToast } from '../../ui/Toast';
@@ -84,8 +84,9 @@ function useRunNow() {
   const run = async (a: AutomationInfo) => {
     setBusy(a.id);
     try {
-      const { runId } = await client.runAutomation(a.id);
+      const { runId, queued } = await client.runAutomation(a.id);
       live.invalidate(['runs', 'automations']);
+      if (queued) toast({ message: `${a.name} is queued. ${QUEUED_NOTE}`, tone: 'neutral' });
       navigate(runPath(runId));
     } catch (e) {
       toast({ message: `Couldn’t start ${a.name}. ${errorMessage(e)}`, tone: 'err' });

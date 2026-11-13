@@ -34,6 +34,10 @@ export const RUN_STATES: Record<string, { label: string; tone: Tone }> = {
   cancelled: { label: 'Cancelled', tone: 'muted' },
 };
 
+/** What a queued run is waiting for, in words. */
+export const QUEUED_NOTE =
+  'It starts when a run slot is free, its retry is due, or the emergency stop is released.';
+
 /** A run state's label and colour. An unknown state is shown in words, muted. */
 export function runState(state: string): { label: string; tone: Tone } {
   const known = RUN_STATES[state];

@@ -87,6 +87,7 @@ import {
 
 import { mountAutomationRoutes, recoverAfterRestart } from './automations/routes.js';
 import { startAutomationSchedules, stopAutomationSchedules } from './automations/scheduler.js';
+import { readKillPause, writeKillPause } from './kill-state.js';
 import {
   cancelQueuedRuns,
   pauseAutomationQueue,
@@ -629,6 +630,8 @@ export function createGateway(config: GatewayConfig = {}): {
         pauseAutomationQueue();
         modules.triggers.pause();
         triggersPausedAt ??= new Date().toISOString();
+        // Kept in the store, so a restart does not release it.
+        writeKillPause(triggersPausedAt);
         triggersPaused = true;
       }
       emit('kill.engaged', { deniedApprovals, cancelledRuns, triggersPaused });
@@ -644,6 +647,7 @@ export function createGateway(config: GatewayConfig = {}): {
     try {
       const wasPaused = triggersPausedAt !== null;
       triggersPausedAt = null;
+      writeKillPause(null);
       startTriggers(runTriggered);
       // Slots missed while paused are skipped, never caught up.
       startAutomationSchedules(automationDeps, { resume: true });
@@ -1196,13 +1200,25 @@ export function createGateway(config: GatewayConfig = {}): {
     if (auth.source === 'generated') {
       logger.info('Generated a new gateway token at ~/.clerq/gateway-token (mode 0600).');
     }
-    startTriggers(runTriggered);
+    // The kill switch, if it was engaged when the gateway stopped, still is.
+    triggersPausedAt = readKillPause();
+    if (triggersPausedAt !== null) {
+      logger.warn(
+        'The kill switch is engaged; triggers, schedules and queued runs wait for POST /resume',
+        {
+          since: triggersPausedAt,
+        }
+      );
+    } else {
+      startTriggers(runTriggered);
+    }
     startPushPublisher();
     try {
       await recoverAfterRestart();
       // Queued runs, from before the restart too, start as the limits allow.
       startAutomationQueue(automationDeps);
-      startAutomationSchedules(automationDeps);
+      if (triggersPausedAt !== null) pauseAutomationQueue();
+      else startAutomationSchedules(automationDeps);
     } catch (e) {
       logger.error('Automations failed to start', {
         err: e instanceof Error ? e.message : String(e),
@@ -1210,6 +1226,7 @@ export function createGateway(config: GatewayConfig = {}): {
     }
     try {
       await modules.loadAll(config.modulesDir ?? process.env.CLERQ_MODULES_DIR);
+      if (triggersPausedAt !== null) modules.triggers.pause();
     } catch (e) {
       logger.warn('Module load error', { err: e instanceof Error ? e.message : String(e) });
     }

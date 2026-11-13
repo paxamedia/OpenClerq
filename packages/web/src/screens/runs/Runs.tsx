@@ -9,7 +9,7 @@ import type { RunDetail, RunStep, RunSummary } from '@clerq/gateway-client';
 import { Button } from '../../ui/Button';
 import { CodeBlock, KeyValue } from '../../ui/Display';
 import { Input, Select } from '../../ui/Field';
-import { RunStatus } from '../../ui/Status';
+import { QUEUED_NOTE, RunStatus } from '../../ui/Status';
 import { Split } from '../../ui/Split';
 import { Table, type Column } from '../../ui/Table';
 import { useToast } from '../../ui/Toast';
@@ -387,7 +387,12 @@ function RunView({ id }: { id: string }) {
           <KeyValue
             items={[
               { label: 'Status', value: <RunStatus state={r.status} /> },
-              { label: 'Outcome', value: r.exitReason },
+              {
+                label: 'Outcome',
+                value:
+                  r.exitReason ??
+                  (r.status === 'queued' || r.status === 'leased' ? QUEUED_NOTE : undefined),
+              },
               { label: 'Started', value: <When at={r.startedAt ?? r.createdAt} /> },
               { label: 'Duration', value: r.startedAt ? duration(end - start) : '', mono: true },
               { label: 'Trigger', value: TRIGGERS[r.trigger] ?? r.trigger },
