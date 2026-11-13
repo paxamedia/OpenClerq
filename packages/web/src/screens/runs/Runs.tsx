@@ -31,7 +31,11 @@ import {
 } from '../../shell/layout';
 import { useNow, When } from '../common';
 import { DiffViewer } from './Diff';
+import { childNode, RunTree, ToolCalls, type TreeNode } from './RunParts';
+import { describeStep, stepLabel } from './steps';
 import './runs.css';
+
+export { stepLabel };
 
 const TRIGGERS: Record<string, string> = {
   schedule: 'Schedule',
@@ -144,11 +148,18 @@ function RunList() {
       key: 'cost',
       hideOnPhone: true,
       header: 'Cost',
-      cell: (r) => money(r.costUsd, { atLeast: !r.costKnown && r.costUsd > 0 }),
-      sortValue: (r) => r.costUsd,
+      cell: (r) => (
+        <>
+          {money(r.costUsd + (r.childCostUsd ?? 0), { atLeast: !r.costKnown && r.costUsd > 0 })}
+          {r.childCostUsd ? (
+            <span className="runs-cost-sub">incl. {money(r.childCostUsd)} sub-agents</span>
+          ) : null}
+        </>
+      ),
+      sortValue: (r) => r.costUsd + (r.childCostUsd ?? 0),
       align: 'end',
       mono: true,
-      width: 'sm',
+      width: 'md',
     },
   ];
 
@@ -230,35 +241,6 @@ function RunList() {
   );
 }
 
-/** One line saying what a step was. */
-export function stepLabel(step: RunStep): string {
-  const input = (step.input ?? {}) as Record<string, unknown>;
-  const output = (step.output ?? {}) as Record<string, unknown>;
-  switch (step.kind) {
-    case 'gate':
-      return `Gate: ${String(input.run ?? input.assert ?? '')}`;
-    case 'git': {
-      const action = String(input.action ?? '');
-      const words: Record<string, string> = {
-        fetch: 'Fetched the base branch',
-        worktree: `Opened a worktree${output.branch ? ` on ${String(output.branch)}` : ''}`,
-        commit: `Committed${output.sha ? ` ${String(output.sha).slice(0, 7)}` : ''}`,
-        push: `Pushed ${String(input.branch ?? '')}`.trim(),
-        pull_request: 'Opened a draft pull request',
-      };
-      return words[action] ?? `git ${action}`;
-    }
-    case 'tool':
-      return `Tool: ${String(input.name ?? '')}`;
-    case 'llm':
-      return step.status === 'text' ? String(output.text ?? '').split('\n')[0] : 'Model call';
-    case 'shell':
-      return `Shell: ${String(input.command ?? input.run ?? '')}`;
-    default:
-      return step.kind;
-  }
-}
-
 function Artifacts({ run }: { run: RunDetail }) {
   const client = useClient();
   const diffs = run.artifacts.filter((a) => a.kind === 'diff');
@@ -305,26 +287,50 @@ function Artifacts({ run }: { run: RunDetail }) {
   );
 }
 
-/** The sub-agents a run started, each a link to its own run. */
+/** The run's own entry in the tree, from its facts. */
+function nodeOf(r: RunDetail): TreeNode {
+  return {
+    id: r.id,
+    title: runName(r),
+    status: r.status,
+    costUsd: r.costUsd,
+    costKnown: r.costKnown,
+  };
+}
+
+/** The sub-agents a run started, each under it with its status and cost. */
 function SubAgents({ run }: { run: RunDetail }) {
   const children = run.children ?? [];
   return (
     <Section title={`Sub-agents (${children.length})`}>
-      <KeyValue
-        items={children.map((c) => ({
-          label: <RunStatus state={c.status} />,
-          value: (
-            <Link className="page-link" to={`/runs/${encodeURIComponent(c.id)}`}>
-              {c.input ? (c.input.length > 80 ? `${c.input.slice(0, 80)}…` : c.input) : c.id}
-            </Link>
-          ),
-        }))}
-      />
-      {run.childCostUsd ? (
+      <RunTree parent={nodeOf(run)} children={children.map(childNode)} currentId={run.id} />
+    </Section>
+  );
+}
+
+/** Where a sub-agent's run sits: under the run that started it, beside its siblings. */
+function StartedBy({ run }: { run: RunDetail }) {
+  const parent = useRun(run.parentRunId ?? null);
+  const id = run.parentRunId as string;
+  return (
+    <Section title="Started by a sub-agent call">
+      {parent.data ? (
+        <RunTree
+          parent={nodeOf(parent.data)}
+          children={(parent.data.children ?? []).map(childNode)}
+          currentId={run.id}
+        />
+      ) : parent.error ? (
         <p className="page-hint">
-          They cost {money(run.childCostUsd)} on top of this run’s own cost.
+          It was started by{' '}
+          <Link className="page-link" to={`/runs/${encodeURIComponent(id)}`}>
+            run {id}
+          </Link>
+          .
         </p>
-      ) : null}
+      ) : (
+        <PageSkeleton kind="text" label="Loading the run that started this one" />
+      )}
     </Section>
   );
 }
@@ -421,22 +427,6 @@ function RunView({ id }: { id: string }) {
               { label: 'Started', value: <When at={r.startedAt ?? r.createdAt} /> },
               { label: 'Duration', value: r.startedAt ? duration(end - start) : '', mono: true },
               { label: 'Trigger', value: TRIGGERS[r.trigger] ?? r.trigger },
-              ...(r.parentRunId
-                ? [
-                    {
-                      label: 'Started by',
-                      value: (
-                        <Link
-                          className="page-link"
-                          to={`/runs/${encodeURIComponent(r.parentRunId)}`}
-                        >
-                          {r.parentRunId}
-                        </Link>
-                      ),
-                      mono: true,
-                    },
-                  ]
-                : []),
               {
                 label: 'Automation',
                 value: r.automationId ? (
@@ -451,11 +441,30 @@ function RunView({ id }: { id: string }) {
                 ),
               },
               { label: 'Branch', value: r.branch, mono: true },
+              ...(r.modelOverride
+                ? [
+                    {
+                      label: 'Model',
+                      value: `${r.modelOverride}, chosen for this run: used as chosen, with no fallback`,
+                    },
+                  ]
+                : []),
               {
                 label: 'Cost',
                 value: `${money(r.costUsd, { atLeast: !r.costKnown && r.costUsd > 0 })}${r.costKnown ? '' : ' (some calls unpriced)'}`,
                 mono: true,
               },
+              ...(r.childCostUsd
+                ? [
+                    {
+                      label: 'With sub-agents',
+                      value: money(r.costUsd + r.childCostUsd, {
+                        atLeast: !r.costKnown && r.costUsd > 0,
+                      }),
+                      mono: true,
+                    },
+                  ]
+                : []),
               {
                 label: 'Tokens',
                 value: `${tokens(r.tokensIn, false)} in · ${tokens(r.tokensOut, false)} out`,
@@ -473,7 +482,15 @@ function RunView({ id }: { id: string }) {
               runEnd={stepsEnd}
               open={open}
               onToggle={(k) => setOpen(open === k ? null : k)}
-              renderDetail={(row) => <CodeBlock code={stepDetail(row.step)} wrap maxHeight="md" />}
+              renderDetail={(row) => {
+                const note = describeStep(row.step).note;
+                return (
+                  <>
+                    {note && <p className="run-step-note">{note}</p>}
+                    <CodeBlock code={stepDetail(row.step)} wrap maxHeight="md" />
+                  </>
+                );
+              }}
             />
           ) : (
             <p className="page-hint">
@@ -483,6 +500,12 @@ function RunView({ id }: { id: string }) {
         </Section>
       </Split>
       {r.children?.length ? <SubAgents run={r} /> : null}
+      {r.parentRunId ? <StartedBy run={r} /> : null}
+      {r.toolCalls?.length ? (
+        <Section title={`Tool calls (${r.toolCalls.length})`}>
+          <ToolCalls calls={r.toolCalls} />
+        </Section>
+      ) : null}
       <Artifacts run={r} />
       {r.input && !r.automationId && (
         <Section title="Message">

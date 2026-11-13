@@ -255,6 +255,8 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         ];
       }
     }
+    runs.push(...specialRuns());
+    runs.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     const month = new Date(now);
     const monthStart = new Date(month.getFullYear(), month.getMonth(), 1).getTime();
     for (const a of automations) {
@@ -395,6 +397,424 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
       );
     }
     return steps;
+  }
+
+  /**
+   * Runs that show what the run page can say: every labelled step, tool calls
+   * with their decisions, and a run with sub-agents under it.
+   */
+  function specialRuns(): RunDetail[] {
+    const diffArtifact = [
+      {
+        id: 1,
+        kind: 'diff',
+        name: 'clerq-weekly-deps.diff',
+        size: DIFF.length,
+        sha256: 'f'.repeat(64),
+      },
+    ] as ArtifactInfo[];
+    const t0 = now - 5 * H;
+    const at = (min: number) => iso(t0 + min * 60_000);
+    const rich: RunDetail = {
+      id: 'run_rich01',
+      status: 'done',
+      trigger: 'schedule',
+      automationId: 'aut_deps',
+      automationName: 'weekly-deps',
+      modelOverride: 'anthropic/claude-haiku-5-5',
+      exitReason: 'Published: draft pull request',
+      createdAt: at(0),
+      startedAt: at(1),
+      finishedAt: at(31),
+      costUsd: 1.12,
+      costKnown: true,
+      tokensIn: 402_000,
+      tokensOut: 31_400,
+      branch: 'clerq/weekly-deps-rich',
+      prUrl: 'https://github.com/example/widgets/pull/412',
+      artifacts: diffArtifact,
+      steps: [
+        {
+          seq: 1,
+          kind: 'tool',
+          input: { name: 'schedule.catch_up' },
+          output: {
+            missedSlots: 2,
+            countCapped: false,
+            firstMissed: at(-2 * 24 * 60),
+            slot: at(-24 * 60),
+            noticed: 'wake',
+          },
+          status: 'ok',
+          createdAt: at(0),
+        },
+        {
+          seq: 2,
+          kind: 'tool',
+          input: { name: 'run.requeue', relaunch: 1 },
+          output: { after: 'Its gateway stopped before it could start.', of: 3 },
+          status: 'warning',
+          createdAt: at(0.5),
+        },
+        {
+          seq: 3,
+          kind: 'git',
+          input: { action: 'clone', repo: 'github:example/widgets' },
+          output: {
+            path: '/Users/me/.clerq/workspaces/widgets-3f9a1c2b7d10',
+            url: 'https://github.com/example/widgets.git',
+            credential: 'vault:GITHUB_TOKEN',
+          },
+          status: 'ok',
+          durationMs: 8200,
+          createdAt: at(1.4),
+        },
+        {
+          seq: 4,
+          kind: 'git',
+          input: { action: 'fetch', ref: 'main' },
+          output: { startRef: 'origin/main' },
+          status: 'ok',
+          durationMs: 1100,
+          createdAt: at(1.5),
+        },
+        {
+          seq: 5,
+          kind: 'git',
+          input: { action: 'worktree', repo: '/Users/me/.clerq/workspaces/widgets-3f9a1c2b7d10' },
+          output: { branch: 'clerq/weekly-deps-rich' },
+          status: 'ok',
+          durationMs: 700,
+          createdAt: at(1.6),
+        },
+        {
+          seq: 6,
+          kind: 'tool',
+          input: {
+            name: 'driver.detect',
+            driver: 'builtin',
+            model: 'anthropic/claude-haiku-5-5',
+            for: 'chosen',
+          },
+          output: { id: 'builtin', available: true },
+          status: 'ok',
+          createdAt: at(1.7),
+        },
+        {
+          seq: 7,
+          kind: 'tool',
+          input: { name: 'sandbox', profile: 'native' },
+          output: {
+            note: 'Unisolated: the agent and the gates run with your account’s access to files and the network (profile native, the default). Set sandbox.profile to seatbelt or container to limit them.',
+          },
+          status: 'warning',
+          createdAt: at(1.8),
+        },
+        {
+          seq: 8,
+          kind: 'tool',
+          input: { name: 'memory.read', types: ['preference', 'procedure'] },
+          output: { notes: 3 },
+          status: 'ok',
+          createdAt: at(1.9),
+        },
+        {
+          seq: 9,
+          kind: 'tool',
+          input: {
+            name: 'model.fallback',
+            from: 'anthropic/claude-haiku-5-5',
+            to: 'openai/gpt-5-mini',
+          },
+          output: { reason: 'Provider overloaded (HTTP 529).' },
+          status: 'warning',
+          createdAt: at(6),
+        },
+        {
+          seq: 10,
+          kind: 'tool',
+          input: { name: 'context.compact', method: 'summary' },
+          output: {
+            compactedMessages: 24,
+            keptMessages: 6,
+            tokensBefore: 118_000,
+            tokensAfter: 21_000,
+          },
+          status: 'ok',
+          createdAt: at(11),
+        },
+        {
+          seq: 11,
+          kind: 'gate',
+          input: { run: 'pnpm test' },
+          output: {
+            exitCode: 1,
+            timedOut: false,
+            stdout: '',
+            stderr: 'Error: getaddrinfo ENOTFOUND registry.npmjs.org',
+            egressDenied: [
+              { host: 'registry.npmjs.org', port: 443, at: at(14) },
+              { host: 'registry.npmjs.org', port: 443, at: at(14.1) },
+            ],
+          },
+          status: 'failed',
+          durationMs: 22_000,
+          createdAt: at(14.3),
+        },
+        {
+          seq: 12,
+          kind: 'tool',
+          input: { name: 'agent.escalate', escalation: 1, model: 'anthropic/claude-opus-5-5' },
+          output: { from: 'openai/gpt-5-mini', after: 'Gate failed: pnpm test (exit 1)' },
+          status: 'warning',
+          createdAt: at(14.5),
+        },
+        {
+          seq: 13,
+          kind: 'tool',
+          input: { name: 'run.retry', attempt: 2 },
+          output: {
+            after: 'The agent stopped without a result.',
+            cause: 'driver_crash',
+            notBefore: at(16),
+          },
+          status: 'warning',
+          createdAt: at(15),
+        },
+        {
+          seq: 14,
+          kind: 'git',
+          input: { action: 'commit' },
+          output: { sha: '4be71d09c', filesChanged: 2, insertions: 5, deletions: 5 },
+          status: 'ok',
+          durationMs: 600,
+          createdAt: at(24),
+        },
+        {
+          seq: 15,
+          kind: 'gate',
+          input: { run: 'pnpm test' },
+          output: { exitCode: 0, timedOut: false, stdout: '12 passed', stderr: '' },
+          status: 'passed',
+          durationMs: 31_000,
+          createdAt: at(26),
+        },
+        {
+          seq: 16,
+          kind: 'tool',
+          input: { name: 'diff.secrets' },
+          output: {
+            note: 'The diff contains a value from the vault that this run uses (redacted in the stored diff, not in the commit). Pushing waits for approval.',
+          },
+          status: 'warning',
+          createdAt: at(26.5),
+        },
+        {
+          seq: 17,
+          kind: 'git',
+          input: { action: 'push', branch: 'clerq/weekly-deps-rich' },
+          output: { remote: 'https://github.com/example/widgets.git' },
+          status: 'ok',
+          durationMs: 2100,
+          createdAt: at(30),
+        },
+        {
+          seq: 18,
+          kind: 'git',
+          input: { action: 'pull_request' },
+          output: { url: 'https://github.com/example/widgets/pull/412' },
+          status: 'ok',
+          durationMs: 1300,
+          createdAt: at(31),
+        },
+      ],
+      toolCalls: [
+        {
+          id: 1,
+          name: 'fs.read',
+          input: { path: 'package.json' },
+          output: '{\n  "name": "widgets",\n  "dependencies": { "express": "^5.1.0" }\n}',
+          status: 'ok',
+          durationMs: 12,
+          approvalState: 'not_required',
+          createdAt: at(3),
+        },
+        {
+          id: 2,
+          name: 'runtime.shell',
+          input: { command: 'pnpm outdated' },
+          output: Array.from(
+            { length: 24 },
+            (_, i) => `package-${i + 1}   ^1.${i}.0   ^1.${i + 2}.0`
+          ).join('\n'),
+          status: 'ok',
+          durationMs: 4300,
+          approvalState: 'approved',
+          createdAt: at(4),
+        },
+        {
+          id: 3,
+          name: 'fs.edit',
+          input: { path: 'package.json', old: '^5.1.0', new: '^5.2.1' },
+          output: 'Edited package.json (1 replacement).',
+          status: 'ok',
+          durationMs: 8,
+          approvalState: 'not_required',
+          createdAt: at(8),
+        },
+        {
+          id: 4,
+          name: 'runtime.shell',
+          input: { command: 'git push origin HEAD' },
+          output: 'You denied this request.',
+          status: 'denied',
+          durationMs: 61_000,
+          approvalState: 'denied',
+          createdAt: at(9),
+        },
+        {
+          id: 5,
+          name: 'Bash',
+          input: { command: 'pnpm install --frozen-lockfile' },
+          output: 'Done in 3.2s',
+          status: 'ok',
+          durationMs: 3300,
+          approvalState: null,
+          createdAt: at(12),
+        },
+        {
+          id: 6,
+          name: 'fs.write',
+          input: { path: '/etc/hosts', content: '…' },
+          output: 'The path is outside the worktree.',
+          status: 'denied',
+          durationMs: 3,
+          approvalState: 'not_required',
+          createdAt: at(13),
+        },
+      ],
+    };
+
+    const parentAt = now - 26 * 60_000;
+    const child = (
+      id: string,
+      status: string,
+      task: string,
+      cost: number,
+      start: number,
+      minutes: number
+    ): RunDetail => ({
+      id,
+      status,
+      trigger: 'subagent',
+      parentRunId: 'run_subs01',
+      input: task,
+      exitReason: status === 'failed' ? 'The sub-agent ran out of time.' : undefined,
+      createdAt: iso(parentAt + start * 60_000),
+      startedAt: iso(parentAt + start * 60_000),
+      finishedAt: status === 'executing' ? undefined : iso(parentAt + (start + minutes) * 60_000),
+      costUsd: cost,
+      costKnown: true,
+      tokensIn: Math.round(cost * 300_000),
+      tokensOut: Math.round(cost * 40_000),
+      steps: [
+        {
+          seq: 1,
+          kind: 'tool',
+          input: {
+            name: 'subagent.start',
+            parentRunId: 'run_subs01',
+            tools: 'read-only',
+            model: null,
+            strict: false,
+          },
+          output: { allow: ['risk:read'], approvalRequired: [], deny: ['sessions.spawn'] },
+          status: 'ok',
+          createdAt: iso(parentAt + start * 60_000),
+        },
+        {
+          seq: 2,
+          kind: 'llm',
+          output: { text: `Working on: ${task}` },
+          status: 'text',
+          createdAt: iso(parentAt + (start + 0.5) * 60_000),
+        },
+      ],
+      artifacts: [],
+    });
+    const children = [
+      child('run_subs_a', 'done', 'Find every use of the deprecated zod API in src/', 0.18, 2, 4),
+      child('run_subs_b', 'done', 'List the tests that touch the checkout flow', 0.07, 2.5, 3),
+      child(
+        'run_subs_c',
+        'executing',
+        'Check the lockfile for duplicate express versions',
+        0.04,
+        8,
+        5
+      ),
+    ];
+    const subs: RunDetail = {
+      id: 'run_subs01',
+      status: 'executing',
+      trigger: 'schedule',
+      automationId: 'aut_tests',
+      automationName: 'flaky-tests',
+      createdAt: iso(parentAt),
+      startedAt: iso(parentAt),
+      costUsd: 0.62,
+      costKnown: true,
+      childCostUsd: 0.29,
+      tokensIn: 210_000,
+      tokensOut: 16_000,
+      branch: 'clerq/flaky-tests-subs',
+      steps: [
+        {
+          seq: 1,
+          kind: 'tool',
+          input: { name: 'sessions.spawn' },
+          output: { text: 'Started 3 sub-agents.' },
+          status: 'ok',
+          durationMs: 240_000,
+          createdAt: iso(parentAt + 6 * 60_000),
+        },
+      ],
+      artifacts: [],
+      children: children.map((c) => ({
+        id: c.id,
+        status: c.status,
+        input: c.input,
+        exitReason: c.exitReason,
+        costUsd: c.costUsd,
+        costKnown: true,
+        createdAt: c.createdAt,
+        finishedAt: c.finishedAt,
+      })),
+      toolCalls: [
+        {
+          id: 1,
+          name: 'fs.search',
+          input: { pattern: 'flaky', path: 'src' },
+          output: 'src/checkout.test.ts:41: // flaky on CI',
+          status: 'ok',
+          durationMs: 30,
+          approvalState: 'not_required',
+          createdAt: iso(parentAt + 60_000),
+        },
+        {
+          id: 2,
+          name: 'sessions.spawn',
+          input: { task: children[0].input, tools: ['risk:read'] },
+          output: 'The sub-agent finished: 4 uses found.',
+          status: 'ok',
+          durationMs: 240_000,
+          approvalState: 'not_required',
+          createdAt: iso(parentAt + 2 * 60_000),
+        },
+      ],
+    };
+    // A sub-agent's rolled-up cost is on the parent's list entry too.
+    return [rich, subs, ...children];
   }
 
   // Repositories: one per automation's folder, then a clone of a GitHub one and a GitLab one.
