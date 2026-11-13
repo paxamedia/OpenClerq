@@ -175,12 +175,15 @@ A conversation's folder (`workspace`, an existing directory, not the disk root, 
 holds or lies inside `~/.clerq` or the store's directory, checked again at every message) and its
 access (`permissionMode`: `acceptEdits` full access by default, `default` asks before writes and
 commands, `plan` reads only, `sandboxed` on macOS: full access inside seatbelt with writes only in
-the folder and the chat's home, no network, credential stores and `~/.clerq` unreadable; a push from
-the shell waits in every level) are set with `POST /sessions/:id/update`; a session says whether
+the folder and the chat's home, no network, credential stores and `~/.clerq` unreadable; `git push`
+and `gh pr create` are recognised by word and wait at every level, which a command that hides the
+word gets past) are set with `POST /sessions/:id/update`; a session says whether
 this machine has `sandboxAvailable`. Commands get a home directory of the conversation's own under
 the system temporary directory (removed with the conversation), with `GIT_AUTHOR_*` and
-`GIT_COMMITTER_*` from the user's global git config, so `~` is not the user's and global git config,
-credential helpers set there and dotfiles are not read. Under Full access a command still runs as the
+`GIT_COMMITTER_*` from the user's global git config. Only what finds the user's files through
+`$HOME` is affected (git's global config and a credential helper set there, shell dotfiles): ssh takes
+the home from the account, so a push over ssh still uses `~/.ssh` and its keys, and a credential
+helper in the system git config (macOS's keychain helper) still answers. Under Full access a command still runs as the
 user and can name any path the account can read: see SECURITY.md §3.
 Without a folder the rules deny `group:fs`, `group:runtime` and `group:git` outright. Every chat
 denies `automation.save|create|update|enable|disable|run|delete` and `sessions.spawn`; no tool for

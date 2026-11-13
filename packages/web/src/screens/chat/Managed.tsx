@@ -416,7 +416,7 @@ const PERMISSION_LABELS: Record<ChatPermissionMode, string> = {
 
 const PERMISSION_HINTS: Record<ChatPermissionMode, string> = {
   acceptEdits:
-    'The agent can do anything your account can, including drive OpenClerq itself. Pushing waits for you.',
+    'The agent can do anything your account can, including drive OpenClerq itself. A push it recognises waits for you.',
   default:
     'Writes and commands wait for your approval. A command you approve has your account’s access.',
   plan: 'The agent only reads the folder.',
