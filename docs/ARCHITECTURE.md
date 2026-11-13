@@ -261,7 +261,8 @@ most 1,000; it listed every one), and a value over 20,000 characters is refused 
 ### Automations
 
 An automation is a YAML spec — a subset of [ROADMAP.md §4](ROADMAP.md#4-automations-as-code) —
-that runs a coding agent against a local repository, on a schedule or on demand. Each state is
+that runs a coding agent against a repository (a local path, or a GitHub or GitLab repository the
+gateway clones), on a schedule or on demand. Each state is
 written before its work starts:
 
 ```text
@@ -273,10 +274,10 @@ queued → leased → preparing → executing → verifying → publishing → d
 
 - **queued** — a row in `runs`, waiting for a place: at most `CLERQ_MAX_CONCURRENT_RUNS` (default 2) automation runs at once, one per automation, and a retry waits out its backoff (`not_before`). Queued runs survive a restart.
 - **leased** — a gateway takes the run: its pid and start time as owner, and `lease_until` a minute ahead, in one statement that only succeeds while the row is still queued. The lease is renewed every 20 seconds until the run ends.
-- **preparing** — a new branch in a fresh `git worktree`, started from origin's copy of the base branch (fetched first; the local branch if the fetch fails). The user's checkout is never touched.
-- **executing** — the spec's driver runs the agent in the worktree: a vendor CLI under the user's own sign-in, or the builtin loop in the gateway, with a minimal environment: no gateway token, and no API key unless the spec names a vault secret (handed over as the variable that CLI reads). Its tool calls become run steps, and the cost it reports goes on the run. The process it starts, and each gate's, is recorded with the run; see [Agent drivers](#agent-drivers).
+- **preparing** — a new branch in a fresh `git worktree`, started from origin's copy of the base branch (fetched first; the local branch if the fetch fails). The user's checkout is never touched. A remote repository (`github:owner/name`, `gitlab:group/name`) is cloned once into the workspace cache, without a checkout, and fetched before each run; see [Remote repositories](#remote-repositories).
+- **executing** — the spec's driver runs the agent in the worktree, under the spec's sandbox profile (`native` unless the spec opts in; see [Sandbox profiles](#sandbox-profiles)): a vendor CLI under the user's own sign-in, or the builtin loop in the gateway, with a minimal environment: no gateway token, and no API key unless the spec names a vault secret (handed over as the variable that CLI reads). Its tool calls become run steps, and the cost it reports goes on the run. The process it starts, and each gate's, is recorded with the run; see [Agent drivers](#agent-drivers).
 - **verifying** — the agent's changes are committed, then each gate runs in the worktree, in order: a command (`run:`) must exit 0, and an assertion (`assert: diff.…`) is checked against the run's diff from its base. The first failure ends the run, unless the spec escalates (below).
-- **publishing** — push, then a draft pull request on GitHub. The push waits in the approvals inbox unless the spec sets `approvals.push: auto`, and an automation's first push always waits.
+- **publishing** — push, then a draft pull request on GitHub (a draft merge request on GitLab). The push waits in the approvals inbox unless the spec sets `approvals.push: auto`, and an automation's first push always waits.
 
 `packages/policy` decides each action first: running the agent, a gate, committing, pushing,
 opening the PR. Anything the spec does not ask to publish is denied. The diff and the agent's
@@ -437,7 +438,8 @@ does in `default` mode. Each driver maps the four modes to the nearest thing it 
 | `dontAsk`               | `--permission-mode dontAsk`     | `--sandbox read-only`       | `--mode ask` (read-only) | reads only                                   |
 | `plan`                  | `--permission-mode plan`        | `--sandbox read-only`       | `--mode plan`            | reads only                                   |
 
-No CLI is ever started with its "run everything" switch. In Codex's `workspace-write`
+Under the `native` profile no CLI is ever started with its "run everything" switch; under
+`seatbelt` and `container`, Codex is (see [Sandbox profiles](#sandbox-profiles)). In Codex's `workspace-write`
 sandbox the driver also passes `--config sandbox_workspace_write.network_access=true`, because
 Codex turns the network off there by default and OpenClerq's default is full access: an agent
 that cannot install packages or fetch what a test needs is of little use. Without network, the
@@ -540,8 +542,44 @@ process, or another instance on the same store) is not treated as interrupted: i
 approvals and worktree are left as they are. This needs `ps` with `lstart` (macOS, procps); where
 there is none, nothing is stopped.
 
-In this release the agent and the gates run with the `native` profile, without isolation, and a
-spec must say so to run. See [SECURITY.md](SECURITY.md).
+#### Sandbox profiles
+
+`sandbox.profile` is `native` (the default, also when the spec has no `sandbox` block), `seatbelt`
+or `container`. The run records which, as a `sandbox` step; a native run's says it is unisolated.
+`automations/isolation.ts` turns the spec into the `@clerq/sandbox` settings for the agent and for
+the gates, from the worktree's git directories (`Workspace.gitDirs()`):
+
+- the same profile for the agent, the builtin agent's shell commands and sub-agents' commands, and the gates;
+- writes in the worktree and the worktree's own entry in the git directory; the git directory itself and the `.git`, `HEAD`, `commondir` and `gitdir` pointers read-only, because the gateway's git runs in the worktree after the agent, outside the profile;
+- under seatbelt, reads everywhere except the credential stores in `credentialPaths()`, and an agent CLI's state directories writable (`agentStatePaths()` in `@clerq/drivers`) with their configuration-only files protected; under container, only the mounted paths;
+- the network: `sandbox.network`, plus the CLI's provider hosts for the agent (`DRIVER_CAPABILITIES[*].providerHosts`; none for builtin, whose model calls the gateway makes), through an egress proxy: on macOS a proxy in the gateway with the sandbox's network closed but its port, in a container a proxy container on an internal network. `network: all` lifts the limit.
+
+Seatbelt on a machine that is not a Mac, or the container profile with no runtime, fails the run
+before it does any work, and the spec preview says so. Under seatbelt and container, Codex runs
+with `--sandbox danger-full-access` (its own sandbox cannot nest in seatbelt; the outer profile is
+the boundary) and a read-only permission mode makes the worktree read-only. In a container a CLI
+driver runs the image's CLI by name (`DRIVER_CAPABILITIES[*].cliName`), `detect` does not check the
+host's copy, and the spec must give the CLI a key (`agent.api_key_secret`). Each container is named
+`clerq-<run>-<random>`; `exec` removes it (with its proxy and network) when the command ends, and the
+name is kept in `run_processes.container` (store migration 19) so the next gateway removes what a
+crashed one left. What each profile does and does not enforce is in
+[SECURITY.md §2.1](SECURITY.md#21-automation-sandbox-profiles).
+
+#### Remote repositories
+
+`targets.repos` takes one of `local:<path>`, `github:owner/name`, `gitlab:group/name` or an https
+URL on github.com or gitlab.com, with `#branch` for a base other than the default. A remote is
+cloned into `~/.clerq/workspaces/<name>-<hash>` (under a temporary name, then moved; one clone at a
+time per entry) and recorded in `repos` with its URL, the clone's path and the secret it is reached
+with. Each run fetches the base branch and cuts its worktree from `origin/<base>`; the branch is
+deleted from the clone once pushed. Every forge credential comes from one function
+(`RunnerDeps.forgeCredentials`, by forge, project and purpose: fetch, push, pull request), by
+default the vault secret `publish.token_secret` (`GITHUB_TOKEN`, or `GITLAB_TOKEN` for GitLab),
+so an installation token can replace it later. git gets it as an HTTP header for the forge's host
+in the environment of the one command (`forgeAuthEnv()`), never in the argv, the URL or the clone's
+config. A public repository clones without one. The diff stored with the run, and gate output, are
+redacted of the vault values the run holds; a diff that contained one makes the push wait for
+approval.
 
 ---
 

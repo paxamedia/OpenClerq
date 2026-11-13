@@ -258,11 +258,12 @@ on:
   events: [pr_opened, issue_labeled:security]
 
 targets:
-  repos: [local:~/code/openclerq, github:paxamedia/*]
-  max_parallel: 4
+  repos: [local:~/code/openclerq, github:paxamedia/*] # local:<path> | github:owner/name | gitlab:group/name
+  max_parallel: 4 # several repositories and globs: fleet runs, after 1.0
 
 agent:
   driver: claude-code # builtin | claude-code | codex | cursor-agent
+  api_key_secret: ANTHROPIC_KEY # a vault secret; a CLI in a container needs one
   model:
     primary: claude-sonnet-4-5
     escalate: [claude-opus-5] # a gate failed: run again with the next, same worktree
@@ -274,10 +275,11 @@ prompt: |
   Apply only patch and minor bumps with no breaking changes noted.
   Update the lockfile. Do not touch source files.
 
-sandbox:
-  profile: container # native | seatbelt | container
-  network: [registry.npmjs.org, api.github.com]
-  filesystem: repo_only
+sandbox: # leave out to run unisolated (native)
+  profile: container # native (default) | seatbelt (macOS) | container
+  image: ghcr.io/acme/agent-tools:1 # container only: the gates' tools and the agent CLI
+  network: [registry.npmjs.org, api.github.com] # plus the agent CLI's provider; or all
+  filesystem: repo_only # writes only in the run's worktree (seatbelt, container)
   timeout: 20m
 
 gates: # all must pass or the run does not publish

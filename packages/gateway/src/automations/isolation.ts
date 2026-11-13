@@ -138,10 +138,13 @@ export function isolationFor(
     const caps = DRIVER_CAPABILITIES[driver];
     // In a container the CLI keeps its state in the container's own /tmp.
     const state =
-      profile === 'seatbelt' ? agentStatePaths(driver, home, options.env) : { dirs: [], files: [] };
+      profile === 'seatbelt'
+        ? agentStatePaths(driver, home, options.env)
+        : { dirs: [], files: [], protect: [] };
     return {
       ...shared,
       allowWrite: [...(shared.allowWrite ?? []), ...state.dirs],
+      protect: [...(shared.protect ?? []), ...state.protect],
       ...(state.files.length > 0 ? { allowWritePrefix: state.files } : {}),
       network: networkFor(spec, caps.providerHosts),
     };

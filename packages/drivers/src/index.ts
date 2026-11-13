@@ -122,30 +122,55 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
  * Under the seatbelt profile they are the only places outside the worktree
  * the agent may write: a CLI refreshes its sign-in there, and a copy would
  * rotate the refresh token away from the user's own sign-in.
+ *
+ * `protect` lists what inside them holds only configuration that would run
+ * code the next time the CLI is used outside the sandbox (hooks, MCP servers,
+ * a notify command, instructions it reads): kept read-only. A file the CLI
+ * itself rewrites during a run (`~/.claude.json`) cannot be protected.
  */
 export function agentStatePaths(
   id: DriverId,
   home = os.homedir(),
   env: NodeJS.ProcessEnv = process.env
-): { dirs: string[]; files: string[] } {
+): { dirs: string[]; files: string[]; protect: string[] } {
   const config = env.XDG_CONFIG_HOME || path.join(home, '.config');
   switch (id) {
-    case 'claude-code':
+    case 'claude-code': {
+      const dir = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
+      const protect = [
+        'settings.json',
+        'settings.local.json',
+        'CLAUDE.md',
+        'commands',
+        'agents',
+        'hooks',
+        'plugins',
+        'skills',
+      ].map((p) => path.join(dir, p));
       return env.CLAUDE_CONFIG_DIR
-        ? { dirs: [env.CLAUDE_CONFIG_DIR], files: [] }
+        ? { dirs: [dir], files: [], protect }
         : {
-            dirs: [
-              path.join(home, '.claude'),
-              path.join(home, 'Library', 'Caches', 'claude-cli-nodejs'),
-            ],
+            dirs: [dir, path.join(home, 'Library', 'Caches', 'claude-cli-nodejs')],
             files: [path.join(home, '.claude.json')],
+            protect,
           };
-    case 'codex':
-      return { dirs: [env.CODEX_HOME || path.join(home, '.codex')], files: [] };
+    }
+    case 'codex': {
+      const dir = env.CODEX_HOME || path.join(home, '.codex');
+      return {
+        dirs: [dir],
+        files: [],
+        protect: ['config.toml', 'AGENTS.md', 'prompts'].map((p) => path.join(dir, p)),
+      };
+    }
     case 'cursor-agent':
-      return { dirs: [path.join(home, '.cursor'), path.join(config, 'cursor')], files: [] };
+      return {
+        dirs: [path.join(home, '.cursor'), path.join(config, 'cursor')],
+        files: [],
+        protect: [path.join(home, '.cursor', 'mcp.json'), path.join(home, '.cursor', 'rules')],
+      };
     case 'builtin':
-      return { dirs: [], files: [] };
+      return { dirs: [], files: [], protect: [] };
   }
 }
 

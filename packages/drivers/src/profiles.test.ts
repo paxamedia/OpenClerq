@@ -213,20 +213,25 @@ describe('what each driver declares', () => {
 
   it('says where each CLI keeps its sign-in, honouring the variables that move it', () => {
     const home = '/home/u';
-    expect(agentStatePaths('claude-code', home, {})).toEqual({
+    expect(agentStatePaths('claude-code', home, {})).toMatchObject({
       dirs: ['/home/u/.claude', '/home/u/Library/Caches/claude-cli-nodejs'],
       files: ['/home/u/.claude.json'],
     });
-    expect(agentStatePaths('claude-code', home, { CLAUDE_CONFIG_DIR: '/cfg' })).toEqual({
+    // What would run code the next time the CLI is used outside the sandbox stays read-only.
+    expect(agentStatePaths('claude-code', home, {}).protect).toEqual(
+      expect.arrayContaining(['/home/u/.claude/settings.json', '/home/u/.claude/hooks'])
+    );
+    expect(agentStatePaths('claude-code', home, { CLAUDE_CONFIG_DIR: '/cfg' })).toMatchObject({
       dirs: ['/cfg'],
       files: [],
     });
+    expect(agentStatePaths('codex', home, {}).protect).toContain('/home/u/.codex/config.toml');
     expect(agentStatePaths('codex', home, { CODEX_HOME: '/c' }).dirs).toEqual(['/c']);
     expect(agentStatePaths('cursor-agent', home, {}).dirs).toEqual([
       '/home/u/.cursor',
       '/home/u/.config/cursor',
     ]);
     for (const id of DRIVER_IDS) expect(agentStatePaths(id, home, {})).toBeTruthy();
-    expect(agentStatePaths('builtin', home, {})).toEqual({ dirs: [], files: [] });
+    expect(agentStatePaths('builtin', home, {})).toEqual({ dirs: [], files: [], protect: [] });
   });
 });

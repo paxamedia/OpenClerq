@@ -411,7 +411,8 @@ hook=$(try "echo evil > '$common/hooks/pre-push'")
 status=$(try 'git status --porcelain')
 commit=$(try 'git add -A && git -c user.name=a -c user.email=a@a commit -qm x')
 state=$(try 'mkdir -p "$HOME/.claude" && echo s > "$HOME/.claude/state"')
-echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"outside=$outside ssh=$ssh gitfile=$gitfile config=$config hook=$hook status=$status commit=$commit state=$state proxy=\${HTTPS_PROXY:+set}\\",\\"total_cost_usd\\":0,\\"usage\\":{}}"
+settings=$(try 'echo {} > "$HOME/.claude/settings.json"')
+echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"outside=$outside ssh=$ssh gitfile=$gitfile config=$config hook=$hook status=$status commit=$commit state=$state settings=$settings proxy=\${HTTPS_PROXY:+set}\\",\\"total_cost_usd\\":0,\\"usage\\":{}}"
 `,
       { mode: 0o755 }
     );
@@ -437,7 +438,7 @@ echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,
       .map((s) => JSON.stringify(s.output))
       .join(' ');
     expect(summary).toContain(
-      'outside=no ssh=no gitfile=no config=no hook=no status=yes commit=no state=yes proxy=set'
+      'outside=no ssh=no gitfile=no config=no hook=no status=yes commit=no state=yes settings=no proxy=set'
     );
     expect(fs.existsSync(escape)).toBe(false);
     expect(fs.existsSync(path.join(root, 'gate-escaped.txt'))).toBe(false);

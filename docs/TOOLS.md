@@ -184,8 +184,9 @@ first.
   exist yet. Files are written without following a link at the last step, and a new file is
   created exclusively.
 - Commands get the sandbox's minimal environment (`PATH`, `HOME`, the user and locale), without the
-  gateway token or the model's API key. Under full access a command runs as the gateway's user and
-  can read what that user can; inputs and outputs are redacted of the vault values the run uses
+  gateway token or the model's API key, and run under the spec's sandbox profile, as the gates do
+  (see [SECURITY.md §2.1](SECURITY.md#21-automation-sandbox-profiles)). Under the default `native`
+  profile a command runs as the gateway's user and can read what that user can; inputs and outputs are redacted of the vault values the run uses
   before they are stored or returned to the model. Anything a command leaves running in its process group is stopped when it exits.
 - `read_file` pages by whole lines, up to 30,000 characters, and says which offset to read on from.
 - A result longer than 30,000 characters keeps its start and end, with a marker in the middle
