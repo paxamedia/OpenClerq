@@ -80,7 +80,7 @@ function unsupported(input: DriverRunInput): string[] {
 }
 
 const NOT_SIGNED_IN =
-  /not (?:logged|signed) in|please (?:log|sign) in|run `?(?:cursor-)?agent login|authentication (?:required|failed)|not authenticated|unauthorized|invalid api key/i;
+  /not (?:logged|signed) in|please (?:log|sign) in|run `?(?:cursor-)?agent login|authentication (?:required|failed)|not authenticated|invalid api key/i;
 
 /** The names the run view already knows from other drivers. */
 const TOOL_NAMES: Record<string, string> = {
@@ -275,7 +275,14 @@ export class CursorStream {
     }
 
     const text = (r?.result ?? '').trim();
-    if (NOT_SIGNED_IN.test(text) || this.stderrTail.some((l) => NOT_SIGNED_IN.test(l))) {
+    // Only a run that failed can have failed for want of a sign-in. A run that
+    // succeeded may well talk about authentication ("Fixed the 401 handler")
+    // or print warnings to stderr.
+    const failed = !r || r.is_error === true || run.code !== 0;
+    if (
+      failed &&
+      (NOT_SIGNED_IN.test(text) || this.stderrTail.some((l) => NOT_SIGNED_IN.test(l)))
+    ) {
       return { ...base, ok: false, summary: CURSOR_NOT_SIGNED_IN };
     }
 

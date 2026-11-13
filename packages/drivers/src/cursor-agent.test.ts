@@ -62,6 +62,14 @@ case "$FAKE_MODE" in
     echo "Error: Not logged in. Run cursor-agent login or set CURSOR_API_KEY" >&2
     exit 1
     ;;
+  talks_about_auth)
+    echo "warning: unauthorized request retried" >&2
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"Fixed the 401 Unauthorized handler. Not logged in users now see a banner.","session_id":"s"}'
+    ;;
+  error_not_signed_in)
+    printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"Not logged in. Run cursor-agent login"}'
+    exit 1
+    ;;
   error_result)
     printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"The model could not continue"}'
     exit 1
@@ -388,6 +396,20 @@ describe.skipIf(isWindows)('cursor-agent driver', () => {
   it('explains a missing sign-in', async () => {
     const result = finished(await runFake('not_signed_in').events);
     expect(result.ok).toBe(false);
+    expect(result.summary).toMatch(/not signed in.*cursor-agent login/);
+  });
+
+  it('does not read a successful run as a missing sign-in because it talks about one', async () => {
+    const result = finished(await runFake('talks_about_auth').events);
+    expect(result).toMatchObject({ ok: true, exitCode: 0 });
+    expect(result.summary).toBe(
+      'Fixed the 401 Unauthorized handler. Not logged in users now see a banner.'
+    );
+  });
+
+  it('still explains a missing sign-in when the run failed with it in the result', async () => {
+    const result = finished(await runFake('error_not_signed_in').events);
+    expect(result).toMatchObject({ ok: false, exitCode: 1 });
     expect(result.summary).toMatch(/not signed in.*cursor-agent login/);
   });
 
