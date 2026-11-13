@@ -144,6 +144,8 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
 
   const driver = await (deps.driverFor ?? getDriver)(spec.agent.driver).detect({
     apiKey: Boolean(spec.agent.apiKeySecret),
+    permissionMode: spec.agent.permissionMode,
+    model: spec.agent.model,
   });
   if (!driver.available)
     checks.push({ level: 'error', message: driver.reason ?? 'The driver is unavailable.' });

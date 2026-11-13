@@ -99,6 +99,36 @@ export async function probe(
 }
 
 /**
+ * The long options a command line relies on: those before the `--` that ends
+ * the options and starts the prompt.
+ */
+export function flagsOf(args: string[]): string[] {
+  const end = args.indexOf('--');
+  const options = end === -1 ? args : args.slice(0, end);
+  return [...new Set(options.filter((a) => a.startsWith('--')))];
+}
+
+/**
+ * Which of `wanted` the CLI's `--help` does not mention. Says nothing is
+ * missing when help cannot be read, so a CLI that words its help unexpectedly
+ * is not turned away for it.
+ */
+export async function missingFlags(
+  bin: string,
+  helpArgs: string[],
+  wanted: string[],
+  env?: Record<string, string>
+): Promise<string[]> {
+  if (wanted.length === 0) return [];
+  const help = await probe(bin, helpArgs, env);
+  const listed = new Set(
+    (help.text.match(/(?<![\w-])--[a-z][\w-]*/gi) ?? []).map((f) => f.toLowerCase())
+  );
+  if (!help.ok || listed.size === 0) return [];
+  return wanted.filter((flag) => !listed.has(flag));
+}
+
+/**
  * Run the CLI and stream what it does. The process is stopped when the
  * caller's signal aborts, when the time limit passes, and when the caller
  * stops iterating; its whole process group goes with it.

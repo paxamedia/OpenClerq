@@ -27,6 +27,16 @@ const FAKE = String.raw`#!/bin/sh
 here=$(dirname "$0")
 case "$1" in
   --version) echo "2099.01.01-abcdef0"; exit 0 ;;
+  --help)
+    if [ -f "$here/broken-help" ]; then echo "usage error" >&2; exit 1; fi
+    echo "Usage: cursor-agent [options] [prompt...]"
+    echo "  -p, --print                 Print responses"
+    echo "  --output-format <format>    text, json or stream-json"
+    echo "  --model <model>             Model to use"
+    [ -f "$here/no-trust" ] || echo "  --trust                     Trust the workspace"
+    [ -f "$here/no-mode" ] || echo "  --mode <mode>               plan or ask"
+    echo "  -f, --force                 Allow commands"
+    exit 0 ;;
   status)
     if [ -f "$here/signed-out" ]; then echo "Not logged in"; exit 1; fi
     echo "Logged in as test@example.com"; exit 0 ;;
@@ -160,7 +170,7 @@ describe('buildCursorArgs', () => {
     expect(args.slice(-2)).toEqual(['--', '- update the lockfile']);
     expect(args.indexOf('--model')).toBeLessThan(args.indexOf('--'));
     expect(args).toEqual(
-      expect.arrayContaining(['-p', '--output-format', 'stream-json', '--model', 'sonnet-4'])
+      expect.arrayContaining(['--print', '--output-format', 'stream-json', '--model', 'sonnet-4'])
     );
   });
 
@@ -285,6 +295,57 @@ describe.skipIf(isWindows)('cursor-agent driver', () => {
     expect(result.ok).toBe(false);
   });
 
+  describe('flags the installed CLI must know', () => {
+    const marker = (name: string) => path.join(dir, name);
+    const without = async (name: string, check: () => Promise<void>) => {
+      fs.writeFileSync(marker(name), '');
+      try {
+        await check();
+      } finally {
+        fs.rmSync(marker(name));
+      }
+    };
+
+    it('says which flag an older CLI lacks, with its version, instead of failing every run', () =>
+      without('no-trust', async () => {
+        const found = await cursorAgent({ bin: fakeBin }).detect();
+        expect(found).toMatchObject({ available: false, version: '2099.01.01-abcdef0' });
+        expect(found.reason).toContain('2099.01.01-abcdef0');
+        expect(found.reason).toContain('--trust');
+        expect(found.reason).toContain('cursor-agent --help');
+        // Not mistaken for a sign-in problem.
+        expect(found.signedIn).toBeUndefined();
+        expect(found.reason).not.toMatch(/signed in/);
+      }));
+
+    it('asks for --mode only of a run that uses it', () =>
+      without('no-mode', async () => {
+        const driver = cursorAgent({ bin: fakeBin });
+        expect((await driver.detect()).available).toBe(true);
+        expect((await driver.detect({ permissionMode: 'acceptEdits' })).available).toBe(true);
+        for (const permissionMode of ['plan', 'default', 'dontAsk'] as const) {
+          const found = await driver.detect({ permissionMode });
+          expect(found).toMatchObject({ available: false });
+          expect(found.reason).toContain('--mode');
+        }
+      }));
+
+    it('stays tolerant when help itself cannot be read', () =>
+      without('broken-help', async () => {
+        expect(await cursorAgent({ bin: fakeBin }).detect()).toMatchObject({
+          available: true,
+          signedIn: true,
+        });
+      }));
+
+    it('checks the flags even when a vault key will stand in for the sign-in', () =>
+      without('no-trust', async () => {
+        expect((await cursorAgent({ bin: fakeBin }).detect({ apiKey: true })).available).toBe(
+          false
+        );
+      }));
+  });
+
   it('says plainly when it is not signed in, unless the run brings an API key', async () => {
     const marker = path.join(dir, 'signed-out');
     fs.writeFileSync(marker, '');
@@ -354,7 +415,7 @@ describe.skipIf(isWindows)('cursor-agent driver', () => {
     const { events, log } = runFake('success', { model: 'gpt-5', permissionMode: 'plan' });
     await events;
     const args = fs.readFileSync(`${log}.args`, 'utf8').trim().split('\n');
-    expect(args.slice(0, 1)).toEqual(['-p']);
+    expect(args.slice(0, 1)).toEqual(['--print']);
     expect(args).toEqual(
       expect.arrayContaining([
         '--output-format',

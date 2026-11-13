@@ -25,7 +25,7 @@
  */
 
 import type { ExecResult } from '@clerq/sandbox';
-import { capped, cliEnv, failed, num, probe, runCli } from './cli.js';
+import { capped, cliEnv, failed, flagsOf, missingFlags, num, probe, runCli } from './cli.js';
 import { locate } from './locate.js';
 import type {
   DetectOptions,
@@ -384,6 +384,26 @@ export function codex(options: CodexOptions = {}): Driver {
         path: bin,
         version: /\d+\.\d+\.\d+\S*/.exec(v.text)?.[0],
       };
+      // The options a run passes, found in the CLI's own help: an older Codex
+      // that lacks one would otherwise fail every run with a usage error.
+      const wanted = flagsOf(
+        buildCodexArgs({
+          prompt: '',
+          cwd: '',
+          permissionMode: options.permissionMode,
+          model: options.model,
+        })
+      );
+      const missing = await missingFlags(bin, ['exec', '--help'], wanted, home());
+      if (missing.length > 0) {
+        const who = found.version ? `Codex ${found.version}` : 'Codex';
+        return {
+          ...found,
+          available: false,
+          reason: `${who} does not list ${missing.join(', ')} in \`codex exec --help\`, which OpenClerq passes to it. Update it (\`npm install -g @openai/codex\`).`,
+        };
+      }
+
       // A key from the vault stands in for the sign-in, so there is nothing to check.
       if (options.apiKey) return found;
 

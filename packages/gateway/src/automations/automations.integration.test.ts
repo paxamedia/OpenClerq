@@ -598,12 +598,18 @@ describe('agent drivers', () => {
       level: 'error',
       message: 'Codex is not signed in on this machine. Run `codex login`.',
     });
-    expect(lastDetect).toEqual({ id: 'codex', options: { apiKey: false } });
+    expect(lastDetect).toEqual({
+      id: 'codex',
+      options: { apiKey: false, permissionMode: 'acceptEdits', model: 'sonnet' },
+    });
 
     // With a key for the CLI, its own sign-in is not what the run depends on.
     secrets = { GITHUB_TOKEN: FORGE_TOKEN, CODEX_API_KEY: 'sk-codex-test-key-000000' };
     await preview(codexSpec('\n  api_key_secret: CODEX_API_KEY'));
-    expect(lastDetect).toEqual({ id: 'codex', options: { apiKey: true } });
+    expect(lastDetect).toEqual({
+      id: 'codex',
+      options: { apiKey: true, permissionMode: 'acceptEdits', model: 'sonnet' },
+    });
   });
 
   it('runs a codex automation, giving the CLI the vault key under the name it reads', async () => {
@@ -619,7 +625,10 @@ describe('agent drivers', () => {
 
     const run = await waitForRun(await start(created.body.id), finished);
     expect(run.status).toBe('done');
-    expect(lastDetect).toEqual({ id: 'codex', options: { apiKey: true } });
+    expect(lastDetect).toEqual({
+      id: 'codex',
+      options: { apiKey: true, permissionMode: 'acceptEdits', model: 'gpt-5-codex' },
+    });
     expect(lastAgentInput?.secrets).toEqual({ CODEX_API_KEY: 'sk-test-openai-key-000000' });
     expect(lastAgentInput).toMatchObject({ model: 'gpt-5-codex', permissionMode: 'acceptEdits' });
     // The run's record names the driver that did the work.

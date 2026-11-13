@@ -219,7 +219,11 @@ async function execute(
 
   const driver = (deps.driverFor ?? getDriver)(spec.agent.driver);
   // A key from the vault stands in for the CLI's own sign-in, so it is not checked.
-  const availability = await driver.detect({ apiKey: Boolean(spec.agent.apiKeySecret) });
+  const availability = await driver.detect({
+    apiKey: Boolean(spec.agent.apiKeySecret),
+    permissionMode: spec.agent.permissionMode,
+    model: spec.agent.model,
+  });
   addRunStep(runId, {
     kind: 'tool',
     input: { name: 'driver.detect', driver: driver.id },

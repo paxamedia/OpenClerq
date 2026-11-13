@@ -24,7 +24,7 @@
  */
 
 import type { ExecResult } from '@clerq/sandbox';
-import { capped, cliEnv, failed, num, probe, runCli } from './cli.js';
+import { capped, cliEnv, failed, flagsOf, missingFlags, num, probe, runCli } from './cli.js';
 import { locate } from './locate.js';
 import type {
   DetectOptions,
@@ -56,7 +56,7 @@ export const CURSOR_NOT_SIGNED_IN =
  * mode.
  */
 export function buildCursorArgs(input: DriverRunInput): string[] {
-  const args = ['-p', '--output-format', 'stream-json', '--trust'];
+  const args = ['--print', '--output-format', 'stream-json', '--trust'];
   const mode = input.permissionMode ?? 'acceptEdits';
   if (mode === 'plan') args.push('--mode', 'plan');
   else if (mode !== 'acceptEdits') args.push('--mode', 'ask');
@@ -341,6 +341,26 @@ export function cursorAgent(options: CursorAgentOptions = {}): Driver {
         path: bin,
         version: v.text.split(/\s+/)[0] || undefined,
       };
+      // The options a run passes, found in the CLI's own help: an older
+      // cursor-agent that lacks one would otherwise fail every run.
+      const wanted = flagsOf(
+        buildCursorArgs({
+          prompt: '',
+          cwd: '',
+          permissionMode: options.permissionMode,
+          model: options.model,
+        })
+      );
+      const missing = await missingFlags(bin, ['--help'], wanted, home());
+      if (missing.length > 0) {
+        const who = found.version ? `Cursor's CLI ${found.version}` : "Cursor's CLI";
+        return {
+          ...found,
+          available: false,
+          reason: `${who} does not list ${missing.join(', ')} in \`cursor-agent --help\`, which OpenClerq passes to it. Update it (\`cursor-agent update\`).`,
+        };
+      }
+
       // A key from the vault stands in for the sign-in, so there is nothing to check.
       if (options.apiKey) return found;
 

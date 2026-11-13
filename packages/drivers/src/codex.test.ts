@@ -19,6 +19,19 @@ const FAKE = String.raw`#!/bin/sh
 here=$(dirname "$0")
 case "$1" in
   --version) echo "codex-cli 9.9.9"; exit 0 ;;
+  exec)
+    if [ "$2" = "--help" ]; then
+      if [ -f "$here/broken-help" ]; then echo "usage error" >&2; exit 1; fi
+      echo "Usage: codex exec [OPTIONS] [PROMPT]"
+      echo "  -m, --model <MODEL>         Model"
+      echo "  -s, --sandbox <MODE>        read-only | workspace-write | danger-full-access"
+      [ -f "$here/no-config" ] || echo "  -c, --config <key=value>    Override a config value"
+      echo "      --json                  JSONL events"
+      echo "      --color <COLOR>         always | never | auto"
+      echo "      --skip-git-repo-check   Allow outside a git repo"
+      [ -f "$here/no-ephemeral" ] || echo "      --ephemeral             Do not persist session files"
+      exit 0
+    fi ;;
   login)
     if [ -f "$here/signed-out" ]; then echo "Not logged in"; exit 1; fi
     echo "Logged in using ChatGPT"; exit 0 ;;
@@ -263,6 +276,53 @@ describe.skipIf(isWindows)('codex driver', () => {
     expect(found.reason).toBeTruthy();
     const result = finished(await collect(missing.run({ prompt: 'x', cwd: work })));
     expect(result.ok).toBe(false);
+  });
+
+  describe('flags the installed CLI must know', () => {
+    const marker = (name: string) => path.join(dir, name);
+    const without = async (name: string, check: () => Promise<void>) => {
+      fs.writeFileSync(marker(name), '');
+      try {
+        await check();
+      } finally {
+        fs.rmSync(marker(name));
+      }
+    };
+
+    it('says which flag an older CLI lacks, with its version, instead of failing every run', () =>
+      without('no-ephemeral', async () => {
+        const found = await codex({ bin: fakeBin }).detect();
+        expect(found).toMatchObject({ available: false, version: '9.9.9' });
+        expect(found.reason).toContain('Codex 9.9.9');
+        expect(found.reason).toContain('--ephemeral');
+        expect(found.reason).toContain('codex exec --help');
+        // Not mistaken for a sign-in problem.
+        expect(found.signedIn).toBeUndefined();
+        expect(found.reason).not.toMatch(/signed in/);
+      }));
+
+    it('asks for --config only of a run that passes it', () =>
+      without('no-config', async () => {
+        const driver = codex({ bin: fakeBin });
+        const found = await driver.detect();
+        expect(found.available).toBe(false);
+        expect(found.reason).toContain('--config');
+        // Read-only runs pass no network setting.
+        expect((await driver.detect({ permissionMode: 'plan' })).available).toBe(true);
+      }));
+
+    it('stays tolerant when help itself cannot be read', () =>
+      without('broken-help', async () => {
+        expect(await codex({ bin: fakeBin }).detect()).toMatchObject({
+          available: true,
+          signedIn: true,
+        });
+      }));
+
+    it('checks the flags even when a vault key will stand in for the sign-in', () =>
+      without('no-ephemeral', async () => {
+        expect((await codex({ bin: fakeBin }).detect({ apiKey: true })).available).toBe(false);
+      }));
   });
 
   it('says plainly when it is not signed in, unless the run brings an API key', async () => {

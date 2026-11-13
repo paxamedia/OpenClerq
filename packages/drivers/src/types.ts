@@ -23,6 +23,12 @@ export interface DetectOptions {
    * not needed and is not checked.
    */
   apiKey?: boolean;
+  /**
+   * What the run will ask of the CLI. The options a run passes depend on them,
+   * and `detect` checks that the installed CLI knows each one.
+   */
+  permissionMode?: 'acceptEdits' | 'default' | 'dontAsk' | 'plan';
+  model?: string;
 }
 
 /** A process a driver started, as the operating system knows it. */
