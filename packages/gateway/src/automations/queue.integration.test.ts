@@ -541,7 +541,11 @@ describe.skipIf(isWindows)('lease expiry', () => {
     // it, then, while it asks the OS which gateways are alive, the other one
     // claims it. This one's claim must then fail, and remove nothing.
     const a = automation('retry:\n  max_retries: 2\n  backoff: 10ms');
+    // Both pids first: from the moment the run exists nothing may yield to the event loop
+    // until the other gateway's claim is written, or this gateway's own reaper timer can
+    // find the run first on a busy machine.
     const dead = await deadPid();
+    const other = await deadPid();
     const id = abandoned(a, 'executing', { pid: dead, start: null }, past());
     const worktree = path.join(root, `wt-${id}`);
     fs.mkdirSync(worktree);
@@ -551,7 +555,6 @@ describe.skipIf(isWindows)('lease expiry', () => {
       output: { path: worktree },
       status: 'ok',
     });
-    const other = await deadPid();
     const checking = reclaimExpiredLeases();
     // The other gateway's claim, as claimAbandonedRun writes it.
     getStore()
