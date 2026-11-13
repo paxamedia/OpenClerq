@@ -8,6 +8,12 @@ import {
   PROFILES,
   RunBudget,
   PolicyViolation,
+  MEMORY_TYPES,
+  isMemoryType,
+  memoryReadRules,
+  memoryTool,
+  readableMemoryTypes,
+  writableMemoryTypes,
   type ToolDescriptor,
 } from './index.js';
 
@@ -192,5 +198,69 @@ describe('guard', () => {
     const b = new RunBudget({ maxCallsPerRun: 1 });
     await guard(rules, read, b, async () => 'first');
     await expect(guard(rules, read, b, async () => 'second')).rejects.toThrow(/limit of 1/);
+  });
+});
+
+describe('memory types', () => {
+  it('has a small, fixed set, each its own tool in the memory group', () => {
+    expect(MEMORY_TYPES).toEqual(['fact', 'preference', 'decision', 'procedure', 'note']);
+    expect(memoryTool('read', 'procedure')).toEqual({
+      name: 'memory.read.procedure',
+      risk: 'read',
+    });
+    expect(memoryTool('write', 'note')).toEqual({ name: 'memory.write.note', risk: 'write' });
+    expect(MEMORY_TYPES.every((t) => groupOf(memoryTool('read', t)) === 'memory')).toBe(true);
+    expect(isMemoryType('fact')).toBe(true);
+    expect(isMemoryType('FACT')).toBe(false);
+    expect(isMemoryType(undefined)).toBe(false);
+  });
+
+  it('reads nothing unless a rule allows it', () => {
+    expect(readableMemoryTypes({})).toEqual([]);
+    expect(readableMemoryTypes({ allow: ['fs.read'] })).toEqual([]);
+  });
+
+  it('reads the types a rule names, and any form of rule works', () => {
+    expect(
+      readableMemoryTypes({ allow: ['memory.read.procedure', 'memory.read.preference'] })
+    ).toEqual(['preference', 'procedure']);
+    expect(readableMemoryTypes({ allow: ['memory.read.*'] })).toEqual([...MEMORY_TYPES]);
+    expect(readableMemoryTypes({ allow: ['group:memory'] })).toEqual([...MEMORY_TYPES]);
+    expect(readableMemoryTypes({ allow: ['*'] })).toEqual([...MEMORY_TYPES]);
+  });
+
+  it('keeps reading and writing apart', () => {
+    const rules = { allow: ['memory.read.*', 'memory.write.note'] };
+    expect(readableMemoryTypes(rules)).toEqual([...MEMORY_TYPES]);
+    expect(writableMemoryTypes(rules)).toEqual(['note']);
+    expect(writableMemoryTypes({ allow: ['memory.read.*'] })).toEqual([]);
+  });
+
+  it('lets a deny rule beat an allow, and does not read a type that needs approval', () => {
+    expect(
+      readableMemoryTypes({
+        allow: ['memory.read.*'],
+        deny: ['memory.read.note', 'memory.read.decision'],
+      })
+    ).toEqual(['fact', 'preference', 'procedure']);
+    // Nobody can be asked while a prompt is being built.
+    expect(
+      readableMemoryTypes({ allow: ['memory.read.*'], approvalRequired: ['memory.read.fact'] })
+    ).toEqual(['preference', 'decision', 'procedure', 'note']);
+  });
+
+  it('builds rules for exactly the types given', () => {
+    const rules = memoryReadRules(['fact', 'procedure']);
+    expect(rules).toEqual({ allow: ['memory.read.fact', 'memory.read.procedure'] });
+    expect(readableMemoryTypes(rules)).toEqual(['fact', 'procedure']);
+    expect(readableMemoryTypes(memoryReadRules([]))).toEqual([]);
+  });
+
+  it('is covered by the profiles that already allow memory.*, under their own denials', () => {
+    expect(readableMemoryTypes(profile('minimal'))).toEqual([...MEMORY_TYPES]);
+    expect(readableMemoryTypes(profile('coding'))).toEqual([...MEMORY_TYPES]);
+    // Writing a record is a write like any other, which research refuses.
+    expect(readableMemoryTypes(profile('research'))).toEqual([...MEMORY_TYPES]);
+    expect(writableMemoryTypes(profile('research'))).toEqual([]);
   });
 });

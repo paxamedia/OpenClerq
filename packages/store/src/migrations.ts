@@ -472,4 +472,51 @@ export const MIGRATIONS: Migration[] = [
     // Null for every other run, which uses the spec's own models.
     sql: `ALTER TABLE runs ADD COLUMN model_override TEXT;`,
   },
+  {
+    id: 16,
+    name: 'memory_records',
+    // Memory 2.0. The old table held one value per key; this one holds typed
+    // records, any number to a key, each with where it came from, how sure it
+    // is and when it lapses. Every existing row is copied across (as a `fact`,
+    // which is what it was), then the old table is replaced: nothing is lost,
+    // and `key` is no longer unique. `seq` is the row's stable number for the
+    // search index; `id` is what the API names it by. A record folded into a
+    // summary stays as `superseded` (pointing at the summary) so it can be
+    // restored. The search index (FTS5) is not part of the schema here: it is
+    // derived data, built at start where the SQLite in use has FTS5 (see
+    // memory.ts), so a build without it still opens the database.
+    sql: `
+      CREATE TABLE memory_v2 (
+        seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+        id             TEXT NOT NULL UNIQUE,
+        type           TEXT NOT NULL DEFAULT 'fact'
+                       CHECK (type IN ('fact','preference','decision','procedure','note')),
+        key            TEXT NOT NULL,
+        value          TEXT NOT NULL,
+        origin         TEXT NOT NULL DEFAULT 'user'
+                       CHECK (origin IN ('user','agent','import','consolidation')),
+        source_session TEXT,
+        confidence     REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+        status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','superseded')),
+        superseded_by  TEXT,
+        created_at     TEXT NOT NULL,
+        updated_at     TEXT NOT NULL,
+        expires_at     TEXT
+      );
+      INSERT INTO memory_v2
+        (id, type, key, value, origin, source_session, confidence, status, created_at, updated_at, expires_at)
+        SELECT 'mem_' || lower(hex(randomblob(8))),
+               CASE WHEN type IN ('fact','preference','decision','procedure','note') THEN type ELSE 'fact' END,
+               key, value, 'import', source_session,
+               CASE WHEN confidence BETWEEN 0 AND 1 THEN confidence ELSE NULL END,
+               'active', created_at, updated_at, expires_at
+        FROM memory ORDER BY created_at, key;
+      DROP TABLE memory;
+      ALTER TABLE memory_v2 RENAME TO memory;
+      CREATE INDEX idx_memory_key ON memory(key, status);
+      CREATE INDEX idx_memory_type ON memory(type, status);
+      CREATE INDEX idx_memory_expiry ON memory(expires_at) WHERE expires_at IS NOT NULL;
+      CREATE INDEX idx_memory_superseded ON memory(superseded_by) WHERE superseded_by IS NOT NULL;
+    `,
+  },
 ];

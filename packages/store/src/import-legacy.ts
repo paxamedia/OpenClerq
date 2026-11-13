@@ -7,10 +7,12 @@
  * needs to inspect or roll back.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from './driver.js';
 import { clerqHome } from './local-files.js';
+import { indexMemory, memoryText } from './memory.js';
 
 export interface ImportResult {
   memory: number;
@@ -48,16 +50,20 @@ function importMemory(db: Database, dir: string, out: ImportResult): void {
   const raw = readJson(file) as Record<string, { value?: unknown; createdAt?: string }> | null;
   if (!raw || typeof raw !== 'object') return;
 
+  // A key already remembered as a fact is left alone, so the import can run again.
+  const exists = db.prepare("SELECT 1 AS x FROM memory WHERE key = ? AND type = 'fact'");
   const insert = db.prepare(
-    `INSERT INTO memory (key, value, type, created_at, updated_at)
-     VALUES (?, ?, 'fact', ?, ?)
-     ON CONFLICT(key) DO NOTHING`
+    `INSERT INTO memory (id, type, key, value, origin, created_at, updated_at)
+     VALUES (?, 'fact', ?, ?, 'import', ?, ?)`
   );
   db.transaction(() => {
     for (const [key, entry] of Object.entries(raw)) {
       if (!entry || typeof entry !== 'object') continue;
+      if (exists.get(key)) continue;
       const at = typeof entry.createdAt === 'string' ? entry.createdAt : new Date().toISOString();
-      const res = insert.run(key, JSON.stringify(entry.value ?? null), at, at);
+      const value = JSON.stringify(entry.value ?? null);
+      const res = insert.run(`mem_${crypto.randomBytes(8).toString('hex')}`, key, value, at, at);
+      indexMemory(db, { seq: Number(res.lastInsertRowid), key, text: memoryText(value) });
       out.memory += res.changes;
     }
   });

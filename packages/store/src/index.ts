@@ -12,6 +12,7 @@ import path from 'node:path';
 import { openDatabase, type Database } from './driver.js';
 import { MIGRATIONS } from './migrations.js';
 import { clerqHome, ensurePrivateDir, restrictFile } from './local-files.js';
+import { ensureMemoryIndex } from './memory.js';
 
 export type { Database, Statement, Row, Param } from './driver.js';
 export { openDatabase } from './driver.js';
@@ -24,6 +25,18 @@ export {
   ModuleMigrationError,
 } from './module-migrations.js';
 export { importLegacyJson, type ImportResult } from './import-legacy.js';
+export {
+  ensureMemoryIndex,
+  searchable as memorySearchable,
+  rebuildMemoryIndex,
+  indexMemory,
+  unindexMemory,
+  searchMemoryIndex,
+  memoryText,
+  searchTokens,
+  ftsQuery,
+  type IndexedRecord,
+} from './memory.js';
 export {
   clerqHome,
   ensurePrivateDir,
@@ -83,6 +96,7 @@ export async function openStore(dbPath?: string): Promise<Database> {
   if (target === ':memory:') {
     const db = await openDatabase(target);
     migrate(db);
+    ensureMemoryIndex(db);
     return db;
   }
 
@@ -95,6 +109,7 @@ export async function openStore(dbPath?: string): Promise<Database> {
 
   const db = await openDatabase(target);
   migrate(db);
+  ensureMemoryIndex(db);
   // Migrating writes, so the WAL and shared-memory files exist by now too. A
   // database this call created is ours to tighten regardless of the opt-out.
   for (const file of [target, `${target}-wal`, `${target}-shm`]) restrictFile(file, created);

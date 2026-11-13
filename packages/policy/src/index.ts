@@ -133,6 +133,54 @@ export function evaluate(rules: PolicyRules, tool: ToolDescriptor): PolicyResult
   };
 }
 
+// ---------------------------------------------------------------------------
+// Memory
+// ---------------------------------------------------------------------------
+
+/**
+ * The kinds of memory a record can be. Each is its own tool under the `memory`
+ * group — `memory.read.<type>`, `memory.write.<type>` — so a policy can let a
+ * session read preferences and procedures and nothing else, with the same rule
+ * syntax as for any tool:
+ *
+ *   `memory.read.*`          every type, read
+ *   `memory.read.procedure`  one type
+ *   `group:memory`           every memory tool, read and write
+ *   `risk:read`              also matches, as it does for every read tool
+ */
+export const MEMORY_TYPES = ['fact', 'preference', 'decision', 'procedure', 'note'] as const;
+export type MemoryType = (typeof MEMORY_TYPES)[number];
+
+export function isMemoryType(value: unknown): value is MemoryType {
+  return typeof value === 'string' && (MEMORY_TYPES as readonly string[]).includes(value);
+}
+
+/** The policy tool for reading or writing records of one type. */
+export function memoryTool(action: 'read' | 'write', type: MemoryType): ToolDescriptor {
+  return { name: `memory.${action}.${type}`, risk: action === 'read' ? 'read' : 'write' };
+}
+
+function allowedMemoryTypes(rules: PolicyRules, action: 'read' | 'write'): MemoryType[] {
+  // Only an outright allow counts: retrieval happens while a prompt is being
+  // built, with nobody to ask, so a type that needs approval is not read.
+  return MEMORY_TYPES.filter((t) => evaluate(rules, memoryTool(action, t)).decision === 'allow');
+}
+
+/** The types of memory `rules` let the holder read. */
+export function readableMemoryTypes(rules: PolicyRules): MemoryType[] {
+  return allowedMemoryTypes(rules, 'read');
+}
+
+/** The types of memory `rules` let the holder write. */
+export function writableMemoryTypes(rules: PolicyRules): MemoryType[] {
+  return allowedMemoryTypes(rules, 'write');
+}
+
+/** Rules that allow reading exactly these types, and nothing else. */
+export function memoryReadRules(types: readonly MemoryType[]): PolicyRules {
+  return { allow: types.map((t) => memoryTool('read', t).name) };
+}
+
 /**
  * Named starting points. A profile is a suggestion: the automation spec can
  * narrow it, and `deny` in the spec still wins.
