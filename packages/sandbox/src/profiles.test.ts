@@ -187,6 +187,131 @@ describe.skipIf(!isMac)('seatbelt filesystem rules, run (macOS)', () => {
   });
 });
 
+describe.skipIf(!isMac)('seatbelt: writable roots cannot be moved or swapped (macOS)', () => {
+  let base: string;
+  let work: string;
+  let state: string;
+  let admin: string;
+  beforeEach(() => {
+    base = fs.mkdtempSync(path.join(root, 'swap-'));
+    work = path.join(base, 'wt');
+    state = path.join(base, 'home', '.agent');
+    admin = path.join(base, 'git', 'worktrees', 'wt');
+    for (const d of [work, state, path.join(state, 'hooks'), admin])
+      fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(work, '.git'), `gitdir: ${admin}\n`);
+    fs.writeFileSync(path.join(admin, 'HEAD'), 'ref: refs/heads/b\n');
+    fs.writeFileSync(path.join(state, 'hooks', 'h.sh'), 'trusted\n');
+  });
+  const spec = (): SandboxSpec => ({
+    profile: 'seatbelt',
+    cwd: work,
+    network: 'none',
+    allowWrite: [state, admin],
+    protect: [path.join(work, '.git'), path.join(admin, 'HEAD'), path.join(state, 'hooks')],
+  });
+  const attempt = async (script: string) => (await exec(spec(), 'sh', ['-c', script])).code;
+
+  it('cannot move its worktree away and put a link in its place', async () => {
+    expect(await attempt(`mv ${work} ${admin}/moved`)).not.toBe(0);
+    expect(await attempt(`rm -rf ${work}`)).not.toBe(0);
+    expect(fs.lstatSync(work).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(work, '.git'), 'utf8')).toBe(`gitdir: ${admin}\n`);
+  });
+
+  it("cannot move an agent CLI's state directory and plant another", async () => {
+    expect(await attempt(`mv ${state} ${work}/old && ln -s ${work}/evil ${state}`)).not.toBe(0);
+    expect(fs.lstatSync(state).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(state, 'hooks', 'h.sh'), 'utf8')).toBe('trusted\n');
+  });
+
+  it('cannot move the git admin directory, or a directory above a protected path', async () => {
+    expect(await attempt(`mv ${admin} ${work}/a`)).not.toBe(0);
+    expect(await attempt(`mv ${state}/hooks ${state}/h2`)).not.toBe(0);
+    expect(fs.existsSync(path.join(admin, 'HEAD'))).toBe(true);
+  });
+
+  it('cannot hard-link a protected file into its worktree and write through the link', async () => {
+    expect(await attempt(`ln ${admin}/HEAD ${work}/h && echo x >> ${work}/h`)).not.toBe(0);
+    expect(fs.readFileSync(path.join(admin, 'HEAD'), 'utf8')).toBe('ref: refs/heads/b\n');
+  });
+
+  it('still creates, renames and removes inside its worktree', async () => {
+    expect(await attempt('mkdir d && echo x > d/f && mv d e && rm -r e && echo ok > done')).toBe(0);
+    expect(fs.readFileSync(path.join(work, 'done'), 'utf8')).toBe('ok\n');
+  });
+});
+
+describe.skipIf(!isMac)('seatbelt: local services (macOS)', () => {
+  let work: string;
+  let sock: string;
+  let server: net.Server;
+  beforeAll(async () => {
+    work = fs.mkdtempSync(path.join(root, 'svc-'));
+    // A Unix-domain socket stands in for a local daemon (Docker's, ssh-agent's).
+    sock = path.join(fs.mkdtempSync(path.join('/tmp', 'clerq-sock-')), 's');
+    server = net.createServer((c) => c.end('daemon answered'));
+    await new Promise<void>((r) => server.listen(sock, () => r()));
+  });
+  afterAll(async () => {
+    await new Promise<void>((r) => server.close(() => r()));
+    fs.rmSync(path.dirname(sock), { recursive: true, force: true });
+  });
+  const connect = (network: SandboxSpec['network']) =>
+    exec({ profile: 'seatbelt', cwd: work, network }, process.execPath, [
+      '-e',
+      `require('node:net').connect(${JSON.stringify(sock)})
+         .on('data', (d) => { console.log(String(d)); process.exit(0); })
+         .on('error', (e) => { console.log('refused ' + e.code); process.exit(1); });`,
+    ]);
+
+  it('refuses a Unix-socket connection even with network: all', async () => {
+    const r = await connect('all');
+    expect(r.stdout).not.toContain('daemon answered');
+    expect(r.code).not.toBe(0);
+  });
+
+  it('refuses it with a host list and with no network', async () => {
+    for (const network of [['example.com'], 'none'] as const) {
+      const r = await connect(network as SandboxSpec['network']);
+      expect(r.stdout).not.toContain('daemon answered');
+    }
+  });
+
+  it('still reaches hosts over IP with network: all', async () => {
+    const tcp = http.createServer((_q, res) => res.end('tcp ok'));
+    await new Promise<void>((r) => tcp.listen(0, '127.0.0.1', () => r()));
+    const port = (tcp.address() as net.AddressInfo).port;
+    try {
+      const r = await exec({ profile: 'seatbelt', cwd: work, network: 'all' }, '/usr/bin/curl', [
+        '-s',
+        '--max-time',
+        '5',
+        `http://127.0.0.1:${port}/`,
+      ]);
+      expect(r.stdout).toBe('tcp ok');
+    } finally {
+      await new Promise<void>((r) => tcp.close(() => r()));
+    }
+  });
+
+  it('cannot reach LaunchServices, so `open` cannot start an app outside the sandbox', async () => {
+    // lsappinfo asks LaunchServices for the frontmost app; refused, it prints nothing useful.
+    const r = await exec(
+      { profile: 'seatbelt', cwd: work, network: 'none' },
+      '/usr/bin/lsappinfo',
+      ['front']
+    );
+    expect(r.stdout).not.toMatch(/ASN:/);
+    // A bundle id is resolved through LaunchServices too: nothing is found, nothing starts.
+    const open = await exec({ profile: 'seatbelt', cwd: work, network: 'none' }, '/usr/bin/open', [
+      '-b',
+      'com.apple.Terminal',
+    ]);
+    expect(`${open.stdout}${open.stderr}`).toMatch(/failed|Unable/i);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Container profile, against a fake runtime
 // ---------------------------------------------------------------------------

@@ -66,7 +66,9 @@ describe('profile construction', () => {
 
   it('seatbelt opens the network only when that is what was asked for', () => {
     const on = buildSeatbeltProfile({ profile: 'seatbelt', cwd: work, network: 'all' });
-    expect(on).toContain('(allow network*)');
+    expect(on).toContain('(allow network-outbound (remote ip "*:*"))');
+    // Not every kind of network: Unix-domain sockets reach local daemons.
+    expect(on).not.toContain('(allow network*)');
     expect(on).not.toContain('(deny network*)');
   });
 

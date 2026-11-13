@@ -305,6 +305,30 @@ function canonical(p: string): string {
   }
 }
 
+/**
+ * The mach services a sandboxed command may look up: directory services
+ * (users, groups), logging, notifications, temp-dir lookup, network
+ * configuration and DNS, certificate trust, the keychain (an agent CLI's
+ * sign-in on macOS), and preferences (cfprefsd enforces the sandbox on writes).
+ */
+const MACH_SERVICES = [
+  'com.apple.system.opendirectoryd.libinfo',
+  'com.apple.system.opendirectoryd.membership',
+  'com.apple.system.logger',
+  'com.apple.logd',
+  'com.apple.system.notification_center',
+  'com.apple.bsd.dirhelper',
+  'com.apple.SystemConfiguration.configd',
+  'com.apple.SystemConfiguration.DNSConfiguration',
+  'com.apple.dnssd.service',
+  'com.apple.trustd',
+  'com.apple.trustd.agent',
+  'com.apple.SecurityServer',
+  'com.apple.securityd.xpc',
+  'com.apple.cfprefsd.daemon',
+  'com.apple.cfprefsd.agent',
+];
+
 /** Every directory above the given paths, once each. */
 function ancestorsOf(paths: string[]): string[] {
   const out = new Set<string>();
@@ -378,7 +402,13 @@ export function buildSeatbeltProfile(
     '(allow process-fork)',
     '(allow sysctl-read)',
     '(allow signal (target same-sandbox))',
-    '(allow mach-lookup)',
+    // Preferences are read through cfprefsd, which checks the sandbox itself;
+    // writing them stays denied.
+    '(allow user-preference-read)',
+    // Mach services by name, and only those a shell, git, node and the agent
+    // CLIs need. Not LaunchServices: `open` would start an app (Terminal with
+    // a .command file) outside the sandbox.
+    `(allow mach-lookup ${MACH_SERVICES.map((n) => `(global-name ${JSON.stringify(n)})`).join(' ')})`,
     // Except what must stay unread: credentials, the gateway's own state.
     ...denied.map((d) => `(deny file-read* file-write* (subpath ${sbplPath(d)}))`),
     // What the command is given stays readable, wherever it lives, and so does
@@ -400,10 +430,35 @@ export function buildSeatbeltProfile(
     '(allow file-write-data (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr"))',
     // Last, so nothing above re-opens them.
     ...protectedPaths.map((p) => `(deny file-write* (subpath ${sbplPath(p)}))`),
+    // A writable directory may be written in, never moved, removed or
+    // replaced, and neither may any directory above it or above a protected
+    // path: \`mv <worktree> x && ln -s / <worktree>\` would otherwise hand the
+    // gateway (which works in the worktree afterwards) a tree of the agent's
+    // choosing. Creating, renaming and removing *inside* stays allowed.
+    ...[
+      ...new Set([
+        ...writable,
+        canonical(spec.cwd),
+        ...ancestorsOf([
+          ...writable,
+          canonical(spec.cwd),
+          ...protectedPaths,
+          ...(spec.allowWritePrefix ?? []).map(canonical),
+        ]),
+      ]),
+    ].map((n) => `(deny file-write* (literal ${sbplPath(n)}))`),
   ];
 
   if (spec.network === 'all') {
-    lines.push('(allow network*)');
+    // Any host by IP, and listening locally (a test server); no Unix-domain
+    // sockets, which reach local daemons (Docker's socket would hand out the
+    // host), except the system resolver's, which DNS needs.
+    lines.push(
+      '(allow network-outbound (remote ip "*:*"))',
+      '(allow network-bind (local ip "*:*"))',
+      '(allow network-inbound (local ip "*:*"))',
+      '(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))'
+    );
   } else if (opts.egressProxyPort !== undefined) {
     // Everything stays denied except the proxy's port, so the only way out is
     // through the allowlist. Note the limit of the tool: SBPL accepts only "*"
