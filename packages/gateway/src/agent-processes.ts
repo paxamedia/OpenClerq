@@ -36,7 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { SpawnedProcess } from '@clerq/drivers';
-import { removeContainer, resolveRuntime } from '@clerq/sandbox';
+import { listLabelled, removeContainer, resolveRuntime } from '@clerq/sandbox';
 import { getStore } from './store.js';
 import { logger } from './logger.js';
 
@@ -447,11 +447,12 @@ export async function killLeftoverProcesses(
   /** Containers removed so far, by name: a run's processes may share none, but never twice. */
   const removed = new Set<string>();
   const report = async (row: Row, outcome: LeftoverOutcome, forced?: boolean) => {
-    // The container is named for this run alone, so whatever the verdict on
-    // the pid (which may since have been reused), a container of a gateway
-    // that is gone is removed by its name.
+    // The container is named for this run alone, so when the pid is gone or
+    // reused, a container of a gateway that is gone is removed by its name.
     let container: string | undefined;
-    if (row.container && outcome !== 'own' && outcome !== 'owner_alive') {
+    // Not when its owner may be alive, nor when the record could not be
+    // matched to what is running: then nothing of it is touched.
+    if (row.container && !['own', 'owner_alive', 'unverified'].includes(outcome)) {
       const runtime =
         row.containerRuntime && fs.existsSync(row.containerRuntime)
           ? row.containerRuntime
@@ -521,4 +522,36 @@ export async function killLeftoverProcesses(
     }
   }
   return out;
+}
+
+/** The label every container, egress proxy and network of a run carries. */
+export const RUN_LABEL = 'clerq.run';
+
+/**
+ * Remove the containers and networks labelled for runs of this store that no
+ * running gateway owns, except those in `skip`. A run's egress proxy and its
+ * network are created before the runtime CLI that is recorded in
+ * `run_processes`, so a gateway that died in between left them with no record;
+ * the label finds them. A label naming a run this store does not know (another
+ * install on the same engine) is left alone. Returns what was removed.
+ */
+export async function removeOrphanContainers(
+  skip: ReadonlySet<string>,
+  runtime: string | null = resolveRuntime()
+): Promise<string[]> {
+  if (!runtime) return [];
+  const { containers, networks } = await listLabelled(runtime, RUN_LABEL);
+  const known = (runId: string) =>
+    Boolean(getStore().prepare('SELECT 1 AS hit FROM runs WHERE id = ?').get(runId));
+  const removed: string[] = [];
+  const orphan = (runId: string) => !skip.has(runId) && known(runId);
+  for (const c of containers.filter((c) => orphan(c.value))) {
+    await removeContainer(runtime, c.name);
+    removed.push(c.name);
+  }
+  for (const n of networks.filter((n) => orphan(n.value))) {
+    await removeContainer(runtime, n.name.replace(/-net$/, ''));
+    removed.push(n.name);
+  }
+  return removed;
 }

@@ -29,6 +29,7 @@ import {
   type UnfinishedRun,
 } from '../runs.js';
 import {
+  removeOrphanContainers,
   killLeftoverProcesses,
   readProcessTable,
   runsOfLiveGateways,
@@ -57,7 +58,9 @@ export async function cleanUpRun(runId: string): Promise<void> {
   if (worktree && fs.existsSync(worktree)) fs.rmSync(worktree, { recursive: true, force: true });
   if (repoPath && fs.existsSync(repoPath)) {
     await pruneWorktrees(repoPath);
-    if (run.branch) await git(['branch', '-D', run.branch], { cwd: repoPath, allowFailure: true });
+    if (run.branch) {
+      await git(['branch', '-D', run.branch], { cwd: repoPath, allowFailure: true, harden: true });
+    }
   }
 }
 
@@ -68,9 +71,12 @@ export async function cleanUpRun(runId: string): Promise<void> {
  * that is about to be removed. Only a process still matching what was
  * recorded is stopped; see agent-processes.ts.
  */
-async function stopLeftoverProcesses(): Promise<void> {
+async function stopLeftoverProcesses(): Promise<Set<string>> {
+  /** Runs whose processes are not to be touched: a live owner, or not matched. */
+  const untouched = new Set<string>();
   try {
     for (const p of await killLeftoverProcesses()) {
+      if (['own', 'owner_alive', 'unverified'].includes(p.outcome)) untouched.add(p.runId);
       if (p.container) {
         addRunStep(p.runId, {
           kind: 'tool',
@@ -111,6 +117,30 @@ async function stopLeftoverProcesses(): Promise<void> {
   } catch (e) {
     // Never stop the gateway starting over this.
     logger.warn('Could not check for processes left by the previous gateway', {
+      err: e instanceof Error ? e.message : String(e),
+    });
+  }
+  return untouched;
+}
+
+/**
+ * Containers, egress proxies and networks of runs nothing works on any more,
+ * found by their `clerq.run` label: some are made before a process is
+ * recorded. Only where an automation uses the container profile, so a
+ * gateway that never runs one never asks a container engine anything.
+ */
+async function sweepContainers(keep: ReadonlySet<string>): Promise<void> {
+  try {
+    const used = getStore()
+      .prepare("SELECT 1 AS hit FROM automations WHERE sandbox_profile = 'container' LIMIT 1")
+      .get();
+    if (!used) return;
+    const removed = await removeOrphanContainers(new Set([...keep, ...activeRunIds()]));
+    if (removed.length > 0) {
+      logger.warn('Removed containers left by runs that are over', { removed });
+    }
+  } catch (e) {
+    logger.warn('Could not check for containers left by earlier runs', {
       err: e instanceof Error ? e.message : String(e),
     });
   }
@@ -247,7 +277,8 @@ export async function recoverAfterRestart(): Promise<void> {
   const table = await readProcessTable();
   const theirs = table ? runsOfLiveGateways(table) : new Set<string>();
   // First, so nothing is still writing into a worktree when it is removed.
-  await stopLeftoverProcesses();
+  const untouched = await stopLeftoverProcesses();
+  await sweepContainers(new Set([...theirs, ...untouched]));
   const runs = interruptedRuns({ except: theirs });
   for (const p of listPending()) {
     if (theirs.has(p.runId)) continue;

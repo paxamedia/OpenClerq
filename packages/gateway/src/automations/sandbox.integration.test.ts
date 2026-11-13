@@ -410,9 +410,14 @@ config=$(try "echo '[core]' >> '$common/config'")
 hook=$(try "echo evil > '$common/hooks/pre-push'")
 status=$(try 'git status --porcelain')
 commit=$(try 'git add -A && git -c user.name=a -c user.email=a@a commit -qm x')
-state=$(try 'mkdir -p "$HOME/.claude" && echo s > "$HOME/.claude/state"')
+state=$(try 'echo s > "$HOME/.claude/todos/state"')
 settings=$(try 'echo {} > "$HOME/.claude/settings.json"')
-echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"outside=$outside ssh=$ssh gitfile=$gitfile config=$config hook=$hook status=$status commit=$commit state=$state settings=$settings proxy=\${HTTPS_PROXY:+set}\\",\\"total_cost_usd\\":0,\\"usage\\":{}}"
+skill=$(try 'mkdir -p "$HOME/.claude/skills/x"')
+wt=$(pwd)
+swap=$(try "mv '$wt' '$wt.moved'")
+statedir=$(try 'mv "$HOME/.claude" "$HOME/.claude-old"')
+open=$(lsappinfo front 2>/dev/null | grep -q ASN && echo yes || echo no)
+echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"outside=$outside ssh=$ssh gitfile=$gitfile config=$config hook=$hook status=$status commit=$commit state=$state settings=$settings skill=$skill swap=$swap statedir=$statedir launchservices=$open proxy=\${HTTPS_PROXY:+set}\\",\\"total_cost_usd\\":0,\\"usage\\":{}}"
 `,
       { mode: 0o755 }
     );
@@ -438,7 +443,7 @@ echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,
       .map((s) => JSON.stringify(s.output))
       .join(' ');
     expect(summary).toContain(
-      'outside=no ssh=no gitfile=no config=no hook=no status=yes commit=no state=yes settings=no proxy=set'
+      'outside=no ssh=no gitfile=no config=no hook=no status=yes commit=no state=yes settings=no skill=no swap=no statedir=no launchservices=no proxy=set'
     );
     expect(fs.existsSync(escape)).toBe(false);
     expect(fs.existsSync(path.join(root, 'gate-escaped.txt'))).toBe(false);
@@ -456,6 +461,99 @@ echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,
     expect(agent.denyRead).toContain(path.join(home, '.ssh'));
     // The agent's own change was committed by the gateway, after the agent.
     expect(run.exitReason).toMatch(/not pushed/);
+  }, 60_000);
+});
+
+describe('what the gateway does after the agent', () => {
+  /** A fake agent that plants a nested repository whose config runs a command. */
+  function nestedRepoAgent(marker: string): void {
+    fs.writeFileSync(
+      path.join(bin, 'claude-nested'),
+      `#!/bin/sh
+[ "$1" = "--version" ] && { echo "9.9.9 (Claude Code)"; exit 0; }
+echo "changed" > CHANGED.md
+mkdir sub && cd sub && git init -q && git -c user.name=a -c user.email=a@a commit -q --allow-empty -m x
+printf '#!/bin/sh\\ntouch ${marker}\\n' > ../fsm.sh && chmod +x ../fsm.sh
+git config core.fsmonitor "$(cd .. && pwd)/fsm.sh"
+cd .. && git add sub
+echo '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0,"usage":{}}'
+`,
+      { mode: 0o755 }
+    );
+    process.env.FAKE_AGENT = 'claude-nested';
+  }
+
+  const profiles = isMac ? ['native', 'seatbelt'] : ['native'];
+  for (const profile of profiles) {
+    it(`runs no code from a nested repository the agent staged, and refuses to commit it (${profile})`, async () => {
+      const marker = path.join(root, `fsmonitor-ran-${profile}`);
+      nestedRepoAgent(marker);
+      const id = await create(
+        spec(
+          `nested-${profile}`,
+          'github:acme/remote-app',
+          `sandbox:\n  profile: ${profile}\npublish:\n  push: false`
+        )
+      );
+      const run = await waitForRun(await start(id), finished);
+      expect(run.status).toBe('failed');
+      expect(run.exitReason).toMatch(/nested git repository \(a submodule entry\) at sub/);
+      // The gateway ran status, add and the diff in that worktree: none ran the command.
+      expect(fs.existsSync(marker)).toBe(false);
+    }, 60_000);
+  }
+
+  it('fails a run whose worktree was swapped for a link, without running git in it', async () => {
+    const marker = path.join(root, 'swapped-git-ran');
+    fs.writeFileSync(
+      path.join(bin, 'claude-swap'),
+      `#!/bin/sh
+[ "$1" = "--version" ] && { echo "9.9.9 (Claude Code)"; exit 0; }
+wt=$(pwd)
+evil="${root}/evil-$$"
+mkdir -p "$evil" && git init -q "$evil"
+printf '#!/bin/sh\\ntouch ${marker}\\n' > "$evil/fsm.sh" && chmod +x "$evil/fsm.sh"
+git -C "$evil" config core.fsmonitor "$evil/fsm.sh"
+echo x > "$evil/CHANGED.md"
+mv "$wt" "$wt.moved" && ln -s "$evil" "$wt"
+echo '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0,"usage":{}}'
+`,
+      { mode: 0o755 }
+    );
+    process.env.FAKE_AGENT = 'claude-swap';
+    // Native: nothing stops the agent; the gateway's own check must.
+    const id = await create(spec('swapped', 'github:acme/remote-app', 'publish:\n  push: false'));
+    const run = await waitForRun(await start(id), finished);
+    expect(run.status).toBe('failed');
+    expect(run.exitReason).toMatch(/worktree was tampered with.*no git command was run in it/);
+    expect(fs.existsSync(marker)).toBe(false);
+    // The link put in its place is removed, not followed.
+    const worktree = String(run.steps.find((s) => s.input?.action === 'worktree')?.output?.path);
+    expect(fs.existsSync(worktree)).toBe(false);
+    expect(fs.existsSync(`${worktree}.moved`)).toBe(true);
+  }, 60_000);
+
+  it('finds a vault value hidden from the diff as binary or -diff, and redacts the PR', async () => {
+    fs.writeFileSync(
+      path.join(bin, 'claude-hide'),
+      `#!/bin/sh
+[ "$1" = "--version" ] && { echo "9.9.9 (Claude Code)"; exit 0; }
+echo "hidden.txt -diff" > .gitattributes
+echo "${FORGE_TOKEN}" > hidden.txt
+echo "changed" > CHANGED.md
+echo '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0,"usage":{}}'
+`,
+      { mode: 0o755 }
+    );
+    process.env.FAKE_AGENT = 'claude-hide';
+    const id = await create(spec('hidden-secret', 'github:acme/remote-app'));
+    const runId = await start(id);
+    const waiting = await waitForRun(runId, (r) => r.status === 'awaiting_approval' || finished(r));
+    // Not pushed on its own: the scan read hidden.txt as text.
+    expect(waiting.status).toBe('awaiting_approval');
+    expect(stepsNamed(waiting, 'diff.secrets')).toHaveLength(1);
+    await api(`/runs/${runId}/cancel`, { method: 'POST' });
+    await waitForRun(runId, finished);
   }, 60_000);
 });
 

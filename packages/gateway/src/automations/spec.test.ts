@@ -389,6 +389,9 @@ on:
     expect(
       errorOf(MINIMAL.replace('[local:~/code/app]', "['github:acme/app#--upload-pack=x']")).message
     ).toMatch(/not a branch name/);
+    expect(
+      errorOf(MINIMAL.replace('[local:~/code/app]', "['github:acme/app#main#evil']")).message
+    ).toMatch(/at most one #branch/);
     const two = errorOf(MINIMAL.replace('[local:~/code/app]', '[local:/a, github:acme/app]'));
     expect(two.message).toMatch(/one repository/);
   });

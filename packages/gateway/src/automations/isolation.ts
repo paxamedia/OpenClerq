@@ -23,6 +23,7 @@
  * history, diff and stage, but not commit; the gateway commits its changes.
  */
 
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -83,6 +84,13 @@ export interface RunIsolation {
   gates: SandboxOptions;
   /** One line for the run's record: what the profile does. */
   note: string;
+  /**
+   * Make what the profile needs to exist before anything runs: the agent CLI's
+   * writable state directories (seatbelt pins each writable directory, so it
+   * cannot be created from inside), and an empty `config.worktree` in the
+   * worktree's git entry (container: mounted read-only only if it exists).
+   */
+  prepare(): void;
 }
 
 /** The network a command gets: the spec's hosts, plus `extra`, or none. */
@@ -106,6 +114,7 @@ export function isolationFor(
       note:
         'Unisolated: the agent and the gates run with your account’s access to files and the ' +
         'network (profile native, the default). Set sandbox.profile to seatbelt or container to limit them.',
+      prepare: () => undefined,
     };
   }
 
@@ -140,14 +149,27 @@ export function isolationFor(
     const state =
       profile === 'seatbelt'
         ? agentStatePaths(driver, home, options.env)
-        : { dirs: [], files: [], protect: [] };
+        : { readDirs: [], writeDirs: [], writeFiles: [] };
     return {
       ...shared,
-      allowWrite: [...(shared.allowWrite ?? []), ...state.dirs],
-      protect: [...(shared.protect ?? []), ...state.protect],
-      ...(state.files.length > 0 ? { allowWritePrefix: state.files } : {}),
+      // Its state directories readable; only the listed parts writable.
+      readOnly: [...(shared.readOnly ?? []), ...state.readDirs],
+      allowWrite: [...(shared.allowWrite ?? []), ...state.writeDirs],
+      ...(state.writeFiles.length > 0 ? { allowWritePrefix: state.writeFiles } : {}),
       network: networkFor(spec, caps.providerHosts),
     };
+  };
+  const prepare = () => {
+    if (profile === 'seatbelt') {
+      for (const dir of agentStatePaths(spec.agent.driver, home, options.env).writeDirs) {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      }
+    }
+    if (profile === 'container') {
+      // An empty one changes nothing: git reads it only with extensions.worktreeConfig.
+      const file = path.join(dirs.adminDir, 'config.worktree');
+      if (!fs.existsSync(file)) fs.writeFileSync(file, '', { mode: 0o600 });
+    }
   };
 
   const hosts =
@@ -159,6 +181,7 @@ export function isolationFor(
   return {
     agent,
     gates,
+    prepare,
     note:
       `Isolated (profile ${profile}): writes only in the worktree, ` +
       `network to ${hosts}${spec.sandbox.network === 'all' ? '' : ' (and the agent CLI’s model provider)'}` +

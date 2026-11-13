@@ -7,6 +7,7 @@ import { initStore, closeStore, getStore } from './store.js';
 import { createRun, getRun } from './runs.js';
 import {
   killLeftoverProcesses,
+  removeOrphanContainers,
   markProcessEnded,
   parseProcessTable,
   readProcessTable,
@@ -536,6 +537,53 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
         'network rm clerq-run_9-0001-net',
       ]);
       expect(row(id).ended_at).not.toBeNull();
+    });
+
+    it('leaves the container of a record it could not match alone', async () => {
+      const runtime = fakeRuntime();
+      // No start time recorded: the pid cannot be told from a stranger's.
+      const child = start('sleep', ['30']);
+      await seen(child.pid as number);
+      const id = insert({
+        pid: child.pid as number,
+        command: 'sleep',
+        procStart: null,
+        ownerPid: await deadPid(),
+      });
+      getStore()
+        .prepare('UPDATE run_processes SET container = ?, container_runtime = ? WHERE id = ?')
+        .run('clerq-run_7-0003', runtime.bin, id);
+      const [found] = await killLeftoverProcesses();
+      expect(found.outcome).toBe('unverified');
+      expect(found.container).toBeUndefined();
+      expect(runtime.calls()).toEqual([]);
+    });
+
+    it('sweeps labelled containers and networks of runs nothing owns, and only those', async () => {
+      const over = createRun({ trigger: 'manual', status: 'failed' });
+      const kept = createRun({ trigger: 'manual', status: 'executing' });
+      const bin = path.join(dir, `docker-sweep-${Math.random().toString(36).slice(2)}`);
+      fs.writeFileSync(
+        bin,
+        `#!/bin/sh
+echo "$*" >> "${bin}.calls"
+case "$1 $2" in
+  "ps -a") printf 'clerq-${over}-aaaa\\t${over}\\nclerq-${over}-aaaa-egress\\t${over}\\nclerq-${kept}-bbbb\\t${kept}\\nother-install\\trun_not-in-this-store\\n' ;;
+  "network ls") printf 'clerq-${over}-aaaa-net\\t${over}\\n' ;;
+esac
+`,
+        { mode: 0o755 }
+      );
+      const removed = await removeOrphanContainers(new Set([kept]), bin);
+      expect(removed).toEqual([
+        `clerq-${over}-aaaa`,
+        `clerq-${over}-aaaa-egress`,
+        `clerq-${over}-aaaa-net`,
+      ]);
+      const calls = fs.readFileSync(`${bin}.calls`, 'utf8');
+      expect(calls).toContain(`rm -f clerq-${over}-aaaa clerq-${over}-aaaa-egress`);
+      expect(calls).not.toContain(`rm -f clerq-${kept}`);
+      expect(calls).not.toContain('other-install');
     });
 
     it("leaves a live gateway's container alone", async () => {

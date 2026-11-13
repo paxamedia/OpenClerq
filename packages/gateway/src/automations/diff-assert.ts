@@ -20,7 +20,7 @@
  * touched.
  */
 
-import { git } from '@clerq/workspaces';
+import { git, SAFE_DIFF } from '@clerq/workspaces';
 
 export type DiffMetric = 'files_changed' | 'lines_added' | 'lines_removed';
 export type Comparison = '<=' | '<' | '>=' | '>' | '==' | '!=';
@@ -290,6 +290,10 @@ export function parseNumstat(out: string): DiffFile[] {
 
 /** The files a workspace's commits changed since `baseSha`. */
 export async function diffFiles(cwd: string, baseSha: string): Promise<DiffFile[]> {
-  const r = await git(['diff', '--numstat', '-z', '-M', `${baseSha}..HEAD`], { cwd });
+  // Hardened: the agent has written to this worktree (see HARDENED_GIT).
+  const r = await git(['diff', '--numstat', '-z', '-M', ...SAFE_DIFF, `${baseSha}..HEAD`], {
+    cwd,
+    harden: true,
+  });
   return parseNumstat(r.stdout);
 }

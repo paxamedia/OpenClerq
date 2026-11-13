@@ -413,7 +413,11 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
       'A repository is a string such as local:~/code/app or github:owner/name.'
     );
   }
-  const [where, ref] = target.trim().split('#');
+  const parts = target.trim().split('#');
+  if (parts.length > 2) {
+    r.fail(['targets', 'repos', 0], 'A repository takes at most one #branch.');
+  }
+  const [where, ref] = parts;
   let repo: RepoTarget;
   if (where.startsWith('local:')) {
     const repoPath = where.slice(6).trim();

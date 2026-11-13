@@ -86,6 +86,7 @@ import { recordFallback } from '../routing.js';
 import { memoryBlock } from '../memory-context.js';
 import { SpendPool, subagentSpawner } from './subagents.js';
 import { isolationFor, profileProblem } from './isolation.js';
+import { pinWorktree, type Pin } from './pin.js';
 import {
   vaultCredentials,
   type CredentialPurpose,
@@ -500,6 +501,7 @@ async function execute(
     { branch, cacheDir: deps.workspaceCacheDir }
   );
   let keepBranch = false;
+  let pin: Pin | undefined;
   try {
     setRunFields(runId, { branch });
     addRunStep(runId, {
@@ -522,7 +524,13 @@ async function execute(
     }
     // What the run's agent and gates may touch (spec.sandbox): the same
     // profile for the agent, its commands and the gates.
-    const isolation = isolationFor(spec, await ws.gitDirs(), { runId });
+    const gitDirs = await ws.gitDirs();
+    const isolation = isolationFor(spec, gitDirs, { runId });
+    isolation.prepare();
+    // What the worktree is now: checked before every git command that follows
+    // the agent or a gate (see pin.ts).
+    const pinned = pinWorktree(gitDirs, ws.path);
+    pin = pinned;
     addRunStep(runId, {
       kind: 'tool',
       input: { name: 'sandbox', profile: spec.sandbox.profile },
@@ -659,19 +667,23 @@ async function execute(
           );
           at += 1;
           // What the interrupted attempt got done is in the worktree for the next to build on.
+          pinned.assert();
           attemptPrompt = (await ws.hasChanges()) ? interruptedPrompt(prompt) : prompt;
         }
       }
 
       // One commit for the run: an escalated attempt's changes join the earlier
       // ones. Measured against the base, an attempt may also have undone them.
-      if (level > 0) await git(['reset', '--soft', ws.baseSha], { cwd: ws.path });
+      pinned.assert();
+      if (level > 0) await git(['reset', '--soft', ws.baseSha], { cwd: ws.path, harden: true });
       if (!(await ws.hasChanges())) {
         setRunFields(runId, { exitReason: 'No changes: the agent left the repository as it was.' });
         return;
       }
 
-      title = `${spec.name}: ${firstLine(result.summary) || 'automated changes'}`;
+      // The agent's words, redacted again before they become a commit message
+      // and a pull request title on a forge.
+      title = redact(`${spec.name}: ${firstLine(result.summary) || 'automated changes'}`, inUse);
       const sha = await guard(rules, TOOLS.commit, budget, () =>
         ws.commitAll(title, { trailer: `Generated-by: OpenClerq\nOpenClerq-Run: ${runId}` })
       );
@@ -685,10 +697,12 @@ async function execute(
       // The stored copy is redacted of the vault values this run holds. The
       // commit itself is not: a secret the agent wrote into a file is in it,
       // and is pushed with it unless a person stops the push (below).
+      // The scan reads every file as text, so a file marked \`-diff\` or holding
+      // a NUL byte cannot hide a value behind "Binary files differ".
       const diff = await ws.diff();
-      const shown = redact(diff, inUse);
-      if (shown !== diff) secretInDiff = true;
-      addArtifact(runId, 'diff', shown, `${branch}.diff`);
+      const scanned = await ws.diff({ text: true });
+      if (redact(scanned, inUse) !== scanned || redact(diff, inUse) !== diff) secretInDiff = true;
+      addArtifact(runId, 'diff', redact(diff, inUse), `${branch}.diff`);
 
       try {
         await verify(spec, ws, runId, signal, deps, rules, budget, isolation.gates, inUse);
@@ -711,12 +725,15 @@ async function execute(
           { runId }
         );
         // Back to the agent's commit: whatever the gates wrote is not its work.
-        await git(['reset', '--hard', 'HEAD'], { cwd: ws.path });
-        await git(['clean', '-fd'], { cwd: ws.path });
+        pinned.assert();
+        await git(['reset', '--hard', 'HEAD'], { cwd: ws.path, harden: true });
+        await git(['clean', '-fd'], { cwd: ws.path, harden: true });
         prompt = escalationPrompt(spec.prompt, e);
       }
     }
 
+    // After the last gate, before anything is published.
+    pinned.assert();
     if (secretInDiff) {
       addRunStep(runId, {
         kind: 'tool',
@@ -807,7 +824,7 @@ async function execute(
             forge: forge?.forge ?? 'github',
             project: forge?.project as string,
             title,
-            body: pullRequestBody(spec, runId, result, stat, {
+            body: pullRequestBodyRedacted(inUse, spec, runId, result, stat, {
               escalatedTo: level > 0 ? models[level] : undefined,
               usedModel: used.model !== models[level] ? used.model : undefined,
             }),
@@ -829,12 +846,32 @@ async function execute(
     }
     setRunFields(runId, { prUrl, exitReason: `Published: ${prUrl ?? branch}` });
   } finally {
-    await ws.dispose();
-    if (!keepBranch) {
-      // Pushed, or not worth keeping: the diff is stored with the run either way.
-      await git(['branch', '-D', branch], { cwd: ws.repoRoot, allowFailure: true });
+    const tampered = pin?.problem();
+    if (tampered) {
+      // No git in a worktree that is not what it was: a link put in its place
+      // is removed (not followed), and the rest is left for a person to see.
+      logger.warn('Left a tampered worktree without running git in it', { runId, tampered });
+      try {
+        if (fs.lstatSync(ws.path).isSymbolicLink()) fs.unlinkSync(ws.path);
+      } catch {
+        /* gone already */
+      }
+    } else {
+      await ws.dispose();
+      if (!keepBranch) {
+        // Pushed, or not worth keeping: the diff is stored with the run either way.
+        await git(['branch', '-D', branch], { cwd: ws.repoRoot, allowFailure: true, harden: true });
+      }
     }
   }
+}
+
+/** The pull request's body, with the vault values the run holds taken out. */
+function pullRequestBodyRedacted(
+  inUse: Record<string, string>,
+  ...args: Parameters<typeof pullRequestBody>
+): string {
+  return redact(pullRequestBody(...args), inUse);
 }
 
 /** What a run of the builtin agent gets beyond the spec: sub-agents, or being one. */
@@ -1382,12 +1419,13 @@ async function pushBranch(
   if (forge && token) {
     await git(['push', remoteTarget(forge.forge, forge.project).url, refspec], {
       cwd: ws.path,
+      harden: true,
       timeoutMs: 300_000,
       env: forgeAuthEnv(forge.forge, token),
     });
     return;
   }
-  await git(['push', 'origin', refspec], { cwd: ws.path, timeoutMs: 300_000 });
+  await git(['push', 'origin', refspec], { cwd: ws.path, timeoutMs: 300_000, harden: true });
 }
 
 function pullRequestBody(
