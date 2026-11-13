@@ -76,8 +76,10 @@ export function credentialPaths(home = os.homedir()): string[] {
 export interface RunIsolation {
   /** For the agent process (a CLI), or the builtin agent's commands. */
   agent(driver: DriverId): SandboxOptions;
-  /** For the gates. */
+  /** For the gates, in the run's worktree (native). */
   gates: SandboxOptions;
+  /** For the gates, in another worktree of the repository (a checkout of the run's commit). */
+  gatesFor(dirs: GitDirs): SandboxOptions;
   /** One line for the run's record: what the profile does. */
   note: string;
   /**
@@ -92,8 +94,17 @@ export interface RunIsolation {
    * could not be stopped (the run must end), `warning` what could not be
    * checked.
    */
-  quiesce(dirs: string[]): Promise<{ stopped: Straggler[]; problem?: string; warning?: string }>;
-  /** Remove the run's state home and tag file. */
+  quiesce(dirs: string[]): Promise<{
+    stopped: Straggler[];
+    /** Under the run's directories but not provably the run's: left running. */
+    ignored: Straggler[];
+    problem?: string;
+    warning?: string;
+  }>;
+  /**
+   * Remove the run's state home and tag file: the home is first moved within
+   * the run's area, where no sandbox may write, then deleted.
+   */
   cleanup(): void;
 }
 
@@ -115,11 +126,12 @@ export function isolationFor(
     return {
       agent: () => ({ profile: 'native' }),
       gates: { profile: 'native' },
+      gatesFor: () => ({ profile: 'native' }),
       note:
         'Unisolated: the agent and the gates run with your account’s access to files and the ' +
         'network (profile native, the default). Set sandbox.profile to seatbelt or container to limit them.',
       // Native promises nothing: the agent can run anything as the user anyway.
-      quiesce: async () => ({ stopped: [] }),
+      quiesce: async () => ({ stopped: [], ignored: [] }),
       cleanup: () => undefined,
     };
   }
@@ -140,19 +152,19 @@ export function isolationFor(
     const file = path.join(dirs.adminDir, 'config.worktree');
     if (!fs.existsSync(file)) fs.writeFileSync(file, '', { mode: 0o600 });
   }
-  const shared: SandboxOptions = {
+  const sharedFor = (d: GitDirs): SandboxOptions => ({
     profile,
     tagFile,
     // The history is readable, the worktree's own index writable, and nothing
     // the gateway's git later trusts can be changed from inside.
-    readOnly: [dirs.commonDir],
-    allowWrite: [dirs.adminDir],
+    readOnly: [d.commonDir],
+    allowWrite: [d.adminDir],
     protect: [
-      dirs.gitFile,
-      path.join(dirs.adminDir, 'commondir'),
-      path.join(dirs.adminDir, 'gitdir'),
-      path.join(dirs.adminDir, 'HEAD'),
-      path.join(dirs.adminDir, 'config.worktree'),
+      d.gitFile,
+      path.join(d.adminDir, 'commondir'),
+      path.join(d.adminDir, 'gitdir'),
+      path.join(d.adminDir, 'HEAD'),
+      path.join(d.adminDir, 'config.worktree'),
     ],
     ...(profile === 'seatbelt' ? { denyRead: credentialPaths(home) } : {}),
     ...(profile === 'container'
@@ -162,9 +174,18 @@ export function isolationFor(
           labels: { 'clerq.run': options.runId },
         }
       : {}),
-  };
+  });
+  const shared = sharedFor(dirs);
 
   const gates: SandboxOptions = { ...shared, network: networkFor(spec, []) };
+  const gatesFor = (d: GitDirs): SandboxOptions => {
+    if (profile === 'container') {
+      const file = path.join(d.adminDir, 'config.worktree');
+      if (!fs.existsSync(file)) fs.writeFileSync(file, '', { mode: 0o600 });
+    }
+    return { ...sharedFor(d), network: networkFor(spec, []) };
+  };
+  const runStarted = Date.now();
   const agent = (driver: DriverId): SandboxOptions => ({
     ...shared,
     // The CLI's state home of the run's (seatbelt; in a container, /tmp).
@@ -175,16 +196,19 @@ export function isolationFor(
     const r = await stopStragglers({
       tagFile,
       dirs: [...watched, ...(stateHome ? [stateHome] : [])],
+      since: runStarted,
     });
     if (r === null) {
       return {
         stopped: [],
+        ignored: [],
         warning:
           'Could not run lsof to look for processes the run left behind; the commit does not depend on it.',
       };
     }
     return {
       stopped: r.stopped,
+      ignored: r.ignored,
       ...(r.remaining.length > 0
         ? {
             problem: `Processes the run started would not stop: ${r.remaining
@@ -205,9 +229,18 @@ export function isolationFor(
   return {
     agent,
     gates,
+    gatesFor,
     ...(stateHome ? { stateHome } : {}),
     quiesce,
-    cleanup: () => fs.rmSync(area, { recursive: true, force: true }),
+    cleanup: () => {
+      try {
+        // Out of reach of anything still running sandboxed before it is deleted.
+        if (stateHome) fs.renameSync(stateHome, path.join(area, `removed-${Date.now()}`));
+      } catch {
+        /* not there */
+      }
+      fs.rmSync(area, { recursive: true, force: true });
+    },
     note:
       `Isolated (profile ${profile}): writes only in the worktree, ` +
       `network to ${hosts}${spec.sandbox.network === 'all' ? '' : ' (and the agent CLI’s model provider)'}` +

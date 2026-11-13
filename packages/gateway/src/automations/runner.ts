@@ -533,18 +533,18 @@ async function execute(
      * left its group with setsid keeps writing otherwise), and fail the run if
      * something will not stop, before any git of the gateway's runs.
      */
-    const settle = async (after: string) => {
-      const q = await isolation.quiesce([ws.path, gitDirs.adminDir]);
-      if (q.stopped.length > 0 || q.warning) {
+    const settle = async (after: string, also: string[] = []) => {
+      const q = await isolation.quiesce([ws.path, gitDirs.adminDir, ...also]);
+      if (q.stopped.length > 0 || q.ignored.length > 0 || q.warning) {
+        const brief = (list: typeof q.stopped) =>
+          list.map((p) => ({ pid: p.pid, command: p.command.slice(0, 200) }));
         addRunStep(runId, {
           kind: 'tool',
           input: { name: 'process.stragglers', after },
           output: {
-            ...(q.stopped.length
-              ? {
-                  stopped: q.stopped.map((p) => ({ pid: p.pid, command: p.command.slice(0, 200) })),
-                }
-              : {}),
+            ...(q.stopped.length ? { stopped: brief(q.stopped) } : {}),
+            // Under the run's directories, but there before the run: not killed.
+            ...(q.ignored.length ? { leftRunning: brief(q.ignored) } : {}),
             ...(q.warning ? { note: q.warning } : {}),
           },
           status: 'warning',
@@ -734,7 +734,47 @@ async function execute(
       addArtifact(runId, 'diff', redact(diff, inUse), `${branch}.diff`);
 
       try {
-        await verify(spec, ws, runId, signal, deps, rules, budget, isolation.gates, inUse);
+        // Under a profile the gates run on a fresh checkout of the run's commit,
+        // which nothing the run started earlier can have written: they test
+        // exactly what would be published. (Native promises no such thing, and
+        // keeps running them in the worktree, with what the agent left there.)
+        if (spec.sandbox.profile === 'native') {
+          await verify(
+            spec,
+            ws,
+            ws.path,
+            runId,
+            signal,
+            deps,
+            rules,
+            budget,
+            isolation.gates,
+            inUse
+          );
+        } else {
+          const gate = await ws.checkout(ws.head as string, deps.workspaceCacheDir);
+          try {
+            const gateDirs = await gate.gitDirs();
+            try {
+              await verify(
+                spec,
+                ws,
+                gate.path,
+                runId,
+                signal,
+                deps,
+                rules,
+                budget,
+                isolation.gatesFor(gateDirs),
+                inUse
+              );
+            } finally {
+              await settle('gates', [gate.path, gateDirs.adminDir]);
+            }
+          } finally {
+            await gate.dispose();
+          }
+        }
         break;
       } catch (e) {
         if (!(e instanceof GateFailed) || level + 1 >= models.length) throw e;
@@ -1221,6 +1261,8 @@ export async function approveToolCall(
 async function verify(
   spec: AutomationSpec,
   ws: Workspace,
+  /** Where the gate commands run: the worktree, or a checkout of the run's commit. */
+  gateDir: string,
   runId: string,
   signal: AbortSignal,
   deps: RunnerDeps,
@@ -1238,7 +1280,7 @@ async function verify(
       checkAssertion(gate, files, runId);
     } else {
       await guard(rules, TOOLS.gate, budget, () =>
-        runGate(gate, ws, runId, signal, deps, sandbox, inUse)
+        runGate(gate, gateDir, runId, signal, deps, sandbox, inUse)
       );
     }
   }
@@ -1270,7 +1312,7 @@ function checkAssertion(
 
 async function runGate(
   gate: Extract<GateSpec, { run: string }>,
-  ws: Workspace,
+  cwd: string,
   runId: string,
   signal: AbortSignal,
   deps: RunnerDeps,
@@ -1288,7 +1330,7 @@ async function runGate(
   const r = await exec(
     {
       ...sandbox,
-      cwd: ws.path,
+      cwd,
       env: { PATH: deps.path() },
       limits: { wallMs: gate.timeoutMs },
     },

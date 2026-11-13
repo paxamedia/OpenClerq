@@ -20,7 +20,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -607,6 +607,122 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"done","tot
   }, 60_000);
 });
 
+describe.skipIf(!isMac)('gates test the commit (macOS, seatbelt)', () => {
+  it('runs the gates on the run commit, not on a worktree a hidden process rewrites', async () => {
+    const marker = `clerq-test-straggler-${Date.now()}`;
+    fs.writeFileSync(
+      path.join(bin, 'claude-rewriter'),
+      `#!/bin/sh
+[ "$1" = "--version" ] && { echo "9.9.9 (Claude Code)"; exit 0; }
+echo good > OUT.md
+wt=$(pwd)
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+branch=$(git symbolic-ref --short HEAD)
+base=$(git rev-parse HEAD)
+# As a shell started by a Node CLI would be: no tag descriptor, out of the
+# group, out of the run's directories. Once the commit exists, it rewrites
+# the worktree.
+/usr/bin/perl -MPOSIX -e 'POSIX::setsid(); close STDIN; close STDOUT; close STDERR; POSIX::close(3); chdir "/"; exec "/bin/sh", "-c", $ARGV[0], "${marker}"' "while [ \\"\\$(cat '$common/refs/heads/$branch')\\" = '$base' ]; do sleep 0.1; done; echo bad > '$wt/OUT.md'; sleep 30" &
+# Long enough for it to leave the group before the agent ends.
+sleep 1
+echo '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0,"usage":{}}'
+`,
+      { mode: 0o755 }
+    );
+    process.env.FAKE_AGENT = 'claude-rewriter';
+    const id = await create(
+      spec(
+        'gates-on-commit',
+        'github:acme/remote-app',
+        '  - run: sleep 3 && grep -q good OUT.md\nsandbox:\n  profile: seatbelt\npublish:\n  push: false'
+      ).replace('  - run: test -f CHANGED.md\n', '')
+    );
+    const runId = await start(id);
+    let sawRewrite = false;
+    try {
+      for (const end = Date.now() + 30_000; Date.now() < end; ) {
+        const { body } = await json<RunView>(`/runs/${runId}`);
+        const wt = body.steps.find((s) => s.input?.action === 'worktree')?.output?.path;
+        if (body.status === 'verifying' && wt) {
+          try {
+            sawRewrite ||= fs.readFileSync(path.join(String(wt), 'OUT.md'), 'utf8') === 'bad\n';
+          } catch {
+            /* not yet */
+          }
+        }
+        if (finished(body)) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const run = await waitForRun(runId, finished);
+      // The hidden process did rewrite the worktree while the gates ran...
+      expect(sawRewrite).toBe(true);
+      // ...and the gates saw the commit, which is what the run keeps.
+      expect(run.status, run.exitReason).toBe('done');
+      const diff = run.artifacts.find((a) => a.kind === 'diff');
+      const { body } = await json<{ content: string }>(`/runs/${runId}/artifacts/${diff?.id}`);
+      expect(body.content).toContain('+good');
+    } finally {
+      // Whatever is left of it (nothing, once the run stopped it).
+      spawnSync('pkill', ['-f', marker], { stdio: 'ignore' });
+    }
+  }, 60_000);
+
+  it("does not kill the user's own process that sits in the worktree", async () => {
+    fs.writeFileSync(
+      path.join(bin, 'claude-plain'),
+      `#!/bin/sh
+[ "$1" = "--version" ] && { echo "9.9.9 (Claude Code)"; exit 0; }
+echo changed > CHANGED.md
+sleep 2
+echo '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0,"usage":{}}'
+`,
+      { mode: 0o755 }
+    );
+    process.env.FAKE_AGENT = 'claude-plain';
+    // The user's shell: started before the run, it moves into the worktree
+    // once there is one, as a person cd-ing into it would.
+    const where = path.join(root, `user-shell-${Date.now()}`);
+    const own = spawn(
+      '/usr/bin/perl',
+      [
+        '-e',
+        `until (-e "${where}") { select(undef,undef,undef,0.05) } open F, "${where}"; chomp($p = <F>); chdir $p or die; sleep 30`,
+      ],
+      { stdio: 'ignore', detached: true }
+    );
+    try {
+      await new Promise((r) => setTimeout(r, 1_500));
+      const id = await create(
+        spec(
+          'user-process',
+          'github:acme/remote-app',
+          'sandbox:\n  profile: seatbelt\npublish:\n  push: false'
+        )
+      );
+      const runId = await start(id);
+      for (;;) {
+        const { body } = await json<RunView>(`/runs/${runId}`);
+        const p = body.steps.find((s) => s.input?.action === 'worktree')?.output?.path;
+        if (p) {
+          fs.writeFileSync(where, `${p}\n`);
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      const run = await waitForRun(runId, finished);
+      expect(run.status, run.exitReason).toBe('done');
+      // Found under the worktree, reported, and left running.
+      const left = stepsNamed(run, 'process.stragglers').flatMap(
+        (s) => (s.output?.leftRunning as Array<{ pid: number }> | undefined) ?? []
+      );
+      expect(left.map((p) => p.pid)).toContain(own.pid);
+      expect(() => process.kill(own.pid as number, 0)).not.toThrow();
+    } finally {
+      own.kill('SIGKILL');
+    }
+  }, 60_000);
+});
+
 describe('the run commit', () => {
   it('pushes only the base plus the run commit, whatever merge the agent set up', async () => {
     fs.writeFileSync(
@@ -690,14 +806,19 @@ exit 0
     expect(runs[1]).toMatch(/ fake-image \/bin\/sh -c test -f CHANGED.md$/);
     const worktree = String(run.steps.find((s) => s.input?.action === 'worktree')?.output?.path);
     const common = path.join(cacheDir, cacheKey('https://github.com/acme/remote-app.git'), '.git');
-    for (const r of runs) {
+    // The agent works in the run's worktree; the gate in a fresh checkout of the commit.
+    const gateDir = /-w (\S+)/.exec(runs[1])?.[1] as string;
+    expect(path.basename(gateDir)).toMatch(/^gate-/);
+    for (const [r, dir] of [
+      [runs[0], worktree],
+      [runs[1], gateDir],
+    ]) {
       expect(r).toContain(`--name clerq-${run.id}-`);
-      expect(r).toContain(`--mount type=bind,source=${worktree},target=${worktree} `);
+      expect(r).toContain(`--mount type=bind,source=${dir},target=${dir} `);
       expect(r).toContain(`--mount type=bind,source=${common},target=${common},readonly`);
-      expect(r).toContain(
-        `--mount type=bind,source=${worktree}/.git,target=${worktree}/.git,readonly`
-      );
+      expect(r).toContain(`--mount type=bind,source=${dir}/.git,target=${dir}/.git,readonly`);
     }
+    expect(runs[1]).toMatch(/config\.worktree,readonly/);
     // The agent reaches its model provider through an egress proxy container on
     // an internal network; the gate, with no hosts in the spec, has no network.
     const agentName = /--name (\S+)/.exec(runs[0])?.[1] as string;
