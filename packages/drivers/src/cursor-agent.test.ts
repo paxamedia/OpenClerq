@@ -171,7 +171,7 @@ describe('buildCursorArgs', () => {
     expect(args).not.toContain('--mode');
   });
 
-  it('maps the permission modes that are not agent mode', () => {
+  it('runs agent mode only for acceptEdits', () => {
     const mode = (permissionMode: 'plan' | 'default' | 'acceptEdits' | 'dontAsk') => {
       const args = buildCursorArgs({ prompt: 'x', cwd: '/x', permissionMode });
       return args.includes('--mode') ? args[args.indexOf('--mode') + 1] : null;
@@ -179,7 +179,8 @@ describe('buildCursorArgs', () => {
     expect(mode('plan')).toBe('plan');
     expect(mode('default')).toBe('ask');
     expect(mode('acceptEdits')).toBeNull();
-    expect(mode('dontAsk')).toBeNull();
+    // Nothing here may ask a person, so what is not granted is denied.
+    expect(mode('dontAsk')).toBe('ask');
   });
 });
 

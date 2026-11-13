@@ -49,15 +49,17 @@ export const CURSOR_NOT_SIGNED_IN =
  * The command line for one run. The prompt comes after `--`, so a prompt that
  * starts with a dash is not read as an option.
  *
- * Permission modes: Cursor's agent mode edits the workspace, so `acceptEdits`
- * and `dontAsk` use it; `plan` is its planning mode; `default` is its
- * read-only ask mode, because an unattended run cannot answer the questions
- * the default mode would put to a person.
+ * Permission modes follow Claude Code's meaning, where anything not granted is
+ * denied: only `acceptEdits` runs Cursor's agent mode, which edits the
+ * workspace. `plan` is its planning mode. `default` and `dontAsk` both cannot
+ * ask a person anything in an unattended run, so they get its read-only ask
+ * mode.
  */
 export function buildCursorArgs(input: DriverRunInput): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--trust'];
-  if (input.permissionMode === 'plan') args.push('--mode', 'plan');
-  else if (input.permissionMode === 'default') args.push('--mode', 'ask');
+  const mode = input.permissionMode ?? 'acceptEdits';
+  if (mode === 'plan') args.push('--mode', 'plan');
+  else if (mode !== 'acceptEdits') args.push('--mode', 'ask');
   if (input.model) args.push('--model', input.model);
   args.push('--', input.prompt);
   return args;
