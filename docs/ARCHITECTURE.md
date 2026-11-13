@@ -191,7 +191,8 @@ opening the PR. Anything the spec does not ask to publish is denied. The diff an
 output stay with the run, and the worktree is removed afterwards. New automations are saved
 disabled. `max_usd_per_run` becomes the agent's own budget, and reaching `max_usd_per_month`
 pauses the automation. The kill switch pauses automation schedules with the triggers, holds the
-queue, and cancels queued runs as well as running ones.
+queue, and cancels queued runs as well as running ones. Its pause is kept in the store: a gateway
+that starts while it is engaged starts no triggers, schedules or queued runs until `POST /resume`.
 
 #### Queue, leases and schedules
 
@@ -201,20 +202,27 @@ within it the oldest run, so one repository with many automations cannot starve 
 `targets` names one repository per automation in this release, so `targets.max_parallel` has
 nothing to spread and is refused; the pick already groups by repository for when it does. A
 scheduled firing while the automation is still running queues one run behind it (never a second);
-starting a run by hand while one is queued or running is refused.
+starting a run by hand while one is queued or running is refused. Switching an automation off
+cancels its queued runs, and a scheduled run of an automation that is off never starts.
 
 A run nothing is working on any more is reclaimed. At startup that is every unfinished run whose
 gateway is not running; while running, a run whose lease has expired and whose owning gateway is
 gone (or, for this gateway's own runs, one it no longer holds). A run whose gateway is still
 running is never touched, at startup or later; see [Agent drivers](#agent-drivers) for how a live
-gateway is told from a reused pid. A reclaimed run first has its leftover processes stopped and
-its worktree and branch removed; then a run that was only leased goes back to the queue as the same
-attempt, one stopped while preparing, working or checking is retried when its spec has retries
-left, and anything else (including a run that was waiting for approval or publishing) is marked
-failed.
+gateway is told from a reused pid. A gateway first claims an abandoned run, in one conditional
+write that succeeds only while the run's state, owner and expired lease are as it read them, so two
+gateways sharing a store cannot both settle it; then its leftover processes are stopped and its
+worktree and branch removed. A run that was only leased goes back to the queue as the same
+attempt, at most three times; one stopped while preparing, working or checking is retried when its
+spec has retries left and its automation is still switched on; anything else (including a run
+that was waiting for approval or publishing) is marked failed. Each of these writes, and the end of
+a run, applies only from the state and owner expected.
 
 One clock watches every schedule: at the next slot due, and at least every 15 seconds. Each
-automation keeps `last_slot_at`, the latest slot dealt with, written before its run is queued. A
+automation keeps `last_slot_at`, the latest slot dealt with. It is moved by compare-and-set in the
+same transaction that writes the slot's run, so two gateways sharing a store cannot both fire a
+slot, and a run that cannot be queued (one is already waiting, or the write failed) still uses up
+its slots, which are recorded as missed (`already_queued`, `enqueue_failed`). A
 slot at most two minutes old runs; older ones were missed (the machine slept, or the gateway was
 down). With `on.catch_up: true` they are caught up by one run, however many there were, when they
 are noticed, on wake or on start; without it they are skipped and recorded
@@ -222,17 +230,24 @@ are noticed, on wake or on start; without it they are skipped and recorded
 the automation's summary). A sleep shows as the wall clock jumping ahead of the monotonic clock,
 which stops while the machine sleeps (`schedule.woke`); the missed slots are found from
 `last_slot_at` either way. Slots missed while the kill switch held schedules are skipped, never
-caught up, and a schedule counts from when it is switched on or edited.
+caught up, and a schedule counts from when it is switched on or edited. Slots follow node-cron's
+reading of local time: a time that does not exist when the clocks go forward is skipped, and a
+repeated hour when they go back runs once.
 
 #### Retries and escalation
 
 `retry.max_retries` (default 0) tries a run again after a failure that says nothing about the
 task: the agent's process crashed without reporting a result, the model provider answered 5xx or
-429 or was unreachable, or the run's lease expired. The wait is `retry.backoff` (default 1m),
+429 or was unreachable, or the run's lease expired. Only what the driver itself reports counts (the
+crash, the API error the CLI printed, the builtin's last model-call error), never the agent's own
+final message, and a limit the CLI enforced (`error_max_turns`, `error_max_budget_usd`) never does. The wait is `retry.backoff` (default 1m),
 doubled for each retry before, at most an hour; the run is back in the queue meanwhile, can be
 cancelled there, and starts again from a fresh worktree. A run that failed a policy decision, a
-budget, a time limit, a denial, a gate or a cancel is never retried. All attempts are one run, so
-its cost, its steps and `max_usd_per_run` cover every attempt.
+budget, a time limit, a denial, a gate or a cancel is never retried, and neither is a run whose
+automation is switched off (a run started by hand while it is off runs once). All attempts are one
+run, so its steps and its cost cover every attempt, and `max_usd_per_run` limits what they
+reported together. A crashed attempt that reported no cost is recorded as unaccounted, and the
+run's cost then reads as a lower bound (`costKnown: false`).
 
 `agent.model.escalate` lists models to try when the gates fail: the agent runs again with the
 next one, once per model, in the same worktree. The earlier attempt's commit stays (whatever the
