@@ -7,8 +7,8 @@
  * one by accident would move the user's runs onto API billing.
  */
 
-import path from 'node:path';
-import { exec, type ExecResult, type SandboxSpec } from '@clerq/sandbox';
+import type { ExecResult } from '@clerq/sandbox';
+import { capped, cliEnv, failed, num, probe, runCli } from './cli.js';
 import { locate } from './locate.js';
 import type {
   Driver,
@@ -19,9 +19,6 @@ import type {
 } from './types.js';
 
 const ID = 'claude-code';
-const DEFAULT_TIMEOUT_MS = 20 * 60_000;
-/** Tool output kept per result. A test log can run to megabytes. */
-const MAX_TOOL_OUTPUT_CHARS = 64_000;
 
 export interface ClaudeCodeOptions {
   /** Path to the CLI. Defaults to CLERQ_CLAUDE_BIN, then `claude` found on PATH. */
@@ -70,16 +67,6 @@ function textOf(content: unknown): string {
       .join('\n');
   }
   return content === undefined ? '' : JSON.stringify(content);
-}
-
-function capped(text: string): string {
-  return text.length > MAX_TOOL_OUTPUT_CHARS
-    ? `${text.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n[…${text.length - MAX_TOOL_OUTPUT_CHARS} more characters]`
-    : text;
-}
-
-function num(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 /** Turns stream-json lines into driver events, and remembers how the run ended. */
@@ -227,20 +214,16 @@ export function claudeCode(options: ClaudeCodeOptions = {}): Driver {
       };
     }
     try {
-      const r = await exec(
-        { profile: 'native', cwd: path.dirname(bin), limits: { wallMs: 15_000 } },
-        bin,
-        ['--version']
-      );
-      if (r.code !== 0) {
+      const r = await probe(bin, ['--version']);
+      if (!r.ok) {
         return {
           id: ID,
           available: false,
           path: bin,
-          reason: `\`claude --version\` failed: ${(r.stderr || r.stdout).trim().slice(0, 200)}`,
+          reason: `\`claude --version\` failed: ${r.text.slice(0, 200)}`,
         };
       }
-      return { id: ID, available: true, path: bin, version: r.stdout.trim().split(/\s+/)[0] };
+      return { id: ID, available: true, path: bin, version: r.text.split(/\s+/)[0] };
     } catch (e) {
       return {
         id: ID,
@@ -255,109 +238,23 @@ export function claudeCode(options: ClaudeCodeOptions = {}): Driver {
     const bin = find();
     if (!bin) {
       const { reason } = await detect();
-      yield {
-        type: 'finished',
-        result: {
-          ok: false,
-          summary: reason ?? 'Claude Code was not found.',
-          costUsd: null,
-          tokensIn: 0,
-          tokensOut: 0,
-          durationMs: 0,
-          exitCode: null,
-          timedOut: false,
-          cancelled: false,
-          permissionDenials: [],
-          warnings: [],
-        },
-      };
+      yield failed(reason ?? 'Claude Code was not found.');
       return;
     }
 
-    // Stops the process if the caller abandons the iteration early.
-    const controller = new AbortController();
-    const forward = () => controller.abort();
-    if (input.signal?.aborted) controller.abort();
-    else input.signal?.addEventListener('abort', forward, { once: true });
-
-    const env: Record<string, string> = {
-      ...input.env,
-      // The CLI's own directory first: an npm install is a node script, and
-      // node usually sits beside it.
-      PATH: [path.dirname(bin), input.env?.PATH ?? process.env.PATH ?? '']
-        .filter(Boolean)
-        .join(path.delimiter),
+    const extra: Record<string, string> = {
       // An unattended run should not update the CLI under itself.
       DISABLE_AUTOUPDATER: '1',
     };
-    if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+    if (process.env.CLAUDE_CONFIG_DIR) extra.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
 
-    const spec: SandboxSpec = {
-      profile: input.sandbox?.profile ?? 'native',
-      network: input.sandbox?.network,
-      allowWrite: input.sandbox?.allowWrite,
-      image: input.sandbox?.image,
-      cwd: input.cwd,
-      env,
-      secrets: input.secrets,
-      limits: { wallMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxOutputBytes: 2_097_152 },
-    };
-
-    const stream = new ClaudeStream();
-    const queue: DriverEvent[] = [];
-    let wake: (() => void) | null = null;
-    let done = false;
-    const push = (event: DriverEvent) => {
-      queue.push(event);
-      wake?.();
-      wake = null;
-    };
-
-    void exec(spec, bin, buildClaudeArgs(input), {
-      signal: controller.signal,
-      onLine: (line, which) => {
-        for (const event of stream.consume(line, which)) push(event);
-      },
-    })
-      .then(
-        (result) => push({ type: 'finished', result: stream.finish(result) }),
-        (e: unknown) =>
-          push({
-            type: 'finished',
-            result: {
-              ok: false,
-              summary: e instanceof Error ? e.message : String(e),
-              costUsd: null,
-              tokensIn: 0,
-              tokensOut: 0,
-              durationMs: 0,
-              exitCode: null,
-              timedOut: false,
-              cancelled: false,
-              permissionDenials: [],
-              warnings: [],
-            },
-          })
-      )
-      .finally(() => {
-        done = true;
-        wake?.();
-        wake = null;
-      });
-
-    try {
-      while (true) {
-        if (queue.length > 0) {
-          yield queue.shift() as DriverEvent;
-          continue;
-        }
-        if (done) return;
-        await new Promise<void>((resolve) => (wake = resolve));
-      }
-    } finally {
-      input.signal?.removeEventListener('abort', forward);
-      if (!done) controller.abort();
-    }
+    yield* runCli({
+      bin,
+      args: buildClaudeArgs(input),
+      input,
+      env: cliEnv(bin, input.env, extra),
+      parser: new ClaudeStream(),
+    });
   }
 
   return { id: ID, detect, run };

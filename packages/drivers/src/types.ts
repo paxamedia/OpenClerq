@@ -7,8 +7,31 @@ export interface DriverAvailability {
   /** Absolute path of the CLI, when found. */
   path?: string;
   version?: string;
+  /**
+   * Whether the CLI reports a signed-in account. Absent when the driver does
+   * not check, or the CLI would not say.
+   */
+  signedIn?: boolean;
   /** Why it cannot run, in words a user can act on. */
   reason?: string;
+}
+
+/** What `detect` is told about the run it is checking for. */
+export interface DetectOptions {
+  /**
+   * The run will give the CLI an API key of its own, so the CLI's sign-in is
+   * not needed and is not checked.
+   */
+  apiKey?: boolean;
+}
+
+/** A process a driver started, as the operating system knows it. */
+export interface SpawnedProcess {
+  pid: number;
+  /** The process group, which the process leads. Killing it stops the descendants too. */
+  pgid: number;
+  /** The CLI that was started, as a path. */
+  command: string;
 }
 
 export interface DriverRunInput {
@@ -31,6 +54,11 @@ export interface DriverRunInput {
   /** Environment variables redacted from everything the agent prints. */
   secrets?: Record<string, string>;
   signal?: AbortSignal;
+  /**
+   * Called once, when the agent's process exists. The caller can record it, so
+   * that a process still running after this one dies can be found and stopped.
+   */
+  onSpawn?: (process: SpawnedProcess) => void;
 }
 
 /**
@@ -71,6 +99,23 @@ export interface DriverResult {
  */
 export interface Driver {
   readonly id: string;
-  detect(): Promise<DriverAvailability>;
+  detect(options?: DetectOptions): Promise<DriverAvailability>;
   run(input: DriverRunInput): AsyncIterable<DriverEvent>;
+}
+
+/**
+ * What a driver's CLI can honour. A spec that asks for more than its driver
+ * can do is refused when it is saved, rather than quietly run without it.
+ */
+export interface DriverCapabilities {
+  /** The CLI stops itself at a spend limit, so `maxBudgetUsd` is passed to it. */
+  budgetLimit: boolean;
+  /** The CLI reports what a run cost, which a monthly budget needs. */
+  reportsCost: boolean;
+  /** The CLI takes a list of tools the agent may use, in its own syntax. */
+  allowedTools: boolean;
+  /** The environment variable the CLI reads an API key from. */
+  apiKeyEnv: string;
+  /** What the CLI is, in a sentence a user can read. */
+  label: string;
 }
