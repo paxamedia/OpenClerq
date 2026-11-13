@@ -173,24 +173,95 @@ that runs a coding agent against a local repository, on a schedule or on demand.
 written before its work starts:
 
 ```text
-preparing → executing → verifying → publishing → done
-                                        ↕
-                                awaiting_approval
+queued → leased → preparing → executing → verifying → publishing → done
+  ↑                              ↑            │            ↕
+  │                              └─ escalate ─┘    awaiting_approval
+  └─── retry after backoff: agent crashed, provider down, lease expired
 ```
 
+- **queued** — a row in `runs`, waiting for a place: at most `CLERQ_MAX_CONCURRENT_RUNS` (default 2) automation runs at once, one per automation, and a retry waits out its backoff (`not_before`). Queued runs survive a restart.
+- **leased** — a gateway takes the run: its pid and start time as owner, and `lease_until` a minute ahead, in one statement that only succeeds while the row is still queued. The lease is renewed every 20 seconds until the run ends.
 - **preparing** — a new branch in a fresh `git worktree`, started from origin's copy of the base branch (fetched first; the local branch if the fetch fails). The user's checkout is never touched.
 - **executing** — the spec's driver runs the agent in the worktree: a vendor CLI under the user's own sign-in, or the builtin loop in the gateway, with a minimal environment: no gateway token, and no API key unless the spec names a vault secret (handed over as the variable that CLI reads). Its tool calls become run steps, and the cost it reports goes on the run. The process it starts, and each gate's, is recorded with the run; see [Agent drivers](#agent-drivers).
-- **verifying** — the agent's changes are committed, then each gate runs in the worktree. The first failure ends the run.
+- **verifying** — the agent's changes are committed, then each gate runs in the worktree, in order: a command (`run:`) must exit 0, and an assertion (`assert: diff.…`) is checked against the run's diff from its base. The first failure ends the run, unless the spec escalates (below).
 - **publishing** — push, then a draft pull request on GitHub. The push waits in the approvals inbox unless the spec sets `approvals.push: auto`, and an automation's first push always waits.
 
 `packages/policy` decides each action first: running the agent, a gate, committing, pushing,
 opening the PR. Anything the spec does not ask to publish is denied. The diff and the agent's
-output stay with the run, and the worktree is removed afterwards. A run interrupted by a restart
-is marked failed and its worktree removed, once anything it left running has been stopped. New automations are saved disabled. Each automation
-runs once at a time, and at most `CLERQ_MAX_CONCURRENT_RUNS` (default 2) run at once; a firing
-beyond that is skipped, not queued. `max_usd_per_run` becomes the agent's own budget, and reaching
-`max_usd_per_month` pauses the automation. The kill switch pauses automation schedules with the
-triggers.
+output stay with the run, and the worktree is removed afterwards. New automations are saved
+disabled. `max_usd_per_run` becomes the agent's own budget, and reaching `max_usd_per_month`
+pauses the automation. The kill switch pauses automation schedules with the triggers, holds the
+queue, and cancels queued runs as well as running ones.
+
+#### Queue, leases and schedules
+
+When more runs are queued than the limit allows, the next one is picked fairly across
+repositories: the repository with the fewest runs going, then the one served longest ago, and
+within it the oldest run, so one repository with many automations cannot starve the others.
+`targets` names one repository per automation in this release, so `targets.max_parallel` has
+nothing to spread and is refused; the pick already groups by repository for when it does. A
+scheduled firing while the automation is still running queues one run behind it (never a second);
+starting a run by hand while one is queued or running is refused.
+
+A run nothing is working on any more is reclaimed. At startup that is every unfinished run whose
+gateway is not running; while running, a run whose lease has expired and whose owning gateway is
+gone (or, for this gateway's own runs, one it no longer holds). A run whose gateway is still
+running is never touched, at startup or later; see [Agent drivers](#agent-drivers) for how a live
+gateway is told from a reused pid. A reclaimed run first has its leftover processes stopped and
+its worktree and branch removed; then a run that was only leased goes back to the queue as the same
+attempt, one stopped while preparing, working or checking is retried when its spec has retries
+left, and anything else (including a run that was waiting for approval or publishing) is marked
+failed.
+
+One clock watches every schedule: at the next slot due, and at least every 15 seconds. Each
+automation keeps `last_slot_at`, the latest slot dealt with, written before its run is queued. A
+slot at most two minutes old runs; older ones were missed (the machine slept, or the gateway was
+down). With `on.catch_up: true` they are caught up by one run, however many there were, when they
+are noticed, on wake or on start; without it they are skipped and recorded
+(`automation.slots_missed` in the audit log, `schedule.missed` on the event bus, `missedSlots` in
+the automation's summary). A sleep shows as the wall clock jumping ahead of the monotonic clock,
+which stops while the machine sleeps (`schedule.woke`); the missed slots are found from
+`last_slot_at` either way. Slots missed while the kill switch held schedules are skipped, never
+caught up, and a schedule counts from when it is switched on or edited.
+
+#### Retries and escalation
+
+`retry.max_retries` (default 0) tries a run again after a failure that says nothing about the
+task: the agent's process crashed without reporting a result, the model provider answered 5xx or
+429 or was unreachable, or the run's lease expired. The wait is `retry.backoff` (default 1m),
+doubled for each retry before, at most an hour; the run is back in the queue meanwhile, can be
+cancelled there, and starts again from a fresh worktree. A run that failed a policy decision, a
+budget, a time limit, a denial, a gate or a cancel is never retried. All attempts are one run, so
+its cost, its steps and `max_usd_per_run` cover every attempt.
+
+`agent.model.escalate` lists models to try when the gates fail: the agent runs again with the
+next one, once per model, in the same worktree. The earlier attempt's commit stays (whatever the
+gates wrote is reset away), the prompt gains the failed check and its output, and the run ends with
+one commit. Each attempt is recorded as an `agent.escalate` step and gets only what is left of
+`max_usd_per_run`; an attempt the run or month budget cannot cover is not started. Every model is
+checked before the run does any work, so a model that is unavailable, or unpriced while the spec
+has a budget in dollars, is refused at the spec check and before the first attempt. The model is
+handed to the driver as given: `provider/model` for the builtin agent, the CLI's `--model` value
+for the others. `agent.model.fallback`, for choosing another model when one is unavailable, is a
+separate key and not part of this release.
+
+#### Diff assertions
+
+A gate can be `assert:` with a small expression, parsed when the spec is saved (no `eval`) and
+refused with its line and column when it does not read:
+
+| Assertion                                                                                       | Passes when                          |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `diff.files_changed`, `diff.lines_added`, `diff.lines_removed` `<= < >= > == !=` a whole number | the count compares as written        |
+| `diff.touches_none_of [glob, …]`                                                                | no changed path matches any glob     |
+| `diff.touches_only [glob, …]`                                                                   | every changed path matches some glob |
+
+The diff is the run's commit against its base (`git diff --numstat -M`): a renamed file counts once
+in `files_changed` and both its paths count as touched; a binary file adds no lines. Globs match
+paths from the repository root: `*` within one directory, `?` one character, `**` any number of
+directories, and a trailing `/` everything below. `*.md` is a Markdown file at the root;
+`**/*.md` is one anywhere. Each result is a gate step with what was measured and, for a set rule,
+the paths that broke it.
 
 #### Agent drivers
 

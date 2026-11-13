@@ -207,10 +207,10 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [x] Tool calling in `packages/providers` — the `builtin` driver needs it
 - [x] `builtin` driver — real tool-calling loop, every call through `packages/policy`
 - [x] Context management — token estimation, rolling history, compaction, pinned context, tool-output truncation
-- [ ] Durable queue with leases; missed-schedule catch-up on wake from sleep
-- [ ] Fair scheduling across repos
-- [ ] Retry with backoff; model escalation on gate failure
-- [ ] Gate `diff.*` assertions
+- [x] Durable queue with leases; missed-schedule catch-up on wake from sleep
+- [x] Fair scheduling across repos
+- [x] Retry with backoff; model escalation on gate failure
+- [x] Gate `diff.*` assertions
 - [ ] Model routing and fallback chains with strictness rules (explicit user selection is strict; defaults and scheduled jobs may fall back)
 - [ ] Memory 2.0 — typed records, SQLite FTS search, summarisation, policy-controlled retrieval
 - [ ] Sub-agents — `sessions.spawn`, isolated policy, `maxConcurrent = 4`, `maxDepth = 1`
@@ -264,7 +264,8 @@ targets:
 agent:
   driver: claude-code # builtin | claude-code | codex | cursor-agent
   model:
-    primary: claude-opus-5
+    primary: claude-sonnet-4-5
+    escalate: [claude-opus-5] # a gate failed: run again with the next, same worktree
     fallback: [deepseek-reasoner, glm-4.6]
     strategy: cost_aware # quality_first | cost_aware | race | consensus
 
@@ -282,8 +283,8 @@ sandbox:
 gates: # all must pass or the run does not publish
   - run: pnpm install --frozen-lockfile
   - run: pnpm test
-  - assert: diff.files_changed <= 5
-  - assert: diff.touches_none_of [src/**, .github/**]
+  - assert: diff.files_changed <= 5 # also diff.lines_added, diff.lines_removed
+  - assert: diff.touches_none_of [src/**, .github/**] # or diff.touches_only [...]
 
 publish:
   branch: 'auto/{{automation}}/{{date}}'
@@ -300,6 +301,10 @@ approvals:
   push: auto
   merge: manual
   secrets_access: manual
+
+retry: # only after a crash, a provider outage or an expired lease
+  max_retries: 2
+  backoff: 1m # doubles with each retry, at most 1h
 ```
 
 Three surfaces over the same object: a form for people who want a form, a YAML pane for
