@@ -34,8 +34,8 @@ import type { AutomationSpec } from './spec.js';
 
 /**
  * Places in a home directory that hold credentials, or OpenClerq's own state,
- * which no profile lets a run read. Every agent CLI's sign-in is among them;
- * the run's own driver gets its own back (`agentStatePaths`).
+ * which no profile lets a run read. Every agent CLI's state is among them: a
+ * run's CLI works on a state home of the run's own (`RunIsolation.stateHome`).
  */
 export function credentialPaths(home = os.homedir()): string[] {
   const at = (...p: string[]) => path.join(home, ...p);
