@@ -24,6 +24,7 @@ import { createGateway } from '../gateway.js';
 import { getStore } from '../store.js';
 import { chatPolicy, chatTools, CHAT_NEVER } from './tools.js';
 import { CHAT_PERMISSION_MODES } from './sessions.js';
+import { chatHome } from './environment.js';
 import { memoryBlock } from '../memory-context.js';
 import { parseSpec } from '../automations/spec.js';
 
@@ -226,6 +227,15 @@ describe('chat console: managed mode and authoring', () => {
   }, 15_000);
 
   afterAll(async () => {
+    // Deleting a conversation removes the home its commands had.
+    const { sessions } = await json<{ sessions: Array<{ id: string }> }>(
+      authed('/sessions?limit=500')
+    );
+    for (const { id } of sessions) {
+      const home = chatHome(id);
+      expect((await authed(`/sessions/${id}`, { method: 'DELETE' })).status).toBe(200);
+      expect(fs.existsSync(home)).toBe(false);
+    }
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await new Promise<void>((resolve) => fake.close(() => resolve()));
     fs.rmSync(dir, { recursive: true, force: true });
