@@ -70,6 +70,12 @@ export interface ProviderSpec {
   authEnv?: string | null;
   /** Model used when none is named. Falls back to the first listed model. */
   defaultModel?: string;
+  /**
+   * openai-compat only: send a model's `reasoning_content` back with its turn.
+   * Off by default; some servers require it in tool rounds, others (DeepSeek's
+   * reasoner) refuse a request that carries it.
+   */
+  replayReasoning?: boolean;
   models: ModelSpec[];
 }
 
@@ -119,6 +125,11 @@ export function parseRegistry(text: string): Registry {
     }
     if (p.adapter !== 'anthropic' && p.adapter !== 'openai-compat') {
       throw new ProviderError(`Provider "${p.id}" has unknown adapter "${p.adapter}".`);
+    }
+    if (p.replayReasoning !== undefined && typeof p.replayReasoning !== 'boolean') {
+      throw new ProviderError(
+        `Provider "${p.id}" has an invalid replayReasoning: expected true or false.`
+      );
     }
     if (!Array.isArray(p.models)) p.models = [];
     for (const m of p.models) {
@@ -474,7 +485,9 @@ function prepareOpenAi(ctx: CallContext, stream: boolean): PreparedRequest {
   const headers: Record<string, string> = {};
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
 
-  const messages = openAiMessages(turns(opts));
+  const messages = openAiMessages(turns(opts), {
+    replayReasoning: ctx.provider.replayReasoning === true,
+  });
   if (opts.system) messages.unshift({ role: 'system', content: opts.system });
 
   return {

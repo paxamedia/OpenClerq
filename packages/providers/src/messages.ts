@@ -129,7 +129,10 @@ export function anthropicMessages(messages: ConversationMessage[]): unknown[] {
  * `role: "tool"` message each, ahead of any text in that turn; an assistant
  * turn's tool calls go in `tool_calls`, with arguments as a JSON string.
  */
-export function openAiMessages(messages: ConversationMessage[]): Array<Record<string, unknown>> {
+export function openAiMessages(
+  messages: ConversationMessage[],
+  opts: { replayReasoning?: boolean } = {}
+): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   for (const m of messages) {
     if (typeof m.content === 'string') {
@@ -149,10 +152,14 @@ export function openAiMessages(messages: ConversationMessage[]): Array<Record<st
     const calls = m.content.filter(
       (b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use'
     );
-    const reasoning = m.content.find(
-      (b): b is Extract<ContentBlock, { type: 'reasoning' }> =>
-        b.type === 'reasoning' && b.adapter === 'openai-compat'
-    );
+    // Off unless the registry says the server wants it back: DeepSeek's
+    // reasoner refuses a request that carries reasoning_content.
+    const reasoning = opts.replayReasoning
+      ? m.content.find(
+          (b): b is Extract<ContentBlock, { type: 'reasoning' }> =>
+            b.type === 'reasoning' && b.adapter === 'openai-compat'
+        )
+      : undefined;
     out.push({
       role: 'assistant',
       // What the vendor's own response carries when the turn is only tool calls.
@@ -257,22 +264,27 @@ export function anthropicTurn(data: {
   stop_reason?: string;
 }): ParsedTurn {
   const content: ContentBlock[] = [];
+  const errors = new Map<string, string>();
   for (const b of data.content ?? []) {
     if (b.type === 'text') {
       if (typeof b.text === 'string' && b.text) content.push({ type: 'text', text: b.text });
     } else if (b.type === 'tool_use') {
+      const id = String(b.id ?? '');
+      // Tool input is a JSON object. Anything else is not run, but sent back as an error.
+      const valid = b.input !== null && typeof b.input === 'object' && !Array.isArray(b.input);
+      if (!valid) errors.set(id, JSON.stringify(b.input ?? null));
       content.push({
         type: 'tool_use',
-        id: String(b.id ?? ''),
+        id,
         name: String(b.name ?? ''),
-        input: b.input && typeof b.input === 'object' ? b.input : {},
+        input: valid ? b.input : {},
       });
     } else {
       // thinking, redacted_thinking, and anything newer: replayed as received.
       content.push({ type: 'reasoning', adapter: 'anthropic', data: b });
     }
   }
-  const toolCalls = toolCallsOf(content, new Map());
+  const toolCalls = toolCallsOf(content, errors);
   return {
     content,
     toolCalls,
@@ -407,7 +419,9 @@ export class AnthropicTurnBuilder {
 export class OpenAiTurnBuilder {
   private text = '';
   private reasoning = '';
-  private readonly calls = new Map<number, { id: string; name: string; args: string }>();
+  /** Keyed by index when the server sends one, else by call id. Insertion order is call order. */
+  private readonly calls = new Map<string, { id: string; name: string; args: string }>();
+  private lastKey: string | undefined;
   private finishReason: string | null | undefined;
 
   consume(event: Record<string, unknown>): string | undefined {
@@ -431,13 +445,21 @@ export class OpenAiTurnBuilder {
     if (choice.finish_reason) this.finishReason = choice.finish_reason;
     const delta = choice.delta ?? {};
     if (delta.reasoning_content) this.reasoning += delta.reasoning_content;
-    for (const [i, c] of (delta.tool_calls ?? []).entries()) {
-      const index = c.index ?? i;
-      const call = this.calls.get(index) ?? { id: '', name: '', args: '' };
+    for (const c of delta.tool_calls ?? []) {
+      // A fragment with neither index nor id continues the call before it.
+      const key =
+        typeof c.index === 'number'
+          ? `index:${c.index}`
+          : c.id
+            ? `id:${c.id}`
+            : (this.lastKey ?? `pos:${this.calls.size}`);
+      const call = this.calls.get(key) ?? { id: '', name: '', args: '' };
       if (c.id) call.id = c.id;
-      if (c.function?.name) call.name += c.function.name;
+      // Some servers repeat the name in every fragment; it is set, not appended.
+      if (c.function?.name) call.name = c.function.name;
       if (c.function?.arguments) call.args += c.function.arguments;
-      this.calls.set(index, call);
+      this.calls.set(key, call);
+      this.lastKey = key;
     }
     if (delta.content) {
       this.text += delta.content;
@@ -451,9 +473,7 @@ export class OpenAiTurnBuilder {
       {
         text: this.text,
         reasoning: this.reasoning,
-        calls: [...this.calls.entries()]
-          .sort((a, b) => a[0] - b[0])
-          .map(([index, c]) => ({ ...c, id: c.id || `call_${index}` })),
+        calls: [...this.calls.values()].map((c, n) => ({ ...c, id: c.id || `call_${n}` })),
       },
       this.finishReason
     );

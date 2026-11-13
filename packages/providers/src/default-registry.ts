@@ -21,6 +21,10 @@ export const DEFAULT_REGISTRY_YAML = `# Model provider registry.
 #
 # defaultModel is used when no model is named. Without it, the first model is.
 #
+# replayReasoning (openai-compat, default false) sends a model's
+# reasoning_content back with its turn in tool rounds. Turn it on only for a
+# server that asks for it; DeepSeek's reasoner refuses requests that carry it.
+#
 # Prices are US dollars per million tokens. Verify them against the vendor's
 # current pricing page before relying on a cost estimate. A model with no
 # prices has an unknown cost, recorded as unknown rather than as free.

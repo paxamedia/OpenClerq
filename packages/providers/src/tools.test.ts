@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   call,
   callStream,
+  overrideProvider,
   parseRegistry,
   DEFAULT_REGISTRY_YAML,
   type ConversationMessage,
@@ -246,6 +247,23 @@ describe('anthropic tool calling', () => {
     });
   });
 
+  it('flags buffered tool input that is not a JSON object', async () => {
+    const { respond } = capture();
+    const res = await call(
+      registry,
+      'anthropic/claude-haiku-4-5',
+      { prompt: 'go', tools: [readFile] },
+      respond({
+        content: [{ type: 'tool_use', id: 't', name: 'read_file', input: 'src/x.ts' }],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+    );
+    expect(res.toolCalls).toEqual([
+      { id: 't', name: 'read_file', input: {}, inputError: '"src/x.ts"' },
+    ]);
+  });
+
   it('records an unpriced model as unknown cost on a tool turn', async () => {
     const { respond } = capture();
     const res = await call(
@@ -328,7 +346,7 @@ describe('openai-compat tool calling', () => {
     ]);
   });
 
-  it('reads tool_calls, parses their arguments, and keeps reasoning_content for the next turn', async () => {
+  it('reads tool_calls, and does not send reasoning_content back unless the registry says to', async () => {
     const { seen, respond } = capture();
     const res = await call(
       registry,
@@ -358,23 +376,23 @@ describe('openai-compat tool calling', () => {
     expect(res.toolCalls).toEqual([{ id: 'call_1', name: 'read_file', input: { path: 'a.md' } }]);
     expect(res.costUsd).toBeCloseTo(0.27, 6);
 
-    // The turn goes back with its reasoning, and no content beside the calls.
-    await call(
-      registry,
-      'deepseek/deepseek-chat',
-      {
-        messages: [
-          { role: 'user', content: 'go' },
-          { role: 'assistant', content: res.content },
-        ],
-        tools: [readFile],
-      },
-      respond({
-        choices: [{ message: { content: 'done' } }],
-        usage: { prompt_tokens: 1, completion_tokens: 1 },
-      })
-    );
-    expect((seen[1].body.messages as unknown[])[1]).toEqual({
+    const followUp = (reg: typeof registry) =>
+      call(
+        reg,
+        'deepseek/deepseek-chat',
+        {
+          messages: [
+            { role: 'user', content: 'go' },
+            { role: 'assistant', content: res.content },
+          ],
+          tools: [readFile],
+        },
+        respond({
+          choices: [{ message: { content: 'done' } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        })
+      );
+    const assistantTurn = {
       role: 'assistant',
       content: null,
       tool_calls: [
@@ -384,8 +402,109 @@ describe('openai-compat tool calling', () => {
           function: { name: 'read_file', arguments: '{"path":"a.md"}' },
         },
       ],
+    };
+
+    // By default the turn goes back without its reasoning: DeepSeek's reasoner
+    // refuses a request that carries reasoning_content.
+    await followUp(registry);
+    expect((seen[1].body.messages as unknown[])[1]).toEqual(assistantTurn);
+
+    // A provider marked replayReasoning gets it back.
+    await followUp(overrideProvider(registry, 'deepseek', { replayReasoning: true }));
+    expect((seen[2].body.messages as unknown[])[1]).toEqual({
+      ...assistantTurn,
       reasoning_content: 'I should read it.',
     });
+  });
+
+  it('refuses a replayReasoning that is not true or false', () => {
+    expect(() =>
+      parseRegistry(
+        'providers:\n  - id: x\n    adapter: openai-compat\n    baseUrl: http://x\n    replayReasoning: yes-please\n'
+      )
+    ).toThrow(/invalid replayReasoning/);
+  });
+
+  it('sets a streamed call name rather than appending a repeated one, and keys index-less calls by id', async () => {
+    const res = await callStream(
+      registry,
+      'deepseek/deepseek-chat',
+      { prompt: 'go', tools: [readFile] },
+      () => undefined,
+      sse([
+        // No index: two calls told apart by id, their fragments interleaved.
+        frame({
+          choices: [
+            {
+              delta: {
+                tool_calls: [{ id: 'call_x', function: { name: 'read_file', arguments: '{"pa' } }],
+              },
+            },
+          ],
+        }),
+        frame({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { id: 'call_y', function: { name: 'read_file', arguments: '{"path":' } },
+                ],
+              },
+            },
+          ],
+        }),
+        // The server repeats the name with each fragment.
+        frame({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { id: 'call_x', function: { name: 'read_file', arguments: 'th":"x"}' } },
+                ],
+              },
+            },
+          ],
+        }),
+        frame({
+          choices: [
+            {
+              delta: {
+                tool_calls: [{ id: 'call_y', function: { name: 'read_file', arguments: '"y"}' } }],
+              },
+            },
+          ],
+        }),
+        frame({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+        'data: [DONE]\n\n',
+      ])
+    );
+    expect(res.toolCalls).toEqual([
+      { id: 'call_x', name: 'read_file', input: { path: 'x' } },
+      { id: 'call_y', name: 'read_file', input: { path: 'y' } },
+    ]);
+  });
+
+  it('continues an index-less, id-less fragment on the call before it', async () => {
+    const res = await callStream(
+      registry,
+      'deepseek/deepseek-chat',
+      { prompt: 'go', tools: [readFile] },
+      () => undefined,
+      sse([
+        frame({
+          choices: [
+            {
+              delta: {
+                tool_calls: [{ id: 'c1', function: { name: 'read_file', arguments: '{"path"' } }],
+              },
+            },
+          ],
+        }),
+        frame({ choices: [{ delta: { tool_calls: [{ function: { arguments: ':"z"}' } }] } }] }),
+        'data: [DONE]\n\n',
+      ])
+    );
+    expect(res.toolCalls).toEqual([{ id: 'c1', name: 'read_file', input: { path: 'z' } }]);
   });
 
   it('treats a turn with tool calls as a tool turn even when the server says "stop"', async () => {
