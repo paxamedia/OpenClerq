@@ -259,12 +259,30 @@
   font-weight: 400;
 }
 
-.toolcall-input {
+.toolcall-io {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.toolcall-input,
+.toolcall-result {
   overflow: hidden;
-  color: var(--ink-2);
   font: var(--type-code);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.toolcall-input {
+  color: var(--ink-2);
+}
+
+.toolcall-result {
+  color: var(--ink-3);
+}
+
+.toolcall-result::before {
+  content: '→ ';
 }
 
 .toolcall-decision {
@@ -383,7 +401,7 @@
     grid-template-columns: 16px 96px minmax(0, 1fr) 72px;
   }
 
-  .toolcall-input,
+  .toolcall-io,
   .toolcall-decision {
     display: none;
   }

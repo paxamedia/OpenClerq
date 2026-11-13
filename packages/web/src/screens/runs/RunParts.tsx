@@ -82,6 +82,12 @@ export function inputSummary(input: unknown, max = 100): string {
   return cut(JSON.stringify(input) ?? '', max);
 }
 
+/** The first line of a call's output, for the row. */
+export function outputSummary(output: string | undefined, max = 100): string {
+  const first = (output ?? '').split('\n').find((l) => l.trim());
+  return first ? cut(first.replace(/\s+/g, ' ').trim(), max) : '';
+}
+
 /** Output is shown whole up to this many lines or characters; longer is folded. */
 export const OUTPUT_LINES = 8;
 export const OUTPUT_CHARS = 800;
@@ -132,6 +138,7 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
   const decision = decisionWords(call);
   const label = toolLabel(call.name);
   const summary = inputSummary(call.input);
+  const result = outputSummary(call.output);
   const input =
     call.input === undefined
       ? null
@@ -148,8 +155,15 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
             {label}
             {label !== call.name && <code className="toolcall-raw">{call.name}</code>}
           </span>
-          <span className="toolcall-input" title={summary}>
-            {summary}
+          <span className="toolcall-io">
+            <span className="toolcall-input" title={summary}>
+              {summary}
+            </span>
+            {result && (
+              <span className="toolcall-result" title={result}>
+                {result}
+              </span>
+            )}
           </span>
           <span className={cx('toolcall-decision', `tone-text-${decision.tone}`)}>
             {decision.label}

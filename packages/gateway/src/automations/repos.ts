@@ -18,7 +18,7 @@ import { logger } from '../logger.js';
 import { listRepoRuns, type RunRecord } from '../runs.js';
 import { getStore } from '../store.js';
 import type { RunnerDeps } from './runner.js';
-import { expandHome, listAutomations } from './store.js';
+import { expandHome, listAutomations, type Automation } from './store.js';
 
 /** How many of a repository's latest runs its detail lists. */
 export const REPO_RECENT_RUNS = 20;
@@ -80,10 +80,13 @@ function projectOf(url: string): string {
 }
 
 /** The automations whose spec targets this repository now, by path or URL. */
-function targeting(row: Record<string, unknown>): RepoView['automations'] {
+function targeting(
+  row: Record<string, unknown>,
+  automations: Automation[]
+): RepoView['automations'] {
   const url = row.url ? String(row.url) : null;
   const local = row.kind === 'local' && row.local_path ? String(row.local_path) : null;
-  return listAutomations()
+  return automations
     .filter((a) => {
       const repo = a.spec?.repo;
       if (!repo) return false;
@@ -122,7 +125,11 @@ function lastRunOf(repoId: string): RepoView['lastRun'] {
   };
 }
 
-function view(row: Record<string, unknown>, deps: Pick<RunnerDeps, 'getSecret'>): RepoView {
+function view(
+  row: Record<string, unknown>,
+  deps: Pick<RunnerDeps, 'getSecret'>,
+  automations: Automation[]
+): RepoView {
   const kind = String(row.kind) as RepoView['kind'];
   const localPath = row.local_path ? String(row.local_path) : null;
   const secret = row.credential_ref ? String(row.credential_ref) : null;
@@ -153,7 +160,7 @@ function view(row: Record<string, unknown>, deps: Pick<RunnerDeps, 'getSecret'>)
         }
       : null,
     credential: secret ? { secret, present } : null,
-    automations: targeting(row),
+    automations: targeting(row, automations),
     runs: counts(String(row.id)),
     lastRun: lastRunOf(String(row.id)),
     createdAt: String(row.created_at),
@@ -161,10 +168,11 @@ function view(row: Record<string, unknown>, deps: Pick<RunnerDeps, 'getSecret'>)
 }
 
 export function listRepos(deps: Pick<RunnerDeps, 'getSecret'>): RepoView[] {
+  const automations = listAutomations();
   return getStore()
     .prepare('SELECT * FROM repos ORDER BY name')
     .all()
-    .map((row) => view(row, deps));
+    .map((row) => view(row, deps, automations));
 }
 
 export function getRepoDetail(
@@ -173,7 +181,10 @@ export function getRepoDetail(
 ): RepoDetailView | null {
   const row = getStore().prepare('SELECT * FROM repos WHERE id = ?').get(id);
   if (!row) return null;
-  return { ...view(row, deps), recentRuns: listRepoRuns(id, REPO_RECENT_RUNS) };
+  return {
+    ...view(row, deps, listAutomations()),
+    recentRuns: listRepoRuns(id, REPO_RECENT_RUNS),
+  };
 }
 
 /**

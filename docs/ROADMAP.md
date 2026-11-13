@@ -214,7 +214,7 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [x] Model routing and fallback chains with strictness rules (explicit user selection is strict; defaults and scheduled jobs may fall back)
 - [x] Memory 2.0 — typed records, SQLite FTS search, summarisation, policy-controlled retrieval
 - [x] Sub-agents — `sessions.spawn`, isolated policy, `maxConcurrent = 4`, `maxDepth = 1`
-- [ ] Repos screen
+- [x] Repos screen
 - [x] **Chat console — managed mode.** System prompt, skills, memory, policy-filtered tools, inline approvals, mode diff against raw
 - [x] **Conversational automation authoring.** Draft → preview → dry run → save disabled, with `approvals.push` forced to manual on first run
 - [x] Console registered through the existing module slot contract rather than extending `App.tsx`

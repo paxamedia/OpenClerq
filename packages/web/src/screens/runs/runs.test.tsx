@@ -12,6 +12,7 @@ import {
   inputSummary,
   OUTPUT_LINES,
   outputPreview,
+  outputSummary,
   RunTree,
   ToolCalls,
 } from './RunParts';
@@ -244,6 +245,20 @@ describe('tool calls', () => {
     expect(inputSummary('a\n  b')).toBe('a b');
     expect(inputSummary(undefined)).toBe('');
     expect(inputSummary({ command: 'x'.repeat(300) }, 20)).toHaveLength(20);
+  });
+
+  it('shows the first line of the output beside the input', () => {
+    expect(outputSummary('\n  first line  \nsecond')).toBe('first line');
+    expect(outputSummary(undefined)).toBe('');
+    expect(outputSummary('x'.repeat(300), 20)).toHaveLength(20);
+    const markup = page(
+      <ToolCalls
+        calls={[call({ name: 'fs.read', input: { path: 'a.txt' }, output: 'hello world\nsecond' })]}
+      />
+    );
+    expect(markup).toContain(
+      '<span class="toolcall-result" title="hello world">hello world</span>'
+    );
   });
 
   it('folds long output and keeps short output whole', () => {

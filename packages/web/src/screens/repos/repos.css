@@ -46,3 +46,9 @@
   align-items: center;
   gap: var(--space-3);
 }
+
+@media (max-width: 640px) {
+  .repos-name-sub {
+    max-width: 150px;
+  }
+}
