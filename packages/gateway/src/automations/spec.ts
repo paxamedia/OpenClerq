@@ -129,7 +129,14 @@ export interface AutomationSpec {
    * prompt are added to it. Empty (the default): none, so an unattended run
    * does not send saved notes to a model unless the spec says so.
    */
-  memory: { read: MemoryType[] };
+  memory: {
+    read: MemoryType[];
+    /**
+     * Also read notes an agent wrote (origin `agent`, or a summary of one).
+     * Off by default: a note a chat's model saved may carry text it read.
+     */
+    includeAgent: boolean;
+  };
 }
 
 /** The most `agent.subagents.models` may list. */
@@ -842,7 +849,7 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
     r.fail(['retry', 'backoff'], '"retry.backoff" may be at most 1h; it doubles with each retry.');
   }
 
-  r.keys(['memory'], ['read']);
+  r.keys(['memory'], ['read', 'include_agent']);
   const memoryRead = r.get(['memory', 'read']);
   let readTypes: MemoryType[] = [];
   if (memoryRead !== undefined && memoryRead !== null) {
@@ -862,6 +869,11 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
       if (memoryRead.indexOf(t) !== i) r.fail(['memory', 'read', i], `"${t}" is listed twice.`);
       return t;
     });
+  }
+
+  const includeAgent = r.bool(['memory', 'include_agent'], false);
+  if (includeAgent && readTypes.length === 0) {
+    r.fail(['memory', 'include_agent'], '"memory.include_agent" needs "memory.read".');
   }
 
   return {
@@ -904,6 +916,6 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
       timeoutMs: r.duration(['approvals', 'timeout'], 24 * 3_600_000),
     },
     retry: { maxRetries, backoffMs },
-    memory: { read: readTypes },
+    memory: { read: readTypes, includeAgent },
   };
 }

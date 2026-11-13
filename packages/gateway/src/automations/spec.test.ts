@@ -309,9 +309,10 @@ on:
   });
 
   it('reads memory.read, and checks each type by line', () => {
-    expect(parseSpec(MINIMAL).memory).toEqual({ read: [] });
+    expect(parseSpec(MINIMAL).memory).toEqual({ read: [], includeAgent: false });
     expect(parseSpec(`${MINIMAL}memory:\n  read: [preference, procedure]\n`).memory).toEqual({
       read: ['preference', 'procedure'],
+      includeAgent: false,
     });
     const bad = errorOf(`${MINIMAL}memory:\n  read: [fact, gossip]\n`);
     expect(bad.message).toMatch(/"gossip" is not a kind of memory\. Use fact, preference/);

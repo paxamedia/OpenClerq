@@ -1345,10 +1345,15 @@ export function readNotes(
 ): string | undefined {
   if (spec.memory.read.length === 0) return undefined;
   try {
-    const block = memoryBlock(query, rules);
+    // Notes an agent wrote are left out unless the spec asks for them.
+    const block = memoryBlock(query, rules, { includeAgent: spec.memory.includeAgent });
     addRunStep(runId, {
       kind: 'tool',
-      input: { name: 'memory.read', types: spec.memory.read },
+      input: {
+        name: 'memory.read',
+        types: spec.memory.read,
+        ...(spec.memory.includeAgent ? { includeAgent: true } : {}),
+      },
       output: { notes: block?.count ?? 0 },
       status: 'ok',
     });

@@ -49,6 +49,9 @@ export const CHAT_NEVER: readonly string[] = [
   SPAWN_TOOL.name,
 ];
 
+/** Note types a chat's model may save only with a person's approval, at every access level. */
+export const ALWAYS_ASK_MEMORY: readonly MemoryType[] = ['preference', 'procedure'];
+
 export interface ChatPolicyOptions {
   /** A folder is attached: the repository tools are allowed there. */
   workspace: boolean;
@@ -60,7 +63,8 @@ export interface ChatPolicyOptions {
 /** The rules one managed chat message runs under. */
 export function chatPolicy(opts: ChatPolicyOptions): PolicyRules {
   const repo = opts.workspace
-    ? builtinPolicy(opts.permissionMode)
+    ? // Sandboxed has full access inside the sandbox.
+      builtinPolicy(opts.permissionMode === 'sandboxed' ? 'acceptEdits' : opts.permissionMode)
     : { allow: [] as string[], approvalRequired: [] as string[] };
   const writes = opts.permissionMode !== 'plan';
   return {
@@ -71,8 +75,14 @@ export function chatPolicy(opts: ChatPolicyOptions): PolicyRules {
       ...(writes ? ['memory.write', 'memory.write.*'] : []),
       'automation.draft',
     ],
-    // In `default`, writes wait for a person: a saved note is one.
-    approvalRequired: [...(repo.approvalRequired ?? [])],
+    approvalRequired: [
+      ...(repo.approvalRequired ?? []),
+      // Preferences and procedures reach every later managed chat's prompt (and
+      // automations that opt in): a person approves each one, at every level.
+      ...(writes ? ALWAYS_ASK_MEMORY.map((t) => memoryTool('write', t).name) : []),
+      // Other notes follow the access level: in `default` every write waits.
+      ...(writes && opts.permissionMode === 'default' ? ['memory.write.*'] : []),
+    ],
     deny: [
       ...CHAT_NEVER,
       // No folder, no reach: not even a rule that names them can allow these.

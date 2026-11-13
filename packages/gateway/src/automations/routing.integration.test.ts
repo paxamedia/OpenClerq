@@ -983,6 +983,8 @@ describe('memory a run may read', () => {
     );
     expect(spec.memory.read).toEqual(['fact', 'note']);
     expect(readableMemoryTypes(policyFor(spec, false))).toEqual(['fact', 'note']);
-    expect(readableMemoryTypes(policyFor({ ...spec, memory: { read: [] } }, false))).toEqual([]);
+    expect(
+      readableMemoryTypes(policyFor({ ...spec, memory: { read: [], includeAgent: false } }, false))
+    ).toEqual([]);
   });
 });

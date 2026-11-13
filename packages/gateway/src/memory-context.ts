@@ -78,6 +78,20 @@ const MAX_RECORD_CHARS = 600;
 const MAX_PREFERENCES = 5;
 const MAX_BY_RELEVANCE = 5;
 
+export interface RetrieveOptions {
+  /**
+   * Read notes an agent wrote (origin `agent`, or a summary of one). Default
+   * true (a managed chat, which labels them); an automation reads them only
+   * when its spec says `memory.include_agent: true`.
+   */
+  includeAgent?: boolean;
+}
+
+/** A note an agent wrote, or a summary that folds one in. */
+export function isAgentWritten(r: Pick<MemoryRecord, 'origin' | 'agentDerived'>): boolean {
+  return r.origin === 'agent' || r.agentDerived === true;
+}
+
 export interface Retrieval {
   records: MemoryRecord[];
   /** The types the rules let the reader read; nothing outside them is in `records`. */
@@ -91,27 +105,36 @@ export interface Retrieval {
  */
 export function retrieveMemory(
   message: string,
-  rules: PolicyRules = managedMemoryRules()
+  rules: PolicyRules = managedMemoryRules(),
+  opts: RetrieveOptions = {}
 ): Retrieval {
   const readable = readableMemoryTypes(rules);
   if (readable.length === 0) return { records: [], readable };
   const records: MemoryRecord[] = [];
   const seen = new Set<string>();
+  const includeAgent = opts.includeAgent ?? true;
   const take = (r: MemoryRecord) => {
+    if (!includeAgent && isAgentWritten(r)) return;
     if (!seen.has(r.id) && records.length < MAX_MEMORY_RECORDS) {
       seen.add(r.id);
       records.push(r);
     }
   };
+  // Left-out agent notes must not crowd out the rest: look further, keep as many.
+  const widen = includeAgent ? 1 : 4;
   if (readable.includes('preference')) {
-    for (const r of listMemory({ type: 'preference', limit: MAX_PREFERENCES })) take(r);
+    const prefs = listMemory({ type: 'preference', limit: MAX_PREFERENCES * widen }).filter(
+      (r) => includeAgent || !isAgentWritten(r)
+    );
+    for (const r of prefs.slice(0, MAX_PREFERENCES)) take(r);
   }
   const { hits } = searchRecords(message, {
     types: readable,
-    limit: MAX_BY_RELEVANCE,
+    limit: MAX_BY_RELEVANCE * widen,
     match: 'any',
   });
-  for (const h of hits) take(h);
+  const relevant = hits.filter((h) => includeAgent || !isAgentWritten(h));
+  for (const h of relevant.slice(0, MAX_BY_RELEVANCE)) take(h);
   return { records, readable };
 }
 
@@ -136,13 +159,15 @@ function renderValue(value: unknown): string {
  */
 export function memoryBlock(
   message: string,
-  rules: PolicyRules = managedMemoryRules()
+  rules: PolicyRules = managedMemoryRules(),
+  opts: RetrieveOptions = {}
 ): { text: string; count: number } | null {
-  const { records } = retrieveMemory(message, rules);
+  const { records } = retrieveMemory(message, rules, opts);
   if (records.length === 0) return null;
+  // A note an agent wrote says so: it may carry text the agent read.
   const lines = records.map(
     (r) =>
-      `- [${r.type}] ${escapeNote(r.key.replace(/\s+/g, ' '))}: ${renderValue(r.value).replace(/\n+/g, ' ')}`
+      `- [${r.type}${isAgentWritten(r) ? ', written by an agent' : ''}] ${escapeNote(r.key.replace(/\s+/g, ' '))}: ${renderValue(r.value).replace(/\n+/g, ' ')}`
   );
   return {
     count: records.length,
