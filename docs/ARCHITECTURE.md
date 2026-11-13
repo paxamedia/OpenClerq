@@ -369,11 +369,17 @@ fallback](#model-routing-and-fallback)). It is not for a gate failure and uses n
   backoff, none of `retry.max_retries` used. If the interrupted attempt changed files, the next model
   is told so. Only a provider fault the CLI itself reported (the same classification as retries)
   moves it on; a crash is a retry, and a refused sign-in is not helped by another model.
-- **At the start of a run** a primary that cannot be used (no key, say) is replaced by the first
-  fallback model that can, and the run says so. Every model of the chain is checked before any work,
-  by one function the spec preview uses as well: an unavailable escalation model, and a fallback or
-  primary model with no price when the spec has a dollar budget, are errors; a fallback model that
-  merely cannot be used now is a warning and is skipped when its turn comes.
+- **At the start of a run** a primary whose provider has no key, or a local server that is not running,
+  is replaced by the first fallback model that can be used, and the run says so. Any other reason is an
+  error and the run does not start on another vendor: a provider the registry does not know (a typo), a
+  model with no price under a dollar budget, a CLI that is missing or signed out. Every model of the
+  chain is checked before any work, by one function the spec preview uses as well: an unavailable
+  escalation model and a fallback model that is a fault in the spec are errors; a fallback model that
+  merely cannot be used now is a warning and is skipped when its turn comes. The driver says which kind
+  of fault it found (`DriverAvailability.reasonKind`: `no_key`, `unreachable`, `unpriced`, `invalid`).
+  A spec saved or previewed is also checked against the registry: a builtin model whose provider the
+  registry does not know is refused with its line, as is `{ "model" }` for a run. A model id the
+  registry does not list is allowed (the provider answers 404 at the first call, which never falls back).
 - When every model is unavailable the run fails with the last error, and with `retry.max_retries` it is
   tried again from the primary after the backoff. A model that failed the gates is not used as the
   fallback of a later escalation, and a model found unavailable is not tried again in the same run.
