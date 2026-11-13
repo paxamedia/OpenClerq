@@ -290,7 +290,8 @@ export async function runManagedTurn(
     timeoutMs: CHAT_TIMEOUT_MS,
     sandbox: chatSandbox(session),
     // A home of the conversation's own: `~` is not the user's, nor ~/.clerq under it.
-    env: chatCommandEnv(session.id, deps.path()),
+    // Without a folder no command runs, and no home is made.
+    env: session.workspace ? chatCommandEnv(session.id, deps.path()) : { PATH: deps.path() },
     secrets,
     signal,
     onApproval: approve,
