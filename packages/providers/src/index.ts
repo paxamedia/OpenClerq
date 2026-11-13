@@ -19,8 +19,36 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { DEFAULT_REGISTRY_YAML } from './default-registry.js';
+import {
+  AnthropicTurnBuilder,
+  OpenAiTurnBuilder,
+  anthropicMessages,
+  anthropicTools,
+  anthropicTurn,
+  openAiMessages,
+  openAiTools,
+  openAiTurn,
+  textOf,
+  type ContentBlock,
+  type ConversationMessage,
+  type ParsedTurn,
+  type StopReason,
+  type ToolCall,
+  type ToolDefinition,
+} from './messages.js';
 
 export { DEFAULT_REGISTRY_YAML };
+export {
+  TOOL_NAME,
+  textOf,
+  parseToolInput,
+  type ContentBlock,
+  type ConversationMessage,
+  type StopReason,
+  type ToolCall,
+  type ToolDefinition,
+} from './messages.js';
+export * from './context.js';
 
 export type AdapterKind = 'anthropic' | 'openai-compat';
 
@@ -211,6 +239,7 @@ export function estimateCost(model: ModelSpec, usage: Usage): number | null {
   return Math.round(cost * 1e6) / 1e6;
 }
 
+/** A plain-text turn. A turn with tool calls or results is a ConversationMessage. */
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -221,7 +250,15 @@ export interface CallOptions {
   /** A single user turn. Ignored when `messages` is given. */
   prompt?: string;
   /** A conversation, for multi-turn chat. Takes precedence over `prompt`. */
-  messages?: ChatMessage[];
+  messages?: ConversationMessage[];
+  /** Tools the model may call. Its calls come back in `toolCalls`. */
+  tools?: ToolDefinition[];
+  /**
+   * `auto` (the default when tools are given) lets the model choose; `none`
+   * keeps the tools declared but forbids calling them. Forcing a call is left
+   * out: current Claude models refuse it.
+   */
+  toolChoice?: 'auto' | 'none';
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
@@ -239,7 +276,15 @@ export interface CallOptions {
 }
 
 export interface CallResult {
+  /** The answer's text: every text block of the turn, joined. */
   text: string;
+  /** The whole assistant turn, to append to the conversation as it is. */
+  content: ContentBlock[];
+  /** Tool calls the model made, in order. Empty when it made none. */
+  toolCalls: ToolCall[];
+  stopReason: StopReason;
+  /** The vendor's own word for why it stopped, when it gave one. */
+  rawStopReason?: string;
   model: string;
   provider: string;
   usage: Usage;
@@ -322,11 +367,15 @@ async function run(
 
   try {
     const outcome = onText
-      ? await readStream(ctx, prepared, onText, anthropic ? anthropicDelta : openAiDelta)
+      ? await readStream(ctx, prepared, onText, anthropic ? anthropicStream() : openAiStream())
       : parseBody(anthropic, await postJson(ctx, prepared));
 
     return {
-      text: outcome.text,
+      text: textOf(outcome.turn.content),
+      content: outcome.turn.content,
+      toolCalls: outcome.turn.toolCalls,
+      stopReason: outcome.turn.stopReason,
+      ...(outcome.turn.rawStopReason ? { rawStopReason: outcome.turn.rawStopReason } : {}),
       model: model.id,
       provider: provider.id,
       usage: outcome.usage,
@@ -371,7 +420,7 @@ interface PreparedRequest {
 }
 
 interface Outcome {
-  text: string;
+  turn: ParsedTurn;
   usage: Usage;
   usageReported: boolean;
   truncated?: boolean;
@@ -390,10 +439,14 @@ function responseLimit(opts: CallOptions): number {
 }
 
 /** The conversation to send: an explicit history, or the single prompt. */
-function turns(opts: CallOptions): Array<{ role: string; content: string }> {
-  if (opts.messages?.length)
-    return opts.messages.map((m) => ({ role: m.role, content: m.content }));
+function turns(opts: CallOptions): ConversationMessage[] {
+  if (opts.messages?.length) return opts.messages;
   return [{ role: 'user', content: opts.prompt ?? '' }];
+}
+
+/** True when the request declares tools, so tool fields belong in it. */
+function withTools(opts: CallOptions): boolean {
+  return (opts.tools?.length ?? 0) > 0;
 }
 
 function prepareAnthropic(ctx: CallContext, stream: boolean): PreparedRequest {
@@ -408,7 +461,9 @@ function prepareAnthropic(ctx: CallContext, stream: boolean): PreparedRequest {
       max_tokens: opts.maxTokens ?? 1024,
       ...(opts.system ? { system: opts.system } : {}),
       ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
-      messages: turns(opts),
+      messages: anthropicMessages(turns(opts)),
+      ...(withTools(opts) ? { tools: anthropicTools(opts.tools ?? []) } : {}),
+      ...(withTools(opts) && opts.toolChoice === 'none' ? { tool_choice: { type: 'none' } } : {}),
       ...(stream ? { stream: true } : {}),
     },
   };
@@ -419,7 +474,7 @@ function prepareOpenAi(ctx: CallContext, stream: boolean): PreparedRequest {
   const headers: Record<string, string> = {};
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
 
-  const messages = turns(opts);
+  const messages = openAiMessages(turns(opts));
   if (opts.system) messages.unshift({ role: 'system', content: opts.system });
 
   return {
@@ -430,6 +485,8 @@ function prepareOpenAi(ctx: CallContext, stream: boolean): PreparedRequest {
       messages,
       max_tokens: opts.maxTokens ?? 1024,
       ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
+      ...(withTools(opts) ? { tools: openAiTools(opts.tools ?? []) } : {}),
+      ...(withTools(opts) && opts.toolChoice === 'none' ? { tool_choice: 'none' } : {}),
       // Usage is not sent with a stream unless asked for, and without it every
       // streamed call would look free.
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
@@ -440,11 +497,12 @@ function prepareOpenAi(ctx: CallContext, stream: boolean): PreparedRequest {
 function parseBody(anthropic: boolean, data: unknown): Outcome {
   if (anthropic) {
     const d = data as {
-      content?: Array<{ type: string; text?: string }>;
+      content?: Array<Record<string, unknown>>;
+      stop_reason?: string;
       usage?: { input_tokens?: number; output_tokens?: number };
     };
     return {
-      text: d.content?.find((b) => b.type === 'text')?.text ?? '',
+      turn: anthropicTurn(d),
       usage: {
         inputTokens: d.usage?.input_tokens ?? 0,
         outputTokens: d.usage?.output_tokens ?? 0,
@@ -453,11 +511,11 @@ function parseBody(anthropic: boolean, data: unknown): Outcome {
     };
   }
   const d = data as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<Parameters<typeof openAiTurn>[0]>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
   return {
-    text: d.choices?.[0]?.message?.content ?? '',
+    turn: openAiTurn(d.choices?.[0] ?? {}),
     usage: {
       inputTokens: d.usage?.prompt_tokens ?? 0,
       outputTokens: d.usage?.completion_tokens ?? 0,
@@ -494,6 +552,11 @@ async function send(ctx: CallContext, prepared: PreparedRequest): Promise<Respon
       const { stream_options: _dropped, ...rest } = prepared.body;
       return send(ctx, { ...prepared, body: rest });
     }
+    // OpenAI's reasoning models refuse max_tokens and name its replacement.
+    if (res.status === 400 && 'max_tokens' in prepared.body && /max_completion_tokens/.test(body)) {
+      const { max_tokens: limit, ...rest } = prepared.body;
+      return send(ctx, { ...prepared, body: { ...rest, max_completion_tokens: limit } });
+    }
     throw new ProviderError(`${provider.label} returned ${res.status}: ${body.slice(0, 300)}`);
   }
   return res;
@@ -506,38 +569,53 @@ interface Delta {
   outputTokens?: number;
 }
 
-function anthropicDelta(event: Record<string, unknown>): Delta {
-  const type = event.type;
-  if (type === 'content_block_delta') {
-    const delta = event.delta as { type?: string; text?: string } | undefined;
-    return { text: delta?.type === 'text_delta' ? (delta.text ?? '') : undefined };
-  }
-  if (type === 'message_start') {
-    const usage = (event.message as { usage?: { input_tokens?: number; output_tokens?: number } })
-      ?.usage;
-    return { inputTokens: usage?.input_tokens, outputTokens: usage?.output_tokens };
-  }
-  if (type === 'message_delta') {
-    const usage = event.usage as { output_tokens?: number } | undefined;
-    return { outputTokens: usage?.output_tokens };
-  }
-  if (type === 'error') {
-    const error = event.error as { message?: string } | undefined;
-    throw new ProviderError(`Stream failed: ${error?.message ?? 'unknown error'}`);
-  }
-  return {};
+/** Reads one adapter's stream: a delta per event, and the assembled turn at the end. */
+interface StreamParser {
+  consume(event: Record<string, unknown>): Delta;
+  finish(): ParsedTurn;
 }
 
-function openAiDelta(event: Record<string, unknown>): Delta {
-  const choices = event.choices as Array<{ delta?: { content?: string } }> | undefined;
-  const usage = event.usage as
-    | { prompt_tokens?: number; completion_tokens?: number }
-    | null
-    | undefined;
+function anthropicStream(): StreamParser {
+  const turn = new AnthropicTurnBuilder();
   return {
-    text: choices?.[0]?.delta?.content,
-    inputTokens: usage?.prompt_tokens,
-    outputTokens: usage?.completion_tokens,
+    consume(event) {
+      const type = event.type;
+      if (type === 'error') {
+        const error = event.error as { message?: string } | undefined;
+        throw new ProviderError(`Stream failed: ${error?.message ?? 'unknown error'}`);
+      }
+      const text = turn.consume(event);
+      if (type === 'message_start') {
+        const usage = (
+          event.message as { usage?: { input_tokens?: number; output_tokens?: number } }
+        )?.usage;
+        return { inputTokens: usage?.input_tokens, outputTokens: usage?.output_tokens };
+      }
+      if (type === 'message_delta') {
+        const usage = event.usage as { input_tokens?: number; output_tokens?: number } | undefined;
+        return { inputTokens: usage?.input_tokens, outputTokens: usage?.output_tokens };
+      }
+      return { text };
+    },
+    finish: () => turn.finish(),
+  };
+}
+
+function openAiStream(): StreamParser {
+  const turn = new OpenAiTurnBuilder();
+  return {
+    consume(event) {
+      const usage = event.usage as
+        | { prompt_tokens?: number; completion_tokens?: number }
+        | null
+        | undefined;
+      return {
+        text: turn.consume(event),
+        inputTokens: usage?.prompt_tokens,
+        outputTokens: usage?.completion_tokens,
+      };
+    },
+    finish: () => turn.finish(),
   };
 }
 
@@ -545,7 +623,7 @@ async function readStream(
   ctx: CallContext,
   prepared: PreparedRequest,
   onText: (delta: string) => void,
-  toDelta: (event: Record<string, unknown>) => Delta
+  parser: StreamParser
 ): Promise<Outcome> {
   const res = await send(ctx, prepared);
   if (!res.body) throw new ProviderError(`${ctx.provider.label} returned an empty stream.`);
@@ -556,7 +634,6 @@ async function readStream(
   let received = 0;
   let truncated = false;
   let buffer = '';
-  let text = '';
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let usageReported = false;
 
@@ -568,11 +645,8 @@ async function readStream(
     } catch {
       return; // a keep-alive or a comment line; nothing to do
     }
-    const delta = toDelta(event);
-    if (delta.text) {
-      text += delta.text;
-      onText(delta.text);
-    }
+    const delta = parser.consume(event);
+    if (delta.text) onText(delta.text);
     if (typeof delta.inputTokens === 'number') {
       usage.inputTokens = delta.inputTokens;
       usageReported = true;
@@ -608,7 +682,7 @@ async function readStream(
     if (line.startsWith('data:')) handle(line.slice(5).trim());
   }
 
-  return { text, usage, usageReported, truncated };
+  return { turn: parser.finish(), usage, usageReported, truncated };
 }
 
 /** Read a buffered body, refusing one larger than `limit`. */
