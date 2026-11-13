@@ -671,12 +671,32 @@ describe('what a command leaves behind', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
+    'leaves alone a process that was there before the run, though it sits in the worktree',
+    async () => {
+      // Say, the user's own shell or editor, opened in the worktree earlier.
+      const own = spawn('sleep', ['30'], { cwd: work, stdio: 'ignore', detached: true });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        const since = Date.now() + 1_000;
+        const done = await stopStragglers({ dirs: [work], since });
+        expect(done?.stopped).toEqual([]);
+        expect(done?.ignored.map((s) => s.pid)).toEqual([own.pid]);
+        expect(alive(own.pid as number)).toBe(true);
+      } finally {
+        own.kill('SIGKILL');
+      }
+    },
+    15_000
+  );
+
+  it.skipIf(process.platform === 'win32')(
     'finds one that closed its descriptors by its working directory',
     async () => {
+      const since = Date.now();
       await exec({ profile: 'native', cwd: work }, '/bin/sh', ['-c', SETSID('sleep 20')], {
         reapGroup: true,
       });
-      const done = await stopStragglers({ dirs: [work] });
+      const done = await stopStragglers({ dirs: [work], since });
       expect(done?.stopped).toHaveLength(1);
       expect(done?.remaining).toEqual([]);
       expect(alive((done?.stopped ?? [])[0].pid)).toBe(false);
