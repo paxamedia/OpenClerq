@@ -178,30 +178,59 @@ triggers.
 A driver runs one agent CLI and reports what it did as the same stream of events, so the run view
 does not care which agent produced a run. `agent.driver` takes one of three:
 
-| Driver         | Runs                                             | Sandbox and permissions                                                                                                                    | Cost |
-| -------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ---- |
-| `claude-code`  | `claude -p`, streaming JSON                      | `agent.permission_mode`; `allowed_tools` in Claude Code's syntax                                                                           | yes  |
-| `codex`        | `codex exec --json`, JSONL events                | Codex's own sandbox: `workspace-write` for `acceptEdits`, `read-only` for every other mode. Its network stays as `~/.codex` sets it        | none |
-| `cursor-agent` | `cursor-agent -p`, `--output-format stream-json` | Agent mode edits the workspace and runs only commands on the user's own allowlist; `plan` and `default` map to Cursor's plan and ask modes | none |
+| Driver         | Runs                                               | Cost reported | Spend limit | `allowed_tools` |
+| -------------- | -------------------------------------------------- | ------------- | ----------- | --------------- |
+| `claude-code`  | `claude -p`, streaming JSON                        | yes           | yes         | yes             |
+| `codex`        | `codex exec --json`, JSONL events                  | no            | no          | no              |
+| `cursor-agent` | `cursor-agent --print --output-format stream-json` | no            | no          | no              |
 
-None of them is ever started with its "run everything" switch. Codex and Cursor report no cost and
-have no spend limit, so a spec that sets `budget.max_usd_per_run` or `budget.max_usd_per_month` for
-them is refused when it is saved, as is `agent.allowed_tools`, which neither CLI takes; a run's
-time limit (`sandbox.timeout`) is the bound. `agent.api_key_secret` is handed to the CLI as
-`ANTHROPIC_API_KEY`, `CODEX_API_KEY` or `CURSOR_API_KEY`. `GET /drivers` lists each driver with
-its version and, where the CLI says, whether it is signed in; a spec that does not bring its own
-key needs it to be. Install paths: `CLERQ_CLAUDE_BIN`, `CLERQ_CODEX_BIN`, `CLERQ_CURSOR_BIN`.
+`agent.permission_mode` follows Claude Code's meaning: nothing is ever prompted, and whatever the
+mode does not grant is denied. Each driver maps the four modes to the nearest thing its CLI has:
 
-Every agent and gate process leads its own process group, so it would outlive a gateway that
+| `permission_mode`       | `claude-code`                   | `codex`                     | `cursor-agent`           |
+| ----------------------- | ------------------------------- | --------------------------- | ------------------------ |
+| `acceptEdits` (default) | `--permission-mode acceptEdits` | `--sandbox workspace-write` | agent mode, no `--force` |
+| `default`               | `--permission-mode default`     | `--sandbox read-only`       | `--mode ask` (read-only) |
+| `dontAsk`               | `--permission-mode dontAsk`     | `--sandbox read-only`       | `--mode ask` (read-only) |
+| `plan`                  | `--permission-mode plan`        | `--sandbox read-only`       | `--mode plan`            |
+
+None of them is ever started with its "run everything" switch. In Codex's `workspace-write`
+sandbox the driver also passes `--config sandbox_workspace_write.network_access=true`, because
+Codex turns the network off there by default and OpenClerq's default is full access: an agent
+that cannot install packages or fetch what a test needs is of little use. Without network, the
+sandbox keeps what `~/.codex/config.toml` says. In Cursor's agent mode, shell commands run only if
+they are on the user's own allowlist.
+
+Codex and Cursor report no cost and have no spend limit, so a spec that sets
+`budget.max_usd_per_run` or `budget.max_usd_per_month` for them is refused when it is saved, as is
+`agent.allowed_tools`, which neither CLI takes; a run's time limit (`sandbox.timeout`) is the
+bound. `agent.api_key_secret` is handed to the CLI as `ANTHROPIC_API_KEY`, `CODEX_API_KEY` or
+`CURSOR_API_KEY`. Install paths: `CLERQ_CLAUDE_BIN`, `CLERQ_CODEX_BIN`, `CLERQ_CURSOR_BIN`.
+
+`GET /drivers` lists each driver with its version and, where the CLI says, whether it is signed in;
+a spec that does not bring its own key needs it to be. For Codex and Cursor, `detect` also reads
+the CLI's own `--help` and checks it lists every option a run of that mode and model will pass
+(`--ephemeral`, `--trust`, `--mode` and so on). An older CLI that lacks one is reported as
+unavailable, naming the option and its version, instead of failing every run. A help screen that
+cannot be read is not held against the CLI.
+
+When an agent or a gate exits, anything it left running in its process group (a dev server, a
+forked daemon) is stopped: asked to stop, then killed after a second. Otherwise it would outlive
+the run, unseen.
+
+Every agent and gate process also leads its own process group, so it would outlive a gateway that
 crashed. The gateway records each one (pid, group, the OS's start time, command) in
-`run_processes`, beside the run, and closes the record when the process exits. On the next start,
-before interrupted runs are marked failed and their worktrees removed, it stops what is still
-running, after checking the pid still belongs to what was recorded: a process is stopped only if
-its start time matches and, for an agent, its command line still names the CLI. What remains of a
-group whose leader has already exited (a server the agent started) is stopped too, if none of it
-is older than the leader was. A reused pid is left alone, and so is anything started by a gateway
-that is still running. This needs `ps` with
-`lstart` (macOS, procps); where there is none, nothing is stopped.
+`run_processes`, beside the run, and closes the record when the process exits. The start time is
+asked of the OS without blocking and written when it answers. On the next start, before
+interrupted runs are marked failed and their worktrees removed, it stops what is still running,
+after checking it is what was recorded: the group's leader must still be there with the recorded
+start time and, for an agent, a command line that still names the CLI. The leader is read again
+just before the group is signalled. A group whose leader has gone is left alone, since its number
+may belong to another group by now; so is a record with no start time. Runs carry the pid and
+start time of the gateway that created them, and a run whose gateway is still running (this
+process, or another instance on the same store) is not treated as interrupted: its processes,
+approvals and worktree are left as they are. This needs `ps` with `lstart` (macOS, procps); where
+there is none, nothing is stopped.
 
 In this release the agent and the gates run with the `native` profile, without isolation, and a
 spec must say so to run. See [SECURITY.md](SECURITY.md).
