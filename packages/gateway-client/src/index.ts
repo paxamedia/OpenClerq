@@ -75,6 +75,16 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** A DELETE that answers `{ ok: true }`, with the token the gateway needs. */
+async function deleteOk(path: string): Promise<{ ok: boolean }> {
+  const res = await fetch(getUrl(path), { method: 'DELETE', headers: authHeaders() });
+  if (!res.ok) {
+    const j = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(j.error ?? `Gateway ${res.status}`);
+  }
+  return { ok: true };
+}
+
 /** One SSE frame's fields. Comment lines (heartbeats) are skipped. */
 function parseFrame(raw: string): { id?: string; event?: string; data?: string } {
   const out: { id?: string; event?: string; data?: string } = {};
@@ -169,6 +179,42 @@ export interface ArtifactInfo {
   name?: string;
   size: number;
   sha256: string;
+}
+
+/** What a memory record is: the five kinds a record can be. */
+export type MemoryType = 'fact' | 'preference' | 'decision' | 'procedure' | 'note';
+
+export const MEMORY_TYPES: readonly MemoryType[] = [
+  'fact',
+  'preference',
+  'decision',
+  'procedure',
+  'note',
+];
+
+export interface MemoryRecord {
+  id: string;
+  type: MemoryType;
+  key: string;
+  value: unknown;
+  /** Who wrote it: a person, an agent, an import of older data, or a summary the model made. */
+  origin: 'user' | 'agent' | 'import' | 'consolidation';
+  /** The chat session or run it was learned in. */
+  sourceSession?: string;
+  /** How sure the writer was, from 0 to 1. */
+  confidence?: number;
+  /** `superseded`: folded into the summary `supersededBy`, kept so it can be restored. */
+  status: 'active' | 'superseded';
+  supersededBy?: string;
+  createdAt: string;
+  updatedAt: string;
+  /** After this time the record is no longer read, and is removed. */
+  expiresAt?: string;
+}
+
+/** A search result: a record and how well it matched (higher is better; 0 for a substring match). */
+export interface MemoryHit extends MemoryRecord {
+  score: number;
 }
 
 export interface RunDetail extends RunSummary {
@@ -1116,28 +1162,120 @@ export const gateway = {
     return fetchJson<{ meta: SkillMeta; body: string }>(`/skills/${encodeURIComponent(slug)}`);
   },
 
-  memory(): Promise<{ entries: Array<{ key: string; value: unknown; createdAt: string }> }> {
+  /** Every record in use. A key may appear more than once; each record has its own id. */
+  memory(): Promise<{ entries: MemoryRecord[] }> {
     return fetchJson('/memory');
   },
 
-  getMemory(key: string): Promise<{ key: string; value: unknown; createdAt: string }> {
+  getMemory(key: string): Promise<MemoryRecord> {
     return fetchJson(`/memory/${encodeURIComponent(key)}`);
   },
 
-  setMemory(key: string, value: unknown): Promise<{ ok: boolean }> {
-    return fetchJson<{ ok: boolean }>('/memory', {
-      method: 'POST',
-      body: JSON.stringify({ key, value }),
+  /** Set a key: the newest record of that key and type is updated, or one is made. */
+  setMemory(
+    key: string,
+    value: unknown,
+    extra: {
+      type?: MemoryType;
+      confidence?: number | null;
+      /** An ISO date and time in the future; the record is removed after it. */
+      expiresAt?: string | null;
+    } = {}
+  ): Promise<{ ok: boolean; record?: MemoryRecord }> {
+    return fetchJson('/memory', { method: 'POST', body: JSON.stringify({ key, value, ...extra }) });
+  },
+
+  /** Forget a key: every record under it, summaries and the records behind them too. */
+  async deleteMemory(key: string): Promise<{ ok: boolean }> {
+    return deleteOk(`/memory/${encodeURIComponent(key)}`);
+  },
+
+  /** Records, newest first. `status: 'superseded'` lists those folded into a summary. */
+  memoryRecords(
+    filter: { type?: MemoryType; key?: string; status?: 'active' | 'superseded' | 'all' } = {}
+  ): Promise<{ records: MemoryRecord[] }> {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(filter)) if (v) q.set(k, v);
+    return fetchJson(`/memory/records${q.size ? `?${q}` : ''}`);
+  },
+
+  /** Add a record. Unlike setMemory it never overwrites: a key may hold any number. */
+  addMemoryRecord(input: {
+    key: string;
+    value: unknown;
+    type?: MemoryType;
+    confidence?: number | null;
+    expiresAt?: string | null;
+    sourceSession?: string;
+  }): Promise<{ record: MemoryRecord }> {
+    return fetchJson('/memory/records', { method: 'POST', body: JSON.stringify(input) });
+  },
+
+  updateMemoryRecord(
+    id: string,
+    patch: {
+      key?: string;
+      value?: unknown;
+      type?: MemoryType;
+      confidence?: number | null;
+      expiresAt?: string | null;
+    }
+  ): Promise<{ record: MemoryRecord }> {
+    return fetchJson(`/memory/records/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
     });
   },
 
-  async deleteMemory(key: string): Promise<{ ok: boolean }> {
-    const res = await fetch(getUrl(`/memory/${encodeURIComponent(key)}`), { method: 'DELETE' });
-    if (!res.ok) {
-      const j = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(j.error ?? `Gateway ${res.status}`);
-    }
-    return { ok: true };
+  /** Delete one record. A summary takes the records folded into it along. */
+  deleteMemoryRecord(id: string): Promise<{ ok: boolean }> {
+    return deleteOk(`/memory/records/${encodeURIComponent(id)}`);
+  },
+
+  /** Search by the words in a record's key and value; `mode` says whether the FTS index served it. */
+  searchMemory(
+    q: string,
+    types?: MemoryType[],
+    limit?: number
+  ): Promise<{ query: string; mode: 'fts5' | 'substring'; results: MemoryHit[] }> {
+    const params = new URLSearchParams({ q });
+    if (types?.length) params.set('types', types.join(','));
+    if (limit) params.set('limit', String(limit));
+    return fetchJson(`/memory/search?${params}`);
+  },
+
+  /**
+   * Fold the records of one key into a single record written by a model. They are
+   * kept, as `superseded`, and `unconsolidateMemory` restores them. A `model` is
+   * used as chosen; without one the default may fall back.
+   */
+  consolidateMemory(
+    key: string,
+    opts: { type?: MemoryType; model?: string } = {}
+  ): Promise<{ record: MemoryRecord; superseded: string[]; model?: string }> {
+    return fetchJson('/memory/consolidate', {
+      method: 'POST',
+      body: JSON.stringify({ key, ...opts }),
+    });
+  },
+
+  /** Undo a summary: it is removed and the records folded into it are in use again. */
+  unconsolidateMemory(id: string): Promise<{ restored: string[] }> {
+    return fetchJson(`/memory/records/${encodeURIComponent(id)}/unconsolidate`, {
+      method: 'POST',
+      body: '{}',
+    });
+  },
+
+  /** The types of memory managed chats and tasks may read. An empty list turns it off for them. */
+  memoryPolicy(): Promise<{ readTypes: MemoryType[]; types: MemoryType[] }> {
+    return fetchJson('/memory/policy');
+  },
+
+  setMemoryPolicy(
+    readTypes: MemoryType[]
+  ): Promise<{ readTypes: MemoryType[]; types: MemoryType[] }> {
+    return fetchJson('/memory/policy', { method: 'PUT', body: JSON.stringify({ readTypes }) });
   },
 
   updateSkill(

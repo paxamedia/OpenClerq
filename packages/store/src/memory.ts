@@ -67,14 +67,17 @@ export function searchTokens(text: string, max = 12): string[] {
 }
 
 /**
- * An FTS5 MATCH expression for what a person typed: every word must be there
- * (so adding a word narrows), the last one as a prefix (so a search that is
- * still being typed finds its record). Each word is quoted, so nothing typed
- * is read as FTS5 syntax. Null when the text holds no word.
+ * An FTS5 MATCH expression for what a person typed (or the words already taken
+ * from it). `all`: every word must be there, so adding a word narrows, and the
+ * last is a prefix, so a search still being typed finds its record. `any`:
+ * a record with any of the words matches, ranked by how many and how rare, for
+ * finding what a whole message is about. Each word is quoted, so nothing typed
+ * is read as FTS5 syntax. Null when there is no word.
  */
-export function ftsQuery(text: string): string | null {
-  const words = searchTokens(text);
+export function ftsQuery(text: string | string[], mode: 'all' | 'any' = 'all'): string | null {
+  const words = typeof text === 'string' ? searchTokens(text) : text;
   if (words.length === 0) return null;
+  if (mode === 'any') return words.map((w) => `"${w}"`).join(' OR ');
   return words.map((w, i) => (i === words.length - 1 ? `"${w}"*` : `"${w}"`)).join(' ');
 }
 
@@ -145,10 +148,11 @@ export function unindexMemory(db: Database, seq: number): void {
  */
 export function searchMemoryIndex(
   db: Database,
-  query: string,
-  limit: number
+  query: string | string[],
+  limit: number,
+  mode: 'all' | 'any' = 'all'
 ): Array<{ seq: number; score: number }> {
-  const match = ftsQuery(query);
+  const match = ftsQuery(query, mode);
   if (!match || !searchable(db)) return [];
   return db
     .prepare(

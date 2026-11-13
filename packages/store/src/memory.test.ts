@@ -176,6 +176,9 @@ describe('the search text', () => {
     expect(ftsQuery('quarterly fil')).toBe('"quarterly" "fil"*');
     expect(ftsQuery('a OR b NEAR(c) "d" -e *')).toBe('"a" "or" "b" "near" "c" "d" "e"*');
     expect(ftsQuery('   ')).toBeNull();
+    // For a whole message: any word, none of them a prefix.
+    expect(ftsQuery(['quarterly', 'filing'], 'any')).toBe('"quarterly" OR "filing"');
+    expect(ftsQuery([], 'any')).toBeNull();
   });
 });
 
@@ -201,6 +204,16 @@ describe('the search index', () => {
     expect(searchMemoryIndex(db, 'creme brulee', 10)).toHaveLength(1);
     expect(searchMemoryIndex(db, 'CRÈME rec', 10)).toHaveLength(1);
     expect(searchMemoryIndex(db, 'creme pizza', 10)).toEqual([]);
+  });
+
+  it('with any, finds a record that has some of the words, the best match first', () => {
+    const both = remember('quarterly-filing', 'quarterly vat filing for the shop');
+    const one = remember('shop', 'the shop is closed on mondays');
+    remember('other', 'nothing relevant');
+    const hits = searchMemoryIndex(db, ['quarterly', 'filing', 'closed'], 10, 'any');
+    expect(hits.map((h) => h.seq)).toEqual([both, one]);
+    expect(searchMemoryIndex(db, ['quarterly', 'filing', 'closed'], 10, 'all')).toEqual([]);
+    expect(searchMemoryIndex(db, [], 10, 'any')).toEqual([]);
   });
 
   it('reads punctuation and operators as text, not as syntax', () => {

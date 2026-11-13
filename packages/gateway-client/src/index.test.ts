@@ -344,3 +344,88 @@ describe('records, search and inbox', () => {
     expect(calls[3][1]?.method).toBe('PATCH');
   });
 });
+
+describe('memory', () => {
+  it('sends a key with its type, and deletes with the token', async () => {
+    stubFetch(() => Response.json({ ok: true }));
+    await gateway.setMemory('tone', 'short', { type: 'preference', confidence: 0.9 });
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/memory');
+    expect(JSON.parse(String(calls[0][1]?.body))).toEqual({
+      key: 'tone',
+      value: 'short',
+      type: 'preference',
+      confidence: 0.9,
+    });
+
+    // A delete needs the token as much as any other call.
+    await gateway.deleteMemory('a key/with slash');
+    expect(calls[1][0]).toBe('http://127.0.0.1:18790/memory/a%20key%2Fwith%20slash');
+    expect(calls[1][1]?.method).toBe('DELETE');
+    expect((calls[1][1]?.headers as Record<string, string>).Authorization).toBe(
+      'Bearer test-token-123'
+    );
+    await gateway.deleteMemoryRecord('mem_1');
+    expect(calls[2][0]).toBe('http://127.0.0.1:18790/memory/records/mem_1');
+    expect((calls[2][1]?.headers as Record<string, string>).Authorization).toBe(
+      'Bearer test-token-123'
+    );
+  });
+
+  it('lists, searches and filters records', async () => {
+    stubFetch(() => Response.json({ records: [], results: [], mode: 'fts5', query: 'x' }));
+    await gateway.memoryRecords({ type: 'procedure', status: 'superseded' });
+    expect(calls[0][0]).toBe(
+      'http://127.0.0.1:18790/memory/records?type=procedure&status=superseded'
+    );
+    await gateway.memoryRecords();
+    expect(calls[1][0]).toBe('http://127.0.0.1:18790/memory/records');
+    await gateway.searchMemory('quarterly vat', ['fact', 'procedure'], 5);
+    expect(calls[2][0]).toBe(
+      'http://127.0.0.1:18790/memory/search?q=quarterly+vat&types=fact%2Cprocedure&limit=5'
+    );
+  });
+
+  it('adds, patches, summarises, undoes and sets the read policy', async () => {
+    stubFetch(() => Response.json({}));
+    await gateway.addMemoryRecord({ key: 'k', value: 1, type: 'note' });
+    await gateway.updateMemoryRecord('mem_1', { value: null });
+    await gateway.consolidateMemory('k', { type: 'note', model: 'openai/gpt-5-mini' });
+    await gateway.unconsolidateMemory('mem_2');
+    await gateway.setMemoryPolicy(['fact']);
+    expect(
+      calls.map(([u, i]) => `${i?.method} ${u.replace('http://127.0.0.1:18790', '')}`)
+    ).toEqual([
+      'POST /memory/records',
+      'PATCH /memory/records/mem_1',
+      'POST /memory/consolidate',
+      'POST /memory/records/mem_2/unconsolidate',
+      'PUT /memory/policy',
+    ]);
+    expect(JSON.parse(String(calls[1][1]?.body))).toEqual({ value: null });
+    expect(JSON.parse(String(calls[2][1]?.body))).toEqual({
+      key: 'k',
+      type: 'note',
+      model: 'openai/gpt-5-mini',
+    });
+    expect(JSON.parse(String(calls[4][1]?.body))).toEqual({ readTypes: ['fact'] });
+  });
+});
+
+describe('routing', () => {
+  it('reads and sets the default fallback chain', async () => {
+    stubFetch(() => Response.json({ fallback: ['openai/gpt-5-mini'] }));
+    await gateway.routing();
+    await gateway.setRouting(['openai/gpt-5-mini']);
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/routing');
+    expect(calls[1][1]?.method).toBe('PUT');
+    expect(JSON.parse(String(calls[1][1]?.body))).toEqual({ fallback: ['openai/gpt-5-mini'] });
+  });
+
+  it('starts a run with a model of its own only when given one', async () => {
+    stubFetch(() => Response.json({ runId: 'run_1' }));
+    await gateway.runAutomation('aut_1');
+    await gateway.runAutomation('aut_1', 'anthropic/claude-sonnet-4-5');
+    expect(String(calls[0][1]?.body)).toBe('{}');
+    expect(JSON.parse(String(calls[1][1]?.body))).toEqual({ model: 'anthropic/claude-sonnet-4-5' });
+  });
+});

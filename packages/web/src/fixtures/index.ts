@@ -564,11 +564,34 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
       { message: string }
     >,
   };
+  const memoryRecord = (
+    id: string,
+    type: 'fact' | 'preference' | 'decision' | 'procedure' | 'note',
+    key: string,
+    value: unknown,
+    created: number
+  ) => ({
+    id,
+    type,
+    key,
+    value,
+    origin: 'user' as const,
+    status: 'active' as const,
+    createdAt: iso(created),
+    updatedAt: iso(created),
+  });
   const memory = opts.empty
     ? []
     : [
-        { key: 'tone', value: 'Plain, short sentences.', createdAt: iso(now - 5 * D) },
-        { key: 'team', value: { lead: 'Sam', reviewers: 2 }, createdAt: iso(now - 3 * D) },
+        memoryRecord('mem_tone', 'preference', 'tone', 'Plain, short sentences.', now - 5 * D),
+        memoryRecord('mem_team', 'fact', 'team', { lead: 'Sam', reviewers: 2 }, now - 3 * D),
+        memoryRecord(
+          'mem_release',
+          'procedure',
+          'release',
+          'Tag on main, then run the release workflow.',
+          now - 2 * D
+        ),
       ];
   let killed = false;
 
@@ -1154,6 +1177,28 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
     getMemory: (key: string) => ok(memory.find((m) => m.key === key)),
     setMemory: () => ok({ ok: true }),
     deleteMemory: () => ok({ ok: true }),
+    memoryRecords: () => ok({ records: memory }),
+    addMemoryRecord: () => ok({ record: memory[0] }),
+    updateMemoryRecord: () => ok({ record: memory[0] }),
+    deleteMemoryRecord: () => ok({ ok: true }),
+    searchMemory: (q: string) =>
+      ok({
+        query: q,
+        mode: 'fts5' as const,
+        results: memory
+          .filter((m) =>
+            `${m.key} ${JSON.stringify(m.value)}`.toLowerCase().includes(q.toLowerCase())
+          )
+          .map((m) => ({ ...m, score: 1 })),
+      }),
+    consolidateMemory: () => ok({ record: memory[0], superseded: [] as string[] }),
+    unconsolidateMemory: () => ok({ restored: [] as string[] }),
+    memoryPolicy: () =>
+      ok({
+        readTypes: ['fact', 'preference', 'decision', 'procedure', 'note'],
+        types: ['fact', 'preference', 'decision', 'procedure', 'note'],
+      }),
+    setMemoryPolicy: (readTypes: string[]) => ok({ readTypes, types: readTypes }),
     calculateEval: () =>
       ok({
         values: { net: 100, tax: 25 },
