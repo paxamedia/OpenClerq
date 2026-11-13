@@ -8,6 +8,8 @@ import {
   memorySearchable,
   rebuildMemoryIndex,
   indexMemory,
+  markMemoryIndexCurrent,
+  memoryIndexSignature,
   unindexMemory,
   searchMemoryIndex,
   memoryText,
@@ -37,6 +39,7 @@ function remember(key: string, value: unknown): number {
     .run(`mem_${key}`, key, json);
   const seq = Number(res.lastInsertRowid);
   indexMemory(db, { seq, key, text: memoryText(json) });
+  markMemoryIndexCurrent(db);
   return seq;
 }
 
@@ -267,6 +270,67 @@ describe('the search index', () => {
     expect(searchMemoryIndex(db, 'three', 10)).toHaveLength(1);
     rebuildMemoryIndex(db);
     expect(searchMemoryIndex(db, 'one', 10)).toHaveLength(1);
+  });
+
+  it('is rebuilt when a process without FTS5 changed a record in place, which leaves the counts as they were', () => {
+    remember('a', 'one');
+    remember('b', 'two');
+    // Another runtime's write: the table changes, the index does not, nothing counts differently.
+    db.prepare(
+      "UPDATE memory SET value = '\"uno\"', updated_at = '2026-06-01T00:00:00.000Z' WHERE key = 'a'"
+    ).run();
+    expect(searchMemoryIndex(db, 'uno', 10)).toEqual([]);
+    ensureMemoryIndex(db);
+    expect(searchMemoryIndex(db, 'uno', 10)).toHaveLength(1);
+    expect(searchMemoryIndex(db, 'one', 10)).toEqual([]);
+    // And the index is known to match again.
+    expect(db.prepare("SELECT value FROM settings WHERE key = 'memory.index'").get()?.value).toBe(
+      memoryIndexSignature(db)
+    );
+  });
+
+  it('is rebuilt when a record was replaced by another of the same size, and when there is no marker yet', () => {
+    remember('a', 'one');
+    db.prepare("DELETE FROM memory WHERE key = 'a'").run();
+    db.prepare(
+      "INSERT INTO memory (id, key, value, created_at, updated_at) VALUES ('mem_x', 'a', '\"two\"', 'a', 'a')"
+    ).run();
+    ensureMemoryIndex(db);
+    expect(searchMemoryIndex(db, 'two', 10)).toHaveLength(1);
+    expect(searchMemoryIndex(db, 'one', 10)).toEqual([]);
+
+    // A database from before the marker existed has none.
+    db.prepare("DELETE FROM settings WHERE key = 'memory.index'").run();
+    indexMemory(db, { seq: 1, key: 'a', text: 'stale words' });
+    ensureMemoryIndex(db);
+    expect(searchMemoryIndex(db, 'stale', 10)).toEqual([]);
+    expect(searchMemoryIndex(db, 'two', 10)).toHaveLength(1);
+  });
+
+  it('is left alone when the marker says it matches the table', () => {
+    const seq = remember('a', 'one');
+    // The index says something else than the table, but the marker and the counts agree.
+    indexMemory(db, { seq, key: 'a', text: 'marker trusted' });
+    ensureMemoryIndex(db);
+    expect(searchMemoryIndex(db, 'trusted', 10)).toHaveLength(1);
+  });
+
+  it('writes no marker where there is no FTS5, so the next start with it rebuilds', async () => {
+    const real = await openDatabase(':memory:');
+    migrate(real);
+    const without: Database = {
+      ...real,
+      exec(sql) {
+        if (/fts5/i.test(sql)) throw new Error('no such module: fts5');
+        real.exec(sql);
+      },
+    };
+    ensureMemoryIndex(without);
+    markMemoryIndexCurrent(without);
+    expect(
+      real.prepare("SELECT COUNT(*) AS n FROM settings WHERE key = 'memory.index'").get()?.n
+    ).toBe(0);
+    real.close();
   });
 
   it('degrades, without failing, where SQLite has no FTS5', async () => {

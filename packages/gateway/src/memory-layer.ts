@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import {
   audit,
   indexMemory,
+  markMemoryIndexCurrent,
   memoryText,
   memorySearchable,
   searchMemoryIndex,
@@ -227,6 +228,19 @@ function announce(
 // Writes
 // ---------------------------------------------------------------------------
 
+/**
+ * A write to `memory` and its index entries in one transaction, ending by noting the
+ * index matches the table (see `markMemoryIndexCurrent`).
+ */
+function write<T>(fn: () => T): T {
+  const db = getStore();
+  return db.transaction(() => {
+    const out = fn();
+    markMemoryIndexCurrent(db);
+    return out;
+  });
+}
+
 const newId = () => `mem_${crypto.randomBytes(8).toString('hex')}`;
 
 export interface NewRecord {
@@ -330,7 +344,7 @@ export function addRecord(input: NewRecord): MemoryRecord {
     expiresAt: checkExpiry(input.expiresAt),
   };
   const now = new Date().toISOString();
-  getStore().transaction(() => insertRow({ ...rec, agentDerived: rec.origin === 'agent' }, now));
+  write(() => insertRow({ ...rec, agentDerived: rec.origin === 'agent' }, now));
   announce('created', { id: rec.id, key, type: rec.type });
   return getRecord(rec.id) as MemoryRecord;
 }
@@ -394,7 +408,7 @@ export function updateRecord(id: string, patch: RecordPatch): MemoryRecord {
         : null
       : checkExpiry(patch.expiresAt);
   const now = new Date().toISOString();
-  db.transaction(() => {
+  write(() => {
     db.prepare(
       `UPDATE memory SET key = ?, type = ?, value = ?, confidence = ?, expires_at = ?, updated_at = ?
        WHERE id = ?`
@@ -413,7 +427,7 @@ export function deleteRecord(id: string): boolean {
   const db = getStore();
   const row = db.prepare('SELECT key, type FROM memory WHERE id = ?').get(id);
   if (!row) return false;
-  db.transaction(() => deleteRows(withSources([id])));
+  write(() => deleteRows(withSources([id])));
   announce('deleted', { id, key: String(row.key), type: String(row.type) as MemoryType });
   return true;
 }
@@ -426,14 +440,14 @@ export function deleteMemory(key: string): boolean {
     .all(key)
     .map((r) => String(r.id));
   if (ids.length === 0) return false;
-  db.transaction(() => deleteRows(withSources(ids)));
+  write(() => deleteRows(withSources(ids)));
   announce('deleted', { key, ids });
   return true;
 }
 
 export function clearMemory(): number {
   const db = getStore();
-  const n = db.transaction(() => {
+  const n = write(() => {
     const count = Number(db.prepare('SELECT COUNT(*) AS n FROM memory').get()?.n ?? 0);
     if (memorySearchable(db)) db.exec('DELETE FROM memory_fts');
     db.exec('DELETE FROM memory');
@@ -627,7 +641,7 @@ export function pruneExpired(): number {
     .map((r) => String(r.id));
   if (expired.length === 0) return 0;
   const ids = withSources(expired);
-  const n = db.transaction(() => deleteRows(ids));
+  const n = write(() => deleteRows(ids));
   audit(db, { actor: 'system', action: 'memory.expired', detail: { removed: n } });
   announce('expired', { ids });
   return n;
@@ -737,7 +751,7 @@ export async function consolidate(
   const agentDerived = before.some((r) => r.origin === 'agent' || r.agentDerived === true);
   const id = newId();
   const now = new Date().toISOString();
-  db.transaction(() => {
+  write(() => {
     // The model call took time; what it read must still be what is there.
     const after = sources();
     // By what they say as well as when they were saved: two writes in one millisecond differ in their text.
@@ -811,7 +825,7 @@ export function unconsolidate(id: string, actor = 'operator'): { restored: strin
     .prepare('SELECT id FROM memory WHERE superseded_by = ?')
     .all(id)
     .map((r) => String(r.id));
-  db.transaction(() => {
+  write(() => {
     if (restored.length > 0) {
       db.prepare(
         `UPDATE memory SET status = 'active', superseded_by = NULL, updated_at = ?

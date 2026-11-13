@@ -19,6 +19,7 @@ import {
 } from './memory-layer.js';
 import { getMemoryPolicy, memoryBlock, retrieveMemory, setMemoryPolicy } from './memory-context.js';
 import { memoryReadRules, readableMemoryTypes } from '@clerq/policy';
+import { ensureMemoryIndex, memoryIndexSignature } from '@clerq/store';
 import { subscribeEvents, type ClerqEvent } from './events.js';
 import { recordRun } from './runs.js';
 import { getStore, initStore, closeStore } from './store.js';
@@ -802,5 +803,46 @@ describe('reading memory under policy', () => {
     addRecord({ key: 'long', value: 'quarterly ' + 'x'.repeat(5_000), type: 'note' });
     const text = memoryBlock('quarterly long')?.text ?? '';
     expect(text.length).toBeLessThan(8 * 700 + 400);
+  });
+});
+
+describe('the search index and other processes', () => {
+  beforeEach(() => {
+    clearMemory();
+  });
+
+  const marker = () =>
+    getStore().prepare("SELECT value FROM settings WHERE key = 'memory.index'").get()?.value;
+
+  it('notes after every write that the index matches the table', async () => {
+    const r = addRecord({ key: 'k', value: 'one' });
+    expect(marker()).toBe(memoryIndexSignature(getStore()));
+    updateRecord(r.id, { value: 'two' });
+    expect(marker()).toBe(memoryIndexSignature(getStore()));
+    addRecord({ key: 'k', value: 'three' });
+    await consolidate({ key: 'k' }, async () => ({ text: 'two and three' }));
+    expect(marker()).toBe(memoryIndexSignature(getStore()));
+    deleteMemory('k');
+    expect(marker()).toBe(memoryIndexSignature(getStore()));
+    clearMemory();
+    expect(marker()).toBe(memoryIndexSignature(getStore()));
+  });
+
+  it('is rebuilt at the next start after another process changed a record in place', () => {
+    const r = addRecord({ key: 'k', value: 'alpha' });
+    // A process whose SQLite has no FTS5 writes the table and cannot touch the index.
+    getStore()
+      .prepare(
+        "UPDATE memory SET value = '\"omega\"', updated_at = '2099-01-01T00:00:00.000Z' WHERE id = ?"
+      )
+      .run(r.id);
+    // The index still says alpha: the word omega is found only by the substring fallback.
+    expect(searchRecords('omega').mode).toBe('substring');
+    expect(marker()).not.toBe(memoryIndexSignature(getStore()));
+    ensureMemoryIndex(getStore());
+    const found = searchRecords('omega');
+    expect(found.mode).toBe('fts5');
+    expect(found.hits.map((h) => h.id)).toEqual([r.id]);
+    expect(searchRecords('alpha').hits).toEqual([]);
   });
 });

@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from './driver.js';
 import { clerqHome } from './local-files.js';
-import { indexMemory, memoryText } from './memory.js';
+import { indexMemory, markMemoryIndexCurrent, memoryText } from './memory.js';
 
 export interface ImportResult {
   memory: number;
@@ -66,6 +66,7 @@ function importMemory(db: Database, dir: string, out: ImportResult): void {
       indexMemory(db, { seq: Number(res.lastInsertRowid), key, text: memoryText(value) });
       out.memory += res.changes;
     }
+    markMemoryIndexCurrent(db);
   });
   archive(file, out.archived);
 }

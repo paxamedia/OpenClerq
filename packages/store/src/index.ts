@@ -29,6 +29,8 @@ export {
   ensureMemoryIndex,
   searchable as memorySearchable,
   rebuildMemoryIndex,
+  markMemoryIndexCurrent,
+  memoryIndexSignature,
   indexMemory,
   unindexMemory,
   searchMemoryIndex,

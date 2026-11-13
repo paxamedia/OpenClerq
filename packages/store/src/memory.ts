@@ -85,11 +85,49 @@ function count(db: Database, table: string): number {
   return Number(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.n ?? 0);
 }
 
+const MARKER = 'memory.index';
+
+/**
+ * What the table `memory` holds, as one short string: how many records, the
+ * newest row number and save time, and how much text. A write by any process
+ * changes it, whether or not that process could update the index.
+ */
+export function memoryIndexSignature(db: Database): string {
+  const r = db
+    .prepare(
+      `SELECT COUNT(*) AS n, COALESCE(MAX(seq), 0) AS s, COALESCE(MAX(updated_at), '') AS u,
+              COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0) AS l FROM memory`
+    )
+    .get();
+  return `${r?.n}|${r?.s}|${r?.u}|${r?.l}`;
+}
+
+/**
+ * Note that the index matches the table as it is now. Called at the end of every
+ * write to `memory` that updated the index, inside its transaction, and after a
+ * rebuild. A process whose SQLite has no FTS5 cannot do this, so what it writes
+ * leaves the marker behind the table, and the next start notices and rebuilds.
+ */
+export function markMemoryIndexCurrent(db: Database): void {
+  if (!searchable(db)) return;
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(MARKER, memoryIndexSignature(db), new Date().toISOString());
+}
+
+function indexIsCurrent(db: Database): boolean {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(MARKER);
+  return row?.value === memoryIndexSignature(db) && count(db, 'memory_fts') === count(db, 'memory');
+}
+
 /**
  * Make the search index ready: create it where this SQLite has FTS5, and
- * rebuild it from `memory` when it does not match (first start after the
- * migration; a database another runtime wrote to). Safe to call again. Returns
- * whether memory is searchable by index.
+ * rebuild it from `memory` when it is not known to match it: the marker of the
+ * last write that updated the index (`markMemoryIndexCurrent`) differs from the
+ * table now, which is what a write by a process without FTS5 leaves, or the
+ * counts differ, or there is no marker yet (the first start after upgrading).
+ * Safe to call again. Returns whether memory is searchable by index.
  */
 export function ensureMemoryIndex(db: Database): boolean {
   let ok = false;
@@ -104,7 +142,7 @@ export function ensureMemoryIndex(db: Database): boolean {
     // No FTS5 in this SQLite: memory is searched by substring instead.
   }
   state.set(db, ok);
-  if (ok && count(db, 'memory_fts') !== count(db, 'memory')) rebuildMemoryIndex(db);
+  if (ok && !indexIsCurrent(db)) rebuildMemoryIndex(db);
   return ok;
 }
 
@@ -122,6 +160,7 @@ export function rebuildMemoryIndex(db: Database): void {
     for (const r of db.prepare('SELECT seq, key, value FROM memory').all()) {
       insert.run(Number(r.seq), String(r.key), memoryText(String(r.value)));
     }
+    markMemoryIndexCurrent(db);
   });
 }
 
