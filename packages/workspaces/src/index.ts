@@ -141,14 +141,13 @@ export class Workspace {
   }
 
   /**
-   * Whether the worktree's content differs from the run's commit so far (the
-   * base, before the first): read from the files themselves into a private
-   * index, never from the worktree's own index, which an agent can rewrite.
+   * Whether the worktree's content differs from the base: what the run's one
+   * commit would hold. Read from the files themselves into a private index,
+   * never from the worktree's own index, which an agent can rewrite.
    */
   async hasChanges(): Promise<boolean> {
-    const parent = this.head ?? this.baseSha;
-    const { tree } = await this.snapshot(parent);
-    return tree !== (await this.treeOf(parent));
+    const { tree } = await this.snapshot(this.head ?? this.baseSha);
+    return tree !== (await this.treeOf(this.baseSha));
   }
 
   /** The run's commit, once `commitAll` has made it. */
