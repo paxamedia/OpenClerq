@@ -427,7 +427,7 @@ function Conversation({ id, base }: { id: string; base: string }) {
             title={s.workspace ?? undefined}
           >
             {s.workspace
-              ? `${s.workspace.split('/').filter(Boolean).at(-1)} · ${permissionLabel(s.permissionMode)}`
+              ? `${folderName(s.workspace)} · ${permissionLabel(s.permissionMode)}`
               : 'No folder'}
           </Button>
         )}
@@ -594,6 +594,12 @@ function Conversation({ id, base }: { id: string; base: string }) {
       />
     </section>
   );
+}
+
+/** The last part of a folder's path. */
+function folderName(p: string): string {
+  const parts = p.split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? p;
 }
 
 /** The user message an answer replies to. */
