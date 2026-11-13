@@ -269,10 +269,23 @@ export interface RepoSummary {
    * cloned yet. `exists: false` is a folder that has gone since.
    */
   path: { value: string; exists: boolean; role: 'repository' | 'clone' } | null;
-  /** The vault secret it is reached with: its name, never its value. */
+  /**
+   * The vault secret named by the last run queued for it: a name, never a
+   * value. Automations can differ, so read `automations[].credential` first;
+   * this is what is left when none targets it now.
+   */
   credential: { secret: string; present: boolean } | null;
-  /** The automations whose spec targets it now. */
-  automations: Array<{ id: string; name: string; enabled: boolean }>;
+  /**
+   * The automations whose spec targets it now, each with the secret its own spec
+   * reaches the forge with (null for a local repository it neither pushes nor
+   * opens a pull request on).
+   */
+  automations: Array<{
+    id: string;
+    name: string;
+    enabled: boolean;
+    credential: { secret: string; present: boolean } | null;
+  }>;
   /** Runs waiting for a place, and runs using it now (an approval wait counts). */
   runs: { queued: number; running: number };
   lastRun: {

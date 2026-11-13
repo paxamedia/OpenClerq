@@ -75,15 +75,58 @@ export interface CredentialState {
   label: string;
 }
 
-/** What the vault says about the secret a repository is reached with. */
-export function credentialState(repo: RepoSummary): CredentialState | null {
-  if (!repo.credential) return null;
-  return repo.credential.present
+/** What the vault says about a secret a repository is reached with. */
+export function vaultState(present: boolean): CredentialState {
+  return present
     ? { tone: 'ok', label: 'In the vault' }
-    : {
-        tone: repo.kind === 'local' ? 'muted' : 'warn',
-        label: 'Not in the vault',
-      };
+    : { tone: 'warn', label: 'Not in the vault' };
+}
+
+/**
+ * The secret a repository is reached with, across the automations that target
+ * it. Each names its own (`publish.token_secret`), and the repository's row
+ * keeps only whichever was queued last, so one secret is shown only where they
+ * all agree. With no automation left, the last one recorded is all there is.
+ */
+export type Reach =
+  | { kind: 'none' }
+  | { kind: 'one'; secret: string; present: boolean; recorded: boolean }
+  | { kind: 'differ'; secrets: string[] };
+
+export function reachOf(repo: RepoSummary): Reach {
+  if (repo.automations.length === 0) {
+    return repo.credential ? { kind: 'one', ...repo.credential, recorded: true } : { kind: 'none' };
+  }
+  const named = repo.automations.flatMap((a) => (a.credential ? [a.credential] : []));
+  const secrets = [...new Set(named.map((c) => c.secret))];
+  if (secrets.length === 0) return { kind: 'none' };
+  if (secrets.length > 1) return { kind: 'differ', secrets };
+  return {
+    kind: 'one',
+    secret: secrets[0],
+    present: named.every((c) => c.present),
+    recorded: false,
+  };
+}
+
+/** An automation whose own secret is not in the vault, and what that costs it. */
+export function missingSecrets(
+  repo: RepoSummary
+): Array<{ automation: string; secret: string; note: string }> {
+  return repo.automations.flatMap((a) =>
+    a.credential && !a.credential.present
+      ? [
+          {
+            automation: a.name,
+            secret: a.credential.secret,
+            note:
+              repo.kind === 'local'
+                ? 'its push or pull request will fail'
+                : 'only a public repository can be cloned, and its push or pull request will fail',
+          },
+        ]
+      : []
+  );
 }
 
 /** "2 running · 1 queued", or "Idle". */
@@ -124,7 +167,7 @@ export function RepoList() {
       hideOnPhone: true,
       cell: (r) => KIND_WORD[r.kind],
       sortValue: (r) => r.kind,
-      width: 'md',
+      width: 'sm',
     },
     {
       key: 'place',
@@ -134,6 +177,17 @@ export function RepoList() {
         return <StatusTag tone={p.tone}>{p.label}</StatusTag>;
       },
       sortValue: (r) => placeOf(r).label,
+      width: 'md',
+    },
+    {
+      key: 'reach',
+      header: 'Reached with',
+      hideOnPhone: true,
+      cell: (r) => <ReachCell repo={r} />,
+      sortValue: (r) => {
+        const reach = reachOf(r);
+        return reach.kind === 'one' ? reach.secret : reach.kind === 'differ' ? '~differ' : null;
+      },
       width: 'md',
     },
     {
@@ -218,10 +272,31 @@ export function NoRepos() {
   );
 }
 
+/** The secret in a list row or a fact: its name and the vault's answer, or that automations differ. */
+export function ReachCell({ repo }: { repo: RepoSummary }) {
+  const reach = reachOf(repo);
+  if (reach.kind === 'none') return <span className="page-muted">—</span>;
+  if (reach.kind === 'differ') {
+    return (
+      <span className="page-muted" title={reach.secrets.join(', ')}>
+        Differs by automation
+      </span>
+    );
+  }
+  const state = vaultState(reach.present);
+  return (
+    <span className="repos-secret">
+      <code>{reach.secret}</code>
+      <StatusTag tone={state.tone}>{state.label}</StatusTag>
+    </span>
+  );
+}
+
 /** The facts about one repository, as label and value pairs. */
 export function RepoFacts({ repo }: { repo: RepoSummary }) {
   const place = placeOf(repo);
-  const credential = credentialState(repo);
+  const reach = reachOf(repo);
+  const missing = missingSecrets(repo);
   return (
     <>
       <KeyValue
@@ -236,28 +311,37 @@ export function RepoFacts({ repo }: { repo: RepoSummary }) {
           },
           { label: 'On disk', value: <StatusTag tone={place.tone}>{place.label}</StatusTag> },
           {
-            label: 'Reached with',
-            value: repo.credential ? (
-              <span className="repos-secret">
-                <code>{repo.credential.secret}</code>
-                {credential && <StatusTag tone={credential.tone}>{credential.label}</StatusTag>}
-              </span>
-            ) : (
-              'Nothing: it is a folder on this computer'
-            ),
+            label: reach.kind === 'one' && reach.recorded ? 'Last reached with' : 'Reached with',
+            value:
+              reach.kind === 'differ' ? (
+                'Differs by automation, listed below'
+              ) : reach.kind === 'none' ? (
+                repo.kind === 'local' ? (
+                  'Nothing: it is a folder, and no automation here pushes or opens a pull request'
+                ) : (
+                  'Nothing recorded'
+                )
+              ) : (
+                <ReachCell repo={repo} />
+              ),
           },
           { label: 'Runs now', value: activityWords(repo.runs) },
         ]}
       />
       <p className="page-hint">{place.note}</p>
-      {repo.credential && !repo.credential.present && repo.kind !== 'local' && (
-        <p className="page-hint">
-          There is no secret called {repo.credential.secret} in the vault, so only a public
-          repository can be cloned, and a push or pull request will fail. Add it in{' '}
+      {missing.map((m) => (
+        <p key={`${m.automation}:${m.secret}`} className="page-hint">
+          {m.automation} names {m.secret}, which is not in the vault, so {m.note}. Add it in{' '}
           <Link className="page-link" to="/settings/secrets">
             Settings → Secrets
           </Link>
           .
+        </p>
+      ))}
+      {reach.kind === 'one' && reach.recorded && !reach.present && (
+        <p className="page-hint">
+          The last run named {reach.secret}, which is not in the vault. No automation targets this
+          repository now.
         </p>
       )}
     </>
@@ -331,6 +415,14 @@ export function RepoDetailView({ repo }: { repo: RepoDetail }) {
                   {a.name}
                 </Link>
                 <StatusTag tone={a.enabled ? 'ok' : 'muted'}>{a.enabled ? 'On' : 'Off'}</StatusTag>
+                {a.credential && (
+                  <span className="repos-secret">
+                    <code>{a.credential.secret}</code>
+                    <StatusTag tone={vaultState(a.credential.present).tone}>
+                      {vaultState(a.credential.present).label}
+                    </StatusTag>
+                  </span>
+                )}
               </li>
             ))}
           </ul>

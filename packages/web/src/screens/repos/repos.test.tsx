@@ -3,9 +3,19 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { RepoDetail, RepoSummary } from '@clerq/gateway-client';
 import { EnvironmentContext } from '../../app/client';
+import { LiveProvider, LiveStore } from '../../app/live';
 import { createFixtureClient, FIXTURE_NOW } from '../../fixtures';
 import { ToastProvider } from '../../ui/Toast';
-import { activityWords, credentialState, NoRepos, placeOf, RepoDetailView } from './Repos';
+import {
+  activityWords,
+  missingSecrets,
+  NoRepos,
+  placeOf,
+  reachOf,
+  RepoDetailView,
+  RepoList,
+  vaultState,
+} from './Repos';
 
 const client = createFixtureClient({ now: FIXTURE_NOW });
 const html = (node: ReactElement) =>
@@ -17,6 +27,23 @@ const html = (node: ReactElement) =>
     </EnvironmentContext.Provider>
   );
 
+/** A page drawn from what the store already holds. */
+function listPage(held: Record<string, unknown>): string {
+  const store = new LiveStore();
+  for (const [key, data] of Object.entries(held)) store.write(key, () => data);
+  return renderToStaticMarkup(
+    <EnvironmentContext.Provider
+      value={{ client, host: { kind: 'web', version: '1.0.0', openUrl: () => {} } }}
+    >
+      <LiveProvider client={client} store={store}>
+        <ToastProvider>
+          <RepoList />
+        </ToastProvider>
+      </LiveProvider>
+    </EnvironmentContext.Provider>
+  );
+}
+
 const base: RepoSummary = {
   id: 'repo_1',
   kind: 'local',
@@ -24,7 +51,7 @@ const base: RepoSummary = {
   url: null,
   path: { value: '/Users/me/code/shop', exists: true, role: 'repository' },
   credential: null,
-  automations: [{ id: 'aut_1', name: 'weekly-deps', enabled: true }],
+  automations: [{ id: 'aut_1', name: 'weekly-deps', enabled: true, credential: null }],
   runs: { queued: 0, running: 0 },
   lastRun: null,
   createdAt: '2026-11-01T00:00:00.000Z',
@@ -37,6 +64,14 @@ const remote: RepoSummary = {
   url: 'https://github.com/acme/widgets.git',
   path: { value: '/cache/widgets-abc', exists: true, role: 'clone' },
   credential: { secret: 'ACME_TOKEN', present: true },
+  automations: [
+    {
+      id: 'aut_1',
+      name: 'weekly-deps',
+      enabled: true,
+      credential: { secret: 'ACME_TOKEN', present: true },
+    },
+  ],
 };
 
 describe('where a repository is', () => {
@@ -63,12 +98,87 @@ describe('where a repository is', () => {
 });
 
 describe('credentials', () => {
-  it('reports the secret as there or not, never more', () => {
-    expect(credentialState(base)).toBeNull();
-    expect(credentialState(remote)).toEqual({ tone: 'ok', label: 'In the vault' });
-    expect(
-      credentialState({ ...remote, credential: { secret: 'ACME_TOKEN', present: false } })
-    ).toEqual({ tone: 'warn', label: 'Not in the vault' });
+  const auto = (name: string, secret: string | null, present = true) => ({
+    id: `aut_${name}`,
+    name,
+    enabled: true,
+    credential: secret ? { secret, present } : null,
+  });
+
+  it('reports the vault’s answer for a secret, never more', () => {
+    expect(vaultState(true)).toEqual({ tone: 'ok', label: 'In the vault' });
+    expect(vaultState(false)).toEqual({ tone: 'warn', label: 'Not in the vault' });
+  });
+
+  it('shows one secret when every automation names the same', () => {
+    const repo = { ...remote, automations: [auto('a', 'ACME_TOKEN'), auto('b', 'ACME_TOKEN')] };
+    expect(reachOf(repo)).toEqual({
+      kind: 'one',
+      secret: 'ACME_TOKEN',
+      present: true,
+      recorded: false,
+    });
+  });
+
+  it('says they differ when the automations name different secrets, whatever the row last recorded', () => {
+    const repo = {
+      ...remote,
+      credential: { secret: 'ACME_TOKEN', present: true },
+      automations: [auto('a', 'ACME_TOKEN'), auto('b', 'OTHER_TOKEN', false)],
+    };
+    expect(reachOf(repo)).toEqual({ kind: 'differ', secrets: ['ACME_TOKEN', 'OTHER_TOKEN'] });
+  });
+
+  it('leaves out an automation that needs no secret, and says none when none does', () => {
+    const quiet = { ...base, automations: [auto('q', null)] };
+    expect(reachOf(quiet)).toEqual({ kind: 'none' });
+    const mixed = { ...base, automations: [auto('q', null), auto('p', 'GITHUB_TOKEN')] };
+    expect(reachOf(mixed)).toMatchObject({ kind: 'one', secret: 'GITHUB_TOKEN' });
+  });
+
+  it('falls back to the recorded secret only when no automation targets it', () => {
+    expect(reachOf({ ...remote, automations: [] })).toEqual({
+      kind: 'one',
+      secret: 'ACME_TOKEN',
+      present: true,
+      recorded: true,
+    });
+    expect(reachOf({ ...base, automations: [], credential: null })).toEqual({ kind: 'none' });
+  });
+
+  it('names the automation whose secret is missing', () => {
+    const repo = {
+      ...remote,
+      automations: [auto('a', 'ACME_TOKEN'), auto('b', 'OTHER_TOKEN', false)],
+    };
+    expect(missingSecrets(repo)).toEqual([
+      {
+        automation: 'b',
+        secret: 'OTHER_TOKEN',
+        note: 'only a public repository can be cloned, and its push or pull request will fail',
+      },
+    ]);
+    const local = { ...base, automations: [auto('p', 'GITHUB_TOKEN', false)] };
+    expect(missingSecrets(local)[0].note).toBe('its push or pull request will fail');
+    expect(missingSecrets({ ...remote, automations: [auto('a', 'ACME_TOKEN')] })).toEqual([]);
+  });
+});
+
+describe('the list', () => {
+  it('shows a secret only where the automations agree, and says when they differ', async () => {
+    const { repos } = await client.repos();
+    const markup = listPage({ repos });
+    expect(markup).toContain('Reached with');
+    // example/widgets: one automation names GITHUB_TOKEN, the other WIDGETS_DOCS_TOKEN.
+    expect(markup.match(/Differs by automation/g)).toHaveLength(1);
+    // No secret is shown as the repository's own: the names are only on hover.
+    expect(markup).not.toContain('<code>WIDGETS_DOCS_TOKEN</code>');
+    expect(markup).toContain('title="GITHUB_TOKEN, WIDGETS_DOCS_TOKEN"');
+    // lab/tools: one automation, GITLAB_TOKEN, not in the vault.
+    expect(markup).toContain('GITLAB_TOKEN');
+    expect(markup).toContain('Not in the vault');
+    // The licence repo's automation only reads: nothing to reach it with.
+    expect(markup).toContain('GITHUB_TOKEN');
   });
 });
 
@@ -107,12 +217,45 @@ describe('one repository', () => {
     expect(markup).toContain('No run has used it yet.');
   });
 
-  it('points to Secrets when the vault lacks the secret', () => {
+  it('ties the missing-secret warning to the automation that names it, and lists each automation’s secret', () => {
     const markup = html(
-      <RepoDetailView repo={detail({ credential: { secret: 'ACME_TOKEN', present: false } })} />
+      <RepoDetailView
+        repo={detail({
+          automations: [
+            {
+              id: 'aut_a',
+              name: 'bumps',
+              enabled: true,
+              credential: { secret: 'ACME_TOKEN', present: true },
+            },
+            {
+              id: 'aut_b',
+              name: 'docs',
+              enabled: false,
+              credential: { secret: 'DOCS_TOKEN', present: false },
+            },
+          ],
+        })}
+      />
     );
-    expect(markup).toContain('Not in the vault');
+    expect(markup).toContain('Differs by automation, listed below');
+    expect(markup).toContain('ACME_TOKEN');
+    expect(markup).toContain('DOCS_TOKEN');
+    expect(markup).toContain(
+      'docs names DOCS_TOKEN, which is not in the vault, so only a public repository can be cloned'
+    );
+    expect(markup).not.toContain('bumps names');
     expect(markup).toContain('href="#/settings/secrets"');
+  });
+
+  it('points to Secrets for the last recorded secret when nothing targets the repository', () => {
+    const markup = html(
+      <RepoDetailView
+        repo={detail({ automations: [], credential: { secret: 'ACME_TOKEN', present: false } })}
+      />
+    );
+    expect(markup).toContain('Last reached with');
+    expect(markup).toContain('The last run named ACME_TOKEN, which is not in the vault.');
   });
 
   it('keeps a repository nobody targets any more, and says so', () => {
