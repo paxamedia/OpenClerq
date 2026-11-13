@@ -381,4 +381,31 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: 11,
+    name: 'run_processes',
+    // The agent and gate processes a run started, with enough to recognise each
+    // one later. If the gateway dies they outlive it; the next gateway finds
+    // them here and stops them, once it has checked the pid still belongs to
+    // the process recorded (its start time and command), so a reused pid is
+    // never killed.
+    sql: `
+      CREATE TABLE run_processes (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        kind        TEXT NOT NULL CHECK (kind IN ('agent','gate')),
+        pid         INTEGER NOT NULL,
+        pgid        INTEGER NOT NULL,
+        command     TEXT NOT NULL,
+        proc_start  TEXT,
+        owner_pid   INTEGER NOT NULL,
+        owner_start TEXT,
+        started_at  TEXT NOT NULL,
+        ended_at    TEXT,
+        outcome     TEXT
+      );
+      CREATE INDEX idx_run_processes_live ON run_processes(ended_at);
+      CREATE INDEX idx_run_processes_run ON run_processes(run_id);
+    `,
+  },
 ];

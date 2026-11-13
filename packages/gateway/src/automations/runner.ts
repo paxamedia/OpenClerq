@@ -8,7 +8,13 @@
  * An automation's first push always waits, whatever its spec says.
  */
 
-import { DRIVER_CAPABILITIES, getDriver, type Driver, type DriverResult } from '@clerq/drivers';
+import {
+  DRIVER_CAPABILITIES,
+  getDriver,
+  type Driver,
+  type DriverResult,
+  type DriverRunInput,
+} from '@clerq/drivers';
 import {
   guard,
   RunBudget,
@@ -41,6 +47,7 @@ import {
 import { requestApproval, waitForDecision, decide } from '../approvals.js';
 import { emit } from '../events.js';
 import { logger } from '../logger.js';
+import { watchProcess } from '../agent-processes.js';
 import { SpecError, type AutomationSpec } from './spec.js';
 import {
   ensureLocalRepo,
@@ -305,8 +312,13 @@ async function execute(
     });
 
     setRunStatus(runId, 'executing');
+    // The agent leads its own process group, so it would outlive a gateway that
+    // crashes. Recording it lets the next gateway find it and stop it.
+    const agentProcess = watchProcess(runId, 'agent');
     const result = await guard(rules, TOOLS.agent, budget, () =>
-      runAgent(driver, spec, ws, runId, signal, deps, apiKey)
+      runAgent(driver, spec, ws, runId, signal, deps, apiKey, agentProcess.onSpawn).finally(
+        agentProcess.done
+      )
     );
     if (!result.ok) throw new Error(result.summary);
 
@@ -437,7 +449,8 @@ async function runAgent(
   runId: string,
   signal: AbortSignal,
   deps: RunnerDeps,
-  secrets: Record<string, string> | undefined
+  secrets: Record<string, string> | undefined,
+  onSpawn: DriverRunInput['onSpawn']
 ): Promise<DriverResult> {
   const pending = new Map<string, { seq: number; started: number }>();
   const log: string[] = [];
@@ -456,6 +469,7 @@ async function runAgent(
     env: { PATH: deps.path() },
     secrets,
     signal,
+    onSpawn,
   })) {
     switch (event.type) {
       case 'started':
@@ -540,6 +554,7 @@ async function runGate(
     process.platform === 'win32'
       ? ['cmd.exe', ['/d', '/s', '/c', gate.run]]
       : ['/bin/sh', ['-c', gate.run]];
+  const watch = watchProcess(runId, 'gate');
   const r = await exec(
     {
       profile: 'native',
@@ -549,8 +564,8 @@ async function runGate(
     },
     command,
     args,
-    { signal }
-  );
+    { signal, onSpawn: (spawned) => watch.onSpawn({ ...spawned, command }) }
+  ).finally(watch.done);
   const passed = r.code === 0 && !r.timedOut && !r.cancelled;
   completeRunStep(runId, seq, {
     output: {

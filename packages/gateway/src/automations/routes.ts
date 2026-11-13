@@ -10,7 +10,8 @@ import { git, isRepo, defaultBranch, pruneWorktrees } from '@clerq/workspaces';
 import { logger } from '../logger.js';
 import { getStore } from '../store.js';
 import { listPending, decide } from '../approvals.js';
-import { reapInterruptedRuns, getArtifact, getRun } from '../runs.js';
+import { addRunStep, reapInterruptedRuns, getArtifact, getRun } from '../runs.js';
+import { killLeftoverProcesses } from '../agent-processes.js';
 import { parseSpec, SpecError, type AutomationSpec } from './spec.js';
 import {
   AutomationError,
@@ -210,10 +211,58 @@ async function cleanUpRun(runId: string): Promise<void> {
 }
 
 /**
+ * Stop the agent and gate processes the previous gateway left running, and say
+ * so on the run each belonged to. They lead their own process groups, so they
+ * outlive a gateway that crashed, and would keep writing into a worktree that
+ * is about to be removed. Only a process still matching what was recorded is
+ * stopped; see agent-processes.ts.
+ */
+async function stopLeftoverProcesses(): Promise<void> {
+  try {
+    for (const p of await killLeftoverProcesses()) {
+      if (p.outcome === 'killed') {
+        addRunStep(p.runId, {
+          kind: 'tool',
+          input: { name: 'process.cleanup', pid: p.pid, command: p.command, kind: p.kind },
+          output: {
+            note: `Stopped the ${p.kind} process (pid ${p.pid}) that the previous gateway left running.`,
+            forced: p.forced === true,
+          },
+          status: 'ok',
+        });
+        logger.warn('Stopped a process left running by the previous gateway', {
+          runId: p.runId,
+          pid: p.pid,
+          kind: p.kind,
+          forced: p.forced === true,
+        });
+      } else if (p.outcome === 'reused' || p.outcome === 'unverified') {
+        addRunStep(p.runId, {
+          kind: 'tool',
+          input: { name: 'process.cleanup', pid: p.pid, command: p.command, kind: p.kind },
+          output: {
+            note: `Left pid ${p.pid} alone: it could not be confirmed as the ${p.kind} process this run started.`,
+          },
+          status: 'warning',
+        });
+      }
+    }
+  } catch (e) {
+    // Never stop the gateway starting over this.
+    logger.warn('Could not check for processes left by the previous gateway', {
+      err: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+/**
  * After a restart: runs that were in flight died with the old process, and
- * their approvals can never be acted on. Mark them, and remove their worktrees.
+ * their approvals can never be acted on. Stop what they left running, mark
+ * them, and remove their worktrees.
  */
 export async function recoverAfterRestart(): Promise<void> {
+  // First, so nothing is still writing into a worktree when it is removed.
+  await stopLeftoverProcesses();
   const reaped = reapInterruptedRuns();
   for (const p of listPending()) {
     decide(p.id, { decision: 'denied', decidedBy: 'restart', reason: 'The gateway restarted.' });

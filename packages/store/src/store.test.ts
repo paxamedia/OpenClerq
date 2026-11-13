@@ -152,6 +152,29 @@ describe('migrations', () => {
     db.prepare("DELETE FROM runs WHERE id = 'r1'").run();
     expect(db.prepare('SELECT count(*) AS n FROM run_steps').get()?.n).toBe(0);
   });
+
+  it('keeps the processes a run started, and drops them with the run', () => {
+    db.prepare(
+      "INSERT INTO runs (id, status, trigger, created_at) VALUES ('r2', 'executing', 'manual', '2026-01-01')"
+    ).run();
+    db.prepare(
+      `INSERT INTO run_processes (run_id, kind, pid, pgid, command, owner_pid, started_at)
+       VALUES ('r2', 'agent', 4242, 4242, '/usr/bin/claude', 1, '2026-01-01')`
+    ).run();
+    expect(db.prepare("SELECT pid, ended_at FROM run_processes WHERE run_id = 'r2'").get()).toEqual(
+      { pid: 4242, ended_at: null }
+    );
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO run_processes (run_id, kind, pid, pgid, command, owner_pid, started_at)
+           VALUES ('r2', 'daemon', 1, 1, 'x', 1, '2026-01-01')`
+        )
+        .run()
+    ).toThrow();
+    db.prepare("DELETE FROM runs WHERE id = 'r2'").run();
+    expect(db.prepare('SELECT count(*) AS n FROM run_processes').get()?.n).toBe(0);
+  });
 });
 
 describe('audit log', () => {

@@ -44,6 +44,8 @@ function scripted(id: string): Driver {
 async function* runScripted(id: string, input: DriverRunInput): AsyncIterable<DriverEvent> {
   agentCalls += 1;
   lastAgentInput = input;
+  // The process the driver started, as the sandbox would report it.
+  input.onSpawn?.({ pid: process.pid, pgid: process.pid, command: `/fake/${id}` });
   yield { type: 'started', model: 'fake-model' };
   yield { type: 'text', text: 'Updating the changelog.' };
   if (mode === 'slow') {
@@ -624,5 +626,27 @@ describe('agent drivers', () => {
     expect(run.steps.find((s) => s.input?.name === 'driver.detect')?.input).toMatchObject({
       driver: 'codex',
     });
+  });
+
+  it('records the agent and gate processes a run starts, and closes them when they end', async () => {
+    const id = await create('process-record', 'publish:\n  push: false');
+    const runId = await start(id);
+    await waitForRun(runId, finished);
+    const rows = getStore()
+      .prepare(
+        'SELECT kind, pid, pgid, command, owner_pid, ended_at, outcome FROM run_processes WHERE run_id = ? ORDER BY id'
+      )
+      .all(runId);
+    expect(rows.map((r) => r.kind)).toEqual(['agent', 'gate']);
+    expect(rows[0]).toMatchObject({
+      command: '/fake/claude-code',
+      owner_pid: process.pid,
+      outcome: 'exited',
+    });
+    // The gate is a real shell, started through the sandbox.
+    expect(rows[1].command).toBe('/bin/sh');
+    expect(Number(rows[1].pid)).toBeGreaterThan(1);
+    expect(rows[1].pgid).toBe(rows[1].pid);
+    expect(rows.every((r) => r.ended_at !== null)).toBe(true);
   });
 });
