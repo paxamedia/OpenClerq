@@ -39,8 +39,11 @@ const PROVIDER_DOWN =
 
 /**
  * Why a failed agent result is worth another attempt, or null when it is not.
- * `lastModelError` is the error of the agent's last model call, when the
- * driver reports its calls one by one (builtin).
+ * Only what the driver itself reports counts: that the CLI crashed, the API
+ * error it printed (`result.apiError`), or the error of the agent's last model
+ * call when the driver makes the calls itself (builtin, `lastModelError`).
+ * Never the summary: it carries the agent's own final message, which may talk
+ * about any error ("the endpoint returned 500") without being one.
  */
 export function transientCause(
   result: DriverResult,
@@ -51,7 +54,7 @@ export function transientCause(
   if (result.permissionDenials.length > 0) return null;
   if (result.crashed) return 'driver_crash';
   if (lastModelError && PROVIDER_DOWN.test(lastModelError)) return 'provider_unavailable';
-  if (PROVIDER_DOWN.test(result.summary)) return 'provider_unavailable';
+  if (result.apiError && PROVIDER_DOWN.test(result.apiError)) return 'provider_unavailable';
   return null;
 }
 

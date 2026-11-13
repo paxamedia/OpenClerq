@@ -8,7 +8,7 @@
  */
 
 import type { ExecResult } from '@clerq/sandbox';
-import { capped, cliEnv, failed, num, probe, runCli } from './cli.js';
+import { apiErrorIn, capped, cliEnv, failed, num, probe, runCli } from './cli.js';
 import { locate } from './locate.js';
 import type {
   Driver,
@@ -182,6 +182,7 @@ export class ClaudeStream {
         ...base,
         ok: false,
         crashed: true,
+        ...(apiErrorIn(this.stderrTail) ? { apiError: apiErrorIn(this.stderrTail) } : {}),
         summary: `claude exited with code ${run.code ?? 'none'} before reporting a result.${
           tail ? `\n${tail}` : ''
         }`,
@@ -193,7 +194,21 @@ export class ClaudeStream {
         r.subtype && r.subtype.startsWith('error_')
           ? `Stopped: ${r.subtype.slice('error_'.length).replace(/_/g, ' ')}.`
           : 'The agent reported an error.';
-      return { ...base, ok: false, summary: text ? `${why} ${text}` : why };
+      // A limit the CLI enforced (error_max_turns, error_max_budget_usd) is
+      // never an API error, whatever the agent wrote. Otherwise only the CLI's
+      // own "API Error: …" line, or its stderr, says the provider failed.
+      const limit = r.subtype?.startsWith('error_max') ?? false;
+      const apiError = limit
+        ? undefined
+        : /^API Error\b/.test(text)
+          ? text.split('\n')[0].slice(0, 500)
+          : apiErrorIn(this.stderrTail);
+      return {
+        ...base,
+        ok: false,
+        summary: text ? `${why} ${text}` : why,
+        ...(apiError ? { apiError } : {}),
+      };
     }
 
     return { ...base, ok: true, summary: text || 'Finished.' };

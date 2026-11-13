@@ -180,6 +180,12 @@ export interface DriverResult {
    * decision. A run may be retried after one.
    */
   crashed?: boolean;
+  /**
+   * An error the CLI or the model provider reported about a failed run: an
+   * API error the CLI printed, a stream error event, a line of its stderr.
+   * Never the agent's own words, which may mention any error at all.
+   */
+  apiError?: string;
 }
 
 /**

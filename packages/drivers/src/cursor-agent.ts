@@ -24,7 +24,17 @@
  */
 
 import type { ExecResult } from '@clerq/sandbox';
-import { capped, cliEnv, failed, flagsOf, missingFlags, num, probe, runCli } from './cli.js';
+import {
+  apiErrorIn,
+  capped,
+  cliEnv,
+  failed,
+  flagsOf,
+  missingFlags,
+  num,
+  probe,
+  runCli,
+} from './cli.js';
 import { locate } from './locate.js';
 import type {
   DetectOptions,
@@ -294,6 +304,7 @@ export class CursorStream {
         ...base,
         ok: false,
         crashed: true,
+        ...(apiErrorIn(this.stderrTail) ? { apiError: apiErrorIn(this.stderrTail) } : {}),
         summary: `cursor-agent exited with code ${run.code ?? 'none'} before reporting a result.${
           tail ? `\n${tail}` : ''
         }`,
@@ -302,7 +313,13 @@ export class CursorStream {
 
     if (r.is_error || run.code !== 0) {
       const why = 'The agent reported an error.';
-      return { ...base, ok: false, summary: text ? `${why} ${text}` : why };
+      const apiError = apiErrorIn(this.stderrTail);
+      return {
+        ...base,
+        ok: false,
+        summary: text ? `${why} ${text}` : why,
+        ...(apiError ? { apiError } : {}),
+      };
     }
 
     return { ...base, ok: true, summary: text || this.lastText.trim() || 'Finished.' };

@@ -40,6 +40,18 @@ case "$FAKE_MODE" in
     echo "boom: something broke" >&2
     exit 2
     ;;
+  api_error)
+    echo '{"type":"result","subtype":"success","is_error":true,"result":"API Error: 529 {\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"overloaded_error\\"}}","usage":{}}'
+    exit 1
+    ;;
+  max_turns_talk)
+    echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"I added a rate limit to /login; the endpoint returned 500 and the test fails with ECONNREFUSED on port 5432.","usage":{}}'
+    exit 1
+    ;;
+  agent_error_talk)
+    echo '{"type":"result","subtype":"success","is_error":true,"result":"The endpoint returned 500: overloaded upstream, fetch failed.","usage":{}}'
+    exit 1
+    ;;
   secret)
     echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"key=$ANTHROPIC_API_KEY\",\"usage\":{}}"
     ;;
@@ -256,6 +268,16 @@ describe.skipIf(isWindows)('claude-code driver', () => {
     expect(result.exitCode).toBe(2);
     expect(result.summary).toContain('boom: something broke');
     expect(result.crashed).toBe(true);
+  });
+
+  it("reports an API error the CLI printed, and never the agent's own words as one", async () => {
+    const api = finished(await runFake('api_error').events);
+    expect(api.ok).toBe(false);
+    expect(api.apiError).toMatch(/^API Error: 529/);
+    // A limit the CLI enforced, whatever the agent wrote about errors.
+    expect(finished(await runFake('max_turns_talk').events).apiError).toBeUndefined();
+    // The agent's final message is not the CLI's report.
+    expect(finished(await runFake('agent_error_talk').events).apiError).toBeUndefined();
   });
 
   it('stops the agent when the signal aborts', async () => {

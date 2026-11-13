@@ -31,6 +31,19 @@ export function num(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * A line of a CLI's own stderr that reports a failed API call, or undefined.
+ * Stderr is the CLI's: the agent's text and its tools' output go to stdout.
+ */
+export function apiErrorIn(lines: readonly string[]): string | undefined {
+  const PROVIDER =
+    /\bAPI Error\b|\boverloaded\b|\brate[_ ]?limit|\b(?:status|HTTP)[: ]+(?:5\d\d|429)\b|\bECONNRESET\b|\bECONNREFUSED\b|\bETIMEDOUT\b|\bEAI_AGAIN\b|\bsocket hang up\b|\bfetch failed\b/i;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (PROVIDER.test(lines[i])) return lines[i].trim().slice(0, 500);
+  }
+  return undefined;
+}
+
 /** A finished event for a run that never got as far as starting the CLI. */
 export function failed(summary: string, warnings: string[] = []): DriverEvent {
   return {

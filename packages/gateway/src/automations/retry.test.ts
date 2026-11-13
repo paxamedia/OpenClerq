@@ -30,10 +30,10 @@ describe('transientCause', () => {
       'provider_unavailable'
     );
     expect(transientCause(failed(), 'fetch failed')).toBe('provider_unavailable');
-    expect(
-      transientCause(failed({ summary: 'The agent reported an error. API Error: 500 Internal' }))
-    ).toBe('provider_unavailable');
-    expect(transientCause(failed({ summary: 'Stopped: overloaded_error' }))).toBe(
+    expect(transientCause(failed({ apiError: 'API Error: 500 Internal server error' }))).toBe(
+      'provider_unavailable'
+    );
+    expect(transientCause(failed({ apiError: 'stream error: overloaded_error' }))).toBe(
       'provider_unavailable'
     );
   });
@@ -53,6 +53,20 @@ describe('transientCause', () => {
     expect(transientCause(failed(), 'Anthropic returned 400: bad request')).toBeNull();
     expect(transientCause(failed(), 'Anthropic returned 401: invalid x-api-key')).toBeNull();
     expect(transientCause(failed({ summary: 'Fixed the 500 error page.' }))).toBeNull();
+  });
+
+  it("never reads the agent's own final message as a provider error", () => {
+    // What claude-code puts in the summary: its reason, then the agent's text.
+    for (const summary of [
+      'Stopped: max turns. I added a rate limit to /login and checked it.',
+      'The agent reported an error. The test fails with ECONNREFUSED on port 5432.',
+      'Stopped: max budget usd. The endpoint returned 500 when called with an empty body.',
+      'The agent reported an error. API Error: 529 overloaded',
+    ]) {
+      expect(transientCause(failed({ summary })), summary).toBeNull();
+    }
+    // A driver error that is not a provider outage.
+    expect(transientCause(failed({ apiError: 'API Error: 400 invalid request' }))).toBeNull();
   });
 });
 

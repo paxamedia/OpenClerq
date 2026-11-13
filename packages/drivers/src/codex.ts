@@ -25,7 +25,17 @@
  */
 
 import type { ExecResult } from '@clerq/sandbox';
-import { capped, cliEnv, failed, flagsOf, missingFlags, num, probe, runCli } from './cli.js';
+import {
+  apiErrorIn,
+  capped,
+  cliEnv,
+  failed,
+  flagsOf,
+  missingFlags,
+  num,
+  probe,
+  runCli,
+} from './cli.js';
 import { locate } from './locate.js';
 import type {
   DetectOptions,
@@ -321,12 +331,21 @@ export class CodexStream {
 
     // A failed turn can still exit 0, so the stream decides, not the exit code.
     if (this.failure !== null || !this.completedTurn || run.code !== 0) {
-      if (reason) return { ...base, ok: false, summary: `Codex stopped: ${reason}` };
+      // turn.failed and error events are Codex's own reports, not the agent's.
+      const apiError = (reason ? apiErrorIn([reason]) : undefined) ?? apiErrorIn(this.stderrTail);
+      if (reason)
+        return {
+          ...base,
+          ok: false,
+          summary: `Codex stopped: ${reason}`,
+          ...(apiError ? { apiError } : {}),
+        };
       const tail = this.stderrTail.slice(-5).join('\n');
       return {
         ...base,
         ok: false,
         crashed: true,
+        ...(apiError ? { apiError } : {}),
         summary: `codex exited with code ${run.code ?? 'none'} before finishing the turn.${
           tail ? `\n${tail}` : ''
         }`,
