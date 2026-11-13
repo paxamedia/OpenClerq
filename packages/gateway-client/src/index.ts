@@ -376,12 +376,24 @@ export interface ChatDraft {
     pushApproval: 'manual' | 'auto';
     maxUsdPerRun: number | null;
     maxUsdPerMonth: number | null;
+    prompt: string;
+    /** Each gate command and diff assertion, as written. */
+    gates: string[];
+    sandbox: { profile: string; network: 'all' | string[] | null };
+    permissionMode: string;
+    allowedTools: string[];
+    memoryRead: string[];
+    memoryIncludeAgent: boolean;
+    /** What to look at before saving, in words: push without asking, no isolation, gates. */
+    warnings: string[];
   } | null;
   /** Why it no longer passes the checks. */
   problem?: string;
   /** The automation it was saved as. */
   automationId: string | null;
   savedAt: string | null;
+  /** When this YAML was dry-run; saving needs one. */
+  dryRunAt: string | null;
   createdAt: string;
 }
 
@@ -631,8 +643,11 @@ export interface Approval {
 
 export type PipelineMode = 'raw' | 'managed';
 
-/** How a managed conversation's agent treats the attached folder: full access, ask first, or read only. */
-export type ChatPermissionMode = 'acceptEdits' | 'default' | 'plan';
+/**
+ * How a managed conversation's agent treats the attached folder: full access, ask first,
+ * read only, or (macOS) sandboxed: writes only in the folder, no network, credentials unreadable.
+ */
+export type ChatPermissionMode = 'acceptEdits' | 'default' | 'plan' | 'sandboxed';
 
 export interface ChatSession {
   id: string;
@@ -642,6 +657,8 @@ export interface ChatSession {
   /** A folder attached to a managed conversation; its agent works there. Absent from an older gateway. */
   workspace?: string | null;
   permissionMode?: ChatPermissionMode;
+  /** Whether this machine can run the Sandboxed access level. */
+  sandboxAvailable?: boolean;
   createdAt: string;
   updatedAt: string;
   messageCount: number;

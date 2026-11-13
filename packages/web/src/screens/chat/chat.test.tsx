@@ -6,6 +6,7 @@ import { EnvironmentContext } from '../../app/client';
 import { createFixtureClient, FIXTURE_NOW } from '../../fixtures';
 import { ToastProvider } from '../../ui/Toast';
 import { questionFor } from './Chat';
+import { AuthoredBy } from '../automations/Automations';
 import { DraftFacts, DryRunResult, LiveActivity, ModeDiffBody, toolLabel } from './Managed';
 
 const client = createFixtureClient({ now: FIXTURE_NOW });
@@ -88,6 +89,9 @@ describe('managed chat', () => {
     expect(markup).toContain('>Draft<');
     expect(markup).toContain('starts off');
     expect(markup).toContain('first push waits for your approval');
+    expect(markup).toContain('Check CI on main and summarise what broke.');
+    expect(markup).toContain('without isolation');
+    expect(markup).toContain('None: your account’s access');
     const saved = html(<DraftFacts draft={{ ...draft, automationId: 'aut_1' }} />);
     expect(saved).toContain('Saved, off');
   });
@@ -110,6 +114,13 @@ describe('managed chat', () => {
     expect(markup).toContain('then openai/gpt-5-mini if it is unavailable');
     expect(markup).toContain('Search saved notes');
     expect(markup).toContain('/Users/me/code/shop · Full access');
+  });
+
+  it('marks an automation a chat wrote, linking to the chat', () => {
+    const markup = html(<AuthoredBy by="chat ses_3" />);
+    expect(markup).toContain('Written by a chat');
+    expect(markup).toContain('href="#/m/chat/ses_3"');
+    expect(html(<AuthoredBy by={null} />)).toBe('');
   });
 
   it('finds the question an answer replies to', () => {

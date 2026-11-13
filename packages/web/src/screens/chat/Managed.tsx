@@ -186,6 +186,8 @@ export function DraftCard({ sessionId, draftId }: { sessionId: string; draftId: 
     setBusy('dry');
     try {
       setDry(await client.dryRunDraft(sessionId, draftId));
+      // Saving is open once this YAML has been dry-run.
+      setDraft({ ...draft, dryRunAt: new Date().toISOString() });
     } catch (e) {
       toast({ message: `Couldn’t check the draft. ${errorMessage(e)}`, tone: 'err' });
     } finally {
@@ -235,13 +237,17 @@ export function DraftCard({ sessionId, draftId }: { sessionId: string; draftId: 
             size="sm"
             icon={Save}
             busy={busy === 'save'}
-            disabled={busy !== null || !s}
+            disabled={busy !== null || !s || !draft.dryRunAt}
+            title={draft.dryRunAt ? undefined : 'Dry-run it first.'}
             onClick={save}
           >
             Save
           </Button>
         )}
       </div>
+      {!draft.automationId && !draft.dryRunAt && (
+        <p className="page-hint">Dry-run it before you save it.</p>
+      )}
       <Dialog
         open={showYaml}
         onClose={() => setShowYaml(false)}
@@ -297,10 +303,68 @@ export function DraftFacts({ draft }: { draft: ChatDraft }) {
                       .join(' · ')
                   : '',
             },
+            {
+              label: 'Push',
+              value: s.push
+                ? s.pushApproval === 'auto'
+                  ? 'Without asking, after the first'
+                  : 'Waits for your approval'
+                : 'Never',
+            },
+            {
+              label: 'Isolation',
+              value:
+                s.sandbox.profile === 'native'
+                  ? 'None: your account’s access'
+                  : `${s.sandbox.profile}, network ${
+                      s.sandbox.network === 'all'
+                        ? 'unlimited'
+                        : s.sandbox.network?.length
+                          ? s.sandbox.network.join(', ')
+                          : 'off'
+                    }`,
+            },
+            {
+              label: 'Access',
+              value: [
+                s.permissionMode,
+                s.allowedTools.length ? `tools ${s.allowedTools.join(', ')}` : null,
+              ]
+                .filter(Boolean)
+                .join(' · '),
+              mono: true,
+            },
+            {
+              label: 'Reads notes',
+              value: s.memoryRead.length
+                ? `${s.memoryRead.join(', ')}${s.memoryIncludeAgent ? ', with notes an agent wrote' : ''}`
+                : 'None',
+            },
           ]}
         />
       ) : (
         <p className="tone-text-err">{draft.problem}</p>
+      )}
+      {s && (
+        <>
+          <CodeBlock title="Prompt" code={s.prompt} maxHeight="sm" wrap copy={false} />
+          <CodeBlock
+            title="Gates"
+            code={s.gates.length ? s.gates.join('\n') : 'None'}
+            maxHeight="sm"
+            copy={false}
+          />
+          {s.warnings.length > 0 && (
+            <ul className="chat-checks" aria-label="Look at these before saving">
+              {s.warnings.map((w) => (
+                <li key={w}>
+                  <StatusTag tone="warn">Check</StatusTag>
+                  <span>{w}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
       <p className="page-hint">
         A saved automation starts off, and its first push waits for your approval.
@@ -347,6 +411,17 @@ const PERMISSION_LABELS: Record<ChatPermissionMode, string> = {
   acceptEdits: 'Full access',
   default: 'Ask before changes',
   plan: 'Read only',
+  sandboxed: 'Sandboxed',
+};
+
+const PERMISSION_HINTS: Record<ChatPermissionMode, string> = {
+  acceptEdits:
+    'The agent can do anything your account can, including drive OpenClerq itself. Pushing waits for you.',
+  default:
+    'Writes and commands wait for your approval. A command you approve has your account’s access.',
+  plan: 'The agent only reads the folder.',
+  sandboxed:
+    'Commands and file tools run sandboxed: writes only in this folder, no network, your credentials unreadable.',
 };
 
 /** Attach a folder to a managed conversation, or detach it. */
@@ -394,7 +469,7 @@ export function FolderDialog({
       open={open}
       onClose={onClose}
       title="Folder"
-      description="The agent reads, edits and runs commands in this folder. Without one it has no file or command tools."
+      description="The agent reads, edits and runs commands in this folder, with a home directory of its own. Without a folder it has no file or command tools. OpenClerq's own data folder cannot be attached."
       size="md"
       actions={
         <>
@@ -431,13 +506,15 @@ export function FolderDialog({
           label="Access"
           value={mode}
           onChange={(e) => setMode(e.target.value as ChatPermissionMode)}
-          hint="Pushing always waits for your approval."
+          hint={PERMISSION_HINTS[mode]}
         >
-          {(Object.keys(PERMISSION_LABELS) as ChatPermissionMode[]).map((m) => (
-            <option key={m} value={m}>
-              {PERMISSION_LABELS[m]}
-            </option>
-          ))}
+          {(Object.keys(PERMISSION_LABELS) as ChatPermissionMode[])
+            .filter((m) => m !== 'sandboxed' || session.sandboxAvailable || mode === 'sandboxed')
+            .map((m) => (
+              <option key={m} value={m}>
+                {PERMISSION_LABELS[m]}
+              </option>
+            ))}
         </Select>
       </div>
     </Dialog>

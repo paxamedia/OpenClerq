@@ -291,6 +291,7 @@ function AutomationDetail({ id, tab, base }: { id: string; tab: Tab; base: strin
         crumbs={[{ label: 'Automations', to: base }, { label: a.name }]}
         actions={
           <>
+            <AuthoredBy by={a.authoredBy} />
             <Switch
               checked={a.enabled}
               onChange={(on) => toggle(a, on)}
@@ -479,4 +480,22 @@ export function AutomationsScreen({ parts, base }: ModuleProps) {
   if (second === 'edit') return <AutomationEditor id={first} base={base} />;
   const tab: Tab = second === 'spec' || second === 'runs' ? second : 'overview';
   return <AutomationDetail id={first} tab={tab} base={base} />;
+}
+
+/**
+ * A spec a chat's model wrote says so beside the switch that turns it on,
+ * and links to the conversation. Read it before switching it on.
+ */
+export function AuthoredBy({ by }: { by?: string | null }) {
+  const session = by?.startsWith('chat ') ? by.slice(5) : null;
+  if (!session) return null;
+  return (
+    <a
+      className="aut-authored"
+      href={`#/m/chat/${encodeURIComponent(session)}`}
+      title="A model drafted this spec in a chat. Read it before you turn it on."
+    >
+      <StatusTag tone="warn">Written by a chat</StatusTag>
+    </a>
+  );
 }

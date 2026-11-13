@@ -211,3 +211,12 @@
     height: 50vh;
   }
 }
+
+.aut-authored {
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.aut-authored:hover {
+  color: var(--ink);
+}

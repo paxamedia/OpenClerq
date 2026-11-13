@@ -515,6 +515,7 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
           model: null,
           workspace: '/Users/me/code/shop',
           permissionMode: 'acceptEdits',
+          sandboxAvailable: true,
           createdAt: iso(now - 3 * H),
           updatedAt: iso(now - 3 * H),
           messageCount: 2,
@@ -582,9 +583,20 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         pushApproval: 'manual',
         maxUsdPerRun: 1,
         maxUsdPerMonth: null,
+        prompt: 'Check CI on main and summarise what broke.',
+        gates: [],
+        sandbox: { profile: 'native', network: null },
+        permissionMode: 'acceptEdits',
+        allowedTools: [],
+        memoryRead: [],
+        memoryIncludeAgent: false,
+        warnings: [
+          'It runs without isolation: the agent and the gates have your account’s access.',
+        ],
       },
       automationId: null,
       savedAt: null,
+      dryRunAt: null,
       createdAt: iso(now - 3 * H + 10_000),
     },
   ];
@@ -1230,8 +1242,10 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
       const d = drafts.find((x) => x.sessionId === id && x.id === draftId);
       return d ? ok(d) : Promise.reject(new Error('No draft with that id.'));
     },
-    dryRunDraft: (_id: string, draftId: string) =>
-      ok({
+    dryRunDraft: (_id: string, draftId: string) => {
+      const d = drafts.find((x) => x.id === draftId);
+      if (d) d.dryRunAt = iso(now);
+      return ok({
         draftId,
         nextRunAt: nextFirings('0 8 * * 1-5', 1, new Date(now))[0]?.toISOString() ?? null,
         nextFirings: nextFirings('0 8 * * 1-5', 10, new Date(now)).map((d) => d.toISOString()),
@@ -1257,7 +1271,8 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
           note: 'Average of the last 12 finished runs of claude-code.',
         },
         executed: false,
-      }),
+      });
+    },
     saveDraft: (_id: string, draftId: string) => {
       const d = drafts.find((x) => x.id === draftId);
       if (d) {
