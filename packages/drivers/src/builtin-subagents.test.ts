@@ -108,16 +108,31 @@ const done = (answer: string, extra: Partial<SubagentOutcome> = {}): SubagentOut
 });
 
 describe('which runs are offered sessions.spawn', () => {
+  it('is off unless asked for, and a wildcard, a risk or a group does not ask', () => {
+    expect(builtinPolicy().allow).not.toContain('sessions.spawn');
+    for (const tools of [['*'], ['risk:write'], ['group:sessions'], ['sessions.*']]) {
+      expect(evaluate(builtinPolicy('acceptEdits', tools), SPAWN_TOOL).decision, tools[0]).toBe(
+        'deny'
+      );
+    }
+    expect(builtinPolicy('acceptEdits', ['sessions.spawn']).allow).toEqual(['sessions.spawn']);
+    expect(builtinPolicy('acceptEdits', [], { subagents: true }).allow).toContain('sessions.spawn');
+    // Turned on, a tool list still narrows it away unless it matches.
+    expect(builtinPolicy('acceptEdits', ['group:fs'], { subagents: true }).allow).not.toContain(
+      'sessions.spawn'
+    );
+  });
+
   it('only a run that can start sub-agents, and only when its policy allows it', () => {
-    const rules = builtinPolicy();
+    const rules = builtinPolicy('acceptEdits', [], { subagents: true });
     expect(rules.allow).toContain('sessions.spawn');
     expect(offeredTools(rules).map((t) => t.name)).not.toContain('sessions.spawn');
     expect(offeredTools(rules, { spawn: true }).map((t) => t.name)).toContain('sessions.spawn');
     // Read-only modes and a tool list that does not name it leave it out.
     for (const narrow of [
-      builtinPolicy('plan'),
-      builtinPolicy('dontAsk'),
-      builtinPolicy('acceptEdits', ['group:fs']),
+      builtinPolicy('plan', [], { subagents: true }),
+      builtinPolicy('dontAsk', [], { subagents: true }),
+      builtinPolicy('acceptEdits', ['group:fs'], { subagents: true }),
     ]) {
       expect(offeredTools(narrow, { spawn: true }).map((t) => t.name)).not.toContain(
         'sessions.spawn'
@@ -127,7 +142,9 @@ describe('which runs are offered sessions.spawn', () => {
     expect(builtinPolicy('acceptEdits', ['sessions.spawn', 'fs.read']).allow).toContain(
       'sessions.spawn'
     );
-    expect(evaluate(builtinPolicy('default'), SPAWN_TOOL).decision).toBe('needs_approval');
+    expect(evaluate(builtinPolicy('default', [], { subagents: true }), SPAWN_TOOL).decision).toBe(
+      'needs_approval'
+    );
   });
 
   it('shows the tool to the model when the caller can start sub-agents', async () => {
@@ -167,19 +184,21 @@ describe("a sub-agent's policy", () => {
   it('is never wider than its parent, for every mode, tool list and request', () => {
     for (const mode of modes) {
       for (const tools of allowedTools) {
-        const parent = builtinPolicy(mode, tools);
-        for (const asked of requests) {
-          const child = subagentPolicy(parent, asked);
-          const where = `${mode} ${JSON.stringify(tools)} ${JSON.stringify(asked)}`;
-          expect(isNarrowerOrEqual(child, parent, BUILTIN_UNIVERSE), where).toBe(true);
-          // No sub-agent can start one of its own (depth 1), whatever it asks.
-          expect(evaluate(child, SPAWN_TOOL).decision, where).toBe('deny');
-          expect(child.maxCallsPerRun, where).toBe(parent.maxCallsPerRun);
-          // Narrowing a sub-agent's rules again never widens them either.
-          expect(
-            isNarrowerOrEqual(subagentPolicy(child, ['*']), child, BUILTIN_UNIVERSE),
-            where
-          ).toBe(true);
+        for (const subagents of [false, true]) {
+          const parent = builtinPolicy(mode, tools, { subagents });
+          for (const asked of requests) {
+            const child = subagentPolicy(parent, asked);
+            const where = `${mode} ${JSON.stringify(tools)} ${JSON.stringify(asked)}`;
+            expect(isNarrowerOrEqual(child, parent, BUILTIN_UNIVERSE), where).toBe(true);
+            // No sub-agent can start one of its own (depth 1), whatever it asks.
+            expect(evaluate(child, SPAWN_TOOL).decision, where).toBe('deny');
+            expect(child.maxCallsPerRun, where).toBe(parent.maxCallsPerRun);
+            // Narrowing a sub-agent's rules again never widens them either.
+            expect(
+              isNarrowerOrEqual(subagentPolicy(child, ['*']), child, BUILTIN_UNIVERSE),
+              where
+            ).toBe(true);
+          }
         }
       }
     }
@@ -237,7 +256,7 @@ describe('spawn calls', () => {
       tools: ['fs.read'],
       model: 'fake/priced',
     });
-    expect(seen[0].parentRules).toEqual(builtinPolicy());
+    expect(seen[0].parentRules).toEqual(builtinPolicy('acceptEdits', [], { subagents: true }));
     expect(seen[0].signal).toBeInstanceOf(AbortSignal);
     expect(seen[0].deadline).toBeGreaterThan(Date.now());
     const call = events.find((e) => e.type === 'tool_call');
@@ -269,7 +288,7 @@ describe('spawn calls', () => {
     expect(outs[1].output).toContain('no budget left');
   });
 
-  it('in one reply run at the same time, and their results come back in order', async () => {
+  it('in one reply run at the same time; each result is reported when it ends, the model gets them in order', async () => {
     let running = 0;
     let most = 0;
     const release: Array<() => void> = [];
@@ -306,8 +325,10 @@ describe('spawn calls', () => {
       id: string;
       output: string;
     }>;
-    expect(results.map((r) => r.id)).toEqual(['s1', 's2', 's3', 'r1']);
-    expect(results[1].output).toContain('answer to Two.');
+    // Reported as each ended (so its step and tool_calls row carry its own
+    // duration), not held back for the slowest.
+    expect(results.map((r) => r.id)).toEqual(['s3', 's1', 's2', 'r1']);
+    expect(results.find((r) => r.id === 's2')?.output).toContain('answer to Two.');
     // The calls' events: the three spawns first, as they started.
     expect(
       events.filter((e) => e.type === 'tool_call').map((e) => (e as { id: string }).id)
@@ -392,6 +413,38 @@ describe('a shared budget', () => {
     expect(p.holds.every((h) => h > 0)).toBe(true);
     expect(p.held.get('parent')).toBeCloseTo(0, 9);
     expect(p.spent.get('parent')).toBeCloseTo(0.002, 9);
+  });
+
+  it('releases a refused call as free, and keeps the hold of one cut off', async () => {
+    const p = pool();
+    const refused = (async () =>
+      ({
+        ok: false,
+        status: 400,
+        text: async () => 'bad request',
+      }) as Response) as unknown as typeof fetch;
+    await run(refused, { maxBudgetUsd: 100, sharedBudget: p.member('parent') });
+    expect(p.spent.get('parent')).toBe(0);
+    expect(p.held.get('parent')).toBeCloseTo(0, 9);
+
+    const q = pool();
+    const controller = new AbortController();
+    const hanging = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError'))
+        );
+        setTimeout(() => controller.abort(), 10);
+      })) as unknown as typeof fetch;
+    const { result } = await run(hanging, {
+      maxBudgetUsd: 100,
+      sharedBudget: q.member('parent'),
+      signal: controller.signal,
+    });
+    expect(result.cancelled).toBe(true);
+    // Nobody says what the cut-off call cost: what it held counts as spent.
+    expect(q.holds).toHaveLength(1);
+    expect(q.spent.get('parent')).toBeCloseTo(q.holds[0], 9);
   });
 
   it('stops before a call that what the others spent leaves no room for', async () => {

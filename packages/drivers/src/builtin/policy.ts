@@ -25,7 +25,7 @@ export type PermissionMode = NonNullable<DriverRunInput['permissionMode']>;
 export const BUILTIN_MAX_CALLS = 400;
 
 const READ = ['fs.read', 'fs.list', 'fs.search', 'git.status', 'git.diff'];
-const EVERYTHING = [...READ, 'fs.write', 'fs.edit', 'runtime.shell', 'git.push', SPAWN_TOOL.name];
+const EVERYTHING = [...READ, 'fs.write', 'fs.edit', 'runtime.shell', 'git.push'];
 
 /**
  * The rules for one run.
@@ -37,10 +37,15 @@ const EVERYTHING = [...READ, 'fs.write', 'fs.edit', 'runtime.shell', 'git.push',
  *
  * `allowedTools`, in policy-rule syntax (`fs.read`, `fs.*`, `group:fs`,
  * `risk:read`), narrows the allow list to what it names; a push still waits.
+ *
+ * `sessions.spawn` (sub-agents) is opt-in: allowed in `acceptEdits` and
+ * `default` only when `opts.subagents` is set or `allowedTools` names it
+ * outright. A wildcard, `risk:write` or `group:sessions` alone does not.
  */
 export function builtinPolicy(
   mode: PermissionMode = 'acceptEdits',
-  allowedTools: string[] = []
+  allowedTools: string[] = [],
+  opts: { subagents?: boolean } = {}
 ): PolicyRules {
   let allow: string[];
   let approvalRequired: string[] = ['git.push'];
@@ -57,6 +62,11 @@ export function builtinPolicy(
       allow = READ;
       approvalRequired = [];
       break;
+  }
+  const spawnWanted =
+    opts.subagents || allowedTools.some((rule) => rule.trim() === SPAWN_TOOL.name);
+  if (spawnWanted && (mode === 'acceptEdits' || mode === 'default')) {
+    allow = [...allow, SPAWN_TOOL.name];
   }
   if (allowedTools.length > 0) {
     allow = allow.filter((name) =>

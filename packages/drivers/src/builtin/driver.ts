@@ -377,7 +377,11 @@ async function* runLoop(
   );
   const signal = controller.signal;
 
-  const rules = input.policy ?? builtinPolicy(input.permissionMode, input.allowedTools);
+  const rules =
+    input.policy ??
+    builtinPolicy(input.permissionMode, input.allowedTools, {
+      subagents: Boolean(input.onSubagent),
+    });
   const budget = new RunBudget(rules);
   const tools = offeredTools(rules, { spawn: Boolean(input.onSubagent) });
   const byModelName = new Map<string, BuiltinTool>(tools.map((t) => [t.definition.name, t]));
@@ -520,6 +524,13 @@ async function* runLoop(
         },
       };
     } catch (e) {
+      // What a failed call cost, for a shared budget. A provider that answered
+      // with an error status generated nothing; a call cut off (cancelled, timed
+      // out, the connection lost) may have, and nobody says how much, so it
+      // keeps what it held.
+      const status = (e as { status?: unknown })?.status;
+      const refused = typeof status === 'number' && status >= 400;
+      cost = refused ? 0 : request.holdUsd;
       return {
         info: {
           purpose,
@@ -792,28 +803,63 @@ async function* runLoop(
 
   /**
    * Several tool calls at the same time: each one's call event as it starts,
-   * then, once all have ended, the rest of their events in the order the
-   * calls were made. Returns their outcomes, in that order.
+   * then each one's other events as they happen, so a call that ends early is
+   * reported (and timed) when it ends, not when the slowest does. Returns their
+   * outcomes in the order the calls were made, for the model.
    */
   async function* together(
     runs: Array<AsyncGenerator<DriverEvent, { output: string; isError: boolean }>>
   ): AsyncGenerator<DriverEvent, Array<{ output: string; isError: boolean }>> {
     const firsts = await Promise.all(runs.map((r) => r.next()));
     for (const first of firsts) if (!first.done) yield first.value;
-    const rests = await Promise.all(
-      runs.map(async (r, k) => {
-        const events: DriverEvent[] = [];
-        const first = firsts[k];
-        if (first.done) return { events, outcome: first.value };
+    const outcomes: Array<{ output: string; isError: boolean }> = new Array(runs.length);
+    const queue: DriverEvent[] = [];
+    let left = runs.length;
+    let failure: unknown;
+    let wake: (() => void) | undefined;
+    const notify = () => {
+      const w = wake;
+      wake = undefined;
+      w?.();
+    };
+    runs.forEach((r, k) => {
+      const first = firsts[k];
+      if (first.done) {
+        outcomes[k] = first.value;
+        left -= 1;
+        return;
+      }
+      void (async () => {
         for (;;) {
           const next = await r.next();
-          if (next.done) return { events, outcome: next.value };
-          events.push(next.value);
+          if (next.done) {
+            outcomes[k] = next.value;
+            return;
+          }
+          queue.push(next.value);
+          notify();
         }
-      })
-    );
-    for (const rest of rests) yield* rest.events;
-    return rests.map((r) => r.outcome);
+      })()
+        .catch((e: unknown) => {
+          failure ??= e;
+        })
+        .finally(() => {
+          left -= 1;
+          notify();
+        });
+    });
+    while (left > 0 || queue.length > 0) {
+      const next = queue.shift();
+      if (next) {
+        yield next;
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+      });
+    }
+    if (failure) throw failure;
+    return outcomes;
   }
 
   function redactValue(value: unknown): unknown {
