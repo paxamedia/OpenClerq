@@ -212,6 +212,27 @@ describe('native execution', () => {
     expect(r.timedOut).toBe(true);
   });
 
+  it('reports the process and its group as soon as it exists', async () => {
+    const seen: Array<{ pid: number; pgid: number }> = [];
+    const r = await exec(spec(), 'sh', ['-c', 'sleep 0.1'], {
+      onSpawn: (p) => seen.push(p),
+    });
+    expect(r.code).toBe(0);
+    expect(seen).toHaveLength(1);
+    // Spawned detached, so the process leads its own group.
+    expect(seen[0].pgid).toBe(seen[0].pid);
+    expect(seen[0].pid).toBeGreaterThan(1);
+  });
+
+  it('runs the command even when the onSpawn callback throws', async () => {
+    const r = await exec(spec(), 'echo', ['still ran'], {
+      onSpawn: () => {
+        throw new Error('bookkeeping failed');
+      },
+    });
+    expect(r.stdout.trim()).toBe('still ran');
+  });
+
   it('truncates output beyond the cap instead of buffering it all', async () => {
     const r = await exec({ ...spec(), limits: { maxOutputBytes: 512 } }, 'sh', [
       '-c',

@@ -135,6 +135,13 @@ export interface ExecOptions {
    * can be followed to the end; a single line is cut at maxLineBytes.
    */
   onLine?: (line: string, stream: 'stdout' | 'stderr') => void;
+  /**
+   * Called once, as soon as the process exists. `pid` leads its own process
+   * group, so `pgid` is the same number; a caller that records them can find
+   * and stop the group later, even if this process has died. Errors thrown
+   * here are swallowed: bookkeeping must not stop the command it describes.
+   */
+  onSpawn?: (process: { pid: number; pgid: number }) => void;
 }
 
 /** Variables a process needs to start and find its tools, and nothing else. */
@@ -491,6 +498,14 @@ export async function exec(
       cleanup?.();
       reject(new SandboxError(`Could not start sandbox: ${e instanceof Error ? e.message : e}`));
       return;
+    }
+
+    if (child.pid !== undefined) {
+      try {
+        options.onSpawn?.({ pid: child.pid, pgid: child.pid });
+      } catch {
+        /* bookkeeping must not stop the command */
+      }
     }
 
     let stdout = '';
