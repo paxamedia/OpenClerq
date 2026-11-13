@@ -85,8 +85,8 @@ import { checkModels, isSpecFault, judgeChain, keyAppliesTo, planModels } from '
 import { recordFallback } from '../routing.js';
 import { memoryBlock } from '../memory-context.js';
 import { SpendPool, subagentSpawner } from './subagents.js';
-import { isolationFor, profileProblem } from './isolation.js';
-import { pinWorktree, type Pin } from './pin.js';
+import { isolationFor, profileProblem, type RunIsolation } from './isolation.js';
+import { pinWorktree, WorktreeTampered, type Pin } from './pin.js';
 import {
   vaultCredentials,
   type CredentialPurpose,
@@ -502,6 +502,7 @@ async function execute(
   );
   let keepBranch = false;
   let pin: Pin | undefined;
+  let isolated: RunIsolation | undefined;
   try {
     setRunFields(runId, { branch });
     addRunStep(runId, {
@@ -526,7 +527,31 @@ async function execute(
     // profile for the agent, its commands and the gates.
     const gitDirs = await ws.gitDirs();
     const isolation = isolationFor(spec, gitDirs, { runId });
-    isolation.prepare();
+    isolated = isolation;
+    /**
+     * After an agent or a gate: stop what it left running (a process that
+     * left its group with setsid keeps writing otherwise), and fail the run if
+     * something will not stop, before any git of the gateway's runs.
+     */
+    const settle = async (after: string) => {
+      const q = await isolation.quiesce([ws.path, gitDirs.adminDir]);
+      if (q.stopped.length > 0 || q.warning) {
+        addRunStep(runId, {
+          kind: 'tool',
+          input: { name: 'process.stragglers', after },
+          output: {
+            ...(q.stopped.length
+              ? {
+                  stopped: q.stopped.map((p) => ({ pid: p.pid, command: p.command.slice(0, 200) })),
+                }
+              : {}),
+            ...(q.warning ? { note: q.warning } : {}),
+          },
+          status: 'warning',
+        });
+      }
+      if (q.problem) throw new WorktreeTampered(q.problem);
+    };
     // What the worktree is now: checked before every git command that follows
     // the agent or a gate (see pin.ts).
     const pinned = pinWorktree(gitDirs, ws.path);
@@ -628,7 +653,10 @@ async function execute(
                 ],
               }),
             }
-          : { sandbox: agentSandbox };
+          : {
+              sandbox: agentSandbox,
+              ...(isolation.stateHome ? { stateHome: isolation.stateHome } : {}),
+            };
         try {
           result = await guard(rules, TOOLS.agent, budget, () =>
             runAgent(
@@ -667,6 +695,7 @@ async function execute(
           );
           at += 1;
           // What the interrupted attempt got done is in the worktree for the next to build on.
+          await settle('agent');
           pinned.assert();
           attemptPrompt = (await ws.hasChanges()) ? interruptedPrompt(prompt) : prompt;
         }
@@ -674,8 +703,8 @@ async function execute(
 
       // One commit for the run: an escalated attempt's changes join the earlier
       // ones. Measured against the base, an attempt may also have undone them.
+      await settle('agent');
       pinned.assert();
-      if (level > 0) await git(['reset', '--soft', ws.baseSha], { cwd: ws.path, harden: true });
       if (!(await ws.hasChanges())) {
         setRunFields(runId, { exitReason: 'No changes: the agent left the repository as it was.' });
         return;
@@ -724,7 +753,8 @@ async function execute(
           { from: from ?? null, to: models[level], reason: e.message },
           { runId }
         );
-        // Back to the agent's commit: whatever the gates wrote is not its work.
+        // Back to the run's commit: whatever the gates wrote is not the agent's work.
+        await settle('gates');
         pinned.assert();
         await git(['reset', '--hard', 'HEAD'], { cwd: ws.path, harden: true });
         await git(['clean', '-fd'], { cwd: ws.path, harden: true });
@@ -733,6 +763,7 @@ async function execute(
     }
 
     // After the last gate, before anything is published.
+    await settle('gates');
     pinned.assert();
     if (secretInDiff) {
       addRunStep(runId, {
@@ -767,7 +798,11 @@ async function execute(
         secretInDiff ? policyFor(spec, true) : rules,
         TOOLS.push,
         budget,
-        () => pushBranch(ws, branch, forge, pushCredential?.token),
+        async () => {
+          // What was diffed and scanned is all that goes: the base plus the run's commit.
+          await ws.verifyHistory();
+          await pushBranch(ws, branch, forge, pushCredential?.token);
+        },
         async (verdict) => {
           setRunStatus(runId, 'awaiting_approval');
           const request = requestApproval({
@@ -846,7 +881,9 @@ async function execute(
     }
     setRunFields(runId, { prUrl, exitReason: `Published: ${prUrl ?? branch}` });
   } finally {
-    const tampered = pin?.problem();
+    // Nothing of the run may still be running while the gateway's git works here.
+    const leftover = await isolated?.quiesce([ws.path]).catch(() => undefined);
+    const tampered = pin?.problem() ?? leftover?.problem;
     if (tampered) {
       // No git in a worktree that is not what it was: a link put in its place
       // is removed (not followed), and the rest is left for a person to see.
@@ -863,6 +900,7 @@ async function execute(
         await git(['branch', '-D', branch], { cwd: ws.repoRoot, allowFailure: true, harden: true });
       }
     }
+    isolated?.cleanup();
   }
 }
 
@@ -878,6 +916,8 @@ function pullRequestBodyRedacted(
 export interface AgentExtras {
   /** The run's isolation for the agent (`isolationFor`). Absent: native. */
   sandbox?: SandboxOptions;
+  /** The CLI's state home for the run (`RunIsolation.stateHome`). */
+  stateHome?: string;
   onSubagent?: DriverRunInput['onSubagent'];
   sharedBudget?: SharedBudget;
   /** A sub-agent's rules, in place of those from the spec's permission mode and tools. */
@@ -925,6 +965,7 @@ export async function runAgent(
     maxBudgetUsd: attempt.maxBudgetUsd,
     timeoutMs: extras.timeoutMs ?? spec.sandbox.timeoutMs,
     sandbox: extras.sandbox ?? { profile: 'native' },
+    ...(extras.stateHome ? { stateHome: extras.stateHome } : {}),
     env: { PATH: deps.path() },
     secrets,
     signal,
@@ -1193,7 +1234,7 @@ async function verify(
   let files: DiffFile[] | undefined;
   for (const gate of spec.gates) {
     if (isAssertion(gate)) {
-      files ??= await diffFiles(ws.path, ws.baseSha);
+      files ??= await diffFiles(ws.path, ws.baseSha, ws.head);
       checkAssertion(gate, files, runId);
     } else {
       await guard(rules, TOOLS.gate, budget, () =>
@@ -1415,7 +1456,8 @@ async function pushBranch(
   forge: { forge: Forge; project: string } | null,
   token: string | undefined
 ): Promise<void> {
-  const refspec = `refs/heads/${branch}:refs/heads/${branch}`;
+  // The run's commit itself, not whatever the branch points at by now.
+  const refspec = `${ws.head ?? `refs/heads/${branch}`}:refs/heads/${branch}`;
   if (forge && token) {
     await git(['push', remoteTarget(forge.forge, forge.project).url, refspec], {
       cwd: ws.path,

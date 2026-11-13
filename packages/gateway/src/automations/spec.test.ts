@@ -3,6 +3,10 @@ import { parseRegistry } from '@clerq/providers';
 import { parseSpec, parseDuration, SpecError } from './spec.js';
 import { nextRunOf } from './scheduler.js';
 
+/** MINIMAL with a vault key for the agent, which a CLI needs under a sandbox profile. */
+const keyed = (source: string) =>
+  source.replace('driver: claude-code', 'driver: claude-code\n  api_key_secret: ANTHROPIC_KEY');
+
 const MINIMAL = `
 name: deps
 targets:
@@ -473,7 +477,7 @@ on:
 
   it('reads the seatbelt profile with its hosts, and limits the filesystem to the repo', () => {
     const spec = parseSpec(
-      MINIMAL.replace(
+      keyed(MINIMAL).replace(
         'profile: native',
         'profile: seatbelt\n  network: [Registry.npmjs.org, "*.github.com", "api.example.com:8443"]\n  timeout: 5m'
       )
@@ -486,8 +490,8 @@ on:
       explicit: true,
     });
     expect(
-      parseSpec(MINIMAL.replace('profile: native', 'profile: seatbelt\n  network: all')).sandbox
-        .network
+      parseSpec(keyed(MINIMAL).replace('profile: native', 'profile: seatbelt\n  network: all'))
+        .sandbox.network
     ).toBe('all');
   });
 
@@ -517,7 +521,16 @@ on:
     );
     expect(
       errorOf(MINIMAL.replace('profile: native', 'profile: container\n  image: agents:1')).message
-    ).toMatch(/cannot use this machine's sign-in.*"agent.api_key_secret"/);
+    ).toMatch(
+      /container profile, Claude Code does not use this machine's sign-in.*"agent.api_key_secret"/
+    );
+    // The same under seatbelt: the run never uses the user's own CLI state.
+    expect(errorOf(MINIMAL.replace('profile: native', 'profile: seatbelt')).message).toMatch(
+      /seatbelt profile, Claude Code does not use this machine's sign-in/
+    );
+    expect(
+      parseSpec(keyed(MINIMAL).replace('profile: native', 'profile: seatbelt')).sandbox.profile
+    ).toBe('seatbelt');
     const ok = parseSpec(
       MINIMAL.replace(
         'driver: claude-code',
@@ -526,7 +539,7 @@ on:
     );
     expect(ok.sandbox).toMatchObject({ profile: 'container', image: 'ghcr.io/acme/agents:1' });
     expect(
-      errorOf(MINIMAL.replace('profile: native', 'profile: seatbelt\n  image: x')).message
+      errorOf(keyed(MINIMAL).replace('profile: native', 'profile: seatbelt\n  image: x')).message
     ).toMatch(/container profile only/);
   });
 

@@ -289,9 +289,14 @@ export function parseNumstat(out: string): DiffFile[] {
 }
 
 /** The files a workspace's commits changed since `baseSha`. */
-export async function diffFiles(cwd: string, baseSha: string): Promise<DiffFile[]> {
+export async function diffFiles(
+  cwd: string,
+  baseSha: string,
+  /** The run's commit; HEAD when omitted. */
+  head = 'HEAD'
+): Promise<DiffFile[]> {
   // Hardened: the agent has written to this worktree (see HARDENED_GIT).
-  const r = await git(['diff', '--numstat', '-z', '-M', ...SAFE_DIFF, `${baseSha}..HEAD`], {
+  const r = await git(['diff', '--numstat', '-z', '-M', ...SAFE_DIFF, `${baseSha}..${head}`], {
     cwd,
     harden: true,
   });

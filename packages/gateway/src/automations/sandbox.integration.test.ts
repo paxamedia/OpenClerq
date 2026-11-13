@@ -185,6 +185,9 @@ beforeAll(async () => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-sbx-int-')));
   home = path.join(root, 'home');
   fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
+  // The user's own Claude Code state, which no run under a profile may touch.
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{"user":"own"}\n');
   fs.writeFileSync(path.join(home, '.ssh', 'id_test'), 'PRIVATE KEY');
   // The default workspace cache: inside ~/.clerq, which seatbelt denies.
   cacheDir = path.join(home, '.clerq', 'workspaces');
@@ -255,7 +258,11 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  secrets = { GITHUB_TOKEN: FORGE_TOKEN, GITLAB_TOKEN: LAB_TOKEN };
+  secrets = {
+    GITHUB_TOKEN: FORGE_TOKEN,
+    GITLAB_TOKEN: LAB_TOKEN,
+    ANTHROPIC_KEY: 'sk-ant-fake-key-for-sandbox-tests',
+  };
   delete process.env.FAKE_AGENT;
   delete process.env.CLERQ_CONTAINER_RUNTIME;
 });
@@ -267,6 +274,8 @@ function spec(name: string, repo: string, extra = ''): string {
     `  repos: [${repo}]`,
     'agent:',
     '  driver: claude-code',
+    // A vault key: under a profile the CLI never uses this machine's sign-in.
+    '  api_key_secret: ANTHROPIC_KEY',
     'prompt: Add a CHANGED.md file.',
     'gates:',
     '  - run: test -f CHANGED.md',
@@ -403,21 +412,22 @@ describe.skipIf(!isMac)('the seatbelt profile, end to end (macOS)', () => {
 try() { if sh -c "$1" >/dev/null 2>&1; then echo yes; else echo no; fi; }
 echo "changed" > CHANGED.md
 outside=$(try 'echo x > "${escape}"')
-ssh=$(try 'cat "$HOME/.ssh/id_test"')
+ssh=$(try 'cat "${home}/.ssh/id_test"')
 gitfile=$(try 'echo "gitdir: /tmp/evil" > .git')
 common=$(git rev-parse --git-common-dir)
 config=$(try "echo '[core]' >> '$common/config'")
 hook=$(try "echo evil > '$common/hooks/pre-push'")
 status=$(try 'git status --porcelain')
 commit=$(try 'git add -A && git -c user.name=a -c user.email=a@a commit -qm x')
-state=$(try 'echo s > "$HOME/.claude/todos/state"')
-settings=$(try 'echo {} > "$HOME/.claude/settings.json"')
-skill=$(try 'mkdir -p "$HOME/.claude/skills/x"')
+state=$(try 'mkdir -p "$HOME/.claude" && echo s > "$HOME/.claude/state"')
+runhome=$([ "$HOME" != "${home}" ] && [ "$CLAUDE_CONFIG_DIR" = "$HOME/.claude" ] && echo yes || echo no)
+settings=$(try 'echo {} > "${home}/.claude/settings.json"')
+skill=$(try 'mkdir -p "${home}/.claude/skills/x"')
 wt=$(pwd)
 swap=$(try "mv '$wt' '$wt.moved'")
-statedir=$(try 'mv "$HOME/.claude" "$HOME/.claude-old"')
+statedir=$(try 'mv "${home}/.claude" "${home}/.claude-old"')
 open=$(lsappinfo front 2>/dev/null | grep -q ASN && echo yes || echo no)
-echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"outside=$outside ssh=$ssh gitfile=$gitfile config=$config hook=$hook status=$status commit=$commit state=$state settings=$settings skill=$skill swap=$swap statedir=$statedir launchservices=$open proxy=\${HTTPS_PROXY:+set}\\",\\"total_cost_usd\\":0,\\"usage\\":{}}"
+echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"outside=$outside ssh=$ssh gitfile=$gitfile config=$config hook=$hook status=$status commit=$commit state=$state runhome=$runhome settings=$settings skill=$skill swap=$swap statedir=$statedir launchservices=$open proxy=\${HTTPS_PROXY:+set}\\",\\"total_cost_usd\\":0,\\"usage\\":{}}"
 `,
       { mode: 0o755 }
     );
@@ -443,10 +453,14 @@ echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,
       .map((s) => JSON.stringify(s.output))
       .join(' ');
     expect(summary).toContain(
-      'outside=no ssh=no gitfile=no config=no hook=no status=yes commit=no state=yes settings=no skill=no swap=no statedir=no launchservices=no proxy=set'
+      'outside=no ssh=no gitfile=no config=no hook=no status=yes commit=no state=yes runhome=yes settings=no skill=no swap=no statedir=no launchservices=no proxy=set'
     );
     expect(fs.existsSync(escape)).toBe(false);
     expect(fs.existsSync(path.join(root, 'gate-escaped.txt'))).toBe(false);
+    // The user's own Claude Code state is as it was.
+    expect(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).toBe(
+      '{"user":"own"}\n'
+    );
 
     const note = stepsNamed(run, 'sandbox')[0];
     expect(note.status).toBe('ok');
@@ -557,6 +571,75 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"done","tot
   }, 60_000);
 });
 
+describe.skipIf(!isMac)('what a run leaves running (macOS, seatbelt)', () => {
+  it('stops a process that left the group with setsid before the gateway commits', async () => {
+    fs.writeFileSync(
+      path.join(bin, 'claude-straggler'),
+      `#!/bin/sh
+[ "$1" = "--version" ] && { echo "9.9.9 (Claude Code)"; exit 0; }
+echo "changed" > CHANGED.md
+# Out of the process group, quiet, and writing into the worktree later.
+/usr/bin/perl -MPOSIX -e 'POSIX::setsid(); close STDOUT; close STDERR; close STDIN; sleep 3; open F, ">", "LATE.md"; print F "late\\n"; close F' &
+sleep 1
+echo '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0,"usage":{}}'
+`,
+      { mode: 0o755 }
+    );
+    process.env.FAKE_AGENT = 'claude-straggler';
+    const id = await create(
+      spec(
+        'straggler',
+        'github:acme/remote-app',
+        'sandbox:\n  profile: seatbelt\npublish:\n  push: false'
+      )
+    );
+    const run = await waitForRun(await start(id), finished);
+    expect(run.status, run.exitReason).toBe('done');
+    const step = stepsNamed(run, 'process.stragglers')[0];
+    expect(step?.output?.stopped).toEqual([
+      expect.objectContaining({ command: expect.stringContaining('perl') }),
+    ]);
+    await new Promise((r) => setTimeout(r, 3_500));
+    const diff = run.artifacts.find((a) => a.kind === 'diff');
+    const { body } = await json<{ content: string }>(`/runs/${run.id}/artifacts/${diff?.id}`);
+    expect(body.content).toContain('CHANGED.md');
+    expect(body.content).not.toContain('LATE.md');
+  }, 60_000);
+});
+
+describe('the run commit', () => {
+  it('pushes only the base plus the run commit, whatever merge the agent set up', async () => {
+    fs.writeFileSync(
+      path.join(bin, 'claude-merge'),
+      `#!/bin/sh
+[ "$1" = "--version" ] && { echo "9.9.9 (Claude Code)"; exit 0; }
+# A private commit the diff never shows, then planted as a merge parent.
+gd=$(git rev-parse --git-dir)
+echo "history nobody reviews" > hidden.txt
+git add hidden.txt
+tree=$(git write-tree)
+hidden=$(git -c user.name=a -c user.email=a@a commit-tree "$tree" -p HEAD -m private)
+git rm -q --cached hidden.txt && rm hidden.txt
+echo "$hidden" > "$gd/MERGE_HEAD"
+echo "$hidden" > "${root}/hidden-commit"
+echo "changed" > CHANGED.md
+echo '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0,"usage":{}}'
+`,
+      { mode: 0o755 }
+    );
+    process.env.FAKE_AGENT = 'claude-merge';
+    const id = await create(spec('merge-planted', 'github:acme/remote-app'));
+    const run = await approveAndFinish(await start(id));
+    expect(run.status, run.exitReason).toBe('done');
+    const branch = String(requests.at(-1)?.body.head);
+    const parents = sh(ghBare, 'rev-list', '--parents', '-n', '1', branch).split(' ');
+    expect(parents).toHaveLength(2);
+    const hidden = fs.readFileSync(path.join(root, 'hidden-commit'), 'utf8').trim();
+    expect(parents[1]).not.toBe(hidden);
+    expect(() => sh(ghBare, 'cat-file', '-e', hidden)).toThrow();
+  }, 60_000);
+});
+
 describe('the container profile, against a fake runtime', () => {
   it('runs the agent and the gates in named containers with the git directory read-only, and removes them', async () => {
     const calls = path.join(root, 'docker.calls');
@@ -594,7 +677,7 @@ exit 0
           'publish:',
           '  push: false',
         ].join('\n')
-      ).replace('driver: claude-code', 'driver: claude-code\n  api_key_secret: ANTHROPIC_KEY')
+      )
     );
     const run = await waitForRun(await start(id), finished);
     expect(run.status, run.exitReason).toBe('done');
@@ -654,7 +737,7 @@ exit 0
         'no-runtime',
         'github:acme/remote-app',
         'sandbox:\n  profile: container\n  image: fake-image'
-      ).replace('driver: claude-code', 'driver: claude-code\n  api_key_secret: ANTHROPIC_KEY')
+      )
     );
     const run = await waitForRun(await start(id), finished);
     expect(run.status).toBe('failed');

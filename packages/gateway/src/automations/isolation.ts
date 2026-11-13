@@ -4,11 +4,12 @@
  *
  * `native` (the default) is no isolation at all. Under `seatbelt` and
  * `container` the profile is the same for the agent, the builtin agent's
- * commands and the gates, except that only an agent CLI also reaches its
- * model provider and writes where it keeps its sign-in:
+ * commands and file tools, and the gates, except that only an agent CLI also
+ * reaches its model provider:
  *
  *   writes      the run's worktree; the worktree's own index in the git
- *               directory; (agent CLI, seatbelt) its sign-in and state
+ *               directory; (agent CLI) a state home of the run's own, never
+ *               the user's ~/.claude, ~/.codex or ~/.cursor
  *   read-only   the repository's git directory (history, config, hooks), and
  *               the pointer files that tell git where that directory is
  *   reads       seatbelt: the whole disk except known credential stores and
@@ -26,13 +27,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  DRIVER_CAPABILITIES,
-  agentStatePaths,
-  type DriverId,
-  type SandboxOptions,
-} from '@clerq/drivers';
-import { resolveRuntime } from '@clerq/sandbox';
+import { DRIVER_CAPABILITIES, type DriverId, type SandboxOptions } from '@clerq/drivers';
+import { resolveRuntime, stopStragglers, type Straggler } from '@clerq/sandbox';
 import type { GitDirs } from '@clerq/workspaces';
 import type { AutomationSpec } from './spec.js';
 
@@ -85,12 +81,20 @@ export interface RunIsolation {
   /** One line for the run's record: what the profile does. */
   note: string;
   /**
-   * Make what the profile needs to exist before anything runs: the agent CLI's
-   * writable state directories (seatbelt pins each writable directory, so it
-   * cannot be created from inside), and an empty `config.worktree` in the
-   * worktree's git entry (container: mounted read-only only if it exists).
+   * Under seatbelt: the directory an agent CLI keeps its state in for this
+   * run (`DriverRunInput.stateHome`), in place of the user's. Under container
+   * the CLI's HOME is the container's own /tmp. Native: undefined.
    */
-  prepare(): void;
+  stateHome?: string;
+  /**
+   * Stop what the run's commands left running: processes holding the run's
+   * tag file, or anything under `dirs` or the state home. `problem` says what
+   * could not be stopped (the run must end), `warning` what could not be
+   * checked.
+   */
+  quiesce(dirs: string[]): Promise<{ stopped: Straggler[]; problem?: string; warning?: string }>;
+  /** Remove the run's state home and tag file. */
+  cleanup(): void;
 }
 
 /** The network a command gets: the spec's hosts, plus `extra`, or none. */
@@ -114,13 +118,31 @@ export function isolationFor(
       note:
         'Unisolated: the agent and the gates run with your account’s access to files and the ' +
         'network (profile native, the default). Set sandbox.profile to seatbelt or container to limit them.',
-      prepare: () => undefined,
+      // Native promises nothing: the agent can run anything as the user anyway.
+      quiesce: async () => ({ stopped: [] }),
+      cleanup: () => undefined,
     };
   }
 
   const home = options.home ?? os.homedir();
+  // The run's own area, outside anything a sandbox may write: the tag file
+  // every command holds open, and (seatbelt) the CLI's state home, which is
+  // the one writable part of it.
+  const area = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-run-area-'));
+  fs.chmodSync(area, 0o700);
+  const tagFile = path.join(area, 'run.tag');
+  fs.writeFileSync(tagFile, '', { mode: 0o600 });
+  const stateHome = profile === 'seatbelt' ? path.join(area, 'home') : undefined;
+  if (stateHome) fs.mkdirSync(stateHome, { mode: 0o700 });
+  if (profile === 'container') {
+    // An empty one changes nothing (git reads it only with
+    // extensions.worktreeConfig), and existing, it is mounted read-only.
+    const file = path.join(dirs.adminDir, 'config.worktree');
+    if (!fs.existsSync(file)) fs.writeFileSync(file, '', { mode: 0o600 });
+  }
   const shared: SandboxOptions = {
     profile,
+    tagFile,
     // The history is readable, the worktree's own index writable, and nothing
     // the gateway's git later trusts can be changed from inside.
     readOnly: [dirs.commonDir],
@@ -143,33 +165,35 @@ export function isolationFor(
   };
 
   const gates: SandboxOptions = { ...shared, network: networkFor(spec, []) };
-  const agent = (driver: DriverId): SandboxOptions => {
-    const caps = DRIVER_CAPABILITIES[driver];
-    // In a container the CLI keeps its state in the container's own /tmp.
-    const state =
-      profile === 'seatbelt'
-        ? agentStatePaths(driver, home, options.env)
-        : { readDirs: [], writeDirs: [], writeFiles: [] };
+  const agent = (driver: DriverId): SandboxOptions => ({
+    ...shared,
+    // The CLI's state home of the run's (seatbelt; in a container, /tmp).
+    allowWrite: [...(shared.allowWrite ?? []), ...(stateHome ? [stateHome] : [])],
+    network: networkFor(spec, DRIVER_CAPABILITIES[driver].providerHosts),
+  });
+  const quiesce = async (watched: string[]) => {
+    const r = await stopStragglers({
+      tagFile,
+      dirs: [...watched, ...(stateHome ? [stateHome] : [])],
+    });
+    if (r === null) {
+      return {
+        stopped: [],
+        warning:
+          'Could not run lsof to look for processes the run left behind; the commit does not depend on it.',
+      };
+    }
     return {
-      ...shared,
-      // Its state directories readable; only the listed parts writable.
-      readOnly: [...(shared.readOnly ?? []), ...state.readDirs],
-      allowWrite: [...(shared.allowWrite ?? []), ...state.writeDirs],
-      ...(state.writeFiles.length > 0 ? { allowWritePrefix: state.writeFiles } : {}),
-      network: networkFor(spec, caps.providerHosts),
+      stopped: r.stopped,
+      ...(r.remaining.length > 0
+        ? {
+            problem: `Processes the run started would not stop: ${r.remaining
+              .map((p) => `${p.pid} (${p.command || 'unknown'})`)
+              .join(', ')
+              .slice(0, 500)}.`,
+          }
+        : {}),
     };
-  };
-  const prepare = () => {
-    if (profile === 'seatbelt') {
-      for (const dir of agentStatePaths(spec.agent.driver, home, options.env).writeDirs) {
-        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      }
-    }
-    if (profile === 'container') {
-      // An empty one changes nothing: git reads it only with extensions.worktreeConfig.
-      const file = path.join(dirs.adminDir, 'config.worktree');
-      if (!fs.existsSync(file)) fs.writeFileSync(file, '', { mode: 0o600 });
-    }
   };
 
   const hosts =
@@ -181,7 +205,9 @@ export function isolationFor(
   return {
     agent,
     gates,
-    prepare,
+    ...(stateHome ? { stateHome } : {}),
+    quiesce,
+    cleanup: () => fs.rmSync(area, { recursive: true, force: true }),
     note:
       `Isolated (profile ${profile}): writes only in the worktree, ` +
       `network to ${hosts}${spec.sandbox.network === 'all' ? '' : ' (and the agent CLI’s model provider)'}` +

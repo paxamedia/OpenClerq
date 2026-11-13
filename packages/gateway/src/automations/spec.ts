@@ -758,15 +758,15 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
     if (/\s/.test(image) || image.startsWith('-')) {
       r.fail(['sandbox', 'image'], `"${image}" is not an image name.`);
     }
-    // The CLI's sign-in on this machine (a keychain, a file in your home) is
-    // not in the container; it needs a key of its own.
-    if (driver !== 'builtin' && r.get(['agent', 'api_key_secret']) == null) {
-      r.fail(
-        ['sandbox', 'profile'],
-        `In a container, ${DRIVER_CAPABILITIES[driver].label} cannot use this machine's sign-in. ` +
-          `Store an API key in the vault and name it in "agent.api_key_secret".`
-      );
-    }
+  }
+  // Under a profile an agent CLI runs on a state home of the run's own, never
+  // the user's sign-in (keychain, ~/.claude, ~/.codex): it needs a key.
+  if (profile !== 'native' && driver !== 'builtin' && r.get(['agent', 'api_key_secret']) == null) {
+    r.fail(
+      ['sandbox', 'profile'],
+      `Under the ${profile} profile, ${DRIVER_CAPABILITIES[driver].label} does not use this machine's sign-in. ` +
+        `Store an API key in the vault and name it in "agent.api_key_secret".`
+    );
   }
   const sandbox: SandboxSettings = {
     profile,
