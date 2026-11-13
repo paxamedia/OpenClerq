@@ -186,6 +186,9 @@ export interface SpawnerContext {
   unavailable: Set<string>;
 }
 
+/** How long after the parent's deadline a sub-agent's own time limit runs out. */
+const BACKSTOP_MS = 5_000;
+
 /** Characters of a sub-agent's task used as its session's title. */
 const TITLE_CHARS = 80;
 
@@ -368,8 +371,10 @@ export function subagentSpawner(
               policy: rules,
               system: SUBAGENT_SYSTEM_PROMPT,
               sharedBudget: pool.member(runId),
-              // Within the parent's own time limit.
-              timeoutMs: Math.max(1_000, request.deadline - Date.now()),
+              // The parent's deadline stops it (through the parent's signal, as
+              // cancelled); its own limit, a little later, is only a backstop, so
+              // the two timers do not race.
+              timeoutMs: Math.max(1_000, request.deadline - Date.now()) + BACKSTOP_MS,
               approve: (r) =>
                 approveToolCall(r, spec, runId, signal, {
                   runId: ctx.parentRunId,

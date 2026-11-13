@@ -221,7 +221,7 @@ sub-agent needs; it does not see the conversation), optionally `tools` (policy n
   calls in flight hold (each call holds the most it may cost) and the call's own maximum. Their
   cost also counts toward the run's cost across attempts and the automation's month.
 - **Stops with the parent.** Cancelling the parent, its time limit, or the kill switch cancels its
-  sub-agents; a sub-agent's time limit is what the parent has left.
+  sub-agents (they end as cancelled); a sub-agent has no time beyond the parent's.
 - **Approvals.** A call that needs approval waits in the same inbox, on the sub-agent's run and
   naming the parent (`parentRunId`); the parent shows `awaiting_approval` meanwhile.
 - **Model.** A sub-agent that names a model uses it as named, with no fallback, and the call fails
