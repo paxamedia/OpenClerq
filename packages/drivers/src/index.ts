@@ -8,6 +8,8 @@
  * is OpenClerq's own tool loop, over any model in the provider registry.
  */
 
+import os from 'node:os';
+import path from 'node:path';
 import { claudeCode } from './claude-code.js';
 import { codex } from './codex.js';
 import { cursorAgent } from './cursor-agent.js';
@@ -67,6 +69,9 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
     midRunModelSwitch: false,
     subagents: false,
     apiKeyEnv: 'ANTHROPIC_API_KEY',
+    // The API, and the two sign-in hosts its OAuth token is refreshed through.
+    providerHosts: ['api.anthropic.com', 'console.anthropic.com', 'claude.ai'],
+    cliName: 'claude',
     label: 'Claude Code',
   },
   codex: {
@@ -77,6 +82,9 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
     midRunModelSwitch: false,
     subagents: false,
     apiKeyEnv: 'CODEX_API_KEY',
+    // The API, ChatGPT's backend for a ChatGPT sign-in, and its token refresh.
+    providerHosts: ['api.openai.com', 'chatgpt.com', 'auth.openai.com'],
+    cliName: 'codex',
     label: 'Codex',
   },
   'cursor-agent': {
@@ -87,6 +95,8 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
     midRunModelSwitch: false,
     subagents: false,
     apiKeyEnv: 'CURSOR_API_KEY',
+    providerHosts: ['api2.cursor.sh', '*.cursor.sh', 'api.cursor.com'],
+    cliName: 'cursor-agent',
     label: 'Cursor',
   },
   // Its cost is the registry price of each call; an unpriced cloud model with a
@@ -99,9 +109,45 @@ export const DRIVER_CAPABILITIES: Record<DriverId, DriverCapabilities> = {
     midRunModelSwitch: true,
     subagents: true,
     apiKeyEnv: BUILTIN_KEY_ENV,
+    // Its model calls are made by the gateway, outside the sandbox.
+    providerHosts: [],
     label: 'the builtin agent',
   },
 };
+
+/**
+ * Where an agent CLI keeps its sign-in and state on this machine: the
+ * directories it writes, and files it rewrites through a temporary sibling
+ * (`files` are prefixes: `~/.claude.json` covers `~/.claude.json.tmp.1`).
+ * Under the seatbelt profile they are the only places outside the worktree
+ * the agent may write: a CLI refreshes its sign-in there, and a copy would
+ * rotate the refresh token away from the user's own sign-in.
+ */
+export function agentStatePaths(
+  id: DriverId,
+  home = os.homedir(),
+  env: NodeJS.ProcessEnv = process.env
+): { dirs: string[]; files: string[] } {
+  const config = env.XDG_CONFIG_HOME || path.join(home, '.config');
+  switch (id) {
+    case 'claude-code':
+      return env.CLAUDE_CONFIG_DIR
+        ? { dirs: [env.CLAUDE_CONFIG_DIR], files: [] }
+        : {
+            dirs: [
+              path.join(home, '.claude'),
+              path.join(home, 'Library', 'Caches', 'claude-cli-nodejs'),
+            ],
+            files: [path.join(home, '.claude.json')],
+          };
+    case 'codex':
+      return { dirs: [env.CODEX_HOME || path.join(home, '.codex')], files: [] };
+    case 'cursor-agent':
+      return { dirs: [path.join(home, '.cursor'), path.join(config, 'cursor')], files: [] };
+    case 'builtin':
+      return { dirs: [], files: [] };
+  }
+}
 
 export function getDriver(id: string): Driver {
   switch (id) {

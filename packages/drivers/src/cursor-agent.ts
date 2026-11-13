@@ -26,6 +26,8 @@
 import type { ExecResult } from '@clerq/sandbox';
 import {
   apiErrorIn,
+  containerAvailability,
+  inContainer,
   capped,
   cliEnv,
   failed,
@@ -334,6 +336,7 @@ export function cursorAgent(options: CursorAgentOptions = {}): Driver {
     process.env.XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME } : {};
 
   async function detect(options: DetectOptions = {}): Promise<DriverAvailability> {
+    if (options.inContainer) return containerAvailability(ID, 'cursor-agent');
     const bin = find();
     if (!bin) {
       return {
@@ -399,7 +402,7 @@ export function cursorAgent(options: CursorAgentOptions = {}): Driver {
   }
 
   async function* run(input: DriverRunInput): AsyncIterable<DriverEvent> {
-    const bin = find();
+    const bin = inContainer(input) ? 'cursor-agent' : find();
     if (!bin) {
       const { reason } = await detect();
       yield failed(reason ?? "Cursor's CLI was not found.");

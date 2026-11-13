@@ -53,7 +53,34 @@ export interface DetectOptions {
    * would use says so, rather than run with a budget it cannot keep.
    */
   budget?: boolean;
+  /**
+   * The CLI runs inside a container image (the container profile), so the
+   * host's copy of it, its options and its sign-in are not what the run uses
+   * and are not checked. The image must provide the CLI.
+   */
+  inContainer?: boolean;
 }
+
+/**
+ * The isolation a driver runs its agent (and the builtin agent its commands)
+ * under: the sandbox settings that do not depend on the command.
+ */
+export type SandboxOptions = Pick<
+  SandboxSpec,
+  | 'profile'
+  | 'network'
+  | 'allowWrite'
+  | 'allowWritePrefix'
+  | 'readOnly'
+  | 'protect'
+  | 'denyRead'
+  | 'readOnlyCwd'
+  | 'image'
+  | 'containerName'
+  | 'labels'
+  | 'runtime'
+  | 'egressImage'
+>;
 
 /** A tool call the agent wants to make that policy says a person must approve. */
 export interface ToolApprovalRequest {
@@ -106,6 +133,12 @@ export interface SpawnedProcess {
   pgid: number;
   /** The CLI that was started, as a path. */
   command: string;
+  /**
+   * The container the command runs in, under the container profile. The pid is
+   * the runtime CLI's; stopping it does not stop the container, which is
+   * removed by name.
+   */
+  container?: { runtime: string; name: string };
 }
 
 /**
@@ -178,8 +211,11 @@ export interface DriverRunInput {
   maxBudgetUsd?: number;
   /** Wall-clock limit for the whole run. */
   timeoutMs?: number;
-  /** Isolation for the agent process. Defaults to the native profile. */
-  sandbox?: Pick<SandboxSpec, 'profile' | 'network' | 'allowWrite' | 'image'>;
+  /**
+   * Isolation for the agent process (for the builtin agent, for the commands
+   * it runs). Defaults to the native profile.
+   */
+  sandbox?: SandboxOptions;
   /** Plain environment variables, PATH among them. */
   env?: Record<string, string>;
   /** Environment variables redacted from everything the agent prints. */
@@ -339,6 +375,14 @@ export interface DriverCapabilities {
   subagents: boolean;
   /** The environment variable the CLI reads an API key from. */
   apiKeyEnv: string;
+  /**
+   * Hosts the agent process itself must reach to talk to its model provider
+   * (sign-in included), allowed under an egress allowlist on top of the
+   * spec's own hosts. Empty for builtin, whose model calls the gateway makes.
+   */
+  providerHosts: string[];
+  /** The CLI's name inside a container image, run from the image's PATH. */
+  cliName?: string;
   /** What the CLI is, in a sentence a user can read. */
   label: string;
 }

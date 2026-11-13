@@ -8,9 +8,20 @@
  */
 
 import type { ExecResult } from '@clerq/sandbox';
-import { apiErrorIn, capped, cliEnv, failed, num, probe, runCli } from './cli.js';
+import {
+  apiErrorIn,
+  capped,
+  cliEnv,
+  containerAvailability,
+  failed,
+  inContainer,
+  num,
+  probe,
+  runCli,
+} from './cli.js';
 import { locate } from './locate.js';
 import type {
+  DetectOptions,
   Driver,
   DriverAvailability,
   DriverEvent,
@@ -219,7 +230,8 @@ export function claudeCode(options: ClaudeCodeOptions = {}): Driver {
   const configured = options.bin ?? process.env.CLERQ_CLAUDE_BIN;
   const find = () => configured || locate('claude');
 
-  async function detect(): Promise<DriverAvailability> {
+  async function detect(options: DetectOptions = {}): Promise<DriverAvailability> {
+    if (options.inContainer) return containerAvailability(ID, 'claude');
     const bin = find();
     if (!bin) {
       return {
@@ -251,7 +263,7 @@ export function claudeCode(options: ClaudeCodeOptions = {}): Driver {
   }
 
   async function* run(input: DriverRunInput): AsyncIterable<DriverEvent> {
-    const bin = find();
+    const bin = inContainer(input) ? 'claude' : find();
     if (!bin) {
       const { reason } = await detect();
       yield failed(reason ?? 'Claude Code was not found.');
@@ -263,6 +275,11 @@ export function claudeCode(options: ClaudeCodeOptions = {}): Driver {
       DISABLE_AUTOUPDATER: '1',
     };
     if (process.env.CLAUDE_CONFIG_DIR) extra.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+    // Under an egress allowlist, telemetry and error reporting would only be
+    // refused at the proxy: the CLI is asked not to try.
+    if (Array.isArray(input.sandbox?.network) || input.sandbox?.network === 'none') {
+      extra.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
+    }
 
     yield* runCli({
       bin,

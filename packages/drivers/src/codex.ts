@@ -29,7 +29,9 @@ import {
   apiErrorIn,
   capped,
   cliEnv,
+  containerAvailability,
   failed,
+  inContainer,
   flagsOf,
   missingFlags,
   num,
@@ -56,13 +58,30 @@ export interface CodexOptions {
 export const CODEX_NOT_SIGNED_IN =
   'Codex is not signed in on this machine. Run `codex login` in a terminal, or store an API key in the vault and name it in agent.api_key_secret.';
 
-/** Codex's sandbox for each permission mode. Never the unrestricted one. */
-function sandboxFor(mode: DriverRunInput['permissionMode']): 'read-only' | 'workspace-write' {
+/** Whether the permission mode lets the agent change files. */
+function writes(mode: DriverRunInput['permissionMode']): boolean {
   // `acceptEdits` is the only mode that lets the agent change files. The rest
   // either ask first (which an unattended run cannot answer), plan, or allow
   // nothing beyond what was granted, and Codex's read-only sandbox is the
   // nearest of its three.
-  return (mode ?? 'acceptEdits') === 'acceptEdits' ? 'workspace-write' : 'read-only';
+  return (mode ?? 'acceptEdits') === 'acceptEdits';
+}
+
+/**
+ * Codex's sandbox for a run. Under the native profile, its own sandbox for the
+ * permission mode, never the unrestricted one. Under seatbelt or container,
+ * `danger-full-access`: Codex's sandbox on macOS is `sandbox-exec`, which
+ * cannot be applied inside another seatbelt profile, and inside a container
+ * its Linux sandbox needs kernel features the container does not grant. The
+ * outer profile is the boundary then, and a read-only mode makes the worktree
+ * read-only in it (see `run`).
+ */
+function sandboxFor(
+  input: Pick<DriverRunInput, 'permissionMode' | 'sandbox'>
+): 'read-only' | 'workspace-write' | 'danger-full-access' {
+  const outer = input.sandbox?.profile ?? 'native';
+  if (outer !== 'native') return 'danger-full-access';
+  return writes(input.permissionMode) ? 'workspace-write' : 'read-only';
 }
 
 /**
@@ -75,7 +94,7 @@ function sandboxFor(mode: DriverRunInput['permissionMode']): 'read-only' | 'work
  * files behind.
  */
 export function buildCodexArgs(input: DriverRunInput): string[] {
-  const sandbox = sandboxFor(input.permissionMode);
+  const sandbox = sandboxFor(input);
   const args = [
     'exec',
     '--json',
@@ -379,6 +398,7 @@ export function codex(options: CodexOptions = {}): Driver {
     process.env.CODEX_HOME ? { CODEX_HOME: process.env.CODEX_HOME } : {};
 
   async function detect(options: DetectOptions = {}): Promise<DriverAvailability> {
+    if (options.inContainer) return containerAvailability(ID, 'codex');
     const bin = find();
     if (!bin) {
       return {
@@ -446,16 +466,22 @@ export function codex(options: CodexOptions = {}): Driver {
   }
 
   async function* run(input: DriverRunInput): AsyncIterable<DriverEvent> {
-    const bin = find();
+    const bin = inContainer(input) ? 'codex' : find();
     if (!bin) {
       const { reason } = await detect();
       yield failed(reason ?? 'Codex was not found.');
       return;
     }
+    // With Codex's own sandbox off, a read-only mode is kept by the outer one.
+    const outer = input.sandbox?.profile ?? 'native';
+    const held =
+      outer !== 'native' && !writes(input.permissionMode)
+        ? { ...input, sandbox: { ...input.sandbox, profile: outer, readOnlyCwd: true } }
+        : input;
     yield* runCli({
       bin,
       args: buildCodexArgs(input),
-      input,
+      input: held,
       env: cliEnv(bin, input.env, home()),
       parser: new CodexStream(input.model, unsupported(input)),
     });

@@ -7,7 +7,7 @@
 
 import path from 'node:path';
 import { exec, type ExecResult, type SandboxSpec } from '@clerq/sandbox';
-import type { DriverEvent, DriverResult, DriverRunInput } from './types.js';
+import type { DriverAvailability, DriverEvent, DriverResult, DriverRunInput } from './types.js';
 
 /** Reads one CLI's output. */
 export interface EventParser {
@@ -42,6 +42,20 @@ export function apiErrorIn(lines: readonly string[]): string | undefined {
     if (PROVIDER.test(lines[i])) return lines[i].trim().slice(0, 500);
   }
   return undefined;
+}
+
+/** Whether the agent runs inside a container image, where the CLI is the image's own. */
+export function inContainer(input: Pick<DriverRunInput, 'sandbox'>): boolean {
+  return input.sandbox?.profile === 'container';
+}
+
+/**
+ * What `detect` says for a CLI that runs inside a container image: the host's
+ * copy is not the one used, so there is nothing here to check. A missing CLI
+ * in the image fails the run when it starts, saying so.
+ */
+export function containerAvailability(id: string, cliName: string): DriverAvailability {
+  return { id, available: true, path: cliName };
 }
 
 /** A finished event for a run that never got as far as starting the CLI. */
@@ -153,7 +167,9 @@ export async function* runCli(options: {
   env: Record<string, string>;
   parser: EventParser;
 }): AsyncIterable<DriverEvent> {
-  const { bin, args, input, env, parser } = options;
+  const { args, input, env, parser } = options;
+  // In a container the CLI is the image's own, found on the image's PATH.
+  const bin = options.bin;
 
   // Stops the process if the caller abandons the iteration early.
   const controller = new AbortController();
@@ -162,10 +178,8 @@ export async function* runCli(options: {
   else input.signal?.addEventListener('abort', forward, { once: true });
 
   const spec: SandboxSpec = {
+    ...input.sandbox,
     profile: input.sandbox?.profile ?? 'native',
-    network: input.sandbox?.network,
-    allowWrite: input.sandbox?.allowWrite,
-    image: input.sandbox?.image,
     cwd: input.cwd,
     env,
     secrets: input.secrets,

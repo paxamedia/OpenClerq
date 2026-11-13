@@ -16,9 +16,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ToolDescriptor } from '@clerq/policy';
-import { exec, resolveWithinRoot, type SandboxSpec } from '@clerq/sandbox';
+import { exec, resolveWithinRoot } from '@clerq/sandbox';
 import { truncateOutput, type ToolDefinition } from '@clerq/providers';
-import type { SpawnedProcess } from '../types.js';
+import type { SandboxOptions, SpawnedProcess } from '../types.js';
 
 export interface ToolContext {
   /** The worktree. Every path is relative to it. */
@@ -26,7 +26,8 @@ export interface ToolContext {
   signal: AbortSignal;
   /** Epoch ms after which nothing new may start. */
   deadline: number;
-  sandbox: Pick<SandboxSpec, 'profile' | 'network' | 'allowWrite' | 'image'>;
+  /** The run's isolation: every command runs under it, as the gates do. */
+  sandbox: SandboxOptions;
   /** Plain environment for commands: PATH and nothing secret. */
   env: Record<string, string>;
   /** A command a tool started, and a function to call when it has ended. */
@@ -136,10 +137,8 @@ async function command(
   try {
     const r = await exec(
       {
+        ...ctx.sandbox,
         profile: ctx.sandbox.profile ?? 'native',
-        network: ctx.sandbox.network,
-        allowWrite: ctx.sandbox.allowWrite,
-        image: ctx.sandbox.image,
         cwd: ctx.cwd,
         env: ctx.env,
         limits: { wallMs, maxOutputBytes: 1_048_576 },

@@ -377,7 +377,7 @@ export function buildSeatbeltProfile(
     ...writable.map((w) => `(allow file-write* (subpath ${sbplPath(w)}))`),
     ...(spec.allowWritePrefix ?? [])
       .map(canonical)
-      .map((p) => `(allow file-write* (regex ${sbplPrefix(p)}))`),
+      .map((p) => `(allow file-read* file-write* (regex ${sbplPrefix(p)}))`),
     '(allow file-write-data (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr"))',
     // Last, so nothing above re-opens them.
     ...protectedPaths.map((p) => `(deny file-write* (subpath ${sbplPath(p)}))`),
