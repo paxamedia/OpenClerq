@@ -242,7 +242,8 @@ The 0.5 `memory` table (one value per key) was rebuilt by store migration 16, wh
 across as a `fact` with its dates, so nothing is lost. `GET /memory`, `GET /memory/:key`,
 `POST /memory` and `DELETE /memory/:key` answer as before with the record's other fields added:
 `POST /memory` still sets one `fact` under a key, in place, and `DELETE /memory/:key` forgets every
-record under it. The records themselves are under `/memory/records`.
+record under it. The records themselves are under `/memory/records`. A key named `search`, `records`,
+`consolidate` or `policy` is reached with `GET /memory?key=`, since those words are paths.
 
 ### Automations
 
