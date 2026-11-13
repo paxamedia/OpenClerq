@@ -46,6 +46,12 @@ export interface AutomationSpec {
      * gates fail: `agent.model.escalate`.
      */
     escalate: string[];
+    /**
+     * Models to use instead, in order, when the one in use is unavailable (the
+     * provider is down, overloaded or rate limiting, or has no key):
+     * `agent.model.fallback`. Not for a run that was given a model by hand.
+     */
+    fallback: string[];
   };
   prompt: string;
   sandbox: { profile: 'native'; timeoutMs: number };
@@ -68,6 +74,8 @@ export interface AutomationSpec {
 export const MAX_RETRIES = 10;
 /** The most `agent.model.escalate` may list. */
 export const MAX_ESCALATIONS = 5;
+/** The most `agent.model.fallback` may list. */
+export const MAX_FALLBACKS = 5;
 
 export class SpecError extends Error {
   readonly code = 'invalid_spec';
@@ -91,12 +99,19 @@ const NOT_YET: Record<string, string> = {
   // Targets are one repository per automation in this release, and an
   // automation runs once at a time, so there is nothing to run in parallel.
   'targets.max_parallel': 'fleet runs across several repositories',
-  'agent.model.fallback': 'model fallback',
-  'agent.model.strategy': 'routing strategies',
+  'agent.model.strategy':
+    'routing strategies such as cost_aware, quality_first, race and consensus',
   'sandbox.network': 'network restriction',
   'sandbox.filesystem': 'filesystem restriction',
   'publish.notify': 'notifications',
   'approvals.secrets_access': 'secret-access approvals',
+};
+
+/** What to say after a refusal in NOT_YET, where there is something to do instead. */
+const NOT_YET_HINT: Record<string, string> = {
+  'agent.model.strategy':
+    'They are planned after 1.0. To use another model when one is unavailable, list it in ' +
+    '"agent.model.fallback"; to run a stronger one when a gate fails, list it in "agent.model.escalate".',
 };
 
 /** Parse "20m", "90s", "2h", "500ms", or a number of seconds. */
@@ -177,7 +192,11 @@ class Reader {
       const key = isScalar(pair.key) ? String(pair.key.value) : String(pair.key);
       const full = [...path, key].join('.');
       if (NOT_YET[full]) {
-        this.failAt(pair.key, `"${full}" (${NOT_YET[full]}) is not supported in this release.`);
+        this.failAt(
+          pair.key,
+          `"${full}" (${NOT_YET[full]}) is not supported in this release.` +
+            (NOT_YET_HINT[full] ? ` ${NOT_YET_HINT[full]}` : '')
+        );
       }
       if (!known.includes(key)) {
         this.failAt(pair.key, `Unknown key "${full}".`);
@@ -323,9 +342,10 @@ export function parseSpec(source: string): AutomationSpec {
   const caps = DRIVER_CAPABILITIES[driver];
   let model: string | undefined;
   let escalate: string[] = [];
+  let fallback: string[] = [];
   const rawModel = r.get(['agent', 'model']);
   if (rawModel !== undefined && rawModel !== null && typeof rawModel === 'object') {
-    r.keys(['agent', 'model'], ['primary', 'escalate']);
+    r.keys(['agent', 'model'], ['primary', 'escalate', 'fallback']);
     model =
       driver === 'builtin'
         ? r.text(['agent', 'model', 'primary'], true)
@@ -366,6 +386,42 @@ export function parseSpec(source: string): AutomationSpec {
         }
       });
     }
+    const alternatives = r.get(['agent', 'model', 'fallback']);
+    if (alternatives !== undefined && alternatives !== null) {
+      if (!Array.isArray(alternatives) || alternatives.length === 0) {
+        r.fail(
+          ['agent', 'model', 'fallback'],
+          '"agent.model.fallback" must list one or more models, e.g. [openai/gpt-5-mini].'
+        );
+      }
+      if (alternatives.length > MAX_FALLBACKS) {
+        r.fail(
+          ['agent', 'model', 'fallback', MAX_FALLBACKS],
+          `"agent.model.fallback" may list at most ${MAX_FALLBACKS} models.`
+        );
+      }
+      fallback = alternatives.map((m, i) => {
+        if (typeof m !== 'string' || !m.trim()) {
+          r.fail(['agent', 'model', 'fallback', i], 'Each fallback model must be a model name.');
+        }
+        return m.trim();
+      });
+      // The model is passed to the CLI as it is, so it must take one.
+      if (!caps.models) {
+        r.fail(
+          ['agent', 'model', 'fallback'],
+          `"agent.model.fallback" is not supported by the ${driver} driver: ${caps.label}'s CLI cannot be told which model to use.`
+        );
+      }
+      fallback.forEach((m, i) => {
+        if (m === model || fallback.indexOf(m) !== i) {
+          r.fail(
+            ['agent', 'model', 'fallback', i],
+            `"${m}" is already ${m === model ? 'the primary model' : 'listed'}; fallback needs a different model at each step.`
+          );
+        }
+      });
+    }
   } else {
     model = r.text(['agent', 'model']);
   }
@@ -390,6 +446,7 @@ export function parseSpec(source: string): AutomationSpec {
     };
     qualified(model, modelPath);
     escalate.forEach((m, i) => qualified(m, ['agent', 'model', 'escalate', i]));
+    fallback.forEach((m, i) => qualified(m, ['agent', 'model', 'fallback', i]));
   }
   const allowedTools = r.get(['agent', 'allowed_tools']) ?? [];
   if (
@@ -512,6 +569,7 @@ export function parseSpec(source: string): AutomationSpec {
         ? { apiKeySecret: r.secretName(['agent', 'api_key_secret']) }
         : {}),
       escalate,
+      fallback,
     },
     prompt,
     sandbox: { profile: 'native', timeoutMs: r.duration(['sandbox', 'timeout'], 20 * 60_000) },

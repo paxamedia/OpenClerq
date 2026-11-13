@@ -107,6 +107,16 @@ providers:
         outputPerM: 2
       - id: unpriced
         context: 200000
+  - id: other
+    label: Other
+    adapter: openai-compat
+    baseUrl: https://other.invalid/v1
+    authEnv: FAKE_OTHER_KEY
+    models:
+      - id: m
+        context: 200000
+        inputPerM: 1
+        outputPerM: 2
 `);
 let modelReplies: Array<Array<Record<string, unknown>>> = [];
 const modelRequests: Array<{ key?: string; body: Record<string, unknown> }> = [];
@@ -818,6 +828,97 @@ describe('builtin driver', () => {
     expect(out.body.checks.map((c) => c.message).join('\n')).toMatch(
       /When a gate fails, the agent runs again with fake\/unpriced/
     );
+  });
+
+  it('previews fallback models: an unpriced one under a dollar budget is an error, an unusable one a warning', async () => {
+    type Checks = { ready: boolean; checks: Array<{ level: string; message: string }> };
+    const preview = (agent: string, extra = '') =>
+      json<Checks>('/automations/preview', {
+        method: 'POST',
+        body: JSON.stringify({ spec: builtinSpec('builtin-fallback', agent, extra) }),
+      });
+
+    const unpriced = await preview(
+      '  model:\n    primary: fake/priced\n    fallback: [fake/unpriced]\n',
+      'budget:\n  max_usd_per_run: 2'
+    );
+    expect(unpriced.body.ready).toBe(false);
+    expect(unpriced.body.checks.filter((c) => c.level === 'error').map((c) => c.message)).toEqual([
+      expect.stringMatching(/^Fallback model fake\/unpriced: .*has no price/),
+    ]);
+
+    // Without a dollar budget the same model is fine; one with no key is only skipped when needed.
+    delete process.env.FAKE_OTHER_KEY;
+    const unusable = await preview(
+      '  model:\n    primary: fake/priced\n    fallback: [fake/unpriced, other/m]\n'
+    );
+    expect(unusable.body.ready).toBe(true);
+    expect(unusable.body.checks.filter((c) => c.level === 'error')).toEqual([]);
+    const text = unusable.body.checks.map((c) => `${c.level}: ${c.message}`).join('\n');
+    expect(text).toMatch(/warning: Fallback model other\/m: Other needs FAKE_OTHER_KEY/);
+    expect(text).toMatch(
+      /ok: When the model in use is unavailable .*fake\/unpriced, then other\/m/
+    );
+    expect(text).toMatch(/never falls back/);
+
+    // A primary without its key starts the run with the fallback instead.
+    delete process.env.FAKE_AUTOMATION_MODEL_KEY;
+    process.env.FAKE_OTHER_KEY = 'k';
+    const moved = await preview('  model:\n    primary: fake/priced\n    fallback: [other/m]\n');
+    expect(moved.body.ready).toBe(true);
+    expect(moved.body.checks.map((c) => c.message).join('\n')).toMatch(
+      /fake\/priced is unavailable \(Fake needs FAKE_AUTOMATION_MODEL_KEY.*a run would start with other\/m/
+    );
+  });
+
+  it('refuses a routing strategy with a plain reason, by line', async () => {
+    const bad = await save(
+      builtinSpec(
+        'builtin-strategy',
+        '  model:\n    primary: fake/priced\n    strategy: cost_aware\n'
+      )
+    );
+    expect(bad.status).toBe(400);
+    expect(bad.body).toMatchObject({ error: 'invalid_spec', line: 8 });
+    expect(bad.body.message).toMatch(
+      /"agent.model.strategy".*planned after 1\.0.*"agent.model.fallback"/
+    );
+  });
+
+  it('runs with a model named for the run, used as chosen', async () => {
+    const id = await create('run-with-model');
+    const refused = await json<{ error: string; message: string }>(`/automations/${id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ model: 7 }),
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toBe('invalid_model');
+
+    const { status, body } = await json<{ runId: string }>(`/automations/${id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ model: 'opus' }),
+    });
+    expect(status).toBe(202);
+    const run = await waitForRun(
+      body.runId,
+      (r) => r.status === 'awaiting_approval' || finished(r)
+    );
+    expect(lastAgentInput?.model).toBe('opus');
+    expect((run as RunView & { modelOverride?: string }).modelOverride).toBe('opus');
+    await json(`/runs/${body.runId}/cancel`, { method: 'POST' });
+  });
+
+  it('refuses a model without its provider for the builtin agent, naming what is missing', async () => {
+    const saved = await save(builtinSpec('builtin-run-model', '  model: fake/priced\n'));
+    const res = await json<{ error: string; message: string }>(
+      `/automations/${saved.body.id}/run`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ model: 'priced' }),
+      }
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/must name the provider too, as provider\/model/);
   });
 
   it('runs the tool loop in the worktree and records each model call, tool call and its cost', async () => {

@@ -71,6 +71,7 @@ function columnsOf(spec: AutomationSpec) {
     model_policy: JSON.stringify({
       model: spec.agent.model ?? null,
       ...(spec.agent.escalate.length ? { escalate: spec.agent.escalate } : {}),
+      ...(spec.agent.fallback.length ? { fallback: spec.agent.fallback } : {}),
     }),
     sandbox_profile: spec.sandbox.profile,
     budget: JSON.stringify(spec.budget),

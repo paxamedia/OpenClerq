@@ -187,6 +187,11 @@ export interface EnqueueOptions {
   ifBusy: 'refuse' | 'once';
   /** A step to record on the run as it is queued, e.g. that it catches up a missed slot. */
   note?: { name: string; [key: string]: unknown };
+  /**
+   * A model a person named for this run. It is used as chosen, in place of the
+   * spec's primary model, and the run never falls back to another.
+   */
+  model?: string;
 }
 
 /**
@@ -247,6 +252,7 @@ export function queueRunRow(
     input: spec.prompt,
     status: 'queued',
     repoId: ensureLocalRepo(spec.repo.path),
+    modelOverride: opts.model,
   });
   if (opts.note) {
     const { name, ...rest } = opts.note;
@@ -264,9 +270,10 @@ export function queueRunRow(
 export function startAutomationRun(
   automation: Automation,
   trigger: 'schedule' | 'manual',
-  d: RunnerDeps
+  d: RunnerDeps,
+  opts: { model?: string } = {}
 ): { runId: string; queued: boolean; done: Promise<void> } {
-  return enqueueAutomationRun(automation, trigger, d, { ifBusy: 'refuse' }) as {
+  return enqueueAutomationRun(automation, trigger, d, { ifBusy: 'refuse', ...opts }) as {
     runId: string;
     queued: boolean;
     done: Promise<void>;

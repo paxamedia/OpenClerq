@@ -61,6 +61,8 @@ import { watchProcess } from '../agent-processes.js';
 import { isAssertion, type AutomationSpec, type GateSpec } from './spec.js';
 import { diffFiles, evaluateAssertion, type DiffFile } from './diff-assert.js';
 import { retryPlan, transientCause, TransientFailure } from './retry.js';
+import { checkModels, judgeChain, keyAppliesTo, planModels } from './model-chain.js';
+import { recordFallback } from '../routing.js';
 import {
   ensureLocalRepo,
   expandHome,
@@ -132,10 +134,11 @@ export function policyFor(spec: AutomationSpec, firstPush: boolean): PolicyRules
   return {
     allow,
     approvalRequired: manual ? [TOOLS.push.name] : [],
-    // Exactly the actions a run consists of: per attempt of the agent (one,
-    // plus one per escalation) the agent, a commit and the gate commands;
-    // then the push and the PR.
-    maxCallsPerRun: (spec.agent.escalate.length + 1) * (commands + 2) + 2,
+    // The most actions a run consists of: for each attempt of the agent (one,
+    // plus one per escalation) the agent (again for each fallback model a CLI
+    // is started with), a commit and the gate commands; then the push and the PR.
+    maxCallsPerRun:
+      (spec.agent.escalate.length + 1) * (spec.agent.fallback.length + 1 + commands + 1) + 2,
   };
 }
 
@@ -270,39 +273,40 @@ async function execute(
   const budget = new RunBudget(rules);
 
   const driver = (deps.driverFor ?? defaultDriver)(spec.agent.driver);
-  // A key from the vault stands in for the CLI's own sign-in, so it is not checked.
-  const availability = await driver.detect({
-    apiKey: Boolean(spec.agent.apiKeySecret),
-    permissionMode: spec.agent.permissionMode,
-    model: spec.agent.model,
-    budget: hasBudget(spec),
-  });
-  addRunStep(runId, {
-    kind: 'tool',
-    input: { name: 'driver.detect', driver: driver.id },
-    output: availability,
-    status: availability.available ? 'ok' : 'error',
-  });
-  if (!availability.available)
-    throw new Error(availability.reason ?? `${driver.id} is unavailable.`);
-  // Every model the run may escalate to is checked now, so a run does not
-  // spend on the first model and then find it cannot go on.
-  for (const model of spec.agent.escalate) {
-    const next = await driver.detect({
-      apiKey: Boolean(spec.agent.apiKeySecret),
-      permissionMode: spec.agent.permissionMode,
-      model,
-      budget: hasBudget(spec),
-    });
+  // The models of this run: the spec's, or the one a person named for it (which
+  // is used as chosen, never replaced by a fallback).
+  const chosen = modelChosenFor(runId);
+  const plan = planModels(spec, chosen);
+  // Every model is checked before the run does any work, so it does not spend
+  // on the first model and then find it cannot go on. A key from the vault
+  // stands in for the CLI's own sign-in, so it is not checked.
+  const checks = await checkModels(driver, spec, plan, hasBudget(spec), (check) =>
     addRunStep(runId, {
       kind: 'tool',
-      input: { name: 'driver.detect', driver: driver.id, model, for: 'escalation' },
-      output: next,
-      status: next.available ? 'ok' : 'error',
-    });
-    if (!next.available) {
-      throw new Error(`Escalation model ${model}: ${next.reason ?? 'unavailable.'}`);
-    }
+      input: {
+        name: 'driver.detect',
+        driver: driver.id,
+        ...(check.role === 'primary' && !chosen
+          ? {}
+          : { model: check.model, for: check.role === 'primary' ? 'chosen' : check.role }),
+      },
+      output: check.availability,
+      // A fallback model that cannot be used now is skipped when its turn comes.
+      status: check.availability.available
+        ? 'ok'
+        : check.role === 'fallback' && !check.availability.unpriced
+          ? 'warning'
+          : 'error',
+    })
+  );
+  const verdict = judgeChain(plan, checks);
+  if (verdict.errors.length > 0) throw new Error(verdict.errors[0]);
+  const unavailable = new Set<string>();
+  if (verdict.movedOff) {
+    // The primary cannot be used (no key, say): the run starts with a fallback.
+    const { from, to, reason } = verdict.movedOff;
+    if (from) unavailable.add(from);
+    recordFallback({ from, to, reason, scope: 'automation' }, { runId });
   }
 
   let apiKey: Record<string, string> | undefined;
@@ -389,34 +393,81 @@ async function execute(
 
     // The agent, then the gates; when they fail and the spec lists models to
     // escalate to, the agent again with the next one, in the same worktree.
-    const models = [spec.agent.model, ...spec.agent.escalate];
+    // When the model in use is unavailable the agent moves to the next fallback
+    // model: the builtin agent in the middle of its run, a CLI by starting
+    // again with the next model.
+    const models: Array<string | undefined> = [verdict.start, ...plan.escalate];
     const inUse = { ...apiKey, ...(token ? { FORGE_TOKEN: token } : {}) };
+    const switchesModels = DRIVER_CAPABILITIES[spec.agent.driver].midRunModelSwitch;
+    // The models whose attempt ended at the gates: not used as a fallback later.
+    const tried = new Set<string>();
+    const used: { model?: string } = {};
     let level = 0;
     let prompt = spec.prompt;
     let result: DriverResult;
     let title: string;
     let stat: Awaited<ReturnType<Workspace['diffStat']>>;
     for (;;) {
-      const maxBudgetUsd = checkBudgets(automation, spec, runId);
-      setRunStatus(runId, 'executing');
-      // The agent leads its own process group, so it would outlive a gateway that
-      // crashes. Recording it lets the next gateway find it and stop it.
-      const agentProcess = watchProcess(runId, 'agent');
-      const attempt = { model: models[level], prompt, maxBudgetUsd };
-      result = await guard(rules, TOOLS.agent, budget, () =>
-        runAgent(
-          driver,
-          spec,
-          attempt,
-          ws,
-          runId,
-          signal,
-          deps,
-          apiKey,
-          agentProcess.onSpawn,
-          inUse
-        ).finally(agentProcess.done)
-      );
+      const candidates = fallbackCandidates(models[level], plan.fallback, tried, unavailable);
+      let at = 0;
+      let attemptPrompt = prompt;
+      for (;;) {
+        const maxBudgetUsd = checkBudgets(automation, spec, runId);
+        setRunStatus(runId, 'executing');
+        // The agent leads its own process group, so it would outlive a gateway that
+        // crashes. Recording it lets the next gateway find it and stop it.
+        const agentProcess = watchProcess(runId, 'agent');
+        const model = candidates[at];
+        used.model = model;
+        const after = candidates.slice(at + 1).filter((m): m is string => m !== undefined);
+        const attempt = {
+          model,
+          prompt: attemptPrompt,
+          maxBudgetUsd,
+          ...(switchesModels && after.length > 0 ? { fallbackModels: after } : {}),
+        };
+        // A key from the vault is for the provider of the model it was given for.
+        const secrets = keyAppliesTo(spec, plan, model) ? apiKey : undefined;
+        try {
+          result = await guard(rules, TOOLS.agent, budget, () =>
+            runAgent(
+              driver,
+              spec,
+              attempt,
+              ws,
+              runId,
+              signal,
+              deps,
+              secrets,
+              agentProcess.onSpawn,
+              inUse,
+              used
+            ).finally(agentProcess.done)
+          );
+          break;
+        } catch (e) {
+          // Only the model being unavailable moves a CLI run on to the next
+          // model; the builtin agent moves itself, and has run out by now.
+          const next = candidates[at + 1];
+          if (
+            switchesModels ||
+            at + 1 >= candidates.length ||
+            !(e instanceof TransientFailure) ||
+            e.kind !== 'provider_unavailable' ||
+            signal.aborted
+          ) {
+            throw e;
+          }
+          if (model) unavailable.add(model);
+          recordFallback(
+            { from: model, to: next as string, reason: e.message, scope: 'automation' },
+            { runId }
+          );
+          at += 1;
+          // What the interrupted attempt got done is in the worktree for the next to build on.
+          attemptPrompt = (await ws.hasChanges()) ? interruptedPrompt(prompt) : prompt;
+        }
+      }
 
       // One commit for the run: an escalated attempt's changes join the earlier
       // ones. Measured against the base, an attempt may also have undone them.
@@ -444,16 +495,19 @@ async function execute(
         break;
       } catch (e) {
         if (!(e instanceof GateFailed) || level + 1 >= models.length) throw e;
+        // The model that did this attempt's work is the one that failed the gates.
+        const from = used.model ?? models[level];
+        if (from) tried.add(from);
         level += 1;
         addRunStep(runId, {
           kind: 'tool',
           input: { name: 'agent.escalate', escalation: level, model: models[level] },
-          output: { from: models[level - 1] ?? 'default', after: e.message },
+          output: { from: from ?? 'default', after: e.message },
           status: 'warning',
         });
         emit(
           'model.escalated',
-          { from: models[level - 1] ?? null, to: models[level], reason: e.message },
+          { from: from ?? null, to: models[level], reason: e.message },
           { runId }
         );
         // Back to the agent's commit: whatever the gates wrote is not its work.
@@ -531,7 +585,10 @@ async function execute(
             forge: 'github',
             project: project as string,
             title,
-            body: pullRequestBody(spec, runId, result, stat, models[level]),
+            body: pullRequestBody(spec, runId, result, stat, {
+              escalatedTo: level > 0 ? models[level] : undefined,
+              usedModel: used.model !== models[level] ? used.model : undefined,
+            }),
             head: branch,
             base: baseBranch,
             draft: true,
@@ -561,7 +618,7 @@ async function execute(
 async function runAgent(
   driver: Driver,
   spec: AutomationSpec,
-  attempt: { model?: string; prompt: string; maxBudgetUsd?: number },
+  attempt: { model?: string; prompt: string; maxBudgetUsd?: number; fallbackModels?: string[] },
   ws: Workspace,
   runId: string,
   signal: AbortSignal,
@@ -569,7 +626,9 @@ async function runAgent(
   secrets: Record<string, string> | undefined,
   onSpawn: DriverRunInput['onSpawn'],
   /** Vault values this run uses, taken out of everything it stores. */
-  inUse: Record<string, string>
+  inUse: Record<string, string>,
+  /** The model doing the work, kept current as the driver moves between models. */
+  used: { model?: string }
 ): Promise<DriverResult> {
   const pending = new Map<string, { seq: number; row: number; started: number }>();
   const log: string[] = [];
@@ -584,6 +643,7 @@ async function runAgent(
     prompt: attempt.prompt,
     cwd: ws.path,
     model: attempt.model,
+    ...(attempt.fallbackModels?.length ? { fallbackModels: attempt.fallbackModels } : {}),
     permissionMode: spec.agent.permissionMode,
     allowedTools: spec.agent.allowedTools,
     maxBudgetUsd: attempt.maxBudgetUsd,
@@ -667,6 +727,20 @@ async function runAgent(
         });
         break;
       }
+      case 'model_fallback':
+        // The call that failed is the model_call before this; here the move.
+        used.model = event.to;
+        recordFallback(
+          {
+            from: event.from,
+            to: event.to,
+            reason: event.reason,
+            scope: 'automation',
+            skipped: event.skipped,
+          },
+          { runId }
+        );
+        break;
       case 'context': {
         const { type: _type, action: _action, ...record } = event;
         addRunStep(runId, {
@@ -893,6 +967,41 @@ async function runGate(
   }
 }
 
+/**
+ * A model a person named for this run, or null. Read from the run row, which a
+ * retry reuses, so every attempt of a run is held to the same choice.
+ */
+function modelChosenFor(runId: string): string | null {
+  const row = getStore().prepare('SELECT model_override FROM runs WHERE id = ?').get(runId);
+  return row?.model_override ? String(row.model_override) : null;
+}
+
+/**
+ * The models to try for one attempt of the agent, in order: the one it is
+ * meant to use, then the fallback models that are neither known to be
+ * unavailable in this run nor already tried and failed at the gates (a
+ * fallback is not a way back to a model an escalation left behind).
+ */
+export function fallbackCandidates(
+  model: string | undefined,
+  fallback: readonly string[],
+  tried: ReadonlySet<string>,
+  unavailable: ReadonlySet<string>
+): Array<string | undefined> {
+  return [model, ...fallback.filter((m) => m !== model && !tried.has(m) && !unavailable.has(m))];
+}
+
+/** The prompt for an attempt that follows one cut short when its model became unavailable. */
+export function interruptedPrompt(task: string): string {
+  return [
+    task,
+    '',
+    '---',
+    'An earlier attempt at this task was interrupted when its model became unavailable. ' +
+      'What it had changed so far is in this working tree. Carry on from there, keeping to the task above.',
+  ].join('\n');
+}
+
 /** The prompt for an escalated attempt: the task, and the check the last one failed. */
 export function escalationPrompt(task: string, failure: GateFailed): string {
   return [
@@ -983,7 +1092,12 @@ function pullRequestBody(
   runId: string,
   result: DriverResult,
   stat: { filesChanged: number; insertions: number; deletions: number },
-  model: string | undefined
+  route: {
+    /** The model an escalation moved to, when the run escalated. */
+    escalatedTo?: string;
+    /** The model that did the work, when it was not the one meant to (a fallback). */
+    usedModel?: string;
+  }
 ): string {
   // Every attempt's spend, and unknown when any model call had no price.
   const run = getRun(runId);
@@ -992,14 +1106,16 @@ function pullRequestBody(
   const gates = spec.gates.length
     ? spec.gates.map((g) => `\`${isAssertion(g) ? g.assert : g.run}\``).join(', ')
     : 'none';
-  const escalated = model && model !== spec.agent.model ? ` · escalated to \`${model}\`` : '';
+  const via =
+    (route.escalatedTo ? ` · escalated to \`${route.escalatedTo}\`` : '') +
+    (route.usedModel ? ` · fell back to \`${route.usedModel}\`` : '');
   const cost = !run || !run.costKnown ? 'unknown' : `$${run.costUsd.toFixed(2)}`;
   return [
     summary,
     '',
     '---',
     `Automation \`${spec.name}\` · run \`${runId}\``,
-    `${stat.filesChanged} files changed (+${stat.insertions} −${stat.deletions}) · gates passed: ${gates} · agent cost: ${cost}${escalated}`,
+    `${stat.filesChanged} files changed (+${stat.insertions} −${stat.deletions}) · gates passed: ${gates} · agent cost: ${cost}${via}`,
     '',
     'Opened by OpenClerq as a draft. Nothing is merged automatically.',
   ].join('\n');

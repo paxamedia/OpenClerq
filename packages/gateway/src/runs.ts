@@ -53,6 +53,8 @@ export interface RunRecord {
   costKnown: boolean;
   tokensIn: number;
   tokensOut: number;
+  /** A model a person named for this run, which it used as chosen. */
+  modelOverride?: string;
 }
 
 /** Selects a run with `unpriced_calls`, the input `costKnown` is derived from. */
@@ -84,6 +86,7 @@ function rowToRun(r: Record<string, unknown>): RunRecord {
     costKnown: Number(r.unpriced_calls ?? 0) === 0,
     tokensIn: Number(r.tokens_in ?? 0),
     tokensOut: Number(r.tokens_out ?? 0),
+    modelOverride: r.model_override ? String(r.model_override) : undefined,
   };
 }
 
@@ -95,6 +98,8 @@ export function createRun(input: {
   input?: string;
   status?: RunStatus;
   repoId?: string;
+  /** A model a person named for this run; it is used as chosen, with no fallback. */
+  modelOverride?: string;
 }): string {
   const id = `run_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
@@ -106,8 +111,8 @@ export function createRun(input: {
   const owner = queued ? { pid: null, start: null } : gatewayOwner();
   getStore()
     .prepare(
-      `INSERT INTO runs (id, automation_id, module_id, trigger_ref, input, status, trigger, repo_id, started_at, created_at, owner_pid, owner_start)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO runs (id, automation_id, module_id, trigger_ref, input, status, trigger, repo_id, started_at, created_at, owner_pid, owner_start, model_override)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -121,7 +126,8 @@ export function createRun(input: {
       queued ? null : now,
       now,
       owner.pid,
-      owner.start
+      owner.start,
+      input.modelOverride ?? null
     );
   return id;
 }
@@ -605,13 +611,22 @@ export function getRun(
 }
 
 /** The run the current async call chain belongs to, if any. */
-const runContext = new AsyncLocalStorage<{ runId: string; controller: AbortController }>();
+const runContext = new AsyncLocalStorage<{
+  runId: string;
+  controller: AbortController;
+  sessionId?: string;
+}>();
 
 /** Runs still executing, so the kill switch can reach every one of them. */
 const activeRuns = new Map<string, AbortController>();
 
 export function currentRunId(): string | undefined {
   return runContext.getStore()?.runId;
+}
+
+/** The chat session the current run belongs to, if it is a chat message. */
+export function currentSessionId(): string | undefined {
+  return runContext.getStore()?.sessionId;
 }
 
 /**
@@ -740,6 +755,8 @@ export async function recordRun<T>(
     triggerId?: string;
     message?: string;
     signal?: AbortSignal;
+    /** The chat session the run is a message of, for the events it emits. */
+    sessionId?: string;
     /** The state the run starts in. Default: executing. */
     status?: RunStatus;
     /** Called once the run exists, before `fn` starts. */
@@ -781,6 +798,7 @@ export async function executeRun<T>(
     moduleId?: string;
     triggerId?: string;
     signal?: AbortSignal;
+    sessionId?: string;
     /** A requeue; null to fail as is; `{ failure }` to fail with that reason instead. */
     retry?: (e: unknown) => Requeue | { failure: string } | null;
   },
@@ -800,7 +818,7 @@ export async function executeRun<T>(
     { runId }
   );
   try {
-    const result = await runContext.run({ runId, controller }, fn);
+    const result = await runContext.run({ runId, controller, sessionId: input.sessionId }, fn);
     // A run whose work swallowed the cancellation still did not finish.
     if (controller.signal.aborted) throw reasonOf(controller.signal);
     finishRun(runId, 'done');

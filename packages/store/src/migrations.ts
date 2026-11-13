@@ -464,4 +464,12 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_runs_queue ON runs(status, not_before, created_at);
     `,
   },
+  {
+    id: 15,
+    name: 'run_model_choice',
+    // A model a person named for one run of an automation (a run started by
+    // hand with `model`). Such a run uses it as chosen: no fallback to another.
+    // Null for every other run, which uses the spec's own models.
+    sql: `ALTER TABLE runs ADD COLUMN model_override TEXT;`,
+  },
 ];

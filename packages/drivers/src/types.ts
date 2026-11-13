@@ -249,6 +249,12 @@ export interface DriverCapabilities {
    * escalate to others when the gates fail.
    */
   models: boolean;
+  /**
+   * The driver makes the model calls itself, so it can move to another model
+   * in the middle of a run when one is unavailable (`fallbackModels`). A CLI
+   * cannot: the caller starts a new attempt with the next model instead.
+   */
+  midRunModelSwitch: boolean;
   /** The environment variable the CLI reads an API key from. */
   apiKeyEnv: string;
   /** What the CLI is, in a sentence a user can read. */

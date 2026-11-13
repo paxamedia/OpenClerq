@@ -32,6 +32,7 @@ import {
   type RunnerDeps,
 } from './runner.js';
 import { hasQueuedRun, runningAutomations, startAutomationRun } from './queue.js';
+import { checkModels, judgeChain, modelChoiceProblem, planModels } from './model-chain.js';
 import {
   lastMissedSlots,
   nextRunOf,
@@ -148,34 +149,37 @@ async function preview(spec: AutomationSpec, deps: RunnerDeps, automationId?: st
     }
   }
 
-  const driver = await (deps.driverFor ?? defaultDriver)(spec.agent.driver).detect({
-    apiKey: Boolean(spec.agent.apiKeySecret),
-    permissionMode: spec.agent.permissionMode,
-    model: spec.agent.model,
-    budget: hasBudget(spec),
-  });
-  if (!driver.available)
-    checks.push({ level: 'error', message: driver.reason ?? 'The driver is unavailable.' });
-  // An escalation model must be usable too, and priced when the spec has a
-  // budget in dollars: a run checks this before it starts, so say it now.
-  for (const model of spec.agent.escalate) {
-    const next = await (deps.driverFor ?? defaultDriver)(spec.agent.driver).detect({
-      apiKey: Boolean(spec.agent.apiKeySecret),
-      permissionMode: spec.agent.permissionMode,
-      model,
-      budget: hasBudget(spec),
+  // Every model a run may use is checked as the run itself will check it: the
+  // primary, each escalation model, each fallback model.
+  const plan = planModels(spec);
+  const modelChecks = await checkModels(
+    (deps.driverFor ?? defaultDriver)(spec.agent.driver),
+    spec,
+    plan,
+    hasBudget(spec)
+  );
+  const driver = modelChecks[0].availability;
+  const verdict = judgeChain(plan, modelChecks);
+  for (const message of verdict.errors) checks.push({ level: 'error', message });
+  for (const message of verdict.warnings) checks.push({ level: 'warning', message });
+  if (verdict.movedOff) {
+    checks.push({
+      level: 'warning',
+      message: `${verdict.movedOff.from ?? 'The primary model'} is unavailable (${verdict.movedOff.reason}); a run would start with ${verdict.movedOff.to}.`,
     });
-    if (!next.available) {
-      checks.push({
-        level: 'error',
-        message: `Escalation model ${model}: ${next.reason ?? 'unavailable.'}`,
-      });
-    }
   }
   if (spec.agent.escalate.length > 0) {
     checks.push({
       level: 'ok',
       message: `When a gate fails, the agent runs again with ${spec.agent.escalate.join(', then ')}, in the same worktree.`,
+    });
+  }
+  if (spec.agent.fallback.length > 0) {
+    checks.push({
+      level: 'ok',
+      message:
+        `When the model in use is unavailable (its provider is down, overloaded or rate limiting, or it has no key), the agent uses ${spec.agent.fallback.join(', then ')}. ` +
+        'A run started by hand with a model of its own never falls back.',
     });
   }
   if (spec.retry.maxRetries > 0) {
@@ -328,12 +332,28 @@ export function mountAutomationRoutes(
     });
   }
 
-  /** Start a run now. Answers once the run exists; follow it at GET /runs/:id. */
+  /**
+   * Start a run now. Answers once the run exists; follow it at GET /runs/:id.
+   * A `model` in the body is the model to run with, in place of the spec's
+   * primary: it is used as chosen, and the run never falls back to another.
+   */
   app.post('/automations/:id/run', (req: Request, res: Response) => {
     try {
       const a = getAutomation(String(req.params.id));
       if (!a) return res.status(404).json({ error: 'not_found' });
-      const { runId, queued } = startAutomationRun(a, 'manual', deps);
+      const body = (req.body ?? {}) as { model?: unknown };
+      let model: string | undefined;
+      if (body.model !== undefined && body.model !== null) {
+        if (typeof body.model !== 'string' || !body.model.trim()) {
+          return res
+            .status(400)
+            .json({ error: 'invalid_model', message: 'model must be a model name.' });
+        }
+        model = body.model.trim();
+        const problem = a.spec ? modelChoiceProblem(a.spec, model) : undefined;
+        if (problem) return res.status(400).json({ error: 'invalid_model', message: problem });
+      }
+      const { runId, queued } = startAutomationRun(a, 'manual', deps, { model });
       // `queued`: the limit on runs at once is reached, and it starts when a place frees.
       res.status(202).json({ runId, queued });
     } catch (e) {

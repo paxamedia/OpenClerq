@@ -131,11 +131,17 @@ on:
       errorOf(MINIMAL.replace('[local:~/code/app]', '[local:~/code/app]\n  max_parallel: 2'))
         .message
     ).toMatch(/"targets.max_parallel" \(fleet runs across several repositories\) is not supported/);
-    expect(
-      errorOf(
-        MINIMAL.replace('driver: claude-code', 'driver: claude-code\n  model:\n    fallback: [x]')
-      ).message
-    ).toMatch(/"agent.model.fallback" \(model fallback\) is not supported/);
+    // Routing strategies are planned for after 1.0, and the refusal says what to use instead.
+    const strategy = errorOf(
+      MINIMAL.replace(
+        'driver: claude-code',
+        'driver: claude-code\n  model:\n    primary: sonnet\n    strategy: cost_aware'
+      )
+    );
+    expect(strategy.message).toMatch(
+      /"agent.model.strategy" \(routing strategies such as cost_aware, quality_first, race and consensus\) is not supported in this release\. They are planned after 1\.0\..*"agent.model.fallback".*"agent.model.escalate"/
+    );
+    expect([strategy.line, strategy.column]).toEqual([9, 5]);
     expect(errorOf(MINIMAL.replace('profile: native', 'profile: container')).message).toMatch(
       /"native" profile only/
     );
@@ -196,6 +202,53 @@ on:
     expect(errorOf(builtin('[fake/a, fake/a]')).message).toMatch(/already listed/);
     expect(errorOf(builtin('[]')).message).toMatch(/one or more models/);
     expect(errorOf(builtin('[a/1, a/2, a/3, a/4, a/5, a/6]')).message).toMatch(/at most 5/);
+  });
+
+  it('reads agent.model.fallback, and checks each model by line', () => {
+    const spec = parseSpec(
+      MINIMAL.replace(
+        'driver: claude-code',
+        'driver: claude-code\n  model:\n    primary: sonnet\n    fallback: [haiku, opus]'
+      )
+    );
+    expect(spec.agent).toMatchObject({
+      model: 'sonnet',
+      fallback: ['haiku', 'opus'],
+      escalate: [],
+    });
+    expect(parseSpec(MINIMAL).agent.fallback).toEqual([]);
+    // Alongside escalation: they are different keys with different jobs.
+    const both = parseSpec(
+      MINIMAL.replace(
+        'driver: claude-code',
+        'driver: claude-code\n  model:\n    primary: sonnet\n    escalate: [opus]\n    fallback: [haiku]'
+      )
+    );
+    expect(both.agent).toMatchObject({ escalate: ['opus'], fallback: ['haiku'] });
+
+    const builtin = (fallback: string) =>
+      MINIMAL.replace(
+        'driver: claude-code',
+        `driver: builtin\n  model:\n    primary: fake/small\n    fallback: ${fallback}`
+      );
+    expect(parseSpec(builtin('[other/m, fake/large]')).agent.fallback).toEqual([
+      'other/m',
+      'fake/large',
+    ]);
+    const bare = errorOf(builtin('[fake/large, huge]'));
+    expect(bare.message).toMatch(/"huge" must name the provider too/);
+    expect([bare.line, bare.column]).toEqual([9, 28]);
+    expect(errorOf(builtin('[fake/small]')).message).toMatch(/already the primary model/);
+    expect(errorOf(builtin('[fake/a, fake/a]')).message).toMatch(/already listed/);
+    expect(errorOf(builtin('[]')).message).toMatch(/one or more models/);
+    expect(errorOf(builtin('[a/1, a/2, a/3, a/4, a/5, a/6]')).message).toMatch(/at most 5/);
+    expect(errorOf(builtin('fake/large')).message).toMatch(/one or more models/);
+    // A CLI that cannot be told a model cannot be told another.
+    expect(
+      errorOf(
+        MINIMAL.replace('driver: claude-code', 'driver: claude-code\n  model:\n    fallback: [7]')
+      ).message
+    ).toMatch(/Each fallback model must be a model name/);
   });
 
   it('reads diff assertions as gates, and points at the mistake in a bad one', () => {
