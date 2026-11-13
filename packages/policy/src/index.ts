@@ -134,6 +134,76 @@ export function evaluate(rules: PolicyRules, tool: ToolDescriptor): PolicyResult
 }
 
 // ---------------------------------------------------------------------------
+// Sub-agents
+// ---------------------------------------------------------------------------
+
+/**
+ * Starting a sub-agent: a child agent with a task of its own, in the `sessions`
+ * group. A sub-agent is never given this tool, so agents spawn at most one
+ * level deep.
+ */
+export const SPAWN_TOOL: ToolDescriptor = { name: 'sessions.spawn', risk: 'write' };
+
+/** Sub-agents one parent run may have running at once. */
+export const SUBAGENT_MAX_CONCURRENT = 4;
+/** How deep agents may nest: a parent's sub-agents cannot start their own. */
+export const SUBAGENT_MAX_DEPTH = 1;
+
+const STRICTNESS: Record<Decision, number> = { deny: 0, needs_approval: 1, allow: 2 };
+
+function lower(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.min(a, b);
+}
+
+/**
+ * The rules for a holder that may do no more than `parent` and no more than
+ * `requested`: for every tool in `universe`, the stricter of the two
+ * decisions (deny, then approval, then allow). The result names tools
+ * outright, so anything outside `universe` is denied, and it keeps the
+ * parent's deny rules, which beat any allow. Limits are the lower of the two.
+ *
+ * This is how a sub-agent's policy is made from its parent's: it can never be
+ * wider than the parent's, whatever the request asks for.
+ */
+export function narrowRules(
+  parent: PolicyRules,
+  requested: PolicyRules,
+  universe: readonly ToolDescriptor[]
+): PolicyRules {
+  const allow: string[] = [];
+  const approvalRequired: string[] = [];
+  for (const tool of universe) {
+    const strictest = Math.min(
+      STRICTNESS[evaluate(parent, tool).decision],
+      STRICTNESS[evaluate(requested, tool).decision]
+    );
+    if (strictest >= STRICTNESS.needs_approval && !allow.includes(tool.name)) {
+      allow.push(tool.name);
+      if (strictest === STRICTNESS.needs_approval) approvalRequired.push(tool.name);
+    }
+  }
+  const out: PolicyRules = { allow, approvalRequired, deny: [...(parent.deny ?? [])] };
+  const maxCallsPerRun = lower(parent.maxCallsPerRun, requested.maxCallsPerRun);
+  const maxRuntimeMs = lower(parent.maxRuntimeMs, requested.maxRuntimeMs);
+  if (maxCallsPerRun !== undefined) out.maxCallsPerRun = maxCallsPerRun;
+  if (maxRuntimeMs !== undefined) out.maxRuntimeMs = maxRuntimeMs;
+  return out;
+}
+
+/** True when `rules` decides no tool in `universe` more leniently than `parent` does. */
+export function isNarrowerOrEqual(
+  rules: PolicyRules,
+  parent: PolicyRules,
+  universe: readonly ToolDescriptor[]
+): boolean {
+  return universe.every(
+    (t) => STRICTNESS[evaluate(rules, t).decision] <= STRICTNESS[evaluate(parent, t).decision]
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
 

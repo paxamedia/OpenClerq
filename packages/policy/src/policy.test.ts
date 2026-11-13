@@ -14,6 +14,10 @@ import {
   memoryTool,
   readableMemoryTypes,
   writableMemoryTypes,
+  narrowRules,
+  isNarrowerOrEqual,
+  SPAWN_TOOL,
+  type PolicyRules,
   type ToolDescriptor,
 } from './index.js';
 
@@ -262,5 +266,80 @@ describe('memory types', () => {
     // Writing a record is a write like any other, which research refuses.
     expect(readableMemoryTypes(profile('research'))).toEqual([...MEMORY_TYPES]);
     expect(writableMemoryTypes(profile('research'))).toEqual([]);
+  });
+});
+
+describe('narrowing a policy for a sub-agent', () => {
+  const push: ToolDescriptor = { name: 'git.push', risk: 'external' };
+  const universe = [read, write, exec, http, slack, push, SPAWN_TOOL];
+
+  it('takes the stricter decision of parent and request, tool by tool', () => {
+    const parent: PolicyRules = {
+      allow: ['fs.*', 'runtime.exec', 'git.push', 'sessions.spawn'],
+      approvalRequired: ['git.push', 'risk:execute'],
+      maxCallsPerRun: 400,
+    };
+    const child = narrowRules(parent, { allow: ['*'], deny: ['sessions.*'] }, universe);
+    expect(evaluate(child, read).decision).toBe('allow');
+    expect(evaluate(child, write).decision).toBe('allow');
+    expect(evaluate(child, exec).decision).toBe('needs_approval');
+    expect(evaluate(child, push).decision).toBe('needs_approval');
+    expect(evaluate(child, http).decision).toBe('deny');
+    expect(evaluate(child, SPAWN_TOOL).decision).toBe('deny');
+    expect(child.maxCallsPerRun).toBe(400);
+    // A tool the universe does not know is denied, whatever the request says.
+    expect(evaluate(child, { name: 'fs.other', risk: 'read' }).decision).toBe('deny');
+  });
+
+  it("keeps the parent's deny rules and the lower of the limits", () => {
+    const child = narrowRules(
+      { allow: ['*'], deny: ['risk:external'], maxCallsPerRun: 50, maxRuntimeMs: 1_000 },
+      { allow: ['*'], maxCallsPerRun: 80 },
+      universe
+    );
+    expect(child.deny).toEqual(['risk:external']);
+    expect(child.maxCallsPerRun).toBe(50);
+    expect(child.maxRuntimeMs).toBe(1_000);
+    expect(evaluate(child, slack).decision).toBe('deny');
+  });
+
+  it('is never wider than the parent, over many parent and request rule sets', () => {
+    // A fixed generator, so the test is the same on every run.
+    let seed = 7;
+    const rand = (n: number) => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed % n;
+    };
+    const vocabulary = [
+      '*',
+      'fs.read',
+      'fs.write',
+      'fs.*',
+      'group:fs',
+      'group:runtime',
+      'group:sessions',
+      'sessions.spawn',
+      'risk:read',
+      'risk:write',
+      'risk:execute',
+      'risk:external',
+      'git.push',
+      'http.request',
+      'runtime.*',
+    ];
+    const pick = () =>
+      Array.from({ length: rand(4) }, () => vocabulary[rand(vocabulary.length)] as string);
+    const rules = (): PolicyRules => ({ allow: pick(), deny: pick(), approvalRequired: pick() });
+    for (let i = 0; i < 2_000; i++) {
+      const parent = rules();
+      const requested = rules();
+      const child = narrowRules(parent, requested, universe);
+      expect(isNarrowerOrEqual(child, parent, universe)).toBe(true);
+      expect(isNarrowerOrEqual(child, requested, universe)).toBe(true);
+      // Narrowing again changes nothing.
+      expect(isNarrowerOrEqual(narrowRules(child, requested, universe), child, universe)).toBe(
+        true
+      );
+    }
   });
 });
