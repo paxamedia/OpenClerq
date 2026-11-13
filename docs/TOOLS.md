@@ -177,6 +177,7 @@ first.
 | `runtime.shell` | `run_shell`    | `execute` | `/bin/sh -c` in the worktree; 120 s by default, up to 30 min; exit code, stdout and stderr |
 | `git.status`    | `git_status`   | `read`    | `git status --short --branch`                                                              |
 | `git.diff`      | `git_diff`     | `read`    | `git diff HEAD`, for one path or as a `--stat` summary                                     |
+| `sessions.spawn` | `spawn_agent` | `write`   | Starts a sub-agent on a task and returns its final answer; see below                      |
 
 - Every path is resolved inside the worktree by the same check as `fs.read` above: no absolute
   paths, no `..` out of it, no symlink that leads outside, including one whose target does not
@@ -191,3 +192,44 @@ first.
   saying how much was cut and how to get the rest (read with `offset`, narrow the search).
 - A `run_shell` command that publishes (`git push`, `gh pr create|merge`, `gh release create`,
   `gh repo create`) is judged as `git.push` (risk `external`) and waits for approval.
+
+### 5.1 Sub-agents (`sessions.spawn`)
+
+An automation run's builtin agent can start sub-agents: `spawn_agent` with a `task` (everything the
+sub-agent needs; it does not see the conversation), optionally `tools` (policy names or rules) and
+`model` (`provider/model`). The result is the sub-agent's final answer and a line on what it did
+(its run id, tool calls, turns, cost).
+
+- **Its own run.** Each sub-agent is a run (trigger `subagent`, `parentRunId` set) with a session
+  holding its task and answer, recorded like any builtin run: steps, `tool_calls`, cost. It is
+  listed in `GET /runs`; `GET /runs/:id` of the parent lists its `children` and `childCostUsd`.
+  Its run events (`run.*`, `model.*`, `tool.*`, `approval.requested`) carry `parentRunId`.
+- **Narrower policy, never wider.** Its rules are the parent's cut down to what the call asks for,
+  tool by tool the stricter of the two; without `tools` it gets the read-only tools. A tool the
+  parent may not use, or may use only with approval, stays refused or waits for approval. It is
+  never given `sessions.spawn`: sub-agents are one level deep, enforced by the policy and by the
+  gateway, not by the prompt. It reads at most the memory types the parent's spec reads, matched
+  to its own task.
+- **Four at once.** Several `spawn_agent` calls in one reply run at the same time, at most four per
+  parent run; a fifth waits until one ends. Other tool calls run one at a time, as before.
+- **Same worktree.** Sub-agents work in the parent's worktree. Writes need both the parent's
+  policy and the call to allow them; sub-agents writing at the same time can overwrite each
+  other's changes (nothing locks a file), so the tool tells the model to give them separate files.
+  The parent's commit includes whatever they changed.
+- **Shared budget.** What is left of the run's `budget.max_usd_per_run` is shared by the parent and
+  its sub-agents: before each model call an agent checks its own spend, the others' spend, what
+  calls in flight hold (each call holds the most it may cost) and the call's own maximum. Their
+  cost also counts toward the run's cost across attempts and the automation's month.
+- **Stops with the parent.** Cancelling the parent, its time limit, or the kill switch cancels its
+  sub-agents; a sub-agent's time limit is what the parent has left.
+- **Approvals.** A call that needs approval waits in the same inbox, on the sub-agent's run and
+  naming the parent (`parentRunId`); the parent shows `awaiting_approval` meanwhile.
+- **Model.** A sub-agent that names a model uses it as named, with no fallback, and the call fails
+  if it cannot be used. One that names none uses the model the parent is on and may fall back along
+  the parent's remaining chain.
+- In `default` permission mode starting a sub-agent waits for approval, as a write does; `plan` and
+  `dontAsk` cannot start one; `agent.allowed_tools` must name `sessions.spawn` (or a rule that
+  matches it) to keep it.
+- Only the builtin driver. The `claude-code`, `codex` and `cursor-agent` CLIs have sub-agent features
+  of their own, which run inside the CLI: OpenClerq does not see them as runs and its policy does
+  not apply to them; the CLI's own settings and the run's budget (where the CLI takes one) do.

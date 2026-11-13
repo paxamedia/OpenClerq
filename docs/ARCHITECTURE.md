@@ -496,6 +496,23 @@ conversation nears the model's context window, older turns are summarised by the
 that would free too little to be worth it; the task stays pinned, a later drop never discards an
 earlier summary, and each compaction is recorded as a `context.compact` step.
 
+The builtin agent can start sub-agents with `sessions.spawn` (`spawn_agent`), in automation runs
+only. A sub-agent is a run of its own, linked to its parent (`runs.parent_run_id`, store migration
+18; reported with trigger `subagent`, while the column keeps the parent's trigger because its CHECK
+predates sub-agents and rebuilding `runs` would cascade), with a session for its transcript that is
+not listed among the chats. Its policy is `narrowRules(parent, requested)` in `packages/policy`:
+tool by tool the stricter decision, so it is never wider than the parent's, and it always denies
+`sessions.spawn`; the gateway also refuses a spawn from a run that has a parent. Without `tools`
+it may only read. Spawn calls in one reply run together, at most four per parent run (a fifth
+waits); all work in the parent's worktree. The run's remaining budget is one pool (`SpendPool`,
+`automations/subagents.ts`) that every agent checks and holds against before each model call
+(`DriverRunInput.sharedBudget`); sub-agents' cost counts toward the parent's run budget and the
+automation's month. Each sub-agent's run is linked to the parent's signal and deadline, so
+cancelling or timing out the parent stops it. Its approvals name the parent run. A model named in
+the call is strict; otherwise it inherits the parent's current model and remaining fallbacks. See
+[TOOLS.md](TOOLS.md#51-sub-agents-sessionsspawn). The CLI drivers' own sub-agent features run inside
+the CLI and are outside OpenClerq's policy and records.
+
 `GET /drivers` lists `builtin` with each provider and whether it has a key; with a model, `detect`
 checks that model's key, its price when the spec sets a budget, and that a local server answers.
 
