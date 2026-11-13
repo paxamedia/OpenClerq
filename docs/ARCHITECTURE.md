@@ -652,11 +652,16 @@ approval.
 `GET /repos` and `GET /repos/:id` read the `repos` rows (made when a run of an automation naming the
 repository is first queued) and nothing else: the kind, a name (`owner/name` or the folder's), the
 URL, the path (the repository itself, or a remote's clone; null before the first clone) with
-whether it exists on disk, the name of the vault secret and whether the vault holds it (its value
-is never read into an answer), the automations whose spec targets it now, runs queued and running,
-and the last run; the detail adds the latest 20 runs. A folder that has gone is listed with
-`exists: false`. The routes are behind the same token check as every other, and a scoped token
-reaches them only if its scopes name them.
+whether it exists on disk, the automations whose spec targets it now, runs queued and running, and
+the last run; the detail adds the latest 20 runs. Each targeting automation carries the vault
+secret its own spec reaches the forge with (`publish.token_secret`, or the forge's default name; for
+a local repository only when it pushes or opens a pull request) and whether the vault holds it,
+because two automations can name different secrets and the row's `credential_ref` keeps only the
+last one queued (it is what is shown when no automation targets the repository). Values are never
+read: the vault is asked for its names (`RunnerDeps.secretNames`). A request reads `runs` once for
+every repository (counts and last run in one windowed query; `runs` has no `repo_id` index) and the
+automations once. A folder that has gone is listed with `exists: false`. The routes are behind the
+same token check as every other, and a scoped token reaches them only if its scopes name them.
 
 ---
 
