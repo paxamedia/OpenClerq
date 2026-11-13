@@ -10,7 +10,13 @@
 import cron from 'node-cron';
 import { DRIVER_CAPABILITIES, DRIVER_IDS, allowedToolProblem, type DriverId } from '@clerq/drivers';
 import type { Registry } from '@clerq/providers';
-import { MEMORY_TYPES, isMemoryType, type MemoryType } from '@clerq/policy';
+import {
+  MEMORY_TYPES,
+  SPAWN_TOOL,
+  SUBAGENT_MAX_CONCURRENT,
+  isMemoryType,
+  type MemoryType,
+} from '@clerq/policy';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
 import { AssertionSyntaxError, parseAssertion, type DiffAssertion } from './diff-assert.js';
 
@@ -54,6 +60,13 @@ export interface AutomationSpec {
      * `agent.model.fallback`. Not for a run that was given a model by hand.
      */
     fallback: string[];
+    /**
+     * Sub-agents (builtin only), off unless the spec turns them on with
+     * `agent.subagents.enabled: true` or names `sessions.spawn` in
+     * `agent.allowed_tools`. `models`: the models a sub-agent may be given by
+     * name besides the spec's own chain.
+     */
+    subagents: { enabled: boolean; maxConcurrent: number; models: string[] };
   };
   prompt: string;
   sandbox: { profile: 'native'; timeoutMs: number };
@@ -77,6 +90,9 @@ export interface AutomationSpec {
    */
   memory: { read: MemoryType[] };
 }
+
+/** The most `agent.subagents.models` may list. */
+export const MAX_SUBAGENT_MODELS = 10;
 
 /** The most `retry.max_retries` may be. */
 export const MAX_RETRIES = 10;
@@ -357,7 +373,10 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
   }
   const [repoPath, ref] = target.slice(6).trim().split('#');
 
-  r.keys(['agent'], ['driver', 'model', 'permission_mode', 'allowed_tools', 'api_key_secret']);
+  r.keys(
+    ['agent'],
+    ['driver', 'model', 'permission_mode', 'allowed_tools', 'api_key_secret', 'subagents']
+  );
   const driver = r.oneOf(['agent', 'driver'], DRIVER_IDS, 'claude-code');
   if (r.get(['agent', 'driver']) === undefined) r.fail(['agent'], '"agent.driver" is required.');
   const caps = DRIVER_CAPABILITIES[driver];
@@ -510,6 +529,88 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
     });
   }
 
+  // Sub-agents: opt-in, builtin only. Naming sessions.spawn itself in
+  // allowed_tools also turns them on; a wildcard or a group does not.
+  const subagentsNode = r.get(['agent', 'subagents']);
+  const spawnNamed = (allowedTools as string[]).some((t) => t.trim() === SPAWN_TOOL.name);
+  let subagents = { enabled: spawnNamed, maxConcurrent: SUBAGENT_MAX_CONCURRENT, models: [] as string[] };
+  if (subagentsNode !== undefined && subagentsNode !== null) {
+    r.keys(['agent', 'subagents'], ['enabled', 'max_concurrent', 'models']);
+    if (!caps.subagents) {
+      r.fail(
+        ['agent', 'subagents'],
+        `"agent.subagents" is not supported by the ${driver} driver: only the builtin agent starts sub-agents through OpenClerq. ` +
+          `${caps.label} has sub-agent features of its own, set in the CLI.`
+      );
+    }
+    const enabled = r.bool(['agent', 'subagents', 'enabled'], false) || spawnNamed;
+    const rawMax = r.get(['agent', 'subagents', 'max_concurrent']);
+    let maxConcurrent = SUBAGENT_MAX_CONCURRENT;
+    if (rawMax !== undefined && rawMax !== null) {
+      if (
+        typeof rawMax !== 'number' ||
+        !Number.isInteger(rawMax) ||
+        rawMax < 1 ||
+        rawMax > SUBAGENT_MAX_CONCURRENT
+      ) {
+        r.fail(
+          ['agent', 'subagents', 'max_concurrent'],
+          `"agent.subagents.max_concurrent" must be a whole number from 1 to ${SUBAGENT_MAX_CONCURRENT}.`
+        );
+      }
+      maxConcurrent = rawMax;
+    }
+    const rawModels = r.get(['agent', 'subagents', 'models']) ?? [];
+    if (!Array.isArray(rawModels)) {
+      r.fail(
+        ['agent', 'subagents', 'models'],
+        '"agent.subagents.models" must list models as provider/model.'
+      );
+    }
+    if (rawModels.length > MAX_SUBAGENT_MODELS) {
+      r.fail(
+        ['agent', 'subagents', 'models', MAX_SUBAGENT_MODELS],
+        `"agent.subagents.models" may list at most ${MAX_SUBAGENT_MODELS} models.`
+      );
+    }
+    const providers = options.registry?.providers;
+    const models = rawModels.map((m, i) => {
+      const path = ['agent', 'subagents', 'models', i];
+      if (typeof m !== 'string' || !m.trim()) r.fail(path, 'Each model must be a model name.');
+      const ref = m.trim();
+      const slash = ref.indexOf('/');
+      if (slash <= 0 || slash === ref.length - 1) {
+        r.fail(path, `"${ref}" must name the provider too, as provider/model.`);
+      }
+      const providerId = ref.slice(0, slash);
+      if (providers && !providers.some((p) => p.id === providerId)) {
+        r.fail(
+          path,
+          `Unknown provider "${providerId}" in "${ref}". Known: ${providers.map((p) => p.id).join(', ')}.`
+        );
+      }
+      if (rawModels.indexOf(m) !== i) r.fail(path, `"${ref}" is listed twice.`);
+      return ref;
+    });
+    subagents = { enabled, maxConcurrent, models };
+  }
+  if (subagents.enabled && !caps.subagents) {
+    r.fail(
+      ['agent', 'allowed_tools'],
+      `"${SPAWN_TOOL.name}" is not supported by the ${driver} driver: only the builtin agent starts sub-agents through OpenClerq.`
+    );
+  }
+  if (
+    subagents.enabled &&
+    (allowedTools as string[]).length > 0 &&
+    !(allowedTools as string[]).some((t) => t.trim() === SPAWN_TOOL.name)
+  ) {
+    r.fail(
+      ['agent', 'allowed_tools'],
+      `"agent.subagents.enabled" is true, but "agent.allowed_tools" leaves "${SPAWN_TOOL.name}" out. Name it there too.`
+    );
+  }
+
   const prompt = r.text(['prompt'], true);
 
   r.keys(['sandbox'], ['profile', 'timeout']);
@@ -633,6 +734,7 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
         : {}),
       escalate,
       fallback,
+      subagents,
     },
     prompt,
     sandbox: { profile: 'native', timeoutMs: r.duration(['sandbox', 'timeout'], 20 * 60_000) },
