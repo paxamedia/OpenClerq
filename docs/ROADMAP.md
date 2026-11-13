@@ -306,6 +306,7 @@ approvals:
 
 memory:
   read: [preference, procedure] # saved notes of these types may be added to the prompt
+  include_agent: false # notes an agent wrote (in a chat, say) are left out unless true
 
 retry: # only after a crash, a provider outage or an expired lease
   max_retries: 2

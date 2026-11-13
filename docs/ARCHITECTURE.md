@@ -164,22 +164,30 @@ prompt is the configured prompt, the selected skill's instructions and the `<mem
 a paragraph on the tools; earlier turns roll as history. The tool set comes from `chatPolicy` in
 `chat/tools.ts`, decided call by call by `packages/policy`:
 
-| Tool (model name)            | Policy name                                                                             | When                                           |
-| ---------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `search_memory`              | `memory.search`, reading only the types the memory policy allows (`memory.read.<type>`) | always                                         |
-| `save_memory`                | `memory.write.<type>`, origin `agent`, the session as source                            | not in `plan`; waits for approval in `default` |
-| `draft_automation`           | `automation.draft`                                                                      | always                                         |
-| the builtin repository tools | `fs.*`, `runtime.shell`, `git.status`, `git.diff`, `git.push`                           | only in a folder attached to the conversation  |
+| Tool (model name)            | Policy name                                                                             | When                                                                                                      |
+| ---------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `search_memory`              | `memory.search`, reading only the types the memory policy allows (`memory.read.<type>`) | always                                                                                                    |
+| `save_memory`                | `memory.write.<type>`, origin `agent`, the session as source                            | not in `plan`; `preference` and `procedure` notes always wait for approval, every note waits in `default` |
+| `draft_automation`           | `automation.draft`                                                                      | always                                                                                                    |
+| the builtin repository tools | `fs.*`, `runtime.shell`, `git.status`, `git.diff`, `git.push`                           | only in a folder attached to the conversation                                                             |
 
-A conversation's folder (`workspace`, an existing directory, not the disk root) and its access
-(`permissionMode`: `acceptEdits` full access by default, `default` asks before writes and commands,
-`plan` reads only; a push from the shell always waits) are set with `POST /sessions/:id/update`.
+A conversation's folder (`workspace`, an existing directory, not the disk root, and not one that is,
+holds or lies inside `~/.clerq` or the store's directory, checked again at every message) and its
+access (`permissionMode`: `acceptEdits` full access by default, `default` asks before writes and
+commands, `plan` reads only, `sandboxed` on macOS: full access inside seatbelt with writes only in
+the folder and the chat's home, no network, credential stores and `~/.clerq` unreadable; a push from
+the shell waits in every level) are set with `POST /sessions/:id/update`; a session says whether
+this machine has `sandboxAvailable`. Commands get a home directory of the conversation's own under
+the system temporary directory (removed with the conversation), with `GIT_AUTHOR_*` and
+`GIT_COMMITTER_*` from the user's global git config, so `~` is not the user's and global git config,
+credential helpers set there and dotfiles are not read. Under Full access a command still runs as the
+user and can name any path the account can read: see SECURITY.md §3.
 Without a folder the rules deny `group:fs`, `group:runtime` and `group:git` outright. Every chat
 denies `automation.save|create|update|enable|disable|run|delete` and `sessions.spawn`; no tool for
 any of them exists. A call that needs approval waits in the inbox (with the chat's `sessionId` on
 `GET /approvals`) and is sent in the message's stream as an `approval` event, then
 `approval_decided`; the run shows `awaiting_approval` meanwhile, ten minutes at most. Provider keys
-in the gateway's environment are redacted from tool input and output before the model or the record
+in the gateway's environment and the gateway token are redacted from tool input and output before the model or the record
 sees them; tool output is truncated by the driver. Each step, tool call (`tool_calls`, also on
 `GET /runs/:id` and `GET /runs/:id/tool-calls`) and model call is recorded on the run, which carries
 the session id. A model a person named (the message's or the conversation's) is used as chosen;
@@ -199,11 +207,17 @@ nothing else. A person reads it (`GET /sessions/:id/drafts[/:draftId]`), dry-run
 (`POST …/dry-run`: the automation preview's checks for the repository, driver, models, budgets,
 tokens and approvals, the next firings as real dates with the host's time zone, and a cost estimate
 from finished runs of the same driver and model in the last 90 days, or none; it executes nothing),
-and saves it (`POST …/save`). A saved draft is an automation that is switched off, with
-`authored_by: chat <session id>` (migration 20, on the summary and in the audit entry). Its first
+and saves it (`POST …/save`, refused with 409 until a dry run of exactly that YAML has been done:
+migration 21 keeps the hash; a draft of another conversation is 404). A draft's summary carries the
+prompt, gates, isolation, permission mode and tools, the memory it reads and warnings (push without
+asking, no isolation, gate commands, no gates). A saved draft is an automation that is switched off, with
+`authored_by: chat <session id>` (migration 20, on the summary and in the audit entry). A draft is
+saved once; if the automation it became is deleted, the link is cleared and it may be saved again. Its first
 push waits for approval whatever the draft says, because every automation's first push does
 (`hasPushedBefore`); the dry run and the preview say so. Switching it on is `POST
-/automations/:id/enable`, a person's action in the Automations screen: no chat tool can reach it.
+/automations/:id/enable`, a person's action in the Automations screen, where the automation is marked
+"Written by a chat"; no chat tool calls it. Under Full access a command in an attached folder runs as
+the user and could call the gateway itself: see SECURITY.md §3.
 
 `POST /sessions/:id/send` streams by default, as SSE; pass `stream: false` for one JSON
 response. `POST /sessions/:id/compare` sends one message to several models at once and returns
@@ -286,7 +300,9 @@ every type until `PUT /memory/policy { readTypes }` narrows it (an empty list tu
 them). An automation reads memory only when its spec says so: `memory: { read: [preference, procedure] }`
 adds `memory.read.<type>` for those types to the run's own policy rules, and the notes that bear on
 the task (found once, and added to the prompt of every attempt, an escalation's too) come from those
-types alone; what was read is a `memory.read` step. A sub-agent is given rules of its own the same way. What reaches the model is
+types alone, leaving out notes an agent wrote (origin `agent`, or a summary of one) unless the spec
+also sets `memory.include_agent: true`; what was read is a `memory.read` step. In the block a note an
+agent wrote is labelled `written by an agent`. A sub-agent is given rules of its own the same way. What reaches the model is
 a `<memory>` block in the system prompt, shown by `POST /context/preview` like everything else sent:
 the reader's preferences (they apply whatever is asked, up to five) and up to five records that match
 the message, ranked, at most eight in all and 600 characters each. The block says its contents are
