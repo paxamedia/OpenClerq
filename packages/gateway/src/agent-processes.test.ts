@@ -11,7 +11,10 @@ import {
   parseProcessTable,
   readProcessTable,
   recordProcess,
+  settleRecords,
+  warmGatewayIdentity,
   watchProcess,
+  type ProcessInfo,
 } from './agent-processes.js';
 import { recoverAfterRestart } from './automations/routes.js';
 
@@ -24,6 +27,7 @@ const started: ChildProcess[] = [];
 
 beforeAll(async () => {
   await initStore(':memory:');
+  await warmGatewayIdentity();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-proc-'));
   // A stand-in agent: starts a helper in its group, then waits on it.
   agentScript = path.join(dir, 'fake-agent.sh');
@@ -36,7 +40,8 @@ afterAll(() => {
   closeStore();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await settleRecords();
   // Whatever a test left running.
   for (const child of started.splice(0)) {
     try {
@@ -64,12 +69,22 @@ const alive = (pid: number) => {
   }
 };
 
-async function until(condition: () => boolean, ms = 4_000): Promise<boolean> {
+async function until(condition: () => boolean | Promise<boolean>, ms = 4_000): Promise<boolean> {
   for (const end = Date.now() + ms; Date.now() < end; ) {
-    if (condition()) return true;
+    if (await condition()) return true;
     await new Promise((r) => setTimeout(r, 25));
   }
   return condition();
+}
+
+async function listed(pid: number): Promise<ProcessInfo | undefined> {
+  return (await readProcessTable())?.find((p) => p.pid === pid);
+}
+
+/** Waits until the OS lists the process, and returns it. */
+async function seen(pid: number): Promise<ProcessInfo> {
+  expect(await until(async () => Boolean(await listed(pid)))).toBe(true);
+  return (await listed(pid)) as ProcessInfo;
 }
 
 /** A pid nobody holds: an owner that is gone. */
@@ -142,8 +157,8 @@ describe('parseProcessTable', () => {
 });
 
 describe.skipIf(isWindows)('the process table on this machine', () => {
-  it('lists this process with its own group and a plausible start time', () => {
-    const table = readProcessTable();
+  it('lists this process with its own group and a plausible start time', async () => {
+    const table = await readProcessTable();
     expect(table).not.toBeNull();
     const me = table?.find((p) => p.pid === process.pid);
     expect(me).toBeDefined();
@@ -151,31 +166,73 @@ describe.skipIf(isWindows)('the process table on this machine', () => {
       5_000
     );
   });
+
+  it('lists session leaders, which is what every agent is', async () => {
+    // Started detached, the child calls setsid(): its pid is its group and its session.
+    const child = start('sleep', ['30']);
+    const pid = child.pid as number;
+    const found = await seen(pid);
+    expect(found.pgid).toBe(pid);
+  });
+
+  it('does not block the event loop while it asks the OS', async () => {
+    let ticks = 0;
+    const timer = setInterval(() => (ticks += 1), 1);
+    try {
+      await readProcessTable();
+      await readProcessTable();
+    } finally {
+      clearInterval(timer);
+    }
+    // A synchronous ps would let no timer fire between the start and the answer.
+    expect(ticks).toBeGreaterThan(0);
+  });
 });
 
 describe.skipIf(isWindows)('recording a run’s processes', () => {
-  it('records the process with its start time, and closes the record when it ends', async () => {
+  it('writes the record at once and fills in the start time when the OS answers', async () => {
     const child = start('sleep', ['30']);
+    const pid = child.pid as number;
     const watch = watchProcess(runId, 'agent');
-    watch.onSpawn({ pid: child.pid as number, pgid: child.pid as number, command: 'sleep' });
+    watch.onSpawn({ pid, pgid: pid, command: 'sleep' });
 
-    const rows = getStore().prepare('SELECT * FROM run_processes WHERE run_id = ?').all(runId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
+    // Immediately: the row exists, with no start time yet.
+    const [first] = getStore().prepare('SELECT * FROM run_processes WHERE run_id = ?').all(runId);
+    expect(first).toMatchObject({
       kind: 'agent',
-      pid: child.pid,
-      pgid: child.pid,
+      pid,
+      pgid: pid,
       command: 'sleep',
       owner_pid: process.pid,
+      proc_start: null,
       ended_at: null,
     });
-    const startMs = readProcessTable()?.find((p) => p.pid === child.pid)?.startMs as number;
-    expect(Math.abs(Date.parse(String(rows[0].proc_start)) - startMs)).toBeLessThan(2_000);
-    expect(rows[0].owner_start).toBeTruthy();
+    expect(first.owner_start).toBeTruthy();
+
+    await settleRecords();
+    const [filled] = getStore().prepare('SELECT * FROM run_processes WHERE run_id = ?').all(runId);
+    const startMs = (await seen(pid)).startMs;
+    expect(Math.abs(Date.parse(String(filled.proc_start)) - startMs)).toBeLessThan(2_000);
 
     watch.done();
-    expect(row(Number(rows[0].id)).ended_at).toBeTruthy();
-    expect(row(Number(rows[0].id)).outcome).toBe('exited');
+    expect(row(Number(filled.id)).ended_at).toBeTruthy();
+    expect(row(Number(filled.id)).outcome).toBe('exited');
+  });
+
+  it('leaves a record alone that never got its start time, and does not stop the process', async () => {
+    // The gateway died before the OS answered: proc_start is still empty.
+    const child = start('sleep', ['30']);
+    const pid = child.pid as number;
+    await seen(pid);
+    const id = recordProcess(runId, 'agent', { pid, pgid: pid, command: 'sleep' }) as number;
+    await settleRecords();
+    getStore()
+      .prepare('UPDATE run_processes SET proc_start = NULL, owner_pid = ? WHERE id = ?')
+      .run(await deadPid(), id);
+
+    const [found] = await killLeftoverProcesses();
+    expect(found.outcome).toBe('unverified');
+    expect(alive(pid)).toBe(true);
   });
 
   it('does not fail the run when the record cannot be written', () => {
@@ -189,8 +246,11 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
     const child = start(agentScript);
     const pid = child.pid as number;
     // Let it start its helper, then record it as the earlier gateway did.
-    await until(() => readProcessTable()?.some((p) => p.pgid === pid && p.pid !== pid) ?? false);
+    await until(
+      async () => (await readProcessTable())?.some((p) => p.pgid === pid && p.pid !== pid) ?? false
+    );
     const id = recordProcess(runId, 'agent', { pid, pgid: pid, command: agentScript }) as number;
+    await settleRecords();
     getStore()
       .prepare('UPDATE run_processes SET owner_pid = ?, owner_start = NULL WHERE id = ?')
       .run(await deadPid(), id);
@@ -200,7 +260,7 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
 
     expect(await until(() => !alive(pid))).toBe(true);
     // Nothing of the group remains, helper included.
-    expect(readProcessTable()?.filter((p) => p.pgid === pid)).toEqual([]);
+    expect((await readProcessTable())?.filter((p) => p.pgid === pid)).toEqual([]);
     expect(row(id).outcome).toMatch(/^killed/);
     expect(row(id).ended_at).toBeTruthy();
   });
@@ -219,6 +279,7 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
     // Only once it has installed its trap does ignoring the request mean anything.
     expect(await until(() => fs.existsSync(ready))).toBe(true);
     const id = recordProcess(runId, 'agent', { pid, pgid: pid, command: stubborn }) as number;
+    await settleRecords();
     getStore()
       .prepare('UPDATE run_processes SET owner_pid = ? WHERE id = ?')
       .run(await deadPid(), id);
@@ -229,32 +290,34 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
     expect(row(id).outcome).toBe('killed (forced)');
   });
 
-  it('stops what a finished agent left running in its group', async () => {
-    // The leader exits at once and leaves a helper behind.
+  it('never stops a group whose leader has gone, however young its members look', async () => {
+    // The recorded group died long ago. Its number now belongs to another
+    // group whose leader has since exited, leaving a member that started well
+    // after the recording: nothing about it says whose it is.
     const lonely = path.join(dir, 'lonely.sh');
     fs.writeFileSync(lonely, '#!/bin/sh\nsleep 60 &\nexit 0\n', { mode: 0o755 });
-    const before = Date.now() - 1_000;
     const child = start(lonely);
     const pid = child.pid as number;
     await new Promise((resolve) => child.once('exit', resolve));
-    expect(readProcessTable()?.some((p) => p.pgid === pid && p.pid !== pid)).toBe(true);
+    const member = (await readProcessTable())?.find((p) => p.pgid === pid && p.pid !== pid);
+    expect(member).toBeDefined();
 
     const id = insert({
       pid,
       command: lonely,
-      procStart: new Date(before),
+      procStart: new Date(Date.now() - 3_600_000),
       ownerPid: await deadPid(),
     });
-    const [found] = await killLeftoverProcesses({ graceMs: 2_000 });
-    expect(found.outcome).toBe('killed');
-    expect(await until(() => !readProcessTable()?.some((p) => p.pgid === pid))).toBe(true);
-    expect(row(id).ended_at).toBeTruthy();
+    const [found] = await killLeftoverProcesses({ graceMs: 500 });
+    expect(found.outcome).toBe('unverified');
+    expect(alive((member as ProcessInfo).pid)).toBe(true);
+    expect(row(id).outcome).toBe('unverified');
   });
 
   it('never kills a process that has taken over the recorded pid', async () => {
     const stranger = start('sleep', ['30']);
     const pid = stranger.pid as number;
-    await until(() => readProcessTable()?.some((p) => p.pid === pid) ?? false);
+    await seen(pid);
     // Recorded as having started an hour before this process did: so the pid
     // was reused after the recorded process died.
     const id = insert({
@@ -273,8 +336,7 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
   it('never kills a process whose command is no longer the recorded agent', async () => {
     const other = start('sleep', ['30']);
     const pid = other.pid as number;
-    await until(() => readProcessTable()?.some((p) => p.pid === pid) ?? false);
-    const startMs = readProcessTable()?.find((p) => p.pid === pid)?.startMs as number;
+    const { startMs } = await seen(pid);
     insert({
       pid,
       command: '/usr/local/bin/codex',
@@ -290,8 +352,7 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
   it('does not hold a gate to its command, which a shell may have replaced', async () => {
     const gate = start('sleep', ['30']);
     const pid = gate.pid as number;
-    await until(() => readProcessTable()?.some((p) => p.pid === pid) ?? false);
-    const startMs = readProcessTable()?.find((p) => p.pid === pid)?.startMs as number;
+    const { startMs } = await seen(pid);
     insert({
       pid,
       kind: 'gate',
@@ -307,12 +368,65 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
   it('leaves a process alone when its start time was never recorded', async () => {
     const child = start('sleep', ['30']);
     const pid = child.pid as number;
-    await until(() => readProcessTable()?.some((p) => p.pid === pid) ?? false);
+    await seen(pid);
     insert({ pid, command: 'sleep', procStart: null, ownerPid: await deadPid() });
 
     const [found] = await killLeftoverProcesses();
     expect(found.outcome).toBe('unverified');
     expect(alive(pid)).toBe(true);
+  });
+
+  it('looks at the leader again just before it stops a group', async () => {
+    const child = start('sleep', ['30']);
+    const pid = child.pid as number;
+    const { startMs } = await seen(pid);
+    insert({
+      pid,
+      command: 'sleep',
+      procStart: new Date(startMs),
+      ownerPid: await deadPid(),
+    });
+
+    // By the second look the pid belongs to a process that started later: the
+    // first reading, taken before earlier groups were stopped, is out of date.
+    const real = (await readProcessTable()) as ProcessInfo[];
+    let reads = 0;
+    const readTable = async () => {
+      reads += 1;
+      return reads === 1
+        ? real
+        : real.map((p) => (p.pid === pid ? { ...p, startMs: p.startMs + 3_600_000 } : p));
+    };
+
+    const [found] = await killLeftoverProcesses({ readTable });
+    expect(reads).toBe(2);
+    expect(found.outcome).toBe('reused');
+    expect(alive(pid)).toBe(true);
+  });
+
+  it('reads the table again for every group it is about to stop', async () => {
+    const a = start('sleep', ['30']);
+    const b = start('sleep', ['30']);
+    const infoA = await seen(a.pid as number);
+    const infoB = await seen(b.pid as number);
+    for (const info of [infoA, infoB]) {
+      insert({
+        pid: info.pid,
+        command: 'sleep',
+        procStart: new Date(info.startMs),
+        ownerPid: await deadPid(),
+      });
+    }
+    let reads = 0;
+    const readTable = async () => {
+      reads += 1;
+      return readProcessTable();
+    };
+    const found = await killLeftoverProcesses({ readTable, graceMs: 2_000 });
+    expect(found.map((f) => f.outcome)).toEqual(['killed', 'killed']);
+    // One reading to find them, then one before each group.
+    expect(reads).toBe(3);
+    expect(await until(() => !alive(a.pid as number) && !alive(b.pid as number))).toBe(true);
   });
 
   it('closes the record of a process that is already gone', async () => {
@@ -330,9 +444,8 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
   it('leaves processes alone while the gateway that started them is still running', async () => {
     const other = start('sleep', ['30']); // stands in for another gateway
     const agent = start('sleep', ['30']);
-    await until(() => (readProcessTable() ?? []).some((p) => p.pid === agent.pid));
-    const ownerStart = readProcessTable()?.find((p) => p.pid === other.pid)?.startMs as number;
-    const agentStart = readProcessTable()?.find((p) => p.pid === agent.pid)?.startMs as number;
+    const ownerStart = (await seen(other.pid as number)).startMs;
+    const agentStart = (await seen(agent.pid as number)).startMs;
 
     const theirs = insert({
       pid: agent.pid as number,
@@ -360,8 +473,7 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
     // A restarted container's gateway is pid 1 every time.
     const child = start('sleep', ['30']);
     const pid = child.pid as number;
-    await until(() => readProcessTable()?.some((p) => p.pid === pid) ?? false);
-    const startMs = readProcessTable()?.find((p) => p.pid === pid)?.startMs as number;
+    const { startMs } = await seen(pid);
     insert({
       pid,
       command: 'sleep',
@@ -381,14 +493,21 @@ describe.skipIf(isWindows)('processes a crashed gateway left behind', () => {
 describe.skipIf(isWindows)('recovering after a restart', () => {
   it('stops the leftover agent before it fails the run, and says so on the run', async () => {
     const id = createRun({ trigger: 'manual', status: 'executing' });
+    // The earlier gateway: gone.
+    getStore()
+      .prepare('UPDATE runs SET owner_pid = ?, owner_start = NULL WHERE id = ?')
+      .run(await deadPid(), id);
     const child = start(agentScript);
     const pid = child.pid as number;
-    await until(() => readProcessTable()?.some((p) => p.pgid === pid && p.pid !== pid) ?? false);
+    await until(
+      async () => (await readProcessTable())?.some((p) => p.pgid === pid && p.pid !== pid) ?? false
+    );
     const recorded = recordProcess(id, 'agent', {
       pid,
       pgid: pid,
       command: agentScript,
     }) as number;
+    await settleRecords();
     getStore()
       .prepare('UPDATE run_processes SET owner_pid = ?, owner_start = NULL WHERE id = ?')
       .run(await deadPid(), recorded);
@@ -396,7 +515,7 @@ describe.skipIf(isWindows)('recovering after a restart', () => {
     await recoverAfterRestart();
 
     expect(await until(() => !alive(pid))).toBe(true);
-    expect(readProcessTable()?.filter((p) => p.pgid === pid)).toEqual([]);
+    expect((await readProcessTable())?.filter((p) => p.pgid === pid)).toEqual([]);
     const run = getRun(id);
     expect(run).toMatchObject({
       status: 'failed',
@@ -411,6 +530,9 @@ describe.skipIf(isWindows)('recovering after a restart', () => {
 
   it('marks interrupted runs failed when nothing was left running', async () => {
     const id = createRun({ trigger: 'manual', status: 'preparing' });
+    getStore()
+      .prepare('UPDATE runs SET owner_pid = ?, owner_start = NULL WHERE id = ?')
+      .run(await deadPid(), id);
     await recoverAfterRestart();
     expect(getRun(id)?.status).toBe('failed');
   });

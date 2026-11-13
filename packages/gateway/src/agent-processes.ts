@@ -10,29 +10,35 @@
  * writing into a directory that is about to disappear.
  *
  * A pid proves nothing on its own: once the process has exited the number can
- * be given to an unrelated one. So a process is stopped only when what is
- * running now is what was recorded.
+ * be given to an unrelated one, and then to an unrelated group. So a group is
+ * stopped only when its leader is still there and is what was recorded:
  *
- *   - If the group's leader still exists, its start time must match the one
- *     recorded, and an agent's command line must still name the CLI that was
- *     started.
- *   - If the leader has gone but other members of the group remain (a server
- *     the agent started, say), they are the leader's descendants: a pid cannot
- *     be reused while it is still a group id. They are stopped too, provided
- *     none of them started before the leader did.
- *   - If the recorded start time is unknown, nothing is stopped.
- *   - A gateway that is still running (another instance sharing the store)
- *     keeps its processes, and so does this one.
+ *   - the leader's start time must match the one recorded, and an agent's
+ *     command line must still name the CLI that was started;
+ *   - a group whose leader has gone is left alone, however old or young its
+ *     members look: nothing says whose they are;
+ *   - a record whose start time is unknown (the OS had not answered yet when
+ *     the gateway died) is left alone;
+ *   - the leader is read again just before the group is signalled, because
+ *     stopping an earlier group can take seconds;
+ *   - a gateway that is still running (another instance sharing the store)
+ *     keeps its processes and its runs, and so does this one.
+ *
+ * What a process leaves in its group when it exits normally is not this
+ * module's business: the sandbox stops it then (`reapGroup`).
  *
  * Needs `ps` with `lstart` (macOS, procps). Elsewhere nothing is stopped, and
  * the records are left for a gateway that can.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import type { SpawnedProcess } from '@clerq/drivers';
 import { getStore } from './store.js';
 import { logger } from './logger.js';
+
+const execFileAsync = promisify(execFile);
 
 export type ProcessKind = 'agent' | 'gate';
 
@@ -66,48 +72,92 @@ export function parseProcessTable(text: string): ProcessInfo[] {
   return out;
 }
 
-function ps(args: string[]): ProcessInfo[] | null {
+async function ps(args: string[]): Promise<ProcessInfo[] | null> {
   if (process.platform === 'win32') return null;
   try {
-    const text = execFileSync('ps', [...args, '-o', PS_COLUMNS], {
+    const { stdout } = await execFileAsync('ps', [...args, '-o', PS_COLUMNS], {
       // English month and day names, whatever the user's locale.
       env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
       timeout: 10_000,
-      stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return parseProcessTable(text);
+    return parseProcessTable(stdout);
   } catch (e) {
     // `ps -p` exits 1 when the pid is gone: that is an empty answer, not a failure.
-    const stdout = (e as { stdout?: string }).stdout;
-    if (typeof stdout === 'string') return parseProcessTable(stdout);
+    const failure = e as { stdout?: unknown; killed?: boolean };
+    if (!failure.killed && typeof failure.stdout === 'string') {
+      return parseProcessTable(failure.stdout);
+    }
     return null;
   }
 }
 
-/** Every process on the machine, or null where `ps` cannot say. */
-export function readProcessTable(): ProcessInfo[] | null {
-  const table = ps(['-axww']);
+/**
+ * Every process on the machine, or null where `ps` cannot say. `-e` is the
+ * POSIX spelling that lists them all on macOS and on procps alike; the UNIX
+ * `-a` would leave out session leaders, which every agent is.
+ */
+export async function readProcessTable(): Promise<ProcessInfo[] | null> {
+  const table = await ps(['-e', '-ww']);
   // A table with nobody in it, or without this process, is a `ps` we cannot read.
   return table && table.some((p) => p.pid === process.pid) ? table : null;
 }
 
-function readProcess(pid: number): ProcessInfo | null {
-  return ps(['-ww', '-p', String(pid)])?.find((p) => p.pid === pid) ?? null;
+async function readProcess(pid: number): Promise<ProcessInfo | null> {
+  return (await ps(['-ww', '-p', String(pid)]))?.find((p) => p.pid === pid) ?? null;
 }
 
-let self: { pid: number; startMs: number | null } | undefined;
+// ---------------------------------------------------------------------------
+// Who started a run
+// ---------------------------------------------------------------------------
 
-/** This gateway process, as it will be recognised after it is gone. */
-function gatewayIdentity(): { pid: number; startMs: number | null } {
-  self ??= { pid: process.pid, startMs: readProcess(process.pid)?.startMs ?? null };
-  return self;
+let identity: { pid: number; startMs: number | null } | undefined;
+let identifying: Promise<void> | undefined;
+
+/**
+ * Learn when this process started, so it can be recognised after it is gone.
+ * Asks the OS without blocking; call it once at startup. Until it has answered,
+ * what is recorded carries the pid only.
+ */
+export function warmGatewayIdentity(): Promise<void> {
+  identifying ??= readProcess(process.pid).then((me) => {
+    identity = { pid: process.pid, startMs: me?.startMs ?? null };
+  });
+  return identifying;
+}
+
+/** This gateway process, as it is recorded on the runs and processes it starts. */
+export function gatewayOwner(): { pid: number; start: string | null } {
+  return {
+    pid: process.pid,
+    start: identity?.startMs == null ? null : new Date(identity.startMs).toISOString(),
+  };
+}
+
+/** Writes that wait on the OS, so a test can wait for them. */
+const pending = new Set<Promise<void>>();
+function later(work: Promise<void>): void {
+  const tracked = work.catch((e: unknown) => {
+    logger.warn('Could not complete an agent process record', {
+      err: e instanceof Error ? e.message : String(e),
+    });
+  });
+  pending.add(tracked);
+  void tracked.finally(() => pending.delete(tracked));
+}
+
+/** Resolves once the start times being looked up have been written. */
+export async function settleRecords(): Promise<void> {
+  while (pending.size > 0) await Promise.all([...pending]);
 }
 
 /**
- * Record a process a run started. Returns the record's id, or null when it
- * could not be written: bookkeeping must not stop the run it describes.
+ * Record a process a run started. The row is written at once, without a start
+ * time; the OS is asked for that without blocking and it is filled in when it
+ * answers. A gateway that dies in between leaves a record that is never acted
+ * on. Returns the record's id, or null when it could not be written:
+ * bookkeeping must not stop the run it describes.
  */
 export function recordProcess(
   runId: string,
@@ -115,13 +165,12 @@ export function recordProcess(
   spawned: SpawnedProcess
 ): number | null {
   try {
-    const me = gatewayIdentity();
-    const startMs = readProcess(spawned.pid)?.startMs;
+    const owner = gatewayOwner();
     const res = getStore()
       .prepare(
         `INSERT INTO run_processes
            (run_id, kind, pid, pgid, command, proc_start, owner_pid, owner_start, started_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`
       )
       .run(
         runId,
@@ -129,12 +178,34 @@ export function recordProcess(
         spawned.pid,
         spawned.pgid,
         spawned.command,
-        startMs === undefined ? null : new Date(startMs).toISOString(),
-        me.pid,
-        me.startMs === null ? null : new Date(me.startMs).toISOString(),
+        owner.pid,
+        owner.start,
         new Date().toISOString()
       );
-    return Number(res.lastInsertRowid);
+    const id = Number(res.lastInsertRowid);
+
+    later(
+      readProcess(spawned.pid).then((info) => {
+        if (!info) return;
+        getStore()
+          .prepare('UPDATE run_processes SET proc_start = ? WHERE id = ? AND proc_start IS NULL')
+          .run(new Date(info.startMs).toISOString(), id);
+      })
+    );
+    if (owner.start === null) {
+      later(
+        warmGatewayIdentity().then(() => {
+          const { start } = gatewayOwner();
+          if (start === null) return;
+          getStore()
+            .prepare(
+              'UPDATE run_processes SET owner_start = ? WHERE id = ? AND owner_start IS NULL'
+            )
+            .run(start, id);
+        })
+      );
+    }
+    return id;
   } catch (e) {
     logger.warn('Could not record an agent process', {
       runId,
@@ -236,16 +307,41 @@ function rows(): Row[] {
 const sameInstant = (a: number, b: number) => Math.abs(a - b) <= START_TOLERANCE_MS;
 
 /**
+ * Whether the gateway recorded as `pid` and `startMs` is running now. The pid
+ * alone is not enough (a restarted container's gateway is pid 1 every time),
+ * so its start time must match too. When that was never recorded, a live pid
+ * is given the benefit of the doubt.
+ */
+function gatewayAlive(table: ProcessInfo[], pid: number, startMs: number | null): boolean {
+  const found = table.find((p) => p.pid === pid);
+  return found !== undefined && (startMs === null || sameInstant(found.startMs, startMs));
+}
+
+/**
+ * The unfinished runs started by a gateway that is running now, this one
+ * included. Their processes, their approvals and their worktrees are theirs.
+ */
+export function runsOfLiveGateways(table: ProcessInfo[]): Set<string> {
+  const owned = getStore()
+    .prepare(
+      `SELECT id, owner_pid, owner_start FROM runs
+       WHERE status NOT IN ('done', 'failed', 'cancelled') AND owner_pid IS NOT NULL`
+    )
+    .all();
+  const live = new Set<string>();
+  for (const r of owned) {
+    const start = r.owner_start ? Date.parse(String(r.owner_start)) : null;
+    if (gatewayAlive(table, Number(r.owner_pid), start)) live.add(String(r.id));
+  }
+  return live;
+}
+
+/**
  * Whether the process now at `pid` is the one that was recorded. "killed"
- * means it should be stopped; the other answers say why it should not.
+ * means its group should be stopped; the other answers say why it should not.
  */
 function judge(row: Row, table: ProcessInfo[]): Exclude<LeftoverOutcome, 'unsupported'> {
-  const owner = table.find((p) => p.pid === row.ownerPid);
-  // The gateway that started it is still there, so it is not a leftover. The
-  // pid alone is not enough (a restarted container's gateway is pid 1 every
-  // time), so its start time must match too. When that was never recorded, a
-  // live pid is given the benefit of the doubt.
-  if (owner && (row.ownerStart === null || sameInstant(owner.startMs, row.ownerStart))) {
+  if (gatewayAlive(table, row.ownerPid, row.ownerStart)) {
     return row.ownerPid === process.pid ? 'own' : 'owner_alive';
   }
 
@@ -259,25 +355,24 @@ function judge(row: Row, table: ProcessInfo[]): Exclude<LeftoverOutcome, 'unsupp
   // Without the recorded start there is nothing to tell it from a stranger.
   if (row.procStart === null) return 'unverified';
 
+  // The leader is the only member that can be told from a stranger's: after
+  // the recorded group has died its number can be given to another group, and
+  // that group's leader may have exited too, leaving members that all look
+  // younger than the recording. Nothing about them says whose they are.
   const leader = group.find((p) => p.pid === row.pid);
-  if (leader) {
-    if (!sameInstant(leader.startMs, row.procStart)) return 'reused';
-    // Start time says it is ours; for an agent the command line must still
-    // agree. The CLI may be a script run by an interpreter, so its name is
-    // looked for, not its place in the line. A gate is run by a shell, which
-    // may have replaced itself with the one command it was given, so there is
-    // nothing fixed to look for.
-    if (row.kind === 'agent') {
-      const name = path.basename(row.command).toLowerCase();
-      if (name && !leader.command.toLowerCase().includes(name)) return 'reused';
-    }
-    return 'killed';
-  }
+  if (!leader) return 'unverified';
 
-  // The leader has exited. A process group id cannot be handed out again while
-  // the group has members, so what is left are its descendants, which cannot
-  // be older than the leader.
-  return group.every((p) => p.startMs >= row.procStart! - START_TOLERANCE_MS) ? 'killed' : 'reused';
+  if (!sameInstant(leader.startMs, row.procStart)) return 'reused';
+  // Start time says it is ours; for an agent the command line must still
+  // agree. The CLI may be a script run by an interpreter, so its name is
+  // looked for, not its place in the line. A gate is run by a shell, which may
+  // have replaced itself with the one command it was given, so there is
+  // nothing fixed to look for.
+  if (row.kind === 'agent') {
+    const name = path.basename(row.command).toLowerCase();
+    if (name && !leader.command.toLowerCase().includes(name)) return 'reused';
+  }
+  return 'killed';
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -320,12 +415,17 @@ async function stopGroup(pgid: number, graceMs: number): Promise<boolean> {
  * before the runs they belonged to are marked failed.
  */
 export async function killLeftoverProcesses(
-  options: { graceMs?: number } = {}
+  options: {
+    graceMs?: number;
+    /** For tests: how the process table is read. */
+    readTable?: () => Promise<ProcessInfo[] | null>;
+  } = {}
 ): Promise<LeftoverProcess[]> {
   const live = rows();
   if (live.length === 0) return [];
 
-  const table = readProcessTable();
+  const readTable = options.readTable ?? readProcessTable;
+  const table = await readTable();
   const out: LeftoverProcess[] = [];
   const close = (row: Row, outcome: string) => markProcessEnded(row.id, outcome);
   const report = (row: Row, outcome: LeftoverOutcome, forced?: boolean) =>
@@ -356,7 +456,13 @@ export async function killLeftoverProcesses(
   }
 
   for (const row of live) {
-    const verdict = judge(row, table);
+    let verdict = judge(row, table);
+    if (verdict === 'killed') {
+      // The reading above may be seconds old: stopping an earlier group can
+      // take that long. Look again, at the leader, just before signalling.
+      const fresh = await readTable();
+      verdict = fresh ? judge(row, fresh) : 'unverified';
+    }
     if (verdict === 'own' || verdict === 'owner_alive') {
       report(row, verdict);
       continue;
