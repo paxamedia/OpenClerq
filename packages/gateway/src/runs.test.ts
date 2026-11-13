@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { initStore, closeStore, getStore } from './store.js';
 import {
+  addRunStep,
+  createRun,
   recordRun,
   recordModelCall,
   getRun,
@@ -245,5 +247,59 @@ describe('run accounting', () => {
 
   it('reports that there was nothing to cancel', () => {
     expect(cancelRun('run_not-running')).toBe(false);
+  });
+});
+
+describe('what a run’s sub-agents cost', () => {
+  const llm = (runId: string, costUsd: number | null) =>
+    addRunStep(runId, { kind: 'llm', status: 'ok', tokensIn: 10, tokensOut: 5, costUsd });
+  const setCost = (id: string, usd: number) =>
+    getStore().prepare('UPDATE runs SET cost_usd = ? WHERE id = ?').run(usd, id);
+
+  it('carries the roll-up on the list and the detail, and says when a child’s call had no price', () => {
+    const parent = createRun({ trigger: 'manual' });
+    const priced = createRun({ trigger: 'subagent', parentRunId: parent });
+    llm(priced, 0.25);
+    setCost(priced, 0.25);
+    const unpriced = createRun({ trigger: 'subagent', parentRunId: parent });
+    llm(unpriced, null);
+    setCost(unpriced, 0.1);
+
+    const listed = listRuns(500).find((r) => r.id === parent);
+    expect(listed?.childCostUsd).toBe(0.35);
+    expect(listed?.childCostKnown).toBe(false);
+    const detail = getRun(parent);
+    expect(detail?.childCostUsd).toBe(0.35);
+    expect(detail?.childCostKnown).toBe(false);
+    // Each child still says so itself.
+    expect(detail?.children.map((c) => c.costKnown)).toEqual([true, false]);
+  });
+
+  it('says nothing about completeness when every child’s cost is known, or there are none', () => {
+    const parent = createRun({ trigger: 'manual' });
+    const child = createRun({ trigger: 'subagent', parentRunId: parent });
+    llm(child, 0.2);
+    setCost(child, 0.2);
+    const alone = createRun({ trigger: 'manual' });
+
+    const listed = listRuns(500);
+    expect(listed.find((r) => r.id === parent)).toMatchObject({ childCostUsd: 0.2 });
+    expect(listed.find((r) => r.id === parent)).not.toHaveProperty('childCostKnown');
+    expect(getRun(parent)).not.toHaveProperty('childCostKnown');
+    expect(listed.find((r) => r.id === alone)).not.toHaveProperty('childCostKnown');
+    expect(listed.find((r) => r.id === alone)).not.toHaveProperty('childCostUsd');
+  });
+
+  it('keeps a child that made no unpriced call out of the lower bound, even with no cost', () => {
+    const parent = createRun({ trigger: 'manual' });
+    const child = createRun({ trigger: 'subagent', parentRunId: parent });
+    // A failed call is not an unpriced one.
+    addRunStep(child, { kind: 'llm', status: 'error', costUsd: null });
+    expect(getRun(parent)).not.toHaveProperty('childCostKnown');
+    // A child whose only call was unpriced makes the roll-up a lower bound even at $0.
+    const other = createRun({ trigger: 'manual' });
+    const unpricedChild = createRun({ trigger: 'subagent', parentRunId: other });
+    llm(unpricedChild, null);
+    expect(getRun(other)).toMatchObject({ childCostUsd: 0, childCostKnown: false });
   });
 });

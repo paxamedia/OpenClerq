@@ -181,6 +181,12 @@ export interface RunSummary {
    * started none (or none that cost anything), and from an older gateway.
    */
   childCostUsd?: number;
+  /**
+   * False when a sub-agent made a model call with no price, so `childCostUsd` is
+   * a lower bound. Absent when every sub-agent's cost is known, when it had none,
+   * and from an older gateway.
+   */
+  childCostKnown?: false;
 }
 
 /** A sub-agent a run started, as the run's detail lists it. */

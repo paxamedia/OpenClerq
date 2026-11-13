@@ -19,7 +19,7 @@ import { loadRunsSince, useAutomations, useRun } from '../../app/data';
 import { duration, errorMessage, money, tokens } from '../../app/format';
 import { useLive, useResource } from '../../app/live';
 import { Link, navigate, useQueryParam } from '../../app/router';
-import { ACTIVE, isFinished, pipeline, runSpan } from '../../app/stats';
+import { ACTIVE, costWithChildren, isFinished, pipeline, runSpan } from '../../app/stats';
 import {
   EmptyState,
   ErrorState,
@@ -148,15 +148,20 @@ function RunList() {
       key: 'cost',
       hideOnPhone: true,
       header: 'Cost',
-      cell: (r) => (
-        <>
-          {money(r.costUsd + (r.childCostUsd ?? 0), { atLeast: !r.costKnown && r.costUsd > 0 })}
-          {r.childCostUsd ? (
-            <span className="runs-cost-sub">incl. {money(r.childCostUsd)} sub-agents</span>
-          ) : null}
-        </>
-      ),
-      sortValue: (r) => r.costUsd + (r.childCostUsd ?? 0),
+      cell: (r) => {
+        const cost = costWithChildren(r);
+        return (
+          <>
+            {money(cost.usd, { atLeast: cost.atLeast })}
+            {cost.children > 0 ? (
+              <span className="runs-cost-sub">
+                incl. {money(cost.children, { atLeast: cost.childrenAtLeast })} sub-agents
+              </span>
+            ) : null}
+          </>
+        );
+      },
+      sortValue: (r) => costWithChildren(r).usd,
       align: 'end',
       mono: true,
       width: 'md',
@@ -454,12 +459,12 @@ function RunView({ id }: { id: string }) {
                 value: `${money(r.costUsd, { atLeast: !r.costKnown && r.costUsd > 0 })}${r.costKnown ? '' : ' (some calls unpriced)'}`,
                 mono: true,
               },
-              ...(r.childCostUsd
+              ...(r.childCostUsd || r.childCostKnown === false
                 ? [
                     {
                       label: 'With sub-agents',
-                      value: money(r.costUsd + r.childCostUsd, {
-                        atLeast: !r.costKnown && r.costUsd > 0,
+                      value: money(costWithChildren(r).usd, {
+                        atLeast: costWithChildren(r).atLeast,
                       }),
                       mono: true,
                     },

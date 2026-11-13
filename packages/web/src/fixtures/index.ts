@@ -798,6 +798,8 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         5
       ),
     ];
+    // The third one ran a model with no price in the registry: its cost is a lower bound.
+    children[2].costKnown = false;
     const subs: RunDetail = {
       id: 'run_subs01',
       status: 'executing',
@@ -809,6 +811,7 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
       costUsd: 0.62,
       costKnown: true,
       childCostUsd: 0.29,
+      childCostKnown: false,
       tokensIn: 210_000,
       tokensOut: 16_000,
       branch: 'clerq/flaky-tests-subs',
@@ -830,7 +833,7 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         input: c.input,
         exitReason: c.exitReason,
         costUsd: c.costUsd,
-        costKnown: true,
+        costKnown: c.costKnown,
         createdAt: c.createdAt,
         finishedAt: c.finishedAt,
       })),

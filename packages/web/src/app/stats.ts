@@ -76,6 +76,24 @@ export function today(runs: RunSummary[], now = new Date()): RunSummary[] {
   return sinceDay(runs, daysAgo(0, now));
 }
 
+/**
+ * What a run cost with the sub-agents it started. `atLeast` when either its own
+ * calls or a sub-agent's included one with no price, so the figure is a lower
+ * bound (and there is something to bound: a total of nothing is not "at least").
+ */
+export function costWithChildren(
+  r: Pick<RunSummary, 'costUsd' | 'costKnown' | 'childCostUsd' | 'childCostKnown'>
+): { usd: number; children: number; atLeast: boolean; childrenAtLeast: boolean } {
+  const children = r.childCostUsd ?? 0;
+  const usd = r.costUsd + children;
+  return {
+    usd,
+    children,
+    atLeast: usd > 0 && (!r.costKnown || r.childCostKnown === false),
+    childrenAtLeast: children > 0 && r.childCostKnown === false,
+  };
+}
+
 /** Start and end of a run in milliseconds; a running run ends now. */
 export function runSpan(r: RunSummary, now = Date.now()): [number, number] {
   const start = Date.parse(r.startedAt ?? r.createdAt);

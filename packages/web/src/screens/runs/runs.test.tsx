@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { RunStep, ToolCallRecord } from '@clerq/gateway-client';
 import { EnvironmentContext } from '../../app/client';
 import { LiveProvider, LiveStore } from '../../app/live';
+import { costWithChildren } from '../../app/stats';
 import { createFixtureClient, FIXTURE_NOW } from '../../fixtures';
 import { ToastProvider } from '../../ui/Toast';
 import {
@@ -308,6 +309,47 @@ describe('tool calls', () => {
   });
 });
 
+describe('what a run cost with its sub-agents', () => {
+  const run = (over: object) => ({
+    costUsd: 0.5,
+    costKnown: true,
+    childCostUsd: 0.25,
+    ...over,
+  });
+
+  it('adds them up, and is a lower bound only when a price was missing somewhere', () => {
+    expect(costWithChildren(run({}))).toEqual({
+      usd: 0.75,
+      children: 0.25,
+      atLeast: false,
+      childrenAtLeast: false,
+    });
+    expect(costWithChildren(run({ childCostKnown: false }))).toMatchObject({
+      usd: 0.75,
+      atLeast: true,
+      childrenAtLeast: true,
+    });
+    // The run's own unpriced call counts too, but is not the children's.
+    expect(costWithChildren(run({ costKnown: false }))).toMatchObject({
+      atLeast: true,
+      childrenAtLeast: false,
+    });
+  });
+
+  it('has no sub-agents to add, or nothing to bound', () => {
+    expect(costWithChildren({ costUsd: 0.5, costKnown: true })).toEqual({
+      usd: 0.5,
+      children: 0,
+      atLeast: false,
+      childrenAtLeast: false,
+    });
+    // An unknown cost of nothing is not "at least $0".
+    expect(
+      costWithChildren({ costUsd: 0, costKnown: true, childCostUsd: 0, childCostKnown: false })
+    ).toMatchObject({ usd: 0, atLeast: false });
+  });
+});
+
 describe('the sub-agent tree', () => {
   const parent = {
     id: 'run_p',
@@ -336,6 +378,23 @@ describe('the sub-agent tree', () => {
     // The run being looked at is marked, and is not a link to itself.
     expect(markup).toContain('This run');
     expect(markup).not.toContain('href="#/runs/run_p"');
+  });
+
+  it('says "at least" in the roll-up when a sub-agent’s cost is not fully known', () => {
+    const unpriced = [
+      kids[0],
+      { id: 'run_c', title: 'Local model', status: 'done', costUsd: 0.07, costKnown: false },
+    ];
+    const markup = page(<RunTree parent={parent} children={unpriced} currentId="run_p" />);
+    expect(markup).toContain('+ ≥ $0.25 sub-agents');
+    expect(markup).toContain('≥ $0.07');
+    expect(markup).toContain(
+      'The sub-agents cost at least $0.25 on top of the run’s own $0.84: at least $1.09 in all.'
+    );
+    // Everything known: no qualifier.
+    expect(page(<RunTree parent={parent} children={kids} currentId="run_p" />)).not.toContain(
+      'at least'
+    );
   });
 
   it('marks a child as the current run, with its parent linked', () => {
@@ -393,9 +452,13 @@ describe('a run’s page', () => {
     const markup = page(<Runs id="run_subs01" />, { 'run:run_subs01': run });
     expect(markup).toContain('Sub-agents (3)');
     expect(markup).toContain('Find every use of the deprecated zod API in src/');
-    expect(markup).toContain('+ $0.29 sub-agents');
+    // One sub-agent ran a model with no price, so what they cost is a lower bound.
+    expect(markup).toContain('+ ≥ $0.29 sub-agents');
+    expect(markup).toContain(
+      'The sub-agents cost at least $0.29 on top of the run’s own $0.62: at least $0.91 in all.'
+    );
     expect(markup).toContain('With sub-agents');
-    expect(markup).toContain('$0.91');
+    expect(markup).toContain('≥ $0.91');
     expect(markup).not.toContain('Started by');
     expect(markup).toContain('Start a sub-agent');
   });
@@ -420,8 +483,8 @@ describe('a run’s page', () => {
       'runs:list:': runs,
       automations: (await client.automations()).automations,
     });
-    expect(markup).toContain('incl. $0.29 sub-agents');
-    // The parent's own $0.62 and its children's $0.29 make $0.91.
-    expect(markup).toContain('$0.91');
+    expect(markup).toContain('incl. ≥ $0.29 sub-agents');
+    // The parent's own $0.62 and its children's $0.29 make $0.91, at least.
+    expect(markup).toContain('≥ $0.91');
   });
 });

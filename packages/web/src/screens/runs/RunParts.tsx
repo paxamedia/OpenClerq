@@ -226,6 +226,10 @@ export function childNode(c: ChildRunSummary): TreeNode {
   };
 }
 
+/** "$0.25", or "at least $0.25" in a sentence when a price was missing. */
+const sayMoney = (usd: number, atLeast: boolean) =>
+  atLeast ? `at least ${money(usd)}` : money(usd);
+
 /** What the children cost together. */
 export function childTotal(children: TreeNode[]): number {
   return Math.round(children.reduce((sum, c) => sum + c.costUsd, 0) * 1e6) / 1e6;
@@ -276,6 +280,11 @@ export function RunTree({
   currentId: string;
 }) {
   const total = childTotal(children);
+  // A call with no price makes a figure a lower bound, if there is anything to bound.
+  const childrenAtLeast = total > 0 && children.some((c) => !c.costKnown);
+  const ownAtLeast = parent.costUsd > 0 && !parent.costKnown;
+  const allAtLeast =
+    parent.costUsd + total > 0 && (!parent.costKnown || children.some((c) => !c.costKnown));
   return (
     <>
       <ul className="runtree" aria-label="Run and its sub-agents">
@@ -283,7 +292,9 @@ export function RunTree({
           <NodeRow
             node={parent}
             current={parent.id === currentId}
-            note={total > 0 ? `+ ${money(total)} sub-agents` : undefined}
+            note={
+              total > 0 ? `+ ${money(total, { atLeast: childrenAtLeast })} sub-agents` : undefined
+            }
           />
           <ul className="runtree-children">
             {children.map((c) => (
@@ -296,8 +307,9 @@ export function RunTree({
       </ul>
       {total > 0 && (
         <p className="page-hint">
-          The sub-agents cost {money(total)} on top of the run’s own {money(parent.costUsd)}:{' '}
-          {money(parent.costUsd + total)} in all.
+          The sub-agents cost {sayMoney(total, childrenAtLeast)} on top of the run’s own{' '}
+          {sayMoney(parent.costUsd, ownAtLeast)}: {sayMoney(parent.costUsd + total, allAtLeast)} in
+          all.
         </p>
       )}
     </>

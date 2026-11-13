@@ -16,7 +16,7 @@ import { useClient } from '../../app/client';
 import { duration, money } from '../../app/format';
 import { useResource } from '../../app/live';
 import { Link, navigate } from '../../app/router';
-import { runSpan } from '../../app/stats';
+import { costWithChildren, runSpan } from '../../app/stats';
 import { ErrorState, Loaded, Page, PageHeader, PageSkeleton, Section } from '../../shell/layout';
 import { useNow, When } from '../common';
 import { runName } from '../runs/Runs';
@@ -389,8 +389,10 @@ function RepoRuns({ runs }: { runs: RunSummary[] }) {
           hideOnPhone: true,
           align: 'end',
           mono: true,
-          cell: (r) =>
-            money(r.costUsd + (r.childCostUsd ?? 0), { atLeast: !r.costKnown && r.costUsd > 0 }),
+          cell: (r) => {
+            const cost = costWithChildren(r);
+            return money(cost.usd, { atLeast: cost.atLeast });
+          },
           width: 'sm',
         },
       ]}

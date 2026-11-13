@@ -65,6 +65,11 @@ export interface RunRecord {
   sessionId?: string;
   /** What the sub-agents it started cost, on top of `costUsd`. Absent when it started none that cost anything. */
   childCostUsd?: number;
+  /**
+   * False when a sub-agent made a model call with no price, so `childCostUsd`
+   * is a lower bound. Absent when every sub-agent's cost is known, or it had none.
+   */
+  childCostKnown?: false;
 }
 
 /** A sub-agent a run started, as the parent's detail lists it. */
@@ -88,7 +93,12 @@ const RUN_COLUMNS = `runs.*, (
   SELECT name FROM automations a WHERE a.id = runs.automation_id
 ) AS automation_name, (
   SELECT COALESCE(SUM(c.cost_usd), 0) FROM runs c WHERE c.parent_run_id = runs.id
-) AS child_cost_usd`;
+) AS child_cost_usd, (
+  SELECT COUNT(*) FROM runs c WHERE c.parent_run_id = runs.id AND EXISTS (
+    SELECT 1 FROM run_steps s
+    WHERE s.run_id = c.id AND s.kind = 'llm' AND s.status IN ('ok', 'unaccounted') AND s.cost_usd IS NULL
+  )
+) AS child_unpriced`;
 
 function rowToRun(r: Record<string, unknown>): RunRecord {
   const childCost = Math.round(Number(r.child_cost_usd ?? 0) * 1e6) / 1e6;
@@ -116,6 +126,7 @@ function rowToRun(r: Record<string, unknown>): RunRecord {
     parentRunId: r.parent_run_id ? String(r.parent_run_id) : undefined,
     sessionId: r.session_id ? String(r.session_id) : undefined,
     ...(childCost > 0 ? { childCostUsd: childCost } : {}),
+    ...(Number(r.child_unpriced ?? 0) > 0 ? { childCostKnown: false as const } : {}),
   };
 }
 

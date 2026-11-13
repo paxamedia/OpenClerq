@@ -263,6 +263,25 @@ describe('one repository', () => {
     expect(markup).toContain('No automation targets it now.');
   });
 
+  it('adds sub-agents’ cost to a recent run, as at least when a price was missing', () => {
+    const run = (over: object) => ({
+      id: 'run_1',
+      status: 'done',
+      trigger: 'schedule' as const,
+      createdAt: '2026-11-11T10:00:00.000Z',
+      costUsd: 0.5,
+      costKnown: true,
+      tokensIn: 0,
+      tokensOut: 0,
+      childCostUsd: 0.25,
+      ...over,
+    });
+    expect(html(<RepoDetailView repo={detail({ recentRuns: [run({})] })} />)).toContain('$0.75');
+    expect(
+      html(<RepoDetailView repo={detail({ recentRuns: [run({ childCostKnown: false })] })} />)
+    ).toContain('≥ $0.75');
+  });
+
   it('lists a missing folder as missing, with its path', () => {
     const markup = html(
       <RepoDetailView
