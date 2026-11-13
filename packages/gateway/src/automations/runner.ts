@@ -166,6 +166,12 @@ function firstLine(text: string, max = 72): string {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
+/** The model doing a run's work, and the models found unavailable so far. */
+interface ModelInUse {
+  model?: string;
+  unavailable: Set<string>;
+}
+
 /** A gate did not pass: a command failed, or an assertion about the diff. */
 export class GateFailed extends Error {
   constructor(
@@ -409,7 +415,7 @@ async function execute(
     const switchesModels = DRIVER_CAPABILITIES[spec.agent.driver].midRunModelSwitch;
     // The models whose attempt ended at the gates: not used as a fallback later.
     const tried = new Set<string>();
-    const used: { model?: string } = {};
+    const used: ModelInUse = { unavailable };
     let level = 0;
     let prompt = spec.prompt;
     let result: DriverResult;
@@ -636,7 +642,7 @@ async function runAgent(
   /** Vault values this run uses, taken out of everything it stores. */
   inUse: Record<string, string>,
   /** The model doing the work, kept current as the driver moves between models. */
-  used: { model?: string }
+  used: ModelInUse
 ): Promise<DriverResult> {
   const pending = new Map<string, { seq: number; row: number; started: number }>();
   const log: string[] = [];
@@ -736,8 +742,11 @@ async function runAgent(
         break;
       }
       case 'model_fallback':
-        // The call that failed is the model_call before this; here the move.
+        // The call that failed is the model_call before this; here the move. The
+        // model it left is down for the rest of the run: a later attempt (an
+        // escalation) is not handed it as a fallback.
         used.model = event.to;
+        used.unavailable.add(event.from);
         recordFallback(
           {
             from: event.from,

@@ -145,6 +145,10 @@ providers:
         context: 200000
         inputPerM: 1
         outputPerM: 2
+      - id: third
+        context: 200000
+        inputPerM: 1
+        outputPerM: 2
       - id: unpriced
         context: 200000
   - id: other
@@ -168,6 +172,8 @@ providers:
 const MODEL_REGISTRY = parseRegistry(MODEL_REGISTRY_YAML);
 /** Status per model id, call by call; a model not listed answers 200. */
 let modelStatuses: Record<string, number[]> = {};
+/** What an Anthropic-shaped model says, call by call, as content blocks; a model not listed says "Done." */
+let modelContent: Record<string, Array<Array<Record<string, unknown>>>> = {};
 const modelRequests: Array<{ model: string; headers: Record<string, string> }> = [];
 const fakeModel = (async (url: string, init: RequestInit) => {
   // The probe of a local server that is not running.
@@ -191,11 +197,16 @@ const fakeModel = (async (url: string, init: RequestInit) => {
               ],
               usage: { prompt_tokens: 10, completion_tokens: 5 },
             }
-          : {
-              content: [{ type: 'text', text: 'Done.' }],
-              stop_reason: 'end_turn',
-              usage: { input_tokens: 10, output_tokens: 5 },
-            }
+          : (() => {
+              const content = modelContent[body.model]?.shift() ?? [
+                { type: 'text', text: 'Done.' },
+              ];
+              return {
+                content,
+                stop_reason: content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn',
+                usage: { input_tokens: 10, output_tokens: 5 },
+              };
+            })()
       ),
   } as Response;
 }) as unknown as typeof fetch;
@@ -325,6 +336,7 @@ beforeEach(() => {
   unavailable = {};
   unavailableKind = 'no_key';
   modelStatuses = {};
+  modelContent = {};
   modelRequests.length = 0;
   vaultKey = undefined;
   process.env.FAKE_ROUTING_KEY = 'fake-key';
@@ -664,6 +676,47 @@ describe('fallback for the builtin agent', () => {
     modelRequests.length = 0;
     await waitFor(enqueue(a, 'manual', 'fake/second'), finished);
     expect(modelRequests[0].headers['x-api-key']).toBe('vault-key-for-fake');
+  });
+
+  it('does not hand an escalation a model the agent found down in the middle of the run', async () => {
+    // priced is down, then second; third does the work and fails the gate; the
+    // escalation model is down too. Neither second nor priced is asked again.
+    modelStatuses = { priced: [503], second: [503], unpriced: [503] };
+    modelContent = {
+      third: [
+        [
+          {
+            type: 'tool_use',
+            id: 'w1',
+            name: 'write_file',
+            input: { path: 'OUT.md', content: 'x\n' },
+          },
+        ],
+        [{ type: 'text', text: 'Done.' }],
+      ],
+    };
+    const run = await waitFor(
+      enqueue(
+        automation('gates:\n  - run: grep -q strong OUT.md', {
+          driver:
+            'builtin\n  model:\n    primary: fake/priced\n    escalate: [fake/unpriced]\n    fallback: [fake/second, fake/third]',
+        })
+      ),
+      finished
+    );
+    expect(modelRequests.map((r) => r.model)).toEqual([
+      'priced',
+      'second',
+      'third',
+      'third',
+      'unpriced',
+    ]);
+    expect(run.status).toBe('failed');
+    expect(named(run, 'agent.escalate')[0].output).toMatchObject({ from: 'fake/third' });
+    expect(named(run, 'model.fallback').map((s) => `${s.input?.from}>${s.input?.to}`)).toEqual([
+      'fake/priced>fake/second',
+      'fake/second>fake/third',
+    ]);
   });
 
   it('refuses before any work a fallback model with no price when the spec has a dollar budget', async () => {
