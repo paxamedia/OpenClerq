@@ -583,7 +583,10 @@ describe.skipIf(isWindows)('lease expiry', () => {
 
   it('does not retry a run that was waiting for approval when its gateway died', async () => {
     const a = automation('retry:\n  max_retries: 2\n  backoff: 50ms');
-    const id = abandoned(a, 'awaiting_approval', { pid: await deadPid(), start: null }, past());
+    // No lease to expire: startup recovery settles it, not this gateway's own
+    // lease reaper, which on a busy machine could find an expired one first
+    // while recovery waits for \`ps\` (and says "Lease expired" instead).
+    const id = abandoned(a, 'awaiting_approval', { pid: await deadPid(), start: null }, null);
     await recoverAfterRestart();
     expect(getRun(id)).toMatchObject({
       status: 'failed',
