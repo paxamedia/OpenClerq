@@ -10,15 +10,16 @@ For where this architecture is going, see [ROADMAP.md](ROADMAP.md).
 
 ## 1. Components
 
-| Component        | Tech                | Role                                                    |
-| ---------------- | ------------------- | ------------------------------------------------------- |
-| Desktop app      | Tauri v2 + React    | Native UI on macOS and Windows                          |
-| Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration |
-| Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration           |
-| Agent drivers    | `packages/drivers`  | Run a coding agent: a vendor CLI, or the builtin loop   |
-| Interface        | `packages/web`      | Shell, screens, charts and components, for any host app |
-| Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                            |
-| Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets               |
+| Component        | Tech                | Role                                                      |
+| ---------------- | ------------------- | --------------------------------------------------------- |
+| Desktop app      | Tauri v2 + React    | Native UI on macOS and Windows                            |
+| Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration   |
+| Server           | `apps/server`       | The gateway as a headless daemon ([SERVER.md](SERVER.md)) |
+| Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration             |
+| Agent drivers    | `packages/drivers`  | Run a coding agent: a vendor CLI, or the builtin loop     |
+| Interface        | `packages/web`      | Shell, screens, charts and components, for any host app   |
+| Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                              |
+| Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets                 |
 
 ```text
 Desktop (Tauri + React)
@@ -730,6 +731,21 @@ gateway open.
 
 The listener binds `127.0.0.1` unless `CLERQ_HOST` says otherwise. Remote access (a phone) goes
 through the user's own tunnel; see Remote mode in SECURITY.md. See [SECURITY.md](SECURITY.md).
+
+### Headless server
+
+`apps/server` (`@clerq/server`, the `clerq-server` binary) runs this same gateway as a daemon with
+no desktop app: `createGateway()` with the settings read from the environment and `~/.clerq/.env`
+only, never the working directory's. `createGateway()` returns `close()`, which a stop (SIGTERM or
+SIGINT) calls: it stops accepting connections, gives requests in flight two seconds, then drops the
+rest (event streams never end by themselves), stops the schedules, the queue and the triggers, and
+closes the store (folding its write-ahead log into `clerq.db`). A run in flight is not cancelled
+and not waited for: its lease stops being renewed, and the next start reclaims it through the same
+recovery a crashed gateway gets (see [Queue, leases and schedules](#queue-leases-and-schedules)).
+Agent and gate processes are not signalled by the gateway; the next start stops those it recorded
+(`run_processes`), and a service manager that ends the whole control group does so sooner.
+`scripts/build-binary.js` compiles any entry point of the repository with Bun, for one target, into
+`<package>/dist/<target>/`; `docs/SERVER.md` covers running, configuring and fronting it.
 
 ### Error response shape
 

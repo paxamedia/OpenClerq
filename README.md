@@ -59,6 +59,8 @@ Full text: [Installer disclaimer](docs/INSTALLER_DISCLAIMER.md).
 
 To **build installers** from this repo: `pnpm build:installers` (requires [Bun](https://bun.sh) — `pnpm add -D bun -w`; if Bun fails, run `cd node_modules/bun && node install.js`). Outputs: macOS → `apps/desktop/src-tauri/target/release/bundle/dmg/`; Windows → `apps/desktop/src-tauri/target/release/bundle/msi/` or `nsis/`.
 
+**On a server:** `clerq-server` runs the same gateway headless, for a Linux machine that keeps running automations with nobody logged in. Build it with `node scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server`; systemd units, settings and reverse-proxy examples are in [SERVER](docs/SERVER.md). A container image and an installer script are not published yet.
+
 **Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS and Windows installers and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases). For signed macOS builds and in-app updates, see [Distribution](docs/DISTRIBUTION.md).
 
 ### macOS
@@ -202,7 +204,8 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 ```
 clerq/
 ├── apps/
-│   └── desktop/          # Tauri v2 + React (Windows, Mac)
+│   ├── desktop/          # Tauri v2 + React (Windows, Mac)
+│   └── server/           # clerq-server: the gateway as a headless daemon (Linux, Mac)
 ├── packages/
 │   ├── gateway/          # OpenClerq agent runtime
 │   └── calculation-core/ # Rust — advanced arithmetic engine (deterministic, auditable)
@@ -232,6 +235,7 @@ clerq/
 | [ARITHMETIC_API](docs/ARITHMETIC_API.md)             | Calculation engine: operators, functions, examples            |
 | [MODULE_SYSTEM](docs/MODULE_SYSTEM.md)               | How skills and modules are structured (schemas, dependencies) |
 | [TOOLS](docs/TOOLS.md)                               | Built‑in tools (filesystem, HTTP) and how to extend them      |
+| [SERVER](docs/SERVER.md)                             | The headless server: systemd, settings, data, reverse proxy   |
 | [SECURITY](docs/SECURITY.md)                         | Threat model, binding rules, release checklist                |
 | [DISTRIBUTION](docs/DISTRIBUTION.md)                 | Code signing, notarization, and the updater                   |
 | [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution    |

@@ -58,6 +58,26 @@ For Windows code signing, configure `bundle.windows.certificateThumbprint` and o
 
 ---
 
+## Server (Linux and macOS)
+
+`clerq-server`, the gateway as a headless daemon, is compiled with Bun by `scripts/build-binary.js`,
+one target at a time, into `apps/server/dist/<target>/` (with `clerq-calc` beside it when one is
+built for that target):
+
+```bash
+cargo build --release --manifest-path packages/calculation-core/Cargo.toml
+node scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server \
+  --target bun-linux-x64 --require-calc
+node apps/server/scripts/smoke.mjs apps/server/dist/bun-linux-x64/clerq-server
+```
+
+CI builds the `linux-x64` binary on every push and runs the smoke script and
+`systemd-analyze verify` on the two units in `apps/server/systemd/`. The binaries are not signed,
+and release archives, checksums and a container image are not published yet. Running it is covered
+in [SERVER.md](SERVER.md).
+
+---
+
 ## CI environment
 
 GitHub Actions sets `CI=true` by default. On macOS, this triggers `--skip-jenkins` in the DMG bundler (headless mode). For local builds where `CI` is set (e.g. by an IDE), you can unset it:
