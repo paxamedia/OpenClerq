@@ -642,8 +642,13 @@ describe('what a command leaves behind', () => {
   });
 
   // perl is in macOS and most Linux base systems; it calls setsid() without a helper.
-  const SETSID = (body: string) =>
-    `/usr/bin/perl -MPOSIX -e 'POSIX::setsid(); close STDOUT; close STDERR; close STDIN; ${body}' & sleep 1; echo started`;
+  // The shell waits until the perl process has left the group and finished
+  // setting up (and says so by creating `ready`), instead of sleeping and
+  // hoping: on a slow runner a fixed second can end before perl has started,
+  // and a process still in the group is reaped with it.
+  const SETSID = (ready: string, body: string, setup = '') =>
+    `/usr/bin/perl -MPOSIX -e 'POSIX::setsid(); ${setup} open R, ">", "${ready}"; close R; close STDOUT; close STDERR; close STDIN; ${body}' & ` +
+    `i=0; while [ ! -e "${ready}" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; echo started`;
 
   it.skipIf(process.platform === 'win32')(
     'finds a process that left the group with setsid and the directories, by its tag file, and stops it',
@@ -653,7 +658,14 @@ describe('what a command leaves behind', () => {
       const r = await exec(
         { profile: isMac ? 'seatbelt' : 'native', cwd: work, network: 'none', tagFile },
         '/bin/sh',
-        ['-c', SETSID('chdir "/"; sleep 4; open F, ">", "' + work + '/survivor.txt"; close F')],
+        [
+          '-c',
+          SETSID(
+            path.join(work, '.ready'),
+            'sleep 4; open F, ">", "' + work + '/survivor.txt"; close F',
+            'chdir "/";'
+          ),
+        ],
         { reapGroup: true }
       );
       expect(r.stdout.trim()).toBe('started');
@@ -693,9 +705,12 @@ describe('what a command leaves behind', () => {
     'finds one that closed its descriptors by its working directory',
     async () => {
       const since = Date.now();
-      await exec({ profile: 'native', cwd: work }, '/bin/sh', ['-c', SETSID('sleep 20')], {
-        reapGroup: true,
-      });
+      await exec(
+        { profile: 'native', cwd: work },
+        '/bin/sh',
+        ['-c', SETSID(path.join(work, '.ready'), 'sleep 20')],
+        { reapGroup: true }
+      );
       const done = await stopStragglers({ dirs: [work], since });
       expect(done?.stopped).toHaveLength(1);
       expect(done?.remaining).toEqual([]);

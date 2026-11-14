@@ -99,23 +99,65 @@ export async function findStragglers(options: {
   return found === null ? null : found.filter((s) => s.pid !== process.pid);
 }
 
-/** Start time (epoch ms) and parent of each pid, from `ps`. */
+/**
+ * How far apart two readings of one process's age can be: `ps` counts whole
+ * seconds, and the process's start and the reading each lose their fraction.
+ */
+export const AGE_GRANULARITY_MS = 1_000;
+
+/**
+ * Seconds from `ps -o etime`: `[[dd-]hh:]mm:ss`. Null for anything else.
+ *
+ * This is how a process's age is read, not `lstart`. On Linux `lstart` is the
+ * boot time plus the process's ticks since boot, and the boot time it assumes
+ * moves with the wall clock: after an NTP step (common on a VM) a process
+ * started a moment ago can be dated seconds before the run that started it.
+ * The elapsed time is counted from uptime on both sides and does not move.
+ */
+export function parseElapsed(text: string): number | null {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d{2})$/.exec(text.trim());
+  if (!m) return null;
+  const [days, hours, minutes, seconds] = [m[1], m[2], m[3], m[4]].map((v) => Number(v ?? 0));
+  return ((days * 24 + hours) * 60 + minutes) * 60 + seconds;
+}
+
+/**
+ * Rows of `ps -o pid=,ppid=,etime=` as start times in the caller's clock:
+ * `now` minus the elapsed time. Rows it cannot read are skipped.
+ */
+export function parseProcessAges(
+  text: string,
+  now: number
+): Map<number, { startMs: number; ppid: number }> {
+  const out = new Map<number, { startMs: number; ppid: number }>();
+  for (const line of text.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
+    if (!m) continue;
+    const elapsed = parseElapsed(m[3]);
+    if (elapsed === null) continue;
+    out.set(Number(m[1]), { startMs: now - elapsed * 1_000, ppid: Number(m[2]) });
+  }
+  return out;
+}
+
+/**
+ * Whether a process that `ps` dates at `startMs` began with the run that began
+ * at `since`. Both ends are whole seconds, so a process the run started can
+ * be dated up to a second before it; a missing date is never "after".
+ */
+export function startedSince(startMs: number | undefined, since: number | undefined): boolean {
+  if (since === undefined) return false;
+  return (startMs ?? -Infinity) >= since - AGE_GRANULARITY_MS;
+}
+
+/** Start time (epoch ms, from the elapsed time) and parent of each pid, from `ps`. */
 async function processInfo(
   pids: number[]
 ): Promise<Map<number, { startMs: number; ppid: number }>> {
-  const out = new Map<number, { startMs: number; ppid: number }>();
-  if (pids.length === 0) return out;
-  const text = await run('ps', ['-ww', '-o', 'pid=,ppid=,lstart=', '-p', pids.join(',')]);
-  for (const line of (text ?? '').split('\n')) {
-    const m =
-      /^\s*(\d+)\s+(\d+)\s+([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})/.exec(
-        line
-      );
-    if (!m) continue;
-    const startMs = new Date(m[3]).getTime();
-    if (Number.isFinite(startMs)) out.set(Number(m[1]), { startMs, ppid: Number(m[2]) });
-  }
-  return out;
+  if (pids.length === 0) return new Map();
+  const text = await run('ps', ['-ww', '-o', 'pid=,ppid=,etime=', '-p', pids.join(',')]);
+  // After the call: the elapsed time was read while `ps` ran.
+  return parseProcessAges(text ?? '', Date.now());
 }
 
 /** This process and its ancestors, which are never the run's. */
@@ -153,10 +195,9 @@ export async function stopStragglers(options: {
   const ours = async (list: Straggler[]) => {
     const info = await processInfo(list.map((s) => s.pid));
     const gateway = await gatewayLine();
-    // `ps` reports start times to the second.
-    const after = options.since === undefined ? Infinity : options.since - 1_000;
     return list.filter(
-      (s) => s.tagged || (!gateway.has(s.pid) && (info.get(s.pid)?.startMs ?? -Infinity) >= after)
+      (s) =>
+        s.tagged || (!gateway.has(s.pid) && startedSince(info.get(s.pid)?.startMs, options.since))
     );
   };
   const stopped = await ours(found);
