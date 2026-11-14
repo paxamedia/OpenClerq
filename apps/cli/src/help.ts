@@ -32,7 +32,7 @@ const EXIT_CODES = `Exit codes:
   ${EXIT.ok}   done
   ${EXIT.failed}   it failed: a run failed or was cancelled, a spec has errors, the gateway refused
   ${EXIT.approval}   a run is waiting for an approval (run/logs --follow --stop-at-approval)
-  ${EXIT.gateway}   the gateway cannot be used: nothing answers, or it speaks another API version
+  ${EXIT.gateway}   the gateway cannot be used: nothing answers, it redirects, or it speaks another API version
   ${EXIT.usage}  bad arguments or options (nothing was sent)`;
 
 export function topHelp(table: CommandDef[], version: string): string {

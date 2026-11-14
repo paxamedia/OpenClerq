@@ -66,8 +66,11 @@ clerq login https://clerq.example.com --token-file /etc/clerq/token   # keeps th
 clerq login                                                 # on a machine with a local gateway: checks it, saves nothing
 ```
 
-`login` checks that the gateway speaks this CLI's API version and that it accepts the token (one
-authenticated call) before it saves anything. It does not read `CLERQ_GATEWAY_TOKEN`: a token in the
+`login` checks that the gateway speaks this CLI's API version and that the token is the gateway's own
+(one call only that token may make, `GET /routing`; a paired phone's or a module's token, which the
+gateway knows, is refused and said to be) before it saves anything. It saves no token shorter than 16
+characters: the gateway's own are 64, a short one is easy to guess, and the CLI could not keep it out of
+its own output. It does not read `CLERQ_GATEWAY_TOKEN`: a token in the
 environment needs no `login`. `clerq logout [--profile <name>]` removes the profile and the token
 stored in it (a token file is left where it is).
 
@@ -99,7 +102,8 @@ command says so and how to fix it (`chmod 600`). You can edit it by hand.
 
 Before anything else a command asks the gateway (no token needed) which API versions it serves. A
 gateway that speaks another version, or is older than 1.0, or is not a gateway, gets the plain reason
-and **exit 3**; so does one that does not answer. A request the gateway has not begun to answer
+and **exit 3**; so does one that does not answer, and one that answers with a **redirect**, which is
+never followed (see Security notes). A request the gateway has not begun to answer
 within 30 seconds is given up on (`CLERQ_TIMEOUT=60` changes that, in seconds); a followed run, once
 its stream has begun, is not cut off.
 
@@ -143,7 +147,10 @@ Added acme/app (github, id repo_41d0…).
 ```
 
 - A relative folder is made absolute from where you run the command. A path is **on the gateway's
-  computer**, so for a gateway elsewhere give a path that exists there (the CLI says so).
+  computer**, so for a gateway elsewhere give a path that exists there (the CLI says so). The CLI
+  expands `~` itself only for the gateway on this computer (loopback, port 18790, the same rule as for the
+  token); for any other address, an `ssh -L` to a gateway elsewhere included, it leaves `~` for the
+  gateway to expand and says the path is on the gateway's computer.
 - The row is made the way an automation naming the repository makes it, so the two find each other.
   Adding one that is listed says so and changes nothing. The `#branch` an automation's target may carry
   is accepted and ignored here: the branch belongs to the spec.
@@ -281,7 +288,7 @@ branch, prUrl, costUsd, exitCode }`). Clients should ignore fields and types the
 | 0    | Done.                                                                                                                                                           |
 | 1    | It failed: a run failed or was cancelled, a spec has errors, a request was refused (including a token the gateway does not accept), or `--insecure` was needed. |
 | 2    | A run is waiting for an approval (`run`/`logs` with `--follow --stop-at-approval`).                                                                             |
-| 3    | The gateway cannot be used: nothing answers, it does not answer in time, or it speaks another API version.                                                      |
+| 3    | The gateway cannot be used: nothing answers, it does not answer in time, it answers with a redirect, or it speaks another API version.                          |
 | 64   | Bad arguments or options; nothing was sent.                                                                                                                     |
 | 130  | Stopped with Ctrl-C.                                                                                                                                            |
 
@@ -296,14 +303,20 @@ approval".
 - **Where the token is kept.** `login` stores it in `~/.clerq/cli.json` (0600) unless you give
   `--token-file`, which keeps only the path. It is never printed: not by `status`, not in an error,
   not under `--json`. Everything the CLI writes passes through one filter that replaces the token in use
-  with `***`, as a last line of defence.
+  with `***` (a value of 8 characters or more; `login` will not save a shorter one), as a last line of
+  defence.
 - **Plain http.** A token sent over `http://` to another computer can be read by anyone on the way. The
   CLI refuses that, for every command, **before sending anything**, unless you pass `--insecure` (on that
   command; it is not remembered). Loopback addresses are exempt. Put TLS in front of a server instead
   ([SERVER.md](SERVER.md#putting-a-reverse-proxy-in-front-of-it)). `login` refuses before it asks for a token.
+- **A redirect is never followed.** A gateway does not redirect, so an answer of 301, 302, 307 or 308
+  means something else is answering at that address, and following it would send your request, a
+  POST's body with it, on to wherever it points, possibly over plain http. Every request is made with
+  redirects refused; the command says the address answered with a redirect and exits 3. If a proxy
+  redirects http to https, use the https address.
 - **A profile's token goes to its own address only** (see Connecting).
-- **The token is the gateway's own.** A scoped token (a phone's, a module's) is refused by most routes;
-  `login` says so. Anyone with the gateway token can do everything the CLI can, and run commands as the
+- **The token is the gateway's own.** A scoped token (a phone's, a module's) reaches a few routes
+  only; `login` and `status` say so (a phone may read approvals, so they ask for something it may not). Anyone with the gateway token can do everything the CLI can, and run commands as the
   account the gateway runs as: keep `cli.json` and token files to yourself.
 - `repo add --check` hands the vault's forge token to one `git ls-remote` through that command's
   environment (never its arguments), hardened as every git command the gateway runs; the answer carries
