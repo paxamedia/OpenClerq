@@ -166,13 +166,13 @@ The state is 32 random bytes, kept in memory, valid ten minutes, once.
 exemption is this exact path, in both the `/v1` and bare forms). It spends the state whatever happens.
 `200` "Connected…" with the install link; `400` for an unknown, used or expired state, the wrong
 `Host`, a bad code, an app under another account than asked or with a wider permission than asked, or
-a key that cannot be read or that the vault refuses; `409` when an app is connected already; `502` when GitHub refuses the code;
+a key that cannot be read or that the vault refuses; `409` when an app is connected already, or another callback connected one first (this one's app is left on GitHub: the page links its settings page so you can delete it); `502` when GitHub refuses the code;
 `503` when the vault has no key. Nothing is stored on any of them.
 
 `POST /github/app/import` with `{ appId, clientId, privateKey, clientSecret? }` proves the key with a
 JWT and `GET /app`, then stores the app and the secrets: `201` (`{ connected: true, app, replacedKey: false }`),
 or `200` with `replacedKey: true` for a new key of the app already connected. `400 invalid_request`
-(a field is missing or malformed), `409 app_already_connected` (another app), `422` with `error`
+(a field is missing or malformed), `409 app_already_connected` (another app), `409 app_changed` (the connection changed while GitHub was being asked), `422` with `error`
 `invalid_private_key` (not an RSA PEM), `github_rejected` (GitHub's own `message`) or
 `client_id_mismatch`, `502 github_unreachable`, `503 vault_unavailable`.
 

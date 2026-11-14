@@ -38,6 +38,21 @@ export class ConnectError extends Error {
   }
 }
 
+/**
+ * Another app was connected (or this one forgotten) after the request began,
+ * while it waited for GitHub. `connected` is the app that is there now.
+ */
+export class ConnectConflict extends Error {
+  constructor(readonly connected: GithubAppConfig | null) {
+    super(
+      connected
+        ? `The GitHub App ${connected.slug} was connected while this was being set up.`
+        : 'The connected GitHub App was forgotten while this was being set up.'
+    );
+    this.name = 'ConnectConflict';
+  }
+}
+
 function must(result: { ok: boolean; error?: string }): void {
   if (!result.ok) throw new ConnectError(result.error ?? 'The vault refused the secret.');
 }
@@ -49,6 +64,11 @@ function must(result: { ok: boolean; error?: string }): void {
  *
  * `clientSecret` null keeps the one stored for the same app and drops one
  * stored for another.
+ *
+ * `expected` is which app was connected when the request began (its id, or
+ * null for none). A request that waited for GitHub in between checks it again
+ * here, with no await before the writes, so two requests that began together
+ * cannot both connect: the later one gets a `ConnectConflict` and stores nothing.
  */
 export function saveConnection(
   vault: Vault,
@@ -56,6 +76,7 @@ export function saveConnection(
     config: GithubAppConfig;
     privateKey: string;
     clientSecret: string | null;
+    expected: number | null;
     actor: string;
     action: 'github.app.connected' | 'github.app.imported' | 'github.app.key_replaced';
   }
@@ -65,6 +86,7 @@ export function saveConnection(
     key: vault.get(APP_PRIVATE_KEY_SECRET) ?? null,
     secret: vault.get(APP_CLIENT_SECRET_SECRET) ?? null,
   };
+  if ((before.config?.appId ?? null) !== input.expected) throw new ConnectConflict(before.config);
   const sameApp = before.config?.appId === input.config.appId;
   try {
     must(vault.set(APP_PRIVATE_KEY_SECRET, input.privateKey));

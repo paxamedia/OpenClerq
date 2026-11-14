@@ -27,6 +27,7 @@ import {
   type GithubAppConfig,
 } from './config.js';
 import {
+  ConnectConflict,
   ConnectError,
   forgetConnection,
   realVault,
@@ -233,14 +234,16 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
 
     const web = githubWebBase();
     const where = settingsUrl({ slug: converted.slug, owner: converted.owner });
-    const mismatch = (title: string, text: string) =>
+    // This app exists on GitHub now and OpenClerq is not keeping it: say where to delete it.
+    const mismatch = (title: string, text: string, status = 400) =>
       page(
         res,
-        400,
+        status,
         title,
         `<p>${esc(text)}</p><p>Nothing was connected, and the key GitHub handed over was discarded. ` +
           `Delete the app on GitHub (<a href="${esc(where)}">${esc(where)}</a>) and start again.</p>`
       );
+    const conflict = (text: string) => mismatch('Another app was connected first', text, 409);
     if (flow.org && converted.owner?.login.toLowerCase() !== flow.org.toLowerCase()) {
       return mismatch(
         'The app is under another account',
@@ -278,10 +281,19 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
         config,
         privateKey: converted.privateKey,
         clientSecret: converted.clientSecret,
+        // None was connected when this callback began; if one is now, another callback won.
+        expected: null,
         actor: 'github-manifest',
         action: 'github.app.connected',
       });
     } catch (e) {
+      if (e instanceof ConnectConflict) {
+        return conflict(
+          e.connected
+            ? `Another app, ${e.connected.slug}, was connected while this one was being created, so it stays the connected one.`
+            : 'The connection changed while this app was being created.'
+        );
+      }
       return mismatch(
         'The key could not be stored',
         e instanceof ConnectError ? e.message : 'The connection could not be stored.'
@@ -397,10 +409,19 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
         config,
         privateKey,
         clientSecret,
+        // The app that was connected when this began; GitHub was asked in between.
+        expected: existing?.appId ?? null,
         actor: 'operator',
         action: replacing ? 'github.app.key_replaced' : 'github.app.imported',
       });
     } catch (e) {
+      if (e instanceof ConnectConflict) {
+        return res.status(409).json({
+          error: 'app_changed',
+          message:
+            'The connected GitHub App changed while the key was being checked. Nothing was stored; look at GET /github/app and try again.',
+        });
+      }
       return res.status(500).json({
         error: 'github_import_failed',
         message: e instanceof ConnectError ? e.message : 'The connection could not be stored.',

@@ -102,6 +102,8 @@ export class FakeGithub {
   reportRepos: string[] | undefined;
   /** Never answer a call whose path includes this text (to test a timeout). */
   hang: string | undefined;
+  /** Answer a call late: `METHOD /path` includes the key, wait this many milliseconds first. */
+  readonly delays = new Map<string, number>();
   /** Page size for `GET /app/installations`. */
   pageSize = 100;
   private counter = 0;
@@ -167,6 +169,7 @@ export class FakeGithub {
     this.grantInstead = undefined;
     this.reportRepos = undefined;
     this.hang = undefined;
+    this.delays.clear();
     this.counter = 0;
     this.purposes.clear();
     this.pats.clear();
@@ -294,6 +297,9 @@ export class FakeGithub {
     };
 
     if (this.hang && path.includes(this.hang)) return; // never answered
+    for (const [needle, ms] of this.delays) {
+      if (`${method} ${path}`.includes(needle)) await new Promise((r) => setTimeout(r, ms));
+    }
     for (const [needle, failure] of this.failNext) {
       if (path.includes(needle)) {
         this.failNext.delete(needle);

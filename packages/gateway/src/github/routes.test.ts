@@ -452,6 +452,53 @@ describe('the callback', () => {
     expect(readAppConfig()?.slug).toBe('other');
   });
 
+  it('lets one of two callbacks that began together connect; the late one says where to delete its app', async () => {
+    const a = await startFlow();
+    const b = await startFlow();
+    fake.conversions.set(a.code, fake.conversion({ id: 11, slug: 'app-a' }));
+    const keyB = fake.addKey();
+    fake.conversions.set(b.code, fake.conversion({ id: 22, slug: 'app-b', pem: keyB }));
+    // A is slow at GitHub; B goes through while it waits.
+    fake.delays.set(a.code, 400);
+    const late = callback(a.state, a.code);
+    while (fake.calls('POST', a.code).length === 0) await new Promise((r) => setTimeout(r, 10));
+    const winner = await callback(b.state, b.code);
+    expect(winner.status).toBe(200);
+    expect(winner.text).toContain('Connected. Now install the app');
+
+    const loser = await late;
+    expect(loser.status).toBe(409);
+    expect(loser.text).toContain(
+      'Another app, app-b, was connected while this one was being created'
+    );
+    expect(loser.text).toContain('Nothing was connected');
+    // Where to delete the one that was not kept.
+    expect(loser.text).toContain(`${WEB}/settings/apps/app-a`);
+    expect(loser.text).not.toContain('Connected. Now install');
+
+    // The first to finish is the connection, with its own key, and the other left no trace.
+    expect(readAppConfig()).toMatchObject({ appId: 22, slug: 'app-b' });
+    expect(vault.get(APP_PRIVATE_KEY_SECRET)).toBe(keyB);
+    expect(audited()).toEqual(['github.app.connected']);
+  });
+
+  it('does not let an import that waited for GitHub replace an app connected meanwhile', async () => {
+    const { state, code } = await startFlow();
+    fake.conversions.set(code, fake.conversion({ id: 33, slug: 'app-c' }));
+    fake.delays.set('GET /app', 400);
+    const importing = call('POST', '/github/app/import', {
+      body: { appId: fake.app.id, clientId: fake.app.clientId, privateKey: fake.privateKeyPem },
+    });
+    while (fake.calls('GET', '/app').length === 0) await new Promise((r) => setTimeout(r, 10));
+    expect((await callback(state, code)).status).toBe(200);
+
+    const res = await importing;
+    expect(res.status).toBe(409);
+    expect(res.json().error).toBe('app_changed');
+    expect(readAppConfig()).toMatchObject({ appId: 33, slug: 'app-c' });
+    expect(audited()).toEqual(['github.app.connected']);
+  });
+
   it('writes the words of GitHub into the page as text, not as markup', async () => {
     const { state, code } = await startFlow();
     fake.conversions.set(code, fake.conversion({ name: '<script>alert(1)</script> "app"' }));
