@@ -23,7 +23,10 @@ export function initStore(dbPath?: string): Promise<Database> {
   if (opening) return opening;
 
   opening = (async () => {
-    const opened = await openStore(dbPath);
+    const opened = await openStore(dbPath, {
+      // Which migrations ran, and where the copy taken before them is.
+      log: (message, detail) => logger.info(message, detail),
+    });
     db = opened;
     logger.info('Store opened', { backend: opened.backend });
 
@@ -48,6 +51,10 @@ export function initStore(dbPath?: string): Promise<Database> {
     }
     return opened;
   })();
+  // A refused open can be tried again; do not hand the same failure to every caller.
+  opening.catch(() => {
+    opening = null;
+  });
 
   return opening;
 }

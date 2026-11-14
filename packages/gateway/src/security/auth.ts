@@ -21,7 +21,7 @@ import { normalisePath, principalAllows, resolveToken, type Principal } from './
 import { DEFAULT_TENANT, TENANT_ID, runInTenant } from '../tenant.js';
 
 /** Endpoints reachable without a token. These must reveal no configuration. */
-export const PUBLIC_PATHS = new Set(['/health']);
+export const PUBLIC_PATHS = new Set(['/health', '/version']);
 
 /**
  * Endpoints that may carry the token as a `token` query parameter instead of a

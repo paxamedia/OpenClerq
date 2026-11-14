@@ -58,4 +58,13 @@ if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
   );
 }
 
-createGateway({ port, host, authToken: token });
+const { ready } = createGateway({ port, host, authToken: token });
+
+// A database from a newer OpenClerq, or one that could not be backed up before
+// an upgrade: the gateway has stopped serving; leave with the reason on stderr
+// (the desktop app keeps what its background service prints) and a failure code.
+ready.catch((e: unknown) => {
+  const reason = e instanceof Error ? e.message : String(e);
+  process.exitCode = 1;
+  process.stderr.write(`[Clerq] Not started: ${reason}\n`, () => process.exit(1));
+});

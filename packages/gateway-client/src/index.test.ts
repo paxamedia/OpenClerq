@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  API_VERSION,
+  API_VERSION_HEADER,
   gateway,
   setGatewayBaseUrl,
   setGatewayToken,
@@ -64,7 +66,9 @@ describe('authentication', () => {
   });
 
   it('puts the token in the log stream URL, the one place headers cannot go', () => {
-    expect(gateway.logsStreamUrl()).toBe('http://127.0.0.1:18790/logs/stream?token=test-token-123');
+    expect(gateway.logsStreamUrl()).toBe(
+      'http://127.0.0.1:18790/v1/logs/stream?token=test-token-123'
+    );
   });
 });
 
@@ -188,7 +192,7 @@ describe('sendMessage — streaming', () => {
     await expect(pending).rejects.toThrow();
     expect(deltas).toEqual(['partial']);
     const cancel = calls.find(([url]) => url.endsWith('/cancel'));
-    expect(cancel?.[0]).toBe('http://127.0.0.1:18790/runs/run_42/cancel');
+    expect(cancel?.[0]).toBe('http://127.0.0.1:18790/v1/runs/run_42/cancel');
     expect(cancel?.[1]?.method).toBe('POST');
   });
 
@@ -214,7 +218,7 @@ describe('kill switch', () => {
       Response.json({ ok: true, deniedApprovals: 0, cancelledRuns: 2, triggersPaused: false })
     );
     const res = await gateway.kill({ triggers: false });
-    expect(calls[0][0]).toBe('http://127.0.0.1:18790/kill');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/kill');
     expect(JSON.parse(calls[0][1]?.body as string)).toEqual({ triggers: false });
     expect(res.cancelledRuns).toBe(2);
   });
@@ -222,7 +226,7 @@ describe('kill switch', () => {
   it('resumes with a POST', async () => {
     stubFetch(() => Response.json({ ok: true, triggersResumed: true, wasPaused: true }));
     await gateway.resume();
-    expect(calls[0][0]).toBe('http://127.0.0.1:18790/resume');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/resume');
     expect(calls[0][1]?.method).toBe('POST');
   });
 });
@@ -231,14 +235,14 @@ describe('addresses', () => {
   it('encodes ids into the path, so an id cannot redirect the request', async () => {
     stubFetch(() => Response.json({ ok: true }));
     await gateway.deleteSession('../../kill');
-    expect(calls[0][0]).toBe('http://127.0.0.1:18790/sessions/..%2F..%2Fkill');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/sessions/..%2F..%2Fkill');
   });
 
   it('falls back to the default gateway URL when given an empty one', async () => {
     setGatewayBaseUrl('   ');
     stubFetch(() => Response.json({ sessions: [] }));
     await gateway.sessions();
-    expect(calls[0][0]).toBe('http://127.0.0.1:18790/sessions?limit=50');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/sessions?limit=50');
   });
 });
 
@@ -248,10 +252,10 @@ describe('automations', () => {
       url.endsWith('/run') ? Response.json({ runId: 'run_1' }) : Response.json({ id: 'aut_1' })
     );
     await gateway.createAutomation('name: x\n');
-    expect(calls[0][0]).toBe('http://127.0.0.1:18790/automations');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/automations');
     expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ spec: 'name: x\n' });
     expect(await gateway.runAutomation('aut 1')).toEqual({ runId: 'run_1' });
-    expect(calls[1][0]).toBe('http://127.0.0.1:18790/automations/aut%201/run');
+    expect(calls[1][0]).toBe('http://127.0.0.1:18790/v1/automations/aut%201/run');
   });
 
   it('carries a refusal’s status and body, so an editor can point at the line', async () => {
@@ -272,7 +276,7 @@ describe('event stream', () => {
     const url = new URL(
       gateway.eventsStreamUrl({ names: ['run.', 'approval.'], lastEventId: 'a-3' })
     );
-    expect(url.pathname).toBe('/events/stream');
+    expect(url.pathname).toBe('/v1/events/stream');
     expect(url.searchParams.get('token')).toBe('test-token-123');
     expect(url.searchParams.get('names')).toBe('run.,approval.');
     expect(url.searchParams.get('lastEventId')).toBe('a-3');
@@ -323,7 +327,7 @@ describe('run history', () => {
     stubFetch(() => Response.json({ runs: [] }));
     await gateway.runs(1000, { since: new Date('2026-11-02T00:00:00Z') });
     expect(calls[0][0]).toBe(
-      'http://127.0.0.1:18790/runs?limit=1000&since=2026-11-02T00%3A00%3A00.000Z'
+      'http://127.0.0.1:18790/v1/runs?limit=1000&since=2026-11-02T00%3A00%3A00.000Z'
     );
   });
 });
@@ -335,7 +339,7 @@ describe('records, search and inbox', () => {
     await gateway.search('ada', { types: ['core:person', 'crm:deal'] });
     await gateway.inbox({ status: 'open' });
     await gateway.setInboxStatus('inb_1', 'done');
-    expect(calls.map((c) => c[0].replace('http://127.0.0.1:18790', ''))).toEqual([
+    expect(calls.map((c) => c[0].replace('http://127.0.0.1:18790/v1', ''))).toEqual([
       '/records?type=person&q=ada',
       '/search?q=ada&types=core%3Aperson%2Ccrm%3Adeal',
       '/inbox?status=open',
@@ -349,7 +353,7 @@ describe('memory', () => {
   it('sends a key with its type, and deletes with the token', async () => {
     stubFetch(() => Response.json({ ok: true }));
     await gateway.setMemory('tone', 'short', { type: 'preference', confidence: 0.9 });
-    expect(calls[0][0]).toBe('http://127.0.0.1:18790/memory');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/memory');
     expect(JSON.parse(String(calls[0][1]?.body))).toEqual({
       key: 'tone',
       value: 'short',
@@ -359,13 +363,13 @@ describe('memory', () => {
 
     // A delete needs the token as much as any other call.
     await gateway.deleteMemory('a key/with slash');
-    expect(calls[1][0]).toBe('http://127.0.0.1:18790/memory/a%20key%2Fwith%20slash');
+    expect(calls[1][0]).toBe('http://127.0.0.1:18790/v1/memory/a%20key%2Fwith%20slash');
     expect(calls[1][1]?.method).toBe('DELETE');
     expect((calls[1][1]?.headers as Record<string, string>).Authorization).toBe(
       'Bearer test-token-123'
     );
     await gateway.deleteMemoryRecord('mem_1');
-    expect(calls[2][0]).toBe('http://127.0.0.1:18790/memory/records/mem_1');
+    expect(calls[2][0]).toBe('http://127.0.0.1:18790/v1/memory/records/mem_1');
     expect((calls[2][1]?.headers as Record<string, string>).Authorization).toBe(
       'Bearer test-token-123'
     );
@@ -375,13 +379,13 @@ describe('memory', () => {
     stubFetch(() => Response.json({ records: [], results: [], mode: 'fts5', query: 'x' }));
     await gateway.memoryRecords({ type: 'procedure', status: 'superseded' });
     expect(calls[0][0]).toBe(
-      'http://127.0.0.1:18790/memory/records?type=procedure&status=superseded'
+      'http://127.0.0.1:18790/v1/memory/records?type=procedure&status=superseded'
     );
     await gateway.memoryRecords();
-    expect(calls[1][0]).toBe('http://127.0.0.1:18790/memory/records');
+    expect(calls[1][0]).toBe('http://127.0.0.1:18790/v1/memory/records');
     await gateway.searchMemory('quarterly vat', ['fact', 'procedure'], 5);
     expect(calls[2][0]).toBe(
-      'http://127.0.0.1:18790/memory/search?q=quarterly+vat&types=fact%2Cprocedure&limit=5'
+      'http://127.0.0.1:18790/v1/memory/search?q=quarterly+vat&types=fact%2Cprocedure&limit=5'
     );
   });
 
@@ -393,7 +397,7 @@ describe('memory', () => {
     await gateway.unconsolidateMemory('mem_2');
     await gateway.setMemoryPolicy(['fact']);
     expect(
-      calls.map(([u, i]) => `${i?.method} ${u.replace('http://127.0.0.1:18790', '')}`)
+      calls.map(([u, i]) => `${i?.method} ${u.replace('http://127.0.0.1:18790/v1', '')}`)
     ).toEqual([
       'POST /memory/records',
       'PATCH /memory/records/mem_1',
@@ -415,11 +419,11 @@ describe('repositories', () => {
   it('reads the list and one repository by an encoded id', async () => {
     stubFetch(() => Response.json({ repos: [] }));
     await gateway.repos();
-    expect(calls[0][0]).toBe('http://127.0.0.1:18790/repos');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/repos');
     expect(calls[0][1]?.method).toBeUndefined();
     stubFetch(() => Response.json({ id: 'repo_a/b', recentRuns: [] }));
     await gateway.repo('repo_a/b');
-    expect(calls[0][0]).toBe('http://127.0.0.1:18790/repos/repo_a%2Fb');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/repos/repo_a%2Fb');
     expect((calls[0][1]?.headers as Record<string, string>).Authorization).toBe(
       'Bearer test-token-123'
     );
@@ -436,7 +440,7 @@ describe('routing', () => {
     stubFetch(() => Response.json({ fallback: ['openai/gpt-5-mini'] }));
     await gateway.routing();
     await gateway.setRouting(['openai/gpt-5-mini']);
-    expect(calls[0][0]).toBe('http://127.0.0.1:18790/routing');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/routing');
     expect(calls[1][1]?.method).toBe('PUT');
     expect(JSON.parse(String(calls[1][1]?.body))).toEqual({ fallback: ['openai/gpt-5-mini'] });
   });
@@ -495,7 +499,7 @@ describe('managed chat and drafts', () => {
     await gateway.updateSession('ses 1', { workspace: '/tmp/x', permissionMode: 'default' });
     expect(
       calls.map(
-        ([url, init]) => `${init?.method ?? 'GET'} ${url.replace('http://127.0.0.1:18790', '')}`
+        ([url, init]) => `${init?.method ?? 'GET'} ${url.replace('http://127.0.0.1:18790/v1', '')}`
       )
     ).toEqual([
       'POST /sessions/ses%201/mode-diff',
@@ -510,5 +514,243 @@ describe('managed chat and drafts', () => {
       workspace: '/tmp/x',
       permissionMode: 'default',
     });
+  });
+});
+
+describe('the API version', () => {
+  const headerOf = (init?: RequestInit): string | undefined =>
+    (init?.headers as Record<string, string> | undefined)?.[API_VERSION_HEADER];
+
+  it('is one integer, exported', () => {
+    expect(API_VERSION).toBe(1);
+    expect(API_VERSION_HEADER).toBe('Clerq-Api-Version');
+  });
+
+  it('calls /v1 and sends the header on a GET, a POST and a DELETE', async () => {
+    stubFetch(() => Response.json({ ok: true, sessions: [], secrets: [] }));
+    await gateway.sessions();
+    await gateway.setSecret('A', 'b');
+    await gateway.deleteSecret('A');
+    await gateway.deleteMemory('k');
+    await gateway.deleteSession('ses_1');
+    expect(calls.map(([url]) => new URL(url).pathname)).toEqual([
+      '/v1/sessions',
+      '/v1/secrets',
+      '/v1/secrets/A',
+      '/v1/memory/k',
+      '/v1/sessions/ses_1',
+    ]);
+    for (const [, init] of calls) expect(headerOf(init)).toBe('1');
+  });
+
+  it('sends the header when it follows the event stream and when it streams a reply', async () => {
+    stubFetch(() => sse([frame({ type: 'done', runId: 'r', message })]));
+    await gateway.sendMessage('ses_1', { text: 'hi' }, () => undefined);
+    const controller = new AbortController();
+    stubFetch(() => {
+      controller.abort();
+      return sse([]);
+    });
+    await gateway.streamEvents(() => undefined, { signal: controller.signal });
+    expect(calls).toHaveLength(1);
+    expect(new URL(calls[0][0]).pathname).toBe('/v1/events/stream');
+    expect(headerOf(calls[0][1])).toBe('1');
+  });
+
+  it('sends the header even when the caller sets other headers', async () => {
+    stubFetch(() => Response.json({}));
+    await gateway.health();
+    expect(headerOf(calls[0][1])).toBe('1');
+    expect((calls[0][1]?.headers as Record<string, string>)['Content-Type']).toBe(
+      'application/json'
+    );
+  });
+
+  it('turns a refused version into a GatewayError in plain words', async () => {
+    stubFetch(
+      () =>
+        new Response(
+          JSON.stringify({ error: 'unsupported_api_version', requested: '1', supported: [2] }),
+          { status: 400 }
+        )
+    );
+    const err = await gateway.sessions().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GatewayError);
+    expect((err as GatewayError).status).toBe(400);
+    expect((err as GatewayError).message).toBe(
+      'This gateway speaks API 2; this app needs API 1. Update the app or the gateway.'
+    );
+    expect((err as GatewayError).body).toMatchObject({ error: 'unsupported_api_version' });
+  });
+
+  it('says the same for a delete, a streamed reply and the event stream', async () => {
+    const refusal = () =>
+      new Response(JSON.stringify({ error: 'unsupported_api_version', supported: [2] }), {
+        status: 400,
+      });
+    stubFetch(refusal);
+    await expect(gateway.deleteSecret('A')).rejects.toThrow('This gateway speaks API 2');
+    await expect(gateway.sendMessage('s', { text: 'x' })).rejects.toThrow(
+      'This gateway speaks API 2'
+    );
+    // A version the gateway does not serve will not get better by retrying.
+    await expect(gateway.streamEvents(() => undefined, { retryMs: 5 })).rejects.toThrow(
+      'This gateway speaks API 2'
+    );
+  });
+
+  it('leaves other 400s as they were', async () => {
+    stubFetch(() => new Response('{"error":"invalid_session"}', { status: 400 }));
+    await expect(gateway.session('x')).rejects.toThrow('Gateway 400: {"error":"invalid_session"}');
+  });
+});
+
+describe('checkCompatibility', () => {
+  const ok = (api: { version: number; supported: number[] }) =>
+    Response.json({ gateway: '1.0.0', api, store: { schema: 21 } });
+
+  it('is compatible with a gateway that serves this version, asking /v1/version with no token', async () => {
+    stubFetch(() => ok({ version: 1, supported: [1] }));
+    const result = await gateway.checkCompatibility();
+    expect(result).toEqual({
+      ok: true,
+      kind: 'compatible',
+      gateway: '1.0.0',
+      api: { version: 1, supported: [1] },
+      reason: null,
+    });
+    expect(new URL(calls[0][0]).pathname).toBe('/v1/version');
+    expect((calls[0][1]?.headers as Record<string, string>)[API_VERSION_HEADER]).toBe('1');
+    expect((calls[0][1]?.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it('is compatible with a gateway that serves more than this version', async () => {
+    stubFetch(() => ok({ version: 2, supported: [1, 2] }));
+    expect(await gateway.checkCompatibility()).toMatchObject({ ok: true, kind: 'compatible' });
+  });
+
+  it('names a gateway that serves only a newer API', async () => {
+    stubFetch(() => ok({ version: 2, supported: [2] }));
+    expect(await gateway.checkCompatibility()).toEqual({
+      ok: false,
+      kind: 'gateway_newer',
+      gateway: '1.0.0',
+      api: { version: 2, supported: [2] },
+      reason: 'This gateway speaks API 2; this app needs API 1. Update the app or the gateway.',
+    });
+  });
+
+  it('reads a newer gateway that refuses /v1 before it can say what it serves', async () => {
+    stubFetch(
+      () =>
+        new Response(
+          JSON.stringify({ error: 'unsupported_api_version', requested: '1', supported: [2, 3] }),
+          { status: 400 }
+        )
+    );
+    expect(await gateway.checkCompatibility()).toMatchObject({
+      ok: false,
+      kind: 'gateway_newer',
+      api: { version: 3, supported: [2, 3] },
+      reason: 'This gateway speaks API 3; this app needs API 1. Update the app or the gateway.',
+    });
+  });
+
+  it('names a gateway that serves only an older API', async () => {
+    // Only reachable once this client speaks a later version; stand one in by reading the wire.
+    stubFetch(() => ok({ version: 0, supported: [0] }));
+    const result = await gateway.checkCompatibility();
+    expect(result.kind).toBe('gateway_older');
+    expect(result.reason).toContain('Update the gateway.');
+  });
+
+  it('says a gateway from before 1.0 is before 1.0 (404 on /v1/version, health without an api)', async () => {
+    stubFetch((url) =>
+      url.endsWith('/health')
+        ? Response.json({ status: 'ok', service: 'clerq-gateway', version: '0.5.1' })
+        : new Response('Not found', { status: 404 })
+    );
+    const result = await gateway.checkCompatibility();
+    expect(result).toMatchObject({ ok: false, kind: 'gateway_older', gateway: '0.5.1', api: null });
+    expect(result.reason).toContain('older than 1.0');
+    expect(result.reason).toContain('0.5.1');
+    // The probe is a plain GET: no custom header to trip a browser's preflight.
+    const probe = calls.find(([url]) => url.endsWith('/health'));
+    expect(probe?.[0]).toBe('http://127.0.0.1:18790/health');
+    expect(probe?.[1]).toBeUndefined();
+  });
+
+  it('says the same when an older gateway answers 401 because it has no public /version', async () => {
+    stubFetch((url) =>
+      url.endsWith('/health')
+        ? Response.json({ status: 'ok', service: 'clerq-gateway', version: '0.4.0' })
+        : new Response('{"error":"unauthorized"}', { status: 401 })
+    );
+    expect(await gateway.checkCompatibility()).toMatchObject({ kind: 'gateway_older' });
+  });
+
+  it('says so when a browser refused the version header of an older gateway (the request itself fails)', async () => {
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (init?.headers) throw new TypeError('Failed to fetch');
+      return Response.json({ status: 'ok', service: 'clerq-gateway', version: '0.5.1' });
+    });
+    expect(await gateway.checkCompatibility()).toMatchObject({
+      ok: false,
+      kind: 'gateway_older',
+    });
+  });
+
+  it('says nothing answered when nothing does', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw new TypeError('fetch failed');
+    });
+    const result = await gateway.checkCompatibility();
+    expect(result).toEqual({
+      ok: false,
+      kind: 'unreachable',
+      gateway: null,
+      api: null,
+      reason: 'Nothing answered at http://127.0.0.1:18790. Is OpenClerq running?',
+    });
+  });
+
+  it('does not take another server for a gateway', async () => {
+    stubFetch(() => new Response('<html>nope</html>', { status: 404 }));
+    expect(await gateway.checkCompatibility()).toMatchObject({ ok: false, kind: 'unexpected' });
+    stubFetch(() => Response.json({ hello: 'world' }));
+    expect(await gateway.checkCompatibility()).toMatchObject({ ok: false, kind: 'unexpected' });
+    stubFetch(() => new Response('boom', { status: 500 }));
+    const result = await gateway.checkCompatibility();
+    expect(result).toMatchObject({ ok: false, kind: 'unexpected' });
+    expect(result.reason).toContain('500');
+  });
+
+  it('never throws, even when the connection drops while it reads the answer', async () => {
+    stubFetch(
+      () =>
+        ({
+          ok: false,
+          status: 404,
+          text: async () => {
+            throw new TypeError('terminated');
+          },
+        }) as unknown as Response
+    );
+    expect(await gateway.checkCompatibility()).toMatchObject({ ok: false, kind: 'unreachable' });
+  });
+
+  it('does not make up a version for a gateway that lists none', async () => {
+    stubFetch(() => ok({ version: 0, supported: [] }));
+    const result = await gateway.checkCompatibility();
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe(
+      'This gateway does not say which API versions it speaks; this app needs API 1. Update the gateway.'
+    );
+  });
+
+  it('reads GET /version through version()', async () => {
+    stubFetch(() => ok({ version: 1, supported: [1] }));
+    expect((await gateway.version()).store.schema).toBe(21);
+    expect(new URL(calls[0][0]).pathname).toBe('/v1/version');
   });
 });

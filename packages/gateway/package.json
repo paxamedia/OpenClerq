@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@clerq/drivers": "workspace:^",
+    "@clerq/gateway-client": "workspace:^",
     "@clerq/module-sdk": "workspace:^",
     "@clerq/policy": "workspace:^",
     "@clerq/providers": "workspace:^",

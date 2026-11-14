@@ -1,7 +1,33 @@
 /**
  * Gateway API client for Clerq desktop and modules.
  * Base URL can be overridden via setGatewayBaseUrl (e.g. from saved settings).
+ *
+ * Every call goes to `/v1/...` and carries `Clerq-Api-Version`; see
+ * docs/API.md. `checkCompatibility()` says whether a gateway speaks what this
+ * client needs.
  */
+
+import {
+  API_VERSION,
+  API_VERSION_HEADER,
+  SUPPORTED_API_VERSIONS,
+  apiPrefix,
+  incompatibilityReason,
+  parseApiVersion,
+  type ApiVersionMismatch,
+  type UnsupportedApiVersion,
+  type VersionInfo,
+} from './protocol.js';
+
+export {
+  API_VERSION,
+  API_VERSION_HEADER,
+  SUPPORTED_API_VERSIONS,
+  apiPrefix,
+  incompatibilityReason,
+  parseApiVersion,
+};
+export type { ApiVersionMismatch, UnsupportedApiVersion, VersionInfo };
 
 const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:18790';
 
@@ -9,9 +35,14 @@ let gatewayBaseUrl: string = DEFAULT_GATEWAY_URL;
 let gatewayToken: string | null = null;
 let gatewayTenant: string | null = null;
 
-function getUrl(path: string): string {
-  const base = gatewayBaseUrl.replace(/\/$/, '');
-  return `${base}${path.startsWith('/') ? path : `/${path}`}`;
+/** The gateway's address without a trailing slash. */
+function baseUrl(): string {
+  return gatewayBaseUrl.replace(/\/$/, '');
+}
+
+/** A route's full address: the base, `/v1`, then the route's own path. */
+function apiUrl(path: string): string {
+  return `${baseUrl()}${apiPrefix()}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
 export function setGatewayBaseUrl(baseUrl: string): void {
@@ -38,8 +69,10 @@ export function hasGatewayToken(): boolean {
   return gatewayToken !== null;
 }
 
+/** What every request carries: the protocol version, the token and the tenant, when set. */
 function authHeaders(): Record<string, string> {
   return {
+    [API_VERSION_HEADER]: String(API_VERSION),
     ...(gatewayToken ? { Authorization: `Bearer ${gatewayToken}` } : {}),
     ...(gatewayTenant ? { 'X-Clerq-Tenant': gatewayTenant } : {}),
   };
@@ -57,30 +90,67 @@ export class GatewayError extends Error {
   }
 }
 
+/**
+ * The refusal a gateway gives a version it does not serve (400, before auth),
+ * in plain words; null for any other answer.
+ */
+function versionRefusal(status: number, body: Record<string, unknown> | null): GatewayError | null {
+  if (status !== 400 || !body) return null;
+  if (body.error !== 'unsupported_api_version' && body.error !== 'api_version_mismatch')
+    return null;
+  const supported = Array.isArray(body.supported)
+    ? body.supported.filter((v): v is number => typeof v === 'number')
+    : [];
+  const reason = incompatibilityReason(supported);
+  const message =
+    body.error === 'api_version_mismatch'
+      ? 'The address and the Clerq-Api-Version header name different API versions.'
+      : reason ||
+        (typeof body.message === 'string'
+          ? body.message
+          : 'The gateway does not serve this API version.');
+  return new GatewayError(message, status, body);
+}
+
+/** Read an error response's body once: its text, and its JSON when it was JSON. */
+async function readRefusal(
+  res: Response
+): Promise<{ text: string; json: Record<string, unknown> | null }> {
+  const text = await res.text();
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return {
+      text,
+      json: parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null,
+    };
+  } catch {
+    return { text, json: null };
+  }
+}
+
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(getUrl(path), {
+  const res = await fetch(apiUrl(path), {
     ...options,
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options?.headers },
   });
   if (!res.ok) {
-    const body = await res.text();
-    let parsed: Record<string, unknown> | null = null;
-    try {
-      parsed = JSON.parse(body) as Record<string, unknown>;
-    } catch {
-      /* not JSON */
-    }
-    throw new GatewayError(`Gateway ${res.status}: ${body || res.statusText}`, res.status, parsed);
+    const { text, json } = await readRefusal(res);
+    throw (
+      versionRefusal(res.status, json) ??
+      new GatewayError(`Gateway ${res.status}: ${text || res.statusText}`, res.status, json)
+    );
   }
   return res.json() as Promise<T>;
 }
 
 /** A DELETE that answers `{ ok: true }`, with the token the gateway needs. */
 async function deleteOk(path: string): Promise<{ ok: boolean }> {
-  const res = await fetch(getUrl(path), { method: 'DELETE', headers: authHeaders() });
+  const res = await fetch(apiUrl(path), { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) {
-    const j = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(j.error ?? `Gateway ${res.status}`);
+    const { json } = await readRefusal(res);
+    throw (
+      versionRefusal(res.status, json) ?? new Error(String(json?.error ?? `Gateway ${res.status}`))
+    );
   }
   return { ok: true };
 }
@@ -104,6 +174,8 @@ export interface HealthResponse {
   status: string;
   service: string;
   version: string;
+  /** The API versions the gateway serves; absent from a gateway older than 1.0. */
+  api?: { version: number; supported: number[] };
   /** LLM mode: api (cloud) or local (Ollama, LM Studio) */
   llm?: {
     mode: 'api' | 'local';
@@ -812,11 +884,157 @@ export interface ToolInfo {
   description: string;
 }
 
+/** How a gateway answers "do you speak what this client needs". */
+export type CompatibilityKind =
+  /** It serves this client's API version. */
+  | 'compatible'
+  /** It serves only newer versions. */
+  | 'gateway_newer'
+  /** It serves only older versions, or predates versioned APIs (before 1.0). */
+  | 'gateway_older'
+  /** Nothing answered at the address. */
+  | 'unreachable'
+  /** Something answered, but not like an OpenClerq gateway. */
+  | 'unexpected';
+
+export interface CompatibilityResult {
+  ok: boolean;
+  kind: CompatibilityKind;
+  /** The gateway's own release, when it said. */
+  gateway: string | null;
+  /** The API versions it serves; null when it said nothing (older than 1.0, unreachable). */
+  api: { version: number; supported: number[] } | null;
+  /** Plain words for what is wrong; null when `ok`. */
+  reason: string | null;
+}
+
+function incompatible(
+  kind: CompatibilityKind,
+  reason: string,
+  gateway: string | null = null,
+  api: CompatibilityResult['api'] = null
+): CompatibilityResult {
+  return { ok: false, kind, gateway, api, reason };
+}
+
+/** Ask an address that is not answering /v1 whether it is a gateway from before 1.0. */
+async function probeOlderGateway(): Promise<CompatibilityResult> {
+  const where = baseUrl();
+  let answered = false;
+  let health = null as { service?: unknown; version?: unknown; api?: unknown } | null;
+  try {
+    // Without the version header or a token: a plain GET needs no CORS preflight,
+    // which a gateway from before 1.0 would refuse for the header.
+    const res = await fetch(`${where}/health`);
+    answered = true;
+    if (res.ok) health = (await res.json()) as typeof health;
+  } catch {
+    /* nothing there, or not JSON */
+  }
+  if (!answered) {
+    return incompatible('unreachable', `Nothing answered at ${where}. Is OpenClerq running?`);
+  }
+  if (!health || health.service !== 'clerq-gateway' || health.api !== undefined) {
+    return incompatible(
+      'unexpected',
+      `Something answered at ${where}, but not like an OpenClerq gateway.`
+    );
+  }
+  const version = typeof health.version === 'string' ? health.version : null;
+  return incompatible(
+    'gateway_older',
+    `This gateway${version ? ` (version ${version})` : ''} is older than 1.0 and does not report an API version. ` +
+      'Update the gateway, or the background service it runs in.',
+    version
+  );
+}
+
+async function checkCompatibility(): Promise<CompatibilityResult> {
+  let res: Response;
+  try {
+    res = await fetch(apiUrl('/version'), {
+      headers: { [API_VERSION_HEADER]: String(API_VERSION) },
+    });
+  } catch {
+    // A gateway from before 1.0 refuses the version header in a browser's
+    // preflight, which looks the same as nothing listening. Ask it plainly.
+    return probeOlderGateway();
+  }
+
+  if (res.ok) {
+    let info: Partial<VersionInfo> | null = null;
+    try {
+      info = (await res.json()) as Partial<VersionInfo>;
+    } catch {
+      /* not JSON */
+    }
+    const supported = info?.api?.supported;
+    if (!info || !Array.isArray(supported) || typeof info.api?.version !== 'number') {
+      return incompatible(
+        'unexpected',
+        `Something answered at ${baseUrl()}, but not like an OpenClerq gateway.`
+      );
+    }
+    const api = {
+      version: info.api.version,
+      supported: supported.filter((v) => typeof v === 'number'),
+    };
+    const gatewayVersion = typeof info.gateway === 'string' ? info.gateway : null;
+    if (api.supported.includes(API_VERSION)) {
+      return { ok: true, kind: 'compatible', gateway: gatewayVersion, api, reason: null };
+    }
+    const newer = Math.max(...api.supported) > API_VERSION;
+    return incompatible(
+      newer ? 'gateway_newer' : 'gateway_older',
+      incompatibilityReason(api.supported),
+      gatewayVersion,
+      api
+    );
+  }
+
+  const { json } = await readRefusal(res);
+  const refused = versionRefusal(res.status, json);
+  if (refused) {
+    const supported = Array.isArray(json?.supported)
+      ? (json.supported as unknown[]).filter((v): v is number => typeof v === 'number')
+      : [];
+    const newer = supported.length > 0 && Math.max(...supported) > API_VERSION;
+    return incompatible(
+      newer ? 'gateway_newer' : 'gateway_older',
+      refused.message,
+      null,
+      supported.length > 0 ? { version: Math.max(...supported), supported } : null
+    );
+  }
+  // A gateway from before 1.0 has no /v1 and no public /version: 404 with a token, 401 without.
+  if (res.status === 404 || res.status === 401) return probeOlderGateway();
+  return incompatible('unexpected', `The gateway answered ${res.status} to GET /version.`);
+}
+
 export const gateway = {
   getUrl: () => gatewayBaseUrl,
 
   health(): Promise<HealthResponse> {
     return fetchJson<HealthResponse>('/health');
+  },
+
+  /** GET /version: the gateway's release, the API versions it serves, the store's schema. */
+  version(): Promise<VersionInfo> {
+    return fetchJson<VersionInfo>('/version');
+  },
+
+  /**
+   * Whether this gateway speaks the API version this client needs. Never
+   * throws: an unreachable or older gateway is an answer, with the reason in
+   * plain words. It needs no token (GET /version is public).
+   */
+  async checkCompatibility(): Promise<CompatibilityResult> {
+    try {
+      return await checkCompatibility();
+    } catch {
+      // A connection that dropped while the answer was being read.
+      return incompatible('unreachable', `Nothing answered at ${baseUrl()}. Is OpenClerq running?`);
+    }
   },
 
   metrics(): Promise<{
@@ -836,7 +1054,7 @@ export const gateway = {
    * query parameter — accepted by the gateway on this endpoint only.
    */
   logsStreamUrl(): string {
-    const url = getUrl('/logs/stream');
+    const url = apiUrl('/logs/stream');
     return gatewayToken ? `${url}?token=${encodeURIComponent(gatewayToken)}` : url;
   },
 
@@ -851,7 +1069,7 @@ export const gateway = {
     if (opts.names?.length) params.set('names', opts.names.join(','));
     if (opts.lastEventId) params.set('lastEventId', opts.lastEventId);
     const query = params.toString();
-    return query ? `${getUrl('/events/stream')}?${query}` : getUrl('/events/stream');
+    return query ? `${apiUrl('/events/stream')}?${query}` : apiUrl('/events/stream');
   },
 
   /**
@@ -868,11 +1086,17 @@ export const gateway = {
         const query = opts.names?.length
           ? `?names=${encodeURIComponent(opts.names.join(','))}`
           : '';
-        const res = await fetch(getUrl(`/events/stream${query}`), {
+        const res = await fetch(apiUrl(`/events/stream${query}`), {
           headers: { ...authHeaders(), ...(lastId ? { 'Last-Event-ID': lastId } : {}) },
           signal,
         });
-        if (!res.ok || !res.body) throw new GatewayError(`Gateway ${res.status}`, res.status, null);
+        if (!res.ok || !res.body) {
+          const { json } = res.ok ? { json: null } : await readRefusal(res);
+          throw (
+            versionRefusal(res.status, json) ??
+            new GatewayError(`Gateway ${res.status}`, res.status, json)
+          );
+        }
         opts.onOpen?.();
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -892,8 +1116,11 @@ export const gateway = {
         }
       } catch (e) {
         if (signal?.aborted) break;
-        // A refused token will not get better by retrying.
-        if (e instanceof GatewayError && e.status === 401) throw e;
+        // A refused token, or a version the gateway does not serve, will not get
+        // better by retrying.
+        if (e instanceof GatewayError && (e.status === 401 || versionRefusal(e.status, e.body))) {
+          throw e;
+        }
       }
       if (signal?.aborted) break;
       await new Promise<void>((resolve) => {
@@ -1004,15 +1231,18 @@ export const gateway = {
     /** Managed: tool activity, approvals to answer, drafts, as they happen (streaming only). */
     onEvent?: (event: ChatStreamEvent) => void
   ): Promise<{ runId: string; message: ChatMessage }> {
-    const res = await fetch(getUrl(`/sessions/${encodeURIComponent(id)}/send`), {
+    const res = await fetch(apiUrl(`/sessions/${encodeURIComponent(id)}/send`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ ...input, stream: Boolean(onDelta) }),
       signal,
     });
     if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Gateway ${res.status}: ${body || res.statusText}`);
+      const { text, json } = await readRefusal(res);
+      throw (
+        versionRefusal(res.status, json) ??
+        new Error(`Gateway ${res.status}: ${text || res.statusText}`)
+      );
     }
     if (!onDelta) return (await res.json()) as { runId: string; message: ChatMessage };
     if (!res.body) throw new Error('Gateway returned an empty stream.');
@@ -1408,16 +1638,8 @@ export const gateway = {
     });
   },
 
-  async deleteSecret(name: string): Promise<{ ok: boolean }> {
-    const res = await fetch(getUrl(`/secrets/${encodeURIComponent(name)}`), {
-      method: 'DELETE',
-      headers: authHeaders(),
-    });
-    if (!res.ok) {
-      const j = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(j.error ?? `Gateway ${res.status}`);
-    }
-    return { ok: true };
+  deleteSecret(name: string): Promise<{ ok: boolean }> {
+    return deleteOk(`/secrets/${encodeURIComponent(name)}`);
   },
 
   triggers(): Promise<{

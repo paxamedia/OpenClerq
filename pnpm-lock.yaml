@@ -107,6 +107,9 @@ importers:
       '@clerq/drivers':
         specifier: workspace:^
         version: link:../drivers
+      '@clerq/gateway-client':
+        specifier: workspace:^
+        version: link:../gateway-client
       '@clerq/module-sdk':
         specifier: workspace:^
         version: link:../module-sdk

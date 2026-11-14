@@ -57,7 +57,14 @@ import {
 import { mountMemoryRoutes } from './memory-routes.js';
 import { memoryBlock } from './memory-context.js';
 import { pruneExpired } from './memory-layer.js';
-import { initStore } from './store.js';
+import { getStore, initStore, isStoreOpen } from './store.js';
+import { schemaVersion, StoreBackupError, StoreTooNewError } from '@clerq/store';
+import {
+  API_VERSION,
+  API_VERSION_HEADER,
+  SUPPORTED_API_VERSIONS,
+} from '@clerq/gateway-client/protocol';
+import { negotiateApiVersion, stampApiVersion, versionInfo } from './api-version.js';
 import {
   recordRun,
   listRuns,
@@ -175,7 +182,11 @@ function disconnectSignal(res: Response, continueOnDisconnect: unknown): AbortSi
 export function createGateway(config: GatewayConfig = {}): {
   app: express.Express;
   server: Server;
-  /** Settles once the store is open and modules are loaded. */
+  /**
+   * Settles once the store is open and modules are loaded. Rejects, after the
+   * server has stopped, when the store cannot be used at all: a database from
+   * a newer OpenClerq, or one that could not be backed up before an upgrade.
+   */
   ready: Promise<void>;
 } {
   const port = config.port ?? DEFAULT_PORT;
@@ -222,6 +233,8 @@ export function createGateway(config: GatewayConfig = {}): {
       .map((o) => o.trim())
       .filter(Boolean)
   );
+  // First of all, so every response carries the API version: a preflight, a 401, a 404.
+  app.use(stampApiVersion);
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (typeof origin === 'string' && corsOrigins.has(origin)) {
@@ -231,11 +244,16 @@ export function createGateway(config: GatewayConfig = {}): {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Last-Event-ID, X-Clerq-Token, X-Clerq-Tenant'
+      `Content-Type, Authorization, Last-Event-ID, X-Clerq-Token, X-Clerq-Tenant, ${API_VERSION_HEADER}`
     );
+    // Without this a browser client cannot read the version a response was served as.
+    res.setHeader('Access-Control-Expose-Headers', API_VERSION_HEADER);
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
+  // Before the body parser and before auth: a client learns why it was refused
+  // without a token, and `/v1/x` reaches every later layer as `/x`.
+  app.use(negotiateApiVersion());
   // Body limit: an unbounded JSON parser is a trivial memory exhaustion vector.
   app.use(express.json({ limit: process.env.CLERQ_MAX_BODY ?? '1mb' }));
   app.use(requireAuth(auth.token));
@@ -248,6 +266,7 @@ export function createGateway(config: GatewayConfig = {}): {
       status: 'ok',
       service: 'clerq-gateway',
       version: GATEWAY_VERSION,
+      api: { version: API_VERSION, supported: [...SUPPORTED_API_VERSIONS] },
       llm: {
         mode: llmStatus.mode,
         provider: llmStatus.provider,
@@ -255,6 +274,11 @@ export function createGateway(config: GatewayConfig = {}): {
         available: llmStatus.available,
       },
     });
+  });
+
+  // The newest core migration applied; null until the store is open.
+  app.get('/version', (_req, res) => {
+    res.json(versionInfo(GATEWAY_VERSION, isStoreOpen() ? schemaVersion(getStore()) : null));
   });
 
   const startTime = Date.now();
@@ -1359,7 +1383,14 @@ export function createGateway(config: GatewayConfig = {}): {
   });
 
   let markReady: () => void = () => undefined;
-  const ready = new Promise<void>((resolve) => (markReady = resolve));
+  let failReady: (e: unknown) => void = () => undefined;
+  const ready = new Promise<void>((resolve, reject) => {
+    markReady = resolve;
+    failReady = reject;
+  });
+  // A host that never looks at `ready` is not crashed by it rejecting; the
+  // reason is logged, and a host that does look still sees the rejection.
+  ready.catch(() => undefined);
   const server = app.listen(port, host, async () => {
     logger.info('Gateway started', { host, port, url: `http://${host}:${port}` });
     try {
@@ -1367,6 +1398,16 @@ export function createGateway(config: GatewayConfig = {}): {
       // Records past their expiry are removed; reads skip them either way.
       pruneExpired();
     } catch (e) {
+      // A database from a newer OpenClerq, or one that could not be backed up
+      // before an upgrade, is not something to run beside half-working: say
+      // why in plain words, stop serving, and let `ready` reject.
+      if (e instanceof StoreTooNewError || e instanceof StoreBackupError) {
+        logger.error(e.message);
+        server.close();
+        server.closeAllConnections?.();
+        failReady(e);
+        return;
+      }
       logger.error('Store failed to open; memory and run history are unavailable', {
         err: e instanceof Error ? e.message : String(e),
       });
