@@ -71,6 +71,18 @@ node apps/server/scripts/smoke.mjs apps/server/dist/bun-linux-x64/clerq-server
 apps/server/scripts/test-install.sh dist/server/openclerq-server-*-linux-x64.tar.gz
 ```
 
+The x64 targets are compiled for Bun's **baseline** build (`bun-linux-x64-baseline`,
+`bun-darwin-x64-baseline`, so `apps/server/dist/bun-linux-x64-baseline/`), not the default one. The
+default x64 build needs AVX2 and ends with SIGILL on a CPU without it: a `kvm64` virtual machine, an
+older Xeon, a Mac from before Haswell. The tarball is still named `linux-x64` / `darwin-x64`, and
+the container image's amd64 build is baseline too. arm64 has one build. (The desktop app's gateway
+sidecar, `scripts/build-sidecars.js`, still uses the default x64 build on an Intel Mac and on Windows, so it has the same limit on a CPU without AVX2.)
+
+On a Mac, `CLERQ_TEST_PRETEND_LINUX=1 apps/server/scripts/test-install.sh <darwin tarball>` runs
+the installer test's Linux branches too (the tarball is renamed as a Linux one and a `uname` that
+says Linux goes first on the `PATH`); run it under `dash` as well as `sh`. It checks the shell
+logic, not GNU tools.
+
 `package-server.js` prints the tarball's path and its SHA-256. The programs stay in
 `apps/server/dist/<bun target>/` and `apps/cli/dist/<bun target>/`. Running the server is covered
 in [SERVER.md](SERVER.md) and the command line in [CLI.md](CLI.md).
@@ -140,17 +152,31 @@ signed in to GitHub: `docker logout ghcr.io; docker pull ghcr.io/paxamedia/openc
 
   ```text
   version ─┬─ release (macOS, Windows installers) ── publish (the GitHub Release, latest.json)
-           ├─ server (4 tarballs, in parallel) ──────────────┴─ publish-server (tarballs, SHA256SUMS,
-           │                                                     install.sh added to that release)
-           └─ docker (one image per CPU) ── docker-manifest (ghcr.io/paxamedia/openclerq)
+           │                                           │   │
+           ├─ server (4 tarballs, in parallel) ────────┤   └─ publish-server (tarballs, SHA256SUMS,
+           │                                           │         install.sh added to that release)
+           └─ docker (one image per CPU) ──────────────┴─ docker-manifest (ghcr.io/paxamedia/openclerq)
   ```
 
   The server and image jobs do not feed `publish`: the desktop release does not wait for them, and
   a failure in them does not undo it. `publish-server` runs only when the desktop release and all
-  four tarballs succeeded; if one fails, fix the cause and use **Re-run failed jobs**. Until
+  four tarballs succeeded; if one fails, fix the cause and use **Re-run failed jobs**.
+  `docker-manifest` needs `publish` too, so the `<version>`, `<major>` and `latest` tags move only
+  once the GitHub Release exists (the image jobs before it push untagged digests, which nobody
+  can pull by name). Until
   `publish-server` has run, `releases/latest/download/install.sh` is a 404 and the installer says the
   server files may not be uploaded yet. Server tarballs are uploaded as `server-<target>` artifacts,
   deliberately not `*-build`, which is what `publish` collects.
+
+- **A tag with a `-` in it** (`v1.0.0-rc.1`) is published as a **pre-release**: `publish` and
+  `publish-server` set `prerelease` when the tag contains one, as `docker-manifest` already skips the
+  `<major>` and `latest` tags for it. GitHub never serves a pre-release as `/releases/latest`, so
+  neither `releases/latest/download/install.sh` nor the desktop updater's address
+  `releases/latest/download/latest.json` finds it: installed apps are not offered the rc and stay on
+  the last stable release (the rc's `latest.json` is on its own release, reachable by its tag's
+  address, for a tester who points an app there), and the installer installs the last stable one
+  unless `CLERQ_VERSION=1.0.0-rc.1` names it. Before this was set, `publish` left `prerelease` off,
+  so an rc tag became "latest" and would have been offered to every installed app.
 
 ---
 

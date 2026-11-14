@@ -27,7 +27,10 @@ docker run -d --name openclerq -p 127.0.0.1:18790:18790 -v openclerq-data:/data 
 
 - Linux (x64 or arm64, with glibc: not Alpine) or macOS (Apple Silicon or Intel). CI builds, starts
   and tests the two Linux binaries on every push; the macOS ones are built by the release, and the
-  Apple Silicon one is run there. Windows is not supported as a server.
+  Apple Silicon one is run there. Windows is not supported as a server. The x64 programs (and the
+  amd64 image) are Bun's "baseline" build, which needs no AVX2, so they run on a virtual machine
+  with a basic CPU model (`kvm64`) and on older Xeons and Macs, where Bun's default x64 build stops
+  with an illegal instruction.
 - `git`, and `ssh` for repositories over ssh. Automations work in git worktrees.
 - `ps` (procps). After a crash, the next start uses it to find and stop agent processes the old
   gateway left running; without it, it logs a warning and leaves them.
@@ -45,7 +48,9 @@ docker run -d --name openclerq -p 127.0.0.1:18790:18790 -v openclerq-data:/data 
 curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh | sh
 ```
 
-`install.sh` is a release file like the others, one POSIX `sh` script you can read first. It works
+`install.sh` is a release file like the others, one POSIX `sh` script you can read first. It needs
+`curl` (it downloads over TLS and refuses to be sent on to plain http, which `wget` cannot be told
+to do; with no `curl` it says so and stops), `tar` and `sha256sum` or `shasum`. It works
 out whether this is Linux or macOS and which CPU, downloads that release's tarball and
 `SHA256SUMS` from GitHub (no API calls), refuses to go on unless the tarball matches its line in
 `SHA256SUMS`, and copies **`clerq-server`, `clerq` and `clerq-calc` into one folder**:
@@ -57,14 +62,14 @@ running server is safe (the running one keeps going until you restart it). It en
 What it never does: run as root unless you pass `--system`, edit your shell's startup files (it
 prints a `PATH` line if the folder is not on your `PATH`), create an account, or start a service.
 
-| Option or variable              | Meaning                                                                                                                                            |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CLERQ_VERSION=1.0.0`           | Install that release (a leading `v` is fine). Default: the latest release.                                                                         |
-| `CLERQ_INSTALL_DIR=/opt/bin`    | Install there. Default: `~/.local/bin`, or `/usr/local/bin` with `--system`.                                                                       |
-| `--system`                      | Install to `/usr/local/bin` for every user. Run it as yourself: it uses `sudo` only for the copy (and refuses to run as root without it).          |
-| `--systemd-user`                | Linux: also write the user unit to `~/.config/systemd/user/openclerq.service` and print the `systemctl --user` commands. It runs none of them.     |
-| `--no-verify`                   | Skip the checksum check. Only for a machine with neither `sha256sum` nor `shasum`; it says so loudly. Without a tool and without this, it refuses. |
-| `CLERQ_DOWNLOAD_BASE=https://…` | Take `SHA256SUMS` and the tarball from here instead of GitHub (a mirror; the tests). Must be https, or http on this computer.                      |
+| Option or variable              | Meaning                                                                                                                                                                                                                                   |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLERQ_VERSION=1.0.0`           | Install that release (a leading `v` is fine). Default: the latest release.                                                                                                                                                                |
+| `CLERQ_INSTALL_DIR=/opt/bin`    | Install there. Default: `~/.local/bin`, or `/usr/local/bin` with `--system`.                                                                                                                                                              |
+| `--system`                      | Install to `/usr/local/bin` for every user. Run it as yourself: it uses `sudo` only for the copy (and refuses to run as root without it).                                                                                                 |
+| `--systemd-user`                | Linux: also write the user unit to `~/.config/systemd/user/openclerq.service` and print the `systemctl --user` commands. It runs none of them.                                                                                            |
+| `--no-verify`                   | Skip the checksum check. Only for a machine with neither `sha256sum` nor `shasum`; it says so loudly. Without a tool and without this, it refuses.                                                                                        |
+| `CLERQ_DOWNLOAD_BASE=https://…` | Take `SHA256SUMS` and the tarball from here instead of GitHub (a mirror; the tests). Must be https, or http on this computer (127.0.0.1, `localhost`, `[::1]`, and then no redirect is followed); no user name, space, query or fragment. |
 
 Options go after `sh -s --` when the script comes through a pipe:
 
