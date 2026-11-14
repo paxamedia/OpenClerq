@@ -220,19 +220,18 @@ jobs:
   # (packages/sandbox/src/container.real.test.ts and the last describe of
   # packages/gateway/src/automations/sandbox.integration.test.ts). They pull alpine and node, run
   # commands in containers and look from inside at the mounts, the user and the privileges, reach
-  # example.com through the egress proxy and nothing else, stop and time out runs, sweep what a
-  # dead gateway left, and run a builtin agent and its gate end to end. The ordinary `verify` job
-  # skips them: the variable is not set there, although the runner has Docker.
+  # servers they start on the engine through the egress proxy and nothing else (and, in one test,
+  # example.com), stop and time out runs, sweep what a dead gateway left, and run a builtin agent
+  # and its gate end to end. The ordinary `verify` job skips them: the variable is not set there,
+  # although the runner has Docker.
   #
-  # NOT REQUIRED YET. The profile had only ever run against a fake `docker` until this job, so the
-  # first runs may find what the fake could not. `continue-on-error` keeps main green while they
-  # are fixed; remove it (and make the job a required check) once both CPUs have been green on
-  # main. On a failure each test prints the docker command lines it ran (never their environment),
-  # every container and network labelled clerq.run with its state and logs (the egress proxy's
-  # too), and the job prints the same once more and uploads the files (scripts/container-debug.sh).
+  # A failure here fails the workflow. To make it block merges, mark the two checks "Container
+  # profile on a real engine (amd64)" and "(arm64)" as required in the repository's branch rules.
+  # On a failure each test prints the docker command lines it ran (never their environment), every
+  # container and network labelled clerq.run with its state, and the egress proxies' logs, and the
+  # job prints the same once more and uploads the files (scripts/container-debug.sh).
   container-profile:
     name: Container profile on a real engine (${{ matrix.arch }})
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
