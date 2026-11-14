@@ -100,21 +100,29 @@ export function withChecksumLine(text: string, value: string): string | null {
 }
 
 /**
- * The checksum a SKILL.md declares in its frontmatter, as `sha256:<hex>`; null when it has none
- * or the line is not in that form. When the line is there more than once, the last one is read,
- * as the gateway's frontmatter reader does.
+ * What the last top-level `checksum:` line of a SKILL.md's frontmatter says, as written (quotes
+ * taken off); undefined when there is none. Only a line that starts in the first column counts,
+ * the same lines `withoutChecksumLine` leaves out of what is hashed, so what is read as the
+ * author's checksum is never part of what it covers.
  */
-export function declaredChecksumIn(text: string): string | null {
+export function rawChecksumIn(text: string): string | undefined {
   const parts = frontmatterParts(text);
-  if (!parts) return null;
-  let value: string | null = null;
+  if (!parts) return undefined;
+  let value: string | undefined;
   for (const line of wholeLines(parts.region)) {
     if (!CHECKSUM_LINE.test(line)) continue;
     const raw = line.slice(line.indexOf(':') + 1).trim();
-    const unquoted = raw.length >= 2 && /^(["']).*\1$/.test(raw) ? raw.slice(1, -1) : raw;
-    value = parseChecksum(unquoted);
+    value = raw.length >= 2 && /^(["']).*\1$/.test(raw) ? raw.slice(1, -1) : raw;
   }
   return value;
+}
+
+/**
+ * The checksum a SKILL.md declares in its frontmatter, as `sha256:<hex>`; null when it has none
+ * or the line is not in that form. When the line is there more than once, the last one is read.
+ */
+export function declaredChecksumIn(text: string): string | null {
+  return parseChecksum(rawChecksumIn(text));
 }
 
 // ---------------------------------------------------------------------------

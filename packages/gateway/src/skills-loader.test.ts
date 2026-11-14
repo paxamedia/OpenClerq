@@ -193,6 +193,18 @@ describe('the manifest keys', () => {
     ]);
   });
 
+  it('takes the author’s checksum only from a line of its own, the line that is not hashed', () => {
+    const hex = 'ab'.repeat(32);
+    // Indented, or inside another value: part of what is hashed, so not a checksum of it.
+    expect(parseSkillMd(md([`  checksum: sha256:${hex}`]), 'x')?.meta.checksum).toBeUndefined();
+    expect(
+      parseSkillMd(md(['description: |', `  checksum: sha256:${hex}`]), 'x')?.meta.checksum
+    ).toBeUndefined();
+    // And not warned about as a malformed one either.
+    expect(parseSkillMd(md(['  checksum: nope']), 'x')?.meta.warnings).toBeUndefined();
+    expect(parseSkillMd(md([`checksum: sha256:${hex}`]), 'x')?.meta.checksum).toBe(`sha256:${hex}`);
+  });
+
   it('reads the author’s checksum in lower case and drops a malformed one', () => {
     const hex = 'AB'.repeat(32);
     expect(parseSkillMd(md([`checksum: sha256:${hex}`]), 'x')?.meta.checksum).toBe(

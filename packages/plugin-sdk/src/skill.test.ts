@@ -8,6 +8,7 @@ import {
   hostProblem,
   nearestName,
   parseChecksum,
+  rawChecksumIn,
   readSkillNeeds,
   scopeProblem,
   withChecksumLine,
@@ -81,6 +82,9 @@ describe('the checksum line', () => {
     expect(declaredChecksumIn('---\nname: X\n---\n')).toBeNull();
     expect(declaredChecksumIn(`checksum: sha256:${HEX}`)).toBeNull();
     expect(declaredChecksumIn(`---\ndescription: |\n  checksum: sha256:${HEX}\n---\n`)).toBeNull();
+    expect(declaredChecksumIn(`---\n  checksum: sha256:${HEX}\n---\n`)).toBeNull();
+    expect(rawChecksumIn('---\nchecksum: "abc"\n---\n')).toBe('abc');
+    expect(rawChecksumIn('---\nname: X\n---\n')).toBeUndefined();
   });
 
   it('reads a declared value in one form only, lower-cased', () => {

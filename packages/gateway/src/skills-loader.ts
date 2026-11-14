@@ -9,6 +9,7 @@ import {
   FRONTMATTER,
   NO_NEEDS,
   parseChecksum,
+  rawChecksumIn,
   readSkillNeeds,
   type SkillNeeds,
   type ToolCheck,
@@ -170,8 +171,11 @@ export function parseSkillMd(
   if (!match) return null;
   const fm = parseFrontmatter(md);
   if (!fm) return null;
-  const { needs, warnings } = readSkillNeeds(fm, checkTool);
-  const checksum = parseChecksum(fm.checksum);
+  // The author's checksum is the one on a line of its own in the first column: the line that is
+  // left out of what is hashed. An indented `checksum:` (it would be part of the hash) is not it.
+  const declared = rawChecksumIn(md);
+  const { needs, warnings } = readSkillNeeds({ ...fm, checksum: declared }, checkTool);
+  const checksum = parseChecksum(declared);
   // Text where text is meant: a value that came out as a list or an object is not a name.
   const text = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
   const meta: SkillMeta = {

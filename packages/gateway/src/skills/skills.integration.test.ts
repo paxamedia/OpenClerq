@@ -10,12 +10,14 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { skillChecksum } from '@clerq/plugin-sdk/node';
 import { createGateway, type Gateway } from '../gateway.js';
 import { getStore } from '../store.js';
 import { issueToken } from '../security/scoped-tokens.js';
 import { MOBILE_SCOPES } from '../remote/devices.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOKEN = 'skills-integration-token-0123456789';
 
 interface ModelRequest {
@@ -322,6 +324,53 @@ describe('skill trust through the API', () => {
       expect(r.body).toBe('Quote the figures from docs.');
       expect(r.skill).toMatchObject({ slug: 'report', trust: 'untrusted' });
       expect((await call('/skills/nope')).status).toBe(404);
+    });
+  });
+
+  describe('the skills that ship with OpenClerq', () => {
+    const shipped = path.resolve(__dirname, '../../../../skills/example');
+
+    it('are trusted by the gateway’s own list, until they change', async () => {
+      fs.cpSync(shipped, path.join(skillsDir, 'example'), { recursive: true });
+      expect(await info('example')).toMatchObject({
+        trust: 'trusted',
+        trustedBy: 'bundled',
+        trustReason: 'It ships with OpenClerq, unchanged.',
+        declared: { tools: [], domains: [], paths: [] },
+      });
+      fs.appendFileSync(body('example'), 'Changed.\n');
+      expect(await info('example')).toMatchObject({
+        trust: 'modified',
+        trustReason: 'Its files differ from the version that ships with OpenClerq.',
+      });
+    });
+
+    it('a skill of the same name with other files is not trusted for it', async () => {
+      write('example', ["triggers: ['example']"], 'Not the one that ships.');
+      expect((await info('example')).trust).toBe('modified');
+    });
+  });
+
+  describe('saving a skill’s schemas', () => {
+    it('keeps the manifest, and a trusted skill is modified afterwards', async () => {
+      await trust('report');
+      const res = await call('/skills/report', {
+        method: 'PUT',
+        body: JSON.stringify({ dependsOn: ['plain'] }),
+      });
+      expect(res.status).toBe(200);
+      const after = await info('report');
+      expect(after.declared).toEqual({
+        tools: ['fs.read', 'fs.list'],
+        domains: ['api.example.com'],
+        paths: ['docs/'],
+      });
+      expect(after).toMatchObject({
+        trust: 'modified',
+        trustReason: 'Its files have changed since you trusted it.',
+      });
+      expect(after.changes?.files.changed).toEqual(['SKILL.md']);
+      expect(fs.readFileSync(body('report'), 'utf8')).toContain('Quote the figures from docs.');
     });
   });
 

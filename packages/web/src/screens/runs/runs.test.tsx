@@ -62,6 +62,38 @@ describe('step labels', () => {
     expect(w.note).toContain('provider may be a different one');
   });
 
+  it('names the skill a chat used, its state and what it passed over, with what was enforced as the note', () => {
+    const used = describeStep(
+      tool(
+        'skill.select',
+        { skill: 'report', trust: 'untrusted' },
+        {
+          notes: ['The skill "report" is untrusted.', 'Enforcement is off: nothing is narrowed.'],
+          skipped: [{ skill: 'old', trust: 'blocked' }],
+        },
+        'warning'
+      )
+    );
+    expect(used.label).toBe('Used the skill report (untrusted), passed over 1 other');
+    expect(used.note).toBe(
+      'The skill "report" is untrusted. Enforcement is off: nothing is narrowed.'
+    );
+    expect(
+      describeStep(tool('skill.select', { skill: 'report', trust: 'trusted' }, { notes: ['x'] }))
+        .label
+    ).toBe('Used the skill report');
+    expect(
+      describeStep(
+        tool(
+          'skill.select',
+          { skill: null, trust: null },
+          { skipped: [{ skill: 'a' }, { skill: 'b' }] },
+          'warning'
+        )
+      ).label
+    ).toBe('Passed over 2 skills that matched');
+  });
+
   it('names an escalation after a failed gate', () => {
     const w = describeStep(
       tool('agent.escalate', { model: 'x/big' }, { from: 'x/small', after: 'Gate failed: t' })
