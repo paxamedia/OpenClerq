@@ -234,7 +234,8 @@ carries a warning, in `app.warnings` for the app or `warnings` for an installati
 `DELETE /github/app` answers `{ disconnected: true, slug, appDeletedOnGitHub: false, settingsUrl, message }`
 (`404 app_not_connected` when none): the app on GitHub is not touched. If somebody was signed in, they
 are signed out first (while the client secret is still there to revoke with) and the answer carries
-`user`, the sign-out's answer below, with its words added to `message`.
+`user`, the sign-out's answer below, with its words added to `message`. Sign-ins still waiting for a
+person on GitHub are cancelled first (`GET /github/login/{flowId}` then says `error`, "disconnected").
 
 ### Signing in as yourself
 
@@ -302,7 +303,8 @@ app's client secret). Otherwise `message` says why and `authorizationsUrl` is wh
 ```
 
 `added` says OpenClerq has a row for it (names are compared without regard to case); `repoId` is that
-row. The list stops at `limit` (1,000), and `truncated` and `message` say so. `warnings` name a
+row. Only GitHub rows (`kind: github`) count: a local clone whose `origin` is the same repository is a
+different row, so the repository still shows `added: false`. The list stops at `limit` (1,000), and `truncated` and `message` say so. `warnings` name a
 suspended installation or names OpenClerq cannot use. `409 not_signed_in` when nobody is signed in (or
 GitHub no longer accepts the sign-in: it is dropped), `409 sign_in_unusable` when it cannot be used
 right now, `502 github_unreachable`.

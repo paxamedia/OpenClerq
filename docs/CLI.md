@@ -307,8 +307,9 @@ clerq github repos [--add <owner/name>]
   organisation, `--name` names it.
 - **`import`** uses an app you made: its App ID and Client ID, the private key from a file and,
   optionally, the client secret from a file (it lets a sign-in be renewed and revoked). It **refuses a
-  key or secret file that other users of the computer can read** (`chmod 600`) before sending anything,
-  and with the same App ID again replaces the key.
+  key or secret file that any other user of the computer has access to** (a mode with any bit set for
+  "other", such as the 0644 a browser usually gives a download: `chmod 600` it) before sending anything,
+  and only warns when the file's group can read it. With the same App ID again it replaces the key.
 - **`status`** shows the app, whether its key and secret are stored, where it is installed (`--refresh`
   asks GitHub again; a key GitHub refuses says to generate a new one and import it) and who is signed in.
 - **`disconnect`** asks first (`y`) unless `--yes`; without a terminal it will not guess and says to
