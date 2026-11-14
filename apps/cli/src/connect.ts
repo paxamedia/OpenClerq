@@ -14,7 +14,7 @@ import { flag, str } from './args.js';
 import { localTokenPath, modeWarning, tildePath } from './config.js';
 import type { Context } from './context.js';
 import { CliError, EXIT } from './errors.js';
-import { assertTransport, isLoopbackHost, resolveConnection, type Resolved } from './connection.js';
+import { assertTransport, isLocalGateway, resolveConnection, type Resolved } from './connection.js';
 
 /** The connection flags of this call. */
 export const flagsOf = (ctx: Context) => ({
@@ -72,12 +72,13 @@ export async function connect(ctx: Context, needToken = true): Promise<Resolved>
   const compat = await gateway.checkCompatibility();
   if (!compat.ok) throw unusable(compat, resolved.url);
   if (needToken && !resolved.token) {
-    const local = isLoopbackHost(new URL(resolved.url).hostname);
+    const local = isLocalGateway(resolved.url, ctx.localUrl);
     throw new CliError(
       `There is no token for ${resolved.url}. ` +
         (local
           ? `The gateway on this computer writes one to ${tildePath(localTokenPath(ctx.home), ctx.home)} the first time it runs: start OpenClerq, or run \`clerq login ${resolved.url}\`. `
-          : `Run \`clerq login ${resolved.url}\`. `) +
+          : `Run \`clerq login ${resolved.url}\` ` +
+            `(for a gateway of yours on this computer, \`--token-file ${tildePath(localTokenPath(ctx.home), ctx.home)}\` keeps where its token is). `) +
         'CLERQ_GATEWAY_TOKEN works too.'
     );
   }

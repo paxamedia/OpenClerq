@@ -25,7 +25,7 @@ const CONNECTION = `Connection (first match wins):
   address   --gateway, --profile, then CLERQ_GATEWAY_URL, then the profile "default"
             in ~/.clerq/cli.json, then http://127.0.0.1:18790
   token     --profile, then CLERQ_GATEWAY_TOKEN, then the profile "default", then
-            ~/.clerq/gateway-token (only for an address on this computer)
+            ~/.clerq/gateway-token (only for the gateway on this computer)
   There is no --token option: it would stay in your shell history. Use \`clerq login\`.`;
 
 const EXIT_CODES = `Exit codes:

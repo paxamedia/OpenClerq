@@ -11,11 +11,13 @@
  *   1. the profile named by `--profile`
  *   2. `CLERQ_GATEWAY_TOKEN`
  *   3. the profile named `default`
- *   4. `~/.clerq/gateway-token`, only for an address on this computer
+ *   4. `~/.clerq/gateway-token`, only for the gateway on this computer
  *
  * A token kept in a profile is sent only to that profile's own address, and the
- * local token file only to a loopback address: `--gateway https://elsewhere` never
- * carries a token that was saved for somewhere else.
+ * local token file only to the gateway on this computer (loopback, on the port
+ * the desktop app and `clerq-server` use by default): `--gateway https://elsewhere`
+ * never carries a token that was saved for somewhere else, and a mistyped port on
+ * localhost does not hand the token to whatever listens there.
  */
 
 import fs from 'node:fs';
@@ -64,6 +66,18 @@ export function isLoopbackHost(hostname: string): boolean {
   if (/^127(\.\d{1,3}){3}$/.test(h)) return true;
   const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(h);
   return mapped ? mapped[1].startsWith('127.') : false;
+}
+
+const portOf = (u: URL) => u.port || (u.protocol === 'https:' ? '443' : '80');
+
+/**
+ * The gateway on this computer: a loopback address on the port of `localUrl`
+ * (18790 unless a test says otherwise). The only place the local token file goes.
+ */
+export function isLocalGateway(url: string, localUrl: string = DEFAULT_URL): boolean {
+  const a = new URL(url);
+  const b = new URL(localUrl);
+  return isLoopbackHost(a.hostname) && portOf(a) === portOf(b);
 }
 
 /**
@@ -236,7 +250,7 @@ export function resolveConnection(input: {
     }
   }
   // 4. The gateway on this computer keeps its token in a file.
-  if (isLoopbackHost(new URL(url).hostname)) {
+  if (isLocalGateway(url, input.localUrl)) {
     const file = localTokenPath(home);
     if (fs.existsSync(file)) {
       return {

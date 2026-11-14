@@ -48,12 +48,12 @@ and nothing else. Targets are the ones `scripts/build-binary.js` knows (see
 
 Which gateway, and which token, are settled from these, first match wins:
 
-|     | Address                                                       | Token                                                          |
-| --- | ------------------------------------------------------------- | -------------------------------------------------------------- |
-| 1   | `--gateway <url>`, or the profile named by `--profile <name>` | the profile named by `--profile`                               |
-| 2   | `CLERQ_GATEWAY_URL`                                           | `CLERQ_GATEWAY_TOKEN`                                          |
-| 3   | the profile `default` in `~/.clerq/cli.json`                  | the profile `default`                                          |
-| 4   | `http://127.0.0.1:18790`, the gateway on this computer        | `~/.clerq/gateway-token`, for an address on this computer only |
+|     | Address                                                       | Token                                                           |
+| --- | ------------------------------------------------------------- | --------------------------------------------------------------- |
+| 1   | `--gateway <url>`, or the profile named by `--profile <name>` | the profile named by `--profile`                                |
+| 2   | `CLERQ_GATEWAY_URL`                                           | `CLERQ_GATEWAY_TOKEN`                                           |
+| 3   | the profile `default` in `~/.clerq/cli.json`                  | the profile `default`                                           |
+| 4   | `http://127.0.0.1:18790`, the gateway on this computer        | `~/.clerq/gateway-token`, for the gateway on this computer only |
 
 So on the machine where the desktop app (or `clerq-server`) runs, `clerq status` works with no setup.
 For another gateway, sign in once:
@@ -71,10 +71,13 @@ authenticated call) before it saves anything. It does not read `CLERQ_GATEWAY_TO
 environment needs no `login`. `clerq logout [--profile <name>]` removes the profile and the token
 stored in it (a token file is left where it is).
 
-A token saved in a profile is sent **only to that profile's own address**, and the local token file only
-to an address on this computer (`localhost`, `127.x.x.x`, `::1`). `--gateway https://elsewhere` never
-carries a token that was saved for somewhere else; a token in `CLERQ_GATEWAY_TOKEN` goes wherever you
-point it, since you set both.
+A token saved in a profile is sent **only to that profile's own address**, and the local token file
+only to **the gateway on this computer**: `localhost`, `127.x.x.x` or `::1` on port 18790, the port the
+desktop app and `clerq-server` use unless told otherwise. `--gateway https://elsewhere` never carries a
+token that was saved for somewhere else, and a mistyped port on `localhost` does not hand your token to
+whatever listens there. A token in `CLERQ_GATEWAY_TOKEN` goes wherever you point it, since you set both.
+A `clerq-server` on another port of this computer needs one `login` to say so:
+`clerq login http://127.0.0.1:18800 --token-file ~/.clerq/gateway-token`.
 
 ### `~/.clerq/cli.json`
 

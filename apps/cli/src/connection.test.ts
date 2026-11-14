@@ -7,6 +7,7 @@ import {
   DEFAULT_URL,
   assertTransport,
   checkToken,
+  isLocalGateway,
   isLoopbackHost,
   normalizeUrl,
   resolveConnection,
@@ -90,15 +91,32 @@ describe('the token', () => {
     expect(resolve({})).toMatchObject({ token: file, tokenSource: 'local-file' });
   });
 
-  it('is the local file only for an address on this computer', () => {
+  it('is the local file only for the gateway on this computer, not any loopback port', () => {
     writeLocalToken();
-    expect(resolve({ gateway: 'http://127.0.0.1:19999' }).tokenSource).toBe('local-file');
-    expect(resolve({ gateway: 'http://localhost:19999' }).tokenSource).toBe('local-file');
-    expect(resolve({ gateway: 'https://clerq.example.com' })).toMatchObject({
-      token: null,
-      tokenSource: 'none',
-    });
+    for (const gateway of [
+      'http://127.0.0.1:18790',
+      'http://localhost:18790',
+      'http://[::1]:18790',
+    ]) {
+      expect(resolve({ gateway }).tokenSource, gateway).toBe('local-file');
+    }
+    // Another port on this computer may be anyone's: the token is not handed to it.
+    for (const gateway of [
+      'http://127.0.0.1:19999',
+      'http://localhost:8080',
+      'https://clerq.example.com',
+    ]) {
+      expect(resolve({ gateway }), gateway).toMatchObject({ token: null, tokenSource: 'none' });
+    }
     expect(resolve({}, { CLERQ_GATEWAY_URL: 'https://clerq.example.com' }).token).toBeNull();
+    // Where this computer's gateway is, the file is its own.
+    const moved = resolveConnection({
+      flags: {},
+      env: {},
+      home,
+      localUrl: 'http://127.0.0.1:19999',
+    });
+    expect(moved).toMatchObject({ url: 'http://127.0.0.1:19999', tokenSource: 'local-file' });
   });
 
   it('never sends a profile’s token to another address', () => {
@@ -181,6 +199,17 @@ describe('the address is checked', () => {
     expect(() => normalizeUrl('ftp://x.example')).toThrow(/must start with http/);
     expect(() => normalizeUrl('https://me:pw@x.example')).toThrow(/user name and password/);
     expect(() => normalizeUrl('http://')).toThrow(/not a gateway address/);
+  });
+
+  it('knows the gateway on this computer by its port as well as its host', () => {
+    expect(isLocalGateway('http://127.0.0.1:18790')).toBe(true);
+    expect(isLocalGateway('http://localhost:18790')).toBe(true);
+    expect(isLocalGateway('http://127.0.0.1:18791')).toBe(false);
+    expect(isLocalGateway('https://127.0.0.1:18790')).toBe(true);
+    expect(isLocalGateway('http://nas.local:18790')).toBe(false);
+    expect(isLocalGateway('http://127.0.0.1:5000', 'http://127.0.0.1:5000')).toBe(true);
+    // No port written: the scheme's own.
+    expect(isLocalGateway('http://localhost', 'http://127.0.0.1:80')).toBe(true);
   });
 
   it('accepts one line of visible characters as a token', () => {
