@@ -908,6 +908,27 @@ describe('builtin driver', () => {
     expect(run.body.message).toMatch(/Unknown provider "fakee"/);
   });
 
+  it('reads `version: 1`, and refuses another spec version when saving and previewing, by line', async () => {
+    const withVersion = (v: string) => `version: ${v}\n${spec('versioned')}`;
+
+    const newer = await save(withVersion('2'));
+    expect(newer.status).toBe(400);
+    expect(newer.body).toMatchObject({ error: 'invalid_spec', line: 1, column: 10 });
+    expect(newer.body.message).toBe(
+      'Line 1, column 10: This automation was written for spec version 2; this OpenClerq reads version 1.'
+    );
+    const preview = await json<{ error: string; line: number; message: string }>(
+      '/v1/automations/preview',
+      { method: 'POST', body: JSON.stringify({ spec: withVersion('2') }) }
+    );
+    expect(preview.status).toBe(400);
+    expect(preview.body).toMatchObject({ error: 'invalid_spec', line: 1 });
+    expect(preview.body.message).toContain('spec version 2');
+
+    const fine = await save(withVersion('1'));
+    expect(fine.status).toBe(201);
+  });
+
   it('refuses a routing strategy with a plain reason, by line', async () => {
     const bad = await save(
       builtinSpec(

@@ -72,7 +72,18 @@ export interface SandboxSettings {
   explicit: boolean;
 }
 
+/**
+ * The version of the spec format this release reads. A spec may say
+ * `version: 1` at the top, or leave it out, which means 1. A spec written for
+ * another version is refused, naming the line, rather than read as if it were
+ * this one; a later release that reads version 2 will translate a version 1
+ * spec on read, and stored specs are never rewritten.
+ */
+export const SPEC_VERSION = 1;
+
 export interface AutomationSpec {
+  /** The spec format version it was read as: always `SPEC_VERSION`. */
+  version: typeof SPEC_VERSION;
   name: string;
   description?: string;
   /** Cron expression in the host's time zone. Absent: the automation only runs on demand. */
@@ -368,9 +379,22 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
   // Annotated so a call to r.fail() narrows types: TypeScript requires it for `never`.
   const r: Reader = new Reader(doc, lineCounter);
 
+  // First of all: a spec written for another version may have other keys, and "unknown key"
+  // would be the wrong thing to tell its author.
+  const version = r.get(['version']);
+  if (version !== undefined && version !== null && version !== SPEC_VERSION) {
+    r.fail(
+      ['version'],
+      typeof version === 'number' && Number.isInteger(version) && version > SPEC_VERSION
+        ? `This automation was written for spec version ${version}; this OpenClerq reads version ${SPEC_VERSION}.`
+        : `"version" must be ${SPEC_VERSION}, the spec version this OpenClerq reads. Leave it out for the same.`
+    );
+  }
+
   r.keys(
     [],
     [
+      'version',
       'name',
       'description',
       'on',
@@ -877,6 +901,7 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
   }
 
   return {
+    version: SPEC_VERSION,
     name,
     description: r.text(['description']),
     schedule,

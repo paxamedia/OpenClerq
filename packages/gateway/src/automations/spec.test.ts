@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseRegistry } from '@clerq/providers';
-import { parseSpec, parseDuration, SpecError } from './spec.js';
+import { parseSpec, parseDuration, SpecError, SPEC_VERSION } from './spec.js';
 import { nextRunOf } from './scheduler.js';
 
 /** MINIMAL with a vault key for the agent, which a CLI needs under a sandbox profile. */
@@ -49,6 +49,45 @@ describe('parseSpec', () => {
       approvals: { push: 'manual', timeoutMs: 24 * 3_600_000 },
     });
     expect(spec.schedule).toBeUndefined();
+  });
+
+  describe('version', () => {
+    it('is 1, and a spec that leaves it out is read as 1', () => {
+      expect(SPEC_VERSION).toBe(1);
+      expect(parseSpec(MINIMAL).version).toBe(1);
+    });
+
+    it('accepts version: 1 anywhere at the top, and changes nothing else', () => {
+      const plain = parseSpec(MINIMAL);
+      expect(parseSpec(`version: 1\n${MINIMAL}`)).toEqual(plain);
+      expect(parseSpec(`${MINIMAL}\nversion: 1\n`)).toEqual(plain);
+      expect(parseSpec(`version: 1.0\n${MINIMAL}`)).toEqual(plain);
+      // A null is the key left empty, which is leaving it out.
+      expect(parseSpec(`version:\n${MINIMAL}`)).toEqual(plain);
+    });
+
+    it('refuses a newer version, naming the line and saying what this release reads', () => {
+      const error = errorOf(`name: deps\nversion: 2\n${MINIMAL.replace('name: deps\n', '')}`);
+      expect(error.message).toBe(
+        'Line 2, column 10: This automation was written for spec version 2; this OpenClerq reads version 1.'
+      );
+      expect(error).toMatchObject({ line: 2, column: 10, code: 'invalid_spec' });
+      expect(errorOf(`version: 12\n${MINIMAL}`).message).toContain('spec version 12;');
+    });
+
+    it('refuses what is not a version, in words', () => {
+      for (const bad of ['0', '-1', '1.5', '"1"', 'v1', 'true', '[1]', 'latest']) {
+        const error = errorOf(`version: ${bad}\n${MINIMAL}`);
+        expect(error.message, bad).toBe(
+          'Line 1, column 10: "version" must be 1, the spec version this OpenClerq reads. Leave it out for the same.'
+        );
+      }
+    });
+
+    it('is refused before anything else is checked', () => {
+      const error = errorOf('version: 3\nbogus: yes\n');
+      expect(error.message).toContain('spec version 3');
+    });
   });
 
   it('reads the documented format', () => {
