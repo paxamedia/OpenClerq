@@ -230,7 +230,7 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [ ] Real updater signing keys, signed artifacts, documented rotation and recovery
 - [x] `packages/plugin-sdk` — declared permissions, lifecycle, treated as code not prompt text ([PLUGINS.md](PLUGINS.md)): manifest v1, `definePlugin` with `upgrade`/`register`/`start`/`stop`, a checksum of the plugin's code, approval by hash, and opt-in enforcement of what a plugin does through its context. Enforcement is not a sandbox: plugins run in the gateway process
 - [ ] Chat console migrated onto `plugin-sdk` as the reference first-party plugin — proving the contract by using it
-- [ ] Skill manifests with `tools_required`, `network_domains`, `filesystem_scope`, checksum, trust states
+- [x] Skill manifests with `tools_required`, `network_domains`, `filesystem_scope`, checksum, trust states ([SKILLS.md](SKILLS.md)): declared in `SKILL.md`, checksummed over the folder (`clerq skill checksum`), `untrusted | trusted | modified | blocked` decided by you for the exact files; with enforcement on (the plugins switch) only trusted skills are used and a trusted skill narrows a chat's tools and limits its file tools and Sandboxed commands. Not a sandbox; skills are not signed
 - [x] Versioned API protocol + migration system
 - [ ] Published threat model and documented plugin/skill trust boundary
 

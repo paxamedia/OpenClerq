@@ -336,6 +336,21 @@ whatever its scopes say, so a plugin cannot approve itself. They are additions t
 [PLUGINS.md](PLUGINS.md) describes them. A plugin declares the API version it needs as
 `engines.api`; a plugin whose version this gateway does not serve is refused with the reason.
 
+## Skills
+
+`GET /skills` and `GET /skills/:slug` say, for each skill, where it comes from (`origin`: `directory`,
+`module:<id>` or `plugin:<id>`), its trust state (`trust`: `untrusted | trusted | modified | blocked`,
+with `trustReason`, `trustedBy` and `trustedAt`), what its manifest declares (`declared: { tools,
+domains, paths }`), the checksum its author wrote (`checksum`), the checksum of its files now
+(`computedChecksum`, null when they cannot be hashed, with `problem`), whether they match
+(`checksumMatches`), `warnings`, what differs from what was trusted (`changes`) and its `files`; the
+list also says whether enforcement is on (`enforce`). `POST /skills/:slug/trust { checksum }` (the
+`computedChecksum` you saw; `409 trust_stale` when the files are not those any more, `409
+not_trustable` for a plugin's skill or files that cannot be hashed), `POST /skills/:slug/block` and
+`POST /skills/:slug/untrust` are for the gateway token only. The switch is the plugins one
+(`GET|PUT /plugins/settings`). They are additions to version 1, and [SKILLS.md](SKILLS.md) describes
+them.
+
 ## The 1.x promise
 
 Within API version 1, changes are additive only:

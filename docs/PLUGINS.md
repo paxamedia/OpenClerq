@@ -20,7 +20,10 @@ _through its context_. They are not a sandbox.
 
 Plugins are not skills. A **skill** is a `SKILL.md` that adds instructions to a prompt (see
 [MODULE_SYSTEM.md](MODULE_SYSTEM.md) §1–4). A plugin may ship skills, and its approval covers
-them, but a skill by itself runs no code. Trust states for skills on their own are a later step.
+them, but a skill by itself runs no code. A skill that is not part of a plugin has trust states and a
+manifest of its own: see [SKILLS.md](SKILLS.md). A plugin's skills are read from the copy that was
+approved and are `trusted` while the plugin that runs is the approved one; with enforcement on, a
+plugin waiting for approval contributes no skills.
 
 ## Writing a plugin
 
@@ -466,5 +469,5 @@ app's `ModuleUI`, `ModuleProps` and `ModuleContext` remain as aliases (the last 
 
 - Running plugins out of process, which is what would make enforcement a boundary.
 - A model or memory helper on the context (so `llm` and `memory` are enforced on nothing).
-- Trust states for skills on their own, and the chat console as a plugin.
+- The chat console as a plugin.
 - Finding a plugin folder added while the gateway runs.

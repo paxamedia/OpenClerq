@@ -50,6 +50,11 @@ moduleType: "calc"          # "calc" | "guidance" | "filing" | "compliance"
 guardrails: []              # High‑level safety rules; see SECURITY.md
 
 triggers: ["inbox", "email", "messages"]
+
+tools_required: [fs.read, fs.list]   # Optional: the tools the instructions use
+network_domains: [api.example.com]   # Optional: hosts the instructions expect to reach
+filesystem_scope: [inbox/, ~/Notes]  # Optional: paths the instructions expect to read or write
+checksum: sha256:…                   # Optional: the author's checksum of the skill's folder
 ---
 
 Skill instructions go here in Markdown: what the agent should do,
@@ -63,8 +68,15 @@ The gateway uses:
 - Optional `inputSchema`, `outputSchema` (JSON Schema objects) for structured inputs/outputs
 - Optional `dependsOn` (array of skill slugs) for dependency mapping
 - Optional `jurisdiction`/`domains` for your own use
+- Optional `tools_required`, `network_domains`, `filesystem_scope` and `checksum`: what the
+  instructions expect to need, and the author's checksum of the skill's files. They are declarations,
+  not permissions: you decide whether to trust a skill, and what the declarations do is up to the
+  enforcement switch. [SKILLS.md](SKILLS.md) has the format, how the checksum is made, trust states
+  and what enforcement does and does not do.
 
-You can edit schemas and dependencies via the desktop (Skills section) or `PUT /skills/:slug`. Everything else is for instructions and safety.
+You can edit schemas and dependencies via the desktop (Skills section) or `PUT /skills/:slug`; saving
+rewrites `SKILL.md`, so a skill you had trusted needs trusting again. Everything else is for
+instructions and safety.
 
 ---
 
@@ -74,7 +86,15 @@ When you call `POST /task`:
 
 1. The gateway loads the skill list (frontmatter only) from your skills directory and each module’s `skills/` folder.
 2. It selects the skill whose `triggers` appear in the message. A skill without `triggers` matches on its slug or name.
-3. The selected skill’s instructions — the Markdown after the frontmatter — are appended to the system prompt in a `<skill_instructions>` block, capped at 16,000 characters. With no match, the plain system prompt is used.
+3. The selected skill’s instructions — the Markdown after the frontmatter — are appended to the system prompt in a `<skill_instructions>` block, capped at 16,000 characters, introduced as instructions from the skill with its trust state. With no match, the plain system prompt is used.
+
+Every skill has a trust state (`untrusted`, `trusted`, `modified`, `blocked`). A blocked skill is
+never selected. With enforcement on (the switch Plugins has, `plugins.enforce`; off by default) only a
+trusted skill is, and the next best match is used when the best is passed over; the trace names the
+skill that was skipped and why. A managed chat narrows its tools to a trusted skill's
+`tools_required` and limits its file tools and Sandboxed commands to its `filesystem_scope` and
+`network_domains`; `/task` offers the model no tools, so there is nothing to narrow there. See
+[SKILLS.md](SKILLS.md).
 
 You can test this behaviour by:
 

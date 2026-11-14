@@ -38,7 +38,7 @@
 ## Why Clerq?
 
 - **Local-first calculations** — All numeric work runs locally on your machine (Rust-based calculation engine). AI provides guidance and explanations only.
-- **Extensible skills** — You decide which domains and workflows to implement as skills, modules or plugins. A plugin declares what it needs, you approve exactly that, and you can turn on checks on what it does through OpenClerq (not a sandbox: see [Plugins](docs/PLUGINS.md)).
+- **Extensible skills** — You decide which domains and workflows to implement as skills, modules or plugins. A plugin declares what it needs, you approve exactly that, and you can turn on checks on what it does through OpenClerq (not a sandbox: see [Plugins](docs/PLUGINS.md)). A skill declares the tools, hosts and paths its instructions expect, you decide whether to trust the exact files, and you can turn on checks on what a trusted skill may do ([Skills](docs/SKILLS.md)).
 - **Open-source** — Use the code as is, program it, build your own modules. No warranty; use at your own risk.
 - **Hosted option** — If you work with us commercially, we can build and host custom modules for your use case on our infrastructure. These are not part of the OSS distribution.
 
@@ -197,8 +197,9 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 | --------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | GET             | /health                                  | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider`                                                                 |
 | GET             | /version                                 | The gateway's release, the API versions it serves and the database schema; no token. See [API](docs/API.md)                               |
-| GET             | /skills                                  | List skills (from disk or fallback)                                                                                                       |
-| GET             | /skills/:slug                            | Get skill detail (meta, body). PUT to update schemas/dependencies.                                                                        |
+| GET             | /skills                                  | List skills (from disk or fallback), each with its trust state and what it declares. See [Skills](docs/SKILLS.md)                         |
+| GET             | /skills/:slug                            | Get skill detail (meta, body, trust). PUT to update schemas/dependencies.                                                                 |
+| POST            | /skills/:slug/trust, /block, /untrust    | Decide on a skill (gateway token only). `trust` names the `checksum` you were shown                                                       |
 | GET             | /metrics                                 | Observability: uptime, LLM calls, latency, token usage                                                                                    |
 | POST            | /context/preview                         | Preview the LLM request (no API call). Body: `question`, optional `context`, `skillSlug`, `sessionId`                                     |
 | GET             | /memory                                  | List memory records (typed: fact, preference, decision, procedure, note). POST to set; `/memory/search?q=` to find                        |
@@ -251,6 +252,7 @@ clerq/
 | [UPGRADING](docs/UPGRADING.md)                       | Upgrades, backups, downgrades, spec and API versions           |
 | [ARITHMETIC_API](docs/ARITHMETIC_API.md)             | Calculation engine: operators, functions, examples             |
 | [MODULE_SYSTEM](docs/MODULE_SYSTEM.md)               | How skills and modules are structured (schemas, dependencies)  |
+| [SKILLS](docs/SKILLS.md)                             | Skill manifests, checksums, trust states and enforcement       |
 | [TOOLS](docs/TOOLS.md)                               | Built‑in tools (filesystem, HTTP) and how to extend them       |
 | [SERVER](docs/SERVER.md)                             | The headless server: systemd, settings, data, reverse proxy    |
 | [CLI](docs/CLI.md)                                   | The `clerq` command line: sign in, apply, run, follow, approve |

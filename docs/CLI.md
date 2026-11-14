@@ -280,6 +280,36 @@ clerq deny 7 --reason "Not on a Friday"
 A decision is recorded as made by `cli`, with the reason. Deciding one that is already decided, or whose
 run has ended, says so and exits 1.
 
+### `clerq skill list | show | trust | block | untrust | checksum`
+
+A skill is a `SKILL.md` whose instructions go into a prompt; you decide whether to trust each one,
+and, if you turn enforcement on in Settings, what that decision does ([SKILLS.md](SKILLS.md)). All of
+them take `--json`.
+
+```sh
+clerq skill list
+clerq skill show vat-core
+clerq skill trust vat-core [--yes]
+clerq skill block payroll-base
+clerq skill untrust payroll-base
+clerq skill checksum ./my-skill [--write]
+```
+
+- **`list`** has each skill, its state (`not trusted`, `trusted`, `changed`, `blocked`), what it
+  declares and where it comes from, and says whether enforcement is on.
+- **`show`** has the state and why, its checksum and the one its author wrote (and whether they
+  match), what it declares in words, any warnings about its manifest, what changed since you trusted
+  it, and its instructions.
+- **`trust`** shows what it declares and the checksum, and asks `[y/N]` (without a terminal: pass
+  `--yes`). The trust is of the files that were shown: if they change before the answer arrives,
+  nothing is trusted and it exits 1. A plugin's skill is approved with its plugin and cannot be
+  trusted here.
+- **`block`** means the skill is never used, with enforcement on or off. **`untrust`** forgets
+  either decision.
+- **`checksum`** needs no gateway: it hashes the folder on this computer the way the gateway does and
+  prints only the value, so `sum=$(clerq skill checksum ./my-skill)` works. `--write` puts it in
+  `SKILL.md` as a `checksum:` line, and says so on stderr. A folder with a link in it is refused.
+
 ### `clerq github connect | import | status | disconnect | login | logout | repos`
 
 Your own GitHub App, and your own sign-in to GitHub, for a gateway on this computer or on a server

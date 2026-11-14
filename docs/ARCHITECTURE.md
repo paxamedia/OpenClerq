@@ -40,7 +40,9 @@ is the key to reading the codebase:
 
 ```text
 POST /task
-  → selectSkill()        match message against skill trigger keywords
+  → skill choice         match message against skill trigger keywords, best first; the first
+                         skill that may be used (not blocked, and trusted when enforcement is
+                         on) is read once, hashed, and judged (skills/catalog.ts)
   → parseCalculationIntent()   detect an arithmetic request
   → runEvalCalc()        (if detected) run the Rust engine
   → getExplanation()     ONE LLM call: the skill's SKILL.md instructions in the system
@@ -200,8 +202,14 @@ otherwise the default chain applies. A message is bounded by 60 turns, 200 tool 
 minutes. The stream sends text a turn at a time (`delta`), and `tool`, `approval`,
 `approval_decided` and `draft` events.
 
+A trusted skill that lists `tools_required`, with enforcement on, narrows the chat's rules with
+`narrowRules` (`skills/enforce.ts`) before the tools are offered; its `filesystem_scope` becomes the
+driver's `fileScope` (the file tools refuse a path outside it, judged by where it leads), and in a
+Sandboxed chat its `network_domains` become the sandbox's egress allowlist. The message's run gets a
+`skill.select` step saying what was used, passed over and enforced.
+
 `POST /sessions/:id/mode-diff { text, model? }` returns what raw sends and what managed adds for a
-message, without calling a model: the system prompt, the skill, the memory block, the tools offered
+message, without calling a model: the system prompt, the skill and what it did (`skillPolicy`), the memory block, the tools offered
 with how policy decides each, the model and its fallback chain, the folder. `POST /context/preview`
 with a `sessionId` includes the tool paragraph.
 
