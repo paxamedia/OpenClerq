@@ -215,6 +215,83 @@ jobs:
       - name: Test the image
         run: apps/server/scripts/test-image.sh openclerq:ci
 
+  # The container profile on a real engine: the sandbox package's tests and the gateway's, with
+  # CLERQ_TEST_CONTAINER_RUNTIME=docker, which turns on the suites that are skipped everywhere else
+  # (packages/sandbox/src/container.real.test.ts and the last describe of
+  # packages/gateway/src/automations/sandbox.integration.test.ts). They pull alpine and node, run
+  # commands in containers and look from inside at the mounts, the user and the privileges, reach
+  # example.com through the egress proxy and nothing else, stop and time out runs, sweep what a
+  # dead gateway left, and run a builtin agent and its gate end to end. The ordinary `verify` job
+  # skips them: the variable is not set there, although the runner has Docker.
+  #
+  # NOT REQUIRED YET. The profile had only ever run against a fake `docker` until this job, so the
+  # first runs may find what the fake could not. `continue-on-error` keeps main green while they
+  # are fixed; remove it (and make the job a required check) once both CPUs have been green on
+  # main. On a failure each test prints the docker command lines it ran (never their environment),
+  # every container and network labelled clerq.run with its state and logs (the egress proxy's
+  # too), and the job prints the same once more and uploads the files (scripts/container-debug.sh).
+  container-profile:
+    name: Container profile on a real engine (${{ matrix.arch }})
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      CLERQ_TEST_CONTAINER_RUNTIME: docker
+      CLERQ_TEST_DEBUG_DIR: ${{ github.workspace }}/container-debug
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The gateway's tests import the built workspace packages (@clerq/sandbox, drivers, ...).
+      - name: Build the packages the tests import
+        run: pnpm --filter '@clerq/gateway^...' build
+
+      - name: The engine
+        run: |
+          id
+          docker version
+          docker info
+
+      - name: Sandbox tests on the engine
+        run: pnpm --filter @clerq/sandbox exec vitest run src/container.real.test.ts --reporter=verbose
+
+      # Also after a failure above, so one run shows both suites.
+      - name: Gateway tests on the engine
+        if: ${{ !cancelled() }}
+        run: >-
+          pnpm --filter @clerq/gateway exec vitest run
+          src/automations/sandbox.integration.test.ts
+          -t 'real container engine' --reporter=verbose
+
+      - name: What the engine holds
+        if: ${{ failure() }}
+        run: scripts/container-debug.sh docker "$CLERQ_TEST_DEBUG_DIR/docker-calls.log"
+
+      - name: Keep the debug files
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: container-profile-debug-${{ matrix.arch }}
+          path: ${{ env.CLERQ_TEST_DEBUG_DIR }}
+          if-no-files-found: ignore
+
   rust:
     name: Rust tests
     runs-on: ubuntu-latest
