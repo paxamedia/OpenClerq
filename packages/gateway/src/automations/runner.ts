@@ -95,7 +95,7 @@ import {
   type ForgeCredential,
   type ForgeCredentials,
 } from './credentials.js';
-import { githubApiBase } from '../github/config.js';
+import { REJECTED_URL, githubApiBase, githubUrl } from '../github/config.js';
 import type { AppAccess } from '../github/app.js';
 import {
   ensureRepoRow,
@@ -978,12 +978,15 @@ async function executeWith(
           deps.fetcher
         );
       });
-      prUrl = pr.url;
+      // A link is kept only if it is on the forge's own website: it is shown in the app.
+      const shownUrl = forge?.forge === 'github' ? githubUrl(pr.url) : pr.url;
+      prUrl = shownUrl ?? undefined;
       addRunStep(runId, {
         kind: 'git',
         input: { action: 'pull_request' },
         output: {
           ...pr,
+          ...(shownUrl ? {} : { url: undefined, warning: REJECTED_URL('the pull request') }),
           ...(prCredential
             ? {
                 credential: prCredential.source,

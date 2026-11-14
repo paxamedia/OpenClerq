@@ -17,6 +17,7 @@
 
 import crypto from 'node:crypto';
 import http from 'node:http';
+import { githubWebBase } from './config.js';
 import type { AddressInfo } from 'node:net';
 
 export interface FakeInstallation {
@@ -104,6 +105,11 @@ export class FakeGithub {
   hang: string | undefined;
   /** Answer a call late: `METHOD /path` includes the key, wait this many milliseconds first. */
   readonly delays = new Map<string, number>();
+  /** `html_url` to report for the app (from `GET /app`) and for installations, instead of GitHub's own. */
+  appHtmlUrl: string | undefined;
+  installationHtmlUrl: string | undefined;
+  /** `html_url` to report for a pull request. */
+  prHtmlUrl: string | undefined;
   /** Page size for `GET /app/installations`. */
   pageSize = 100;
   private counter = 0;
@@ -170,6 +176,9 @@ export class FakeGithub {
     this.reportRepos = undefined;
     this.hang = undefined;
     this.delays.clear();
+    this.appHtmlUrl = undefined;
+    this.installationHtmlUrl = undefined;
+    this.prHtmlUrl = undefined;
     this.counter = 0;
     this.purposes.clear();
     this.pats.clear();
@@ -216,7 +225,7 @@ export class FakeGithub {
       client_secret: 'client-secret-from-the-fake-conversion',
       webhook_secret: 'webhook-secret-from-the-fake-conversion',
       pem: this.privateKeyPem,
-      html_url: `https://github.com/apps/${this.app.slug}`,
+      html_url: `${githubWebBase()}/apps/${this.app.slug}`,
       permissions: { contents: 'write', pull_requests: 'write', metadata: 'read' },
       events: [],
       ...extra,
@@ -362,7 +371,7 @@ export class FakeGithub {
         name: this.app.name,
         client_id: this.app.clientId,
         owner: this.app.owner,
-        html_url: `https://github.com/apps/${this.app.slug}`,
+        html_url: this.appHtmlUrl ?? `${githubWebBase()}/apps/${this.app.slug}`,
         permissions: { contents: 'write', pull_requests: 'write', metadata: 'read' },
       });
     }
@@ -482,7 +491,10 @@ export class FakeGithub {
         body: (body ?? {}) as Record<string, unknown>,
         number,
       });
-      return reply(201, { html_url: `https://github.com/${full}/pull/${number}`, number });
+      return reply(201, {
+        html_url: this.prHtmlUrl ?? `${githubWebBase()}/${full}/pull/${number}`,
+        number,
+      });
     }
 
     reply(404, { message: 'Not Found' });
@@ -497,7 +509,7 @@ export class FakeGithub {
       repository_selection: i.selection,
       permissions: i.permissions,
       suspended_at: i.suspended ? '2026-01-01T00:00:00Z' : null,
-      html_url: `https://github.com/settings/installations/${i.id}`,
+      html_url: this.installationHtmlUrl ?? `${githubWebBase()}/settings/installations/${i.id}`,
     };
   }
 }

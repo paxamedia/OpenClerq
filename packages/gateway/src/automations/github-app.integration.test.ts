@@ -25,6 +25,8 @@ import { getStore } from '../store.js';
 const TOKEN = 'github-app-run-test-token-0123456789';
 const VAULT_PAT = 'ghp_vault_personal_token_for_run_tests';
 const PAT_LOGIN = 'acme-user';
+/** GitHub's website, for the gateway and the fake. */
+const WEB = 'http://github.test';
 
 type Mode = 'edit' | 'fail' | 'slow' | 'leak';
 let mode: Mode = 'edit';
@@ -328,7 +330,7 @@ exec "$REAL_GIT" "$@"
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ''}`;
   fake = await new FakeGithub().listen();
   process.env.CLERQ_GITHUB_API = fake.url;
-  process.env.CLERQ_GITHUB_WEB = 'http://github.test';
+  process.env.CLERQ_GITHUB_WEB = WEB;
 
   const { server: s } = createGateway({
     port: 0,
@@ -389,7 +391,7 @@ describe('a run with the app installed on the repository', () => {
   it('uses short-lived tokens for one repository, opens the pull request as the app and ends the tokens', async () => {
     const run = await runSpec(spec('github:acme/remote-app'));
     expect(run.status).toBe('done');
-    expect(run.prUrl).toBe('https://github.com/acme/remote-app/pull/1');
+    expect(run.prUrl).toBe(`${WEB}/acme/remote-app/pull/1`);
 
     // Three tokens, each for the one repository and the least its purpose needs.
     const made = fake.calls('POST', '/access_tokens');
@@ -439,7 +441,7 @@ describe('a run with the app installed on the repository', () => {
     });
     const pr = run.steps.find((s) => s.input?.action === 'pull_request');
     expect(pr?.output).toMatchObject({
-      url: 'https://github.com/acme/remote-app/pull/1',
+      url: `${WEB}/acme/remote-app/pull/1`,
       openedBy: `${fake.app.slug}[bot]`,
     });
 
@@ -583,6 +585,23 @@ describe('a run with the app installed on the repository', () => {
     // The gate printed the file: its output is stored, redacted.
     const gate = run.steps.find((s) => s.kind === 'gate' && String(s.input?.run).includes('cat'));
     expect(JSON.stringify(gate)).toContain('«redacted»');
+  });
+
+  it('keeps a pull request link only when it is on GitHub’s website', async () => {
+    fake.prHtmlUrl = 'javascript:alert(1)';
+    const run = await runSpec(spec('github:acme/remote-app'));
+    // The pull request exists; the run does not offer a link that is not GitHub's.
+    expect(run.status).toBe('done');
+    expect(fake.pulls).toHaveLength(1);
+    expect(run.prUrl).toBeUndefined();
+    expect(JSON.stringify(run)).not.toContain('javascript:');
+    const pr = run.steps.find((s) => s.input?.action === 'pull_request');
+    expect(pr?.output).toMatchObject({
+      number: 1,
+      warning:
+        "GitHub gave an address for the pull request that is not on GitHub's website; it was left out.",
+    });
+    expect(run.exitReason).toMatch(/^Published: auto\//);
   });
 
   it('takes a token out of an error GitHub echoes it in', async () => {

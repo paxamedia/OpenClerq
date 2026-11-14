@@ -210,7 +210,10 @@ or `200` with `replacedKey: true` for a new key of the app already connected. `4
 }
 ```
 
-`secrets` says whether each is stored, never what it is. `installations` is from GitHub (null, with
+`secrets` says whether each is stored, never what it is. An address GitHub gives (the app's, an
+installation's, a pull request's) is passed on only if it is `https://` on GitHub's own website
+(`javascript:`, another host and look-alikes are not): otherwise it is left out (`null`) and the answer
+carries a warning, in `app.warnings` for the app or `warnings` for an installation. `installations` is from GitHub (null, with
 `installationsError`, when GitHub could not be asked), cached for a minute; `?refresh=1` asks again.
 `DELETE /github/app` answers `{ disconnected: true, slug, appDeletedOnGitHub: false, settingsUrl, message }`
 (`404 app_not_connected` when none): the app on GitHub is not touched.

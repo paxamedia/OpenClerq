@@ -24,6 +24,7 @@ import {
 } from './api.js';
 import {
   APP_PRIVATE_KEY_SECRET,
+  githubUrl,
   readAppConfig,
   splitProject,
   type GithubAppConfig,
@@ -70,7 +71,9 @@ export interface Installation {
   repositorySelection: 'all' | 'selected' | null;
   suspended: boolean;
   permissions: Record<string, string>;
+  /** On GitHub's website, or null (GitHub gave none, or one that is not: `htmlUrlRejected`). */
   htmlUrl: string | null;
+  htmlUrlRejected?: true;
 }
 
 export type InstallationLookup =
@@ -114,7 +117,9 @@ export interface AppInfo {
   name: string;
   clientId: string | null;
   owner: { login: string; type: string } | null;
+  /** On GitHub's website, or null (GitHub gave none, or one that is not: `htmlUrlRejected`). */
   htmlUrl: string | null;
+  htmlUrlRejected?: true;
   permissions: Record<string, string>;
 }
 
@@ -149,7 +154,10 @@ export function readAppInfo(body: unknown): AppInfo | null {
       typeof owner?.login === 'string'
         ? { login: owner.login, type: typeof owner.type === 'string' ? owner.type : 'User' }
         : null,
-    htmlUrl: typeof b.html_url === 'string' ? b.html_url : null,
+    htmlUrl: githubUrl(b.html_url),
+    ...(b.html_url != null && githubUrl(b.html_url) === null
+      ? { htmlUrlRejected: true as const }
+      : {}),
     permissions: stringMap(b.permissions),
   };
 }
@@ -178,7 +186,10 @@ function readInstallation(body: unknown): Installation | null {
             )
           )
         : {},
-    htmlUrl: typeof b.html_url === 'string' ? b.html_url : null,
+    htmlUrl: githubUrl(b.html_url),
+    ...(b.html_url != null && githubUrl(b.html_url) === null
+      ? { htmlUrlRejected: true as const }
+      : {}),
   };
 }
 

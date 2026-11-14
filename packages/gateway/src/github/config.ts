@@ -58,7 +58,7 @@ export interface GithubAppConfig {
   clientId: string;
   /** Who owns the app on GitHub, when GitHub said. */
   owner: { login: string; type: string } | null;
-  /** `<web>/apps/<slug>` as GitHub gave it. */
+  /** `<web>/apps/<slug>`: GitHub's own address for the app if it is on GitHub's website, else built from the slug. */
   htmlUrl: string;
   /** How it was connected. */
   source: 'manifest' | 'import';
@@ -66,6 +66,8 @@ export interface GithubAppConfig {
   createdAt: string;
   /** Rotated by importing a new key, when. */
   keyUpdatedAt?: string;
+  /** What was wrong in what GitHub sent (an address left out), in words. Absent when nothing. */
+  warnings?: string[];
 }
 
 const KEY = 'github.app';
@@ -131,3 +133,24 @@ export function settingsUrl(config: Pick<GithubAppConfig, 'slug' | 'owner'>): st
     ? `${githubWebBase()}/organizations/${encodeURIComponent(config.owner.login)}/settings/apps/${slug}`
     : `${githubWebBase()}/settings/apps/${slug}`;
 }
+
+/**
+ * An address GitHub gave us, if it is safe to show and link: https on GitHub's
+ * own website (`githubWebBase()`), with no user name or password. Anything else
+ * (`javascript:`, another host, a look-alike) is null: nothing taken from GitHub
+ * is passed on as a link unless it passes this.
+ */
+export function githubUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    if (url.username || url.password) return null;
+    return url.origin === new URL(githubWebBase()).origin ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The warning for an address that was left out. */
+export const REJECTED_URL = (what: string) =>
+  `GitHub gave an address for ${what} that is not on GitHub's website; it was left out.`;

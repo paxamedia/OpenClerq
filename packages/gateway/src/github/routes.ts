@@ -20,6 +20,8 @@ import { GithubApp, type AppInfo, type Installation } from './app.js';
 import {
   APP_CLIENT_SECRET_SECRET,
   APP_PRIVATE_KEY_SECRET,
+  REJECTED_URL,
+  githubUrl,
   githubWebBase,
   installUrl,
   readAppConfig,
@@ -74,7 +76,14 @@ function page(res: Response, status: number, title: string, body: string): void 
 
 /** The app's config as a client sees it: nothing secret, with its two GitHub pages. */
 function publicConfig(config: GithubAppConfig) {
-  return { ...config, installUrl: installUrl(config), settingsUrl: settingsUrl(config) };
+  return {
+    ...config,
+    // Whatever is in the settings row, a link is shown only if it is on GitHub's website.
+    htmlUrl:
+      githubUrl(config.htmlUrl) ?? `${githubWebBase()}/apps/${encodeURIComponent(config.slug)}`,
+    installUrl: installUrl(config),
+    settingsUrl: settingsUrl(config),
+  };
 }
 
 function publicInstallation(i: Installation) {
@@ -119,6 +128,7 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
     if (refresh) github.invalidate();
     let installations: ReturnType<typeof publicInstallation>[] | null = null;
     let installationsError: string | undefined;
+    const warnings: string[] = [];
     try {
       const list = await Promise.race([
         github.installations({ refresh }),
@@ -130,6 +140,9 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
         ),
       ]);
       installations = list.map(publicInstallation);
+      for (const i of list) {
+        if (i.htmlUrlRejected) warnings.push(REJECTED_URL(`installation ${i.id}`));
+      }
     } catch (e) {
       installationsError = e instanceof Error ? e.message : String(e);
     }
@@ -143,6 +156,7 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
       },
       installations,
       ...(installationsError ? { installationsError } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   };
 
@@ -275,7 +289,10 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
       htmlUrl: converted.htmlUrl ?? `${web}/apps/${converted.slug}`,
       source: 'manifest',
       createdAt: new Date(now()).toISOString(),
+      ...(converted.htmlUrlRejected ? { warnings: [REJECTED_URL('the app')] } : {}),
     };
+    if (config.warnings)
+      logger.warn('GitHub gave an address that is not on its website', { app: config.slug });
     try {
       saveConnection(vault, {
         config,
@@ -403,6 +420,7 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
       clientId,
       owner: info.owner,
       htmlUrl: info.htmlUrl ?? `${githubWebBase()}/apps/${info.slug}`,
+      ...(info.htmlUrlRejected ? { warnings: [REJECTED_URL('the app')] } : {}),
       source: replacing ? existing.source : 'import',
       createdAt: replacing ? existing.createdAt : new Date(now()).toISOString(),
       ...(replacing ? { keyUpdatedAt: new Date(now()).toISOString() } : {}),

@@ -499,6 +499,26 @@ describe('the callback', () => {
     expect(audited()).toEqual(['github.app.connected']);
   });
 
+  it('leaves out an address that is not on GitHub’s website, and keeps a warning', async () => {
+    const { state, code } = await startFlow();
+    fake.conversions.set(code, fake.conversion({ html_url: 'javascript:alert(1)' }));
+    const page = await callback(state, code);
+    expect(page.status).toBe(200);
+    expect(page.text).not.toContain('javascript:');
+
+    const stored = readAppConfig();
+    expect(stored?.htmlUrl).toBe(`${WEB}/apps/${fake.app.slug}`);
+    expect(stored?.warnings).toEqual([
+      "GitHub gave an address for the app that is not on GitHub's website; it was left out.",
+    ]);
+    const shown = await call('GET', '/github/app');
+    expect(shown.text).not.toContain('javascript:');
+    expect(shown.json().app.htmlUrl).toBe(`${WEB}/apps/${fake.app.slug}`);
+    expect(shown.json().app.warnings).toHaveLength(1);
+    expect(shown.json().app.installUrl.startsWith(`${WEB}/`)).toBe(true);
+    expect(shown.json().app.settingsUrl.startsWith(`${WEB}/`)).toBe(true);
+  });
+
   it('writes the words of GitHub into the page as text, not as markup', async () => {
     const { state, code } = await startFlow();
     fake.conversions.set(code, fake.conversion({ name: '<script>alert(1)</script> "app"' }));
@@ -589,6 +609,15 @@ describe('importing an app that exists', () => {
     expect(res.json().message).toContain("about 5 minutes ahead of GitHub's");
     expect(readAppConfig()).toBeNull();
     expect(vault.entries.size).toBe(0);
+  });
+
+  it('leaves out an address GitHub gives for the app that is not on its website', async () => {
+    fake.appHtmlUrl = 'https://evil.example/apps/x';
+    const res = await call('POST', '/github/app/import', { body: body() });
+    expect(res.status).toBe(201);
+    expect(res.json().app.htmlUrl).toBe(`${WEB}/apps/${fake.app.slug}`);
+    expect(res.json().app.warnings).toHaveLength(1);
+    expect(res.text).not.toContain('evil.example');
   });
 
   it('answers 422 for an app id GitHub does not accept the key for', async () => {
@@ -722,6 +751,41 @@ describe('looking at the connection', () => {
     expect(fake.calls('GET', '/app/installations')).toHaveLength(1);
     await call('GET', '/github/app?refresh=1');
     expect(fake.calls('GET', '/app/installations')).toHaveLength(2);
+  });
+
+  it('drops an installation address that is not on GitHub’s website and says so', async () => {
+    await call('POST', '/github/app/import', {
+      body: { appId: fake.app.id, clientId: fake.app.clientId, privateKey: fake.privateKeyPem },
+    });
+    fake.install({ id: 71, repos: ['acme/app'] });
+    fake.installationHtmlUrl = 'javascript:alert(document.cookie)';
+    const res = await call('GET', '/github/app?refresh=1');
+    expect(res.text).not.toContain('javascript:');
+    expect(res.json().installations[0]).toMatchObject({ id: 71, htmlUrl: null });
+    expect(res.json().warnings).toEqual([
+      "GitHub gave an address for installation 71 that is not on GitHub's website; it was left out.",
+    ]);
+    // A good one is kept, and no warning is made.
+    fake.installationHtmlUrl = undefined;
+    const ok = await call('GET', '/github/app?refresh=1');
+    expect(ok.json().installations[0].htmlUrl).toBe(`${WEB}/settings/installations/71`);
+    expect(ok.json().warnings).toBeUndefined();
+  });
+
+  it('shows an address from the settings row only if it is on GitHub’s website', async () => {
+    writeAppConfig({
+      appId: 5,
+      slug: 'x',
+      name: 'x',
+      clientId: 'Iv1.x',
+      owner: null,
+      htmlUrl: 'javascript:alert(1)',
+      source: 'import',
+      createdAt: 'now',
+    });
+    const res = await call('GET', '/github/app');
+    expect(res.json().app.htmlUrl).toBe(`${WEB}/apps/x`);
+    expect(res.text).not.toContain('javascript:');
   });
 
   it('still answers when GitHub cannot be reached, and says why the list is missing', async () => {

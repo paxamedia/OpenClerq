@@ -124,6 +124,9 @@ app is refused (`409`) while one is connected: disconnect first.
 
 - `GET /v1/github/app` shows the app (no secrets), which secrets are stored, and `installations`:
   where it is installed, from GitHub, kept for a minute (`?refresh=1` asks again). It still answers when GitHub does not.
+- Addresses from GitHub are checked: one that is not `https://` on github.com (a `javascript:` link, another
+  host, a look-alike) is left out and a warning says so (`app.warnings`, `warnings`), and the install and
+  settings links are built from the app's slug, never taken from GitHub.
 - `DELETE /v1/github/app` forgets the app, its key and its client secret. It cannot delete the app on
   GitHub: the answer says so and links to the app's settings page.
 
