@@ -33,6 +33,7 @@ import {
   sameChain,
 } from './routing';
 import { Settings } from './Settings';
+import { gatewayUrlProblem } from './sections';
 
 const client = createFixtureClient({ now: FIXTURE_NOW });
 
@@ -334,5 +335,36 @@ describe('summarising memory', () => {
     expect(markup).toContain('Undo the summary deps-policy');
     // Folded records stay out of the list until asked for.
     expect(markup).not.toContain('Majors wait for a person to say yes.');
+  });
+});
+
+describe('the Gateway URL field', () => {
+  it('on the desktop app, accepts 127.0.0.1, says localhost is used as 127.0.0.1, and refuses any other address', () => {
+    // The app's security policy lets it connect to 127.0.0.1 only; another address would be saved and then
+    // fail with no message.
+    expect(gatewayUrlProblem('http://127.0.0.1:18790', 'desktop')).toEqual({});
+    expect(gatewayUrlProblem('  http://127.0.0.1:8080  ', 'desktop')).toEqual({});
+    expect(gatewayUrlProblem('', 'desktop')).toEqual({});
+    expect(gatewayUrlProblem('http://localhost:18790', 'desktop')).toEqual({
+      hint: 'The app uses localhost as 127.0.0.1.',
+    });
+    for (const other of [
+      'https://clerq.example.com',
+      'http://192.168.1.5:18790',
+      'http://[::1]:18790',
+    ]) {
+      const problem = gatewayUrlProblem(other, 'desktop');
+      expect(problem.error, other).toContain('127.0.0.1');
+      expect(problem.error, other).toContain('security policy');
+    }
+  });
+
+  it('still asks for a full address, and leaves other apps to reach what they can', () => {
+    expect(gatewayUrlProblem('clerq.example.com', 'desktop').error).toContain('full address');
+    expect(gatewayUrlProblem('clerq.example.com', 'web').error).toContain('full address');
+    for (const kind of ['web', 'mobile'] as const) {
+      expect(gatewayUrlProblem('https://clerq.example.com', kind)).toEqual({});
+      expect(gatewayUrlProblem('http://localhost:18790', kind)).toEqual({});
+    }
   });
 });

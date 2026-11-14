@@ -16,6 +16,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { relaunch } from '@tauri-apps/plugin-process';
 import type { AppConfig, Host } from '@clerq/web';
 import { setGatewayBaseUrl } from './gateway';
+import { desktopGatewayUrl } from './gatewayUrl';
 import { version } from '../package.json';
 
 export async function readConfig(): Promise<AppConfig> {
@@ -40,7 +41,7 @@ export const desktopHost: Host = {
   openForm: (url, fields) => invoke('open_form', { url, fields }),
   readConfig,
   writeConfig: (config) => invoke('write_config', { json: JSON.stringify(config, null, 2) }),
-  setGatewayUrl: (url) => setGatewayBaseUrl(url),
+  setGatewayUrl: (url) => setGatewayBaseUrl(desktopGatewayUrl(url)),
   saveApiKey: (apiKey) => invoke('write_api_key', { apiKey }),
   async checkForUpdates() {
     const update = await check();

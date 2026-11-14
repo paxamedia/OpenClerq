@@ -11,10 +11,11 @@ import { desktopHost, readConfig } from './host';
 import { loadModules } from './moduleLoader';
 import { renderModule } from './ModuleHost';
 import { BUNDLED_MODULES, isTurnedOff } from './bundled';
+import { desktopGatewayUrl } from './gatewayUrl';
 
 async function start() {
   const config = await readConfig().catch((): AppConfig => ({}));
-  if (config.settings?.gatewayUrl) setGatewayBaseUrl(config.settings.gatewayUrl);
+  if (config.settings?.gatewayUrl) setGatewayBaseUrl(desktopGatewayUrl(config.settings.gatewayUrl));
   // The gateway writes its token on first start; on a cold launch this waits for it.
   await initGatewayAuth().catch(() => false);
 

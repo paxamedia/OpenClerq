@@ -143,7 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **The desktop's Content-Security-Policy is narrower.** `http://localhost:*` is gone from `connect-src` and `frame-src` (the app uses `127.0.0.1`), and `data:` is gone from `img-src` (the app draws no image from one; fonts keep it). No `unsafe-inline` or `unsafe-eval`.
+- **The desktop's Content-Security-Policy is narrower.** `http://localhost:*` is gone from `connect-src` and `frame-src` (the app uses `127.0.0.1`), and `data:` is gone from `img-src` (the app draws no image from one; fonts keep it). No `unsafe-inline` or `unsafe-eval`. **Compatibility:** a Gateway URL saved as `http://localhost:18790` keeps working: the app uses `localhost` as `127.0.0.1` when it starts and when the setting is changed (the saved value is not rewritten). Any other address (a remote gateway, `[::1]`) was already blocked by the policy, with no message; on the desktop app, Settings (Advanced, Gateway URL) now refuses it and says why.
 - `body-parser` and `qs`, used by Express in the gateway, are pinned to their patched releases.
 - The desktop's `rustls-webpki` and `webpki-root-certs` are updated past advisories that let distrusted certificate intermediates verify.
 - Build and test tooling moves to `vite` 7.3.7 and `vitest` 5.0.5, past advisories in the dev server and the test mocker.

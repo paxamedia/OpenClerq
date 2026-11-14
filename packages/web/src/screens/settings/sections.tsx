@@ -8,7 +8,7 @@ import { EmptyState } from '../../ui/Display';
 import { Input, Select, Textarea } from '../../ui/Field';
 import { Dialog } from '../../ui/Modal';
 import { useToast } from '../../ui/Toast';
-import { useClient, useHost, type AppConfig } from '../../app/client';
+import { useClient, useHost, type AppConfig, type Host } from '../../app/client';
 import { describeCron } from '../../app/cron';
 import { errorMessage } from '../../app/format';
 import { useLive, useResource } from '../../app/live';
@@ -732,6 +732,34 @@ function Capabilities() {
   );
 }
 
+/**
+ * What is wrong with a Gateway URL, or worth saying about it. The desktop app runs under a
+ * security policy that lets it connect to `127.0.0.1` and nowhere else, so on the desktop any other
+ * address would be saved and then fail with no message (`localhost` is rewritten to `127.0.0.1`
+ * when the app uses it). Other apps (a browser, the phone app) reach what they can.
+ */
+export function gatewayUrlProblem(
+  raw: string,
+  kind: Host['kind']
+): { error?: string; hint?: string } {
+  const text = raw.trim();
+  if (!text) return {};
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return { error: 'Use a full address, such as http://127.0.0.1:18790.' };
+  }
+  if (kind !== 'desktop') return {};
+  const name = url.hostname.toLowerCase();
+  if (name === '127.0.0.1') return {};
+  if (name === 'localhost') return { hint: 'The app uses localhost as 127.0.0.1.' };
+  return {
+    error:
+      'This app can only reach a service on this computer, at 127.0.0.1: its security policy blocks any other address. Use http://127.0.0.1:18790, or the port the service uses.',
+  };
+}
+
 function Connection({
   config,
   saveConfig,
@@ -748,14 +776,7 @@ function Connection({
     setUrl(config?.settings?.gatewayUrl ?? '');
     setSkills(config?.settings?.skillsDir ?? '');
   }, [config]);
-  let urlError: string | undefined;
-  if (url.trim()) {
-    try {
-      new URL(url.trim());
-    } catch {
-      urlError = 'Use a full address, such as http://127.0.0.1:18790.';
-    }
-  }
+  const { error: urlError, hint: urlHint } = gatewayUrlProblem(url, host.kind);
   if (!host.writeConfig) return null;
   return (
     <Section title="Background service">
@@ -766,6 +787,7 @@ function Connection({
         onChange={(e) => setUrl(e.target.value)}
         placeholder="http://127.0.0.1:18790"
         error={urlError}
+        hint={urlHint}
       />
       <Input
         label="Skills directory"
