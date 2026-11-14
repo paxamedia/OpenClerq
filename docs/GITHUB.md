@@ -35,7 +35,7 @@ A GitHub App's installation token is the narrowest of the three, which is why 1.
 **Why your own.** OpenClerq runs on your machine or your server and has no service of its own. An
 app owned by OpenClerq would need its private key on every install, or a hosted service that signs
 for everyone. So each person (or team) makes an app of their own, and its private key stays in
-their own vault. Making one takes a minute and a click on GitHub's page.
+their own vault. Making one is one confirmation on GitHub's page.
 
 ## Connect an app
 
@@ -144,8 +144,8 @@ authorization at install.
 | `pull_requests` | write | open the draft pull request                               |
 | `metadata`      | read  | GitHub gives this to every app                            |
 
-It does not ask for `workflows`, so GitHub refuses a push that adds or changes a file under
-`.github/workflows/`; that is deliberate.
+It does not ask for `workflows`, so GitHub should refuse a push that adds or changes a file under
+`.github/workflows/` (not verified, see the end); that is deliberate.
 
 Write access to `contents` can push to any branch the app may write to. OpenClerq only ever pushes
 the run's own new branch, and never merges (see [SECURITY.md](SECURITY.md)); branch protection on
