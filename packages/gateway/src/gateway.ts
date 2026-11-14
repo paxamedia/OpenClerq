@@ -57,7 +57,7 @@ import {
 import { mountMemoryRoutes } from './memory-routes.js';
 import { memoryBlock } from './memory-context.js';
 import { pruneExpired } from './memory-layer.js';
-import { getStore, initStore, isStoreOpen } from './store.js';
+import { closeStore, getStore, initStore, isStoreOpen } from './store.js';
 import { schemaVersion, StoreBackupError, StoreBusyError, StoreTooNewError } from '@clerq/store';
 import {
   API_VERSION,
@@ -179,17 +179,40 @@ function disconnectSignal(res: Response, continueOnDisconnect: unknown): AbortSi
   return controller.signal;
 }
 
-export function createGateway(config: GatewayConfig = {}): {
+/** How long `close()` lets requests in flight finish before it drops their connections. */
+export const CLOSE_GRACE_MS = 2_000;
+
+export interface Gateway {
   app: express.Express;
   server: Server;
   /**
    * Settles once the store is open and modules are loaded. Rejects, after the
    * server has stopped, when the store cannot be used at all: a database from
    * a newer OpenClerq, one that could not be backed up before an upgrade, or
-   * one that another process was still upgrading after two minutes.
+   * one that another process was still upgrading after two minutes. It also
+   * rejects when the port cannot be bound, and when `close()` came first.
    */
   ready: Promise<void>;
-} {
+  /**
+   * Stop for good, for a process that is about to exit: stop accepting
+   * connections, give requests in flight `graceMs` (default 2 s) and then drop
+   * what is left (event streams never end by themselves), stop the schedules,
+   * the queue, the triggers and the push publisher, and close the store.
+   *
+   * Runs in flight are not cancelled and not waited for. Nothing is written
+   * to them: their leases stop being renewed when the process exits, and the
+   * next start reclaims them the way it reclaims those of a crashed gateway
+   * (retried when the spec allows, else failed as interrupted). Agent and gate
+   * processes are not signalled either; the next start stops what is left of
+   * them, and a service manager or container that ends the whole process
+   * group or control group does so sooner.
+   *
+   * Safe to call more than once; every call returns the same promise.
+   */
+  close(options?: { graceMs?: number }): Promise<void>;
+}
+
+export function createGateway(config: GatewayConfig = {}): Gateway {
   const port = config.port ?? DEFAULT_PORT;
   // Loopback unless an operator deliberately opts out. Binding a wider interface
   // exposes tool execution to the network and is gated on explicit configuration.
@@ -1392,12 +1415,32 @@ export function createGateway(config: GatewayConfig = {}): {
   // A host that never looks at `ready` is not crashed by it rejecting; the
   // reason is logged, and a host that does look still sees the rejection.
   ready.catch(() => undefined);
-  const server = app.listen(port, host, async () => {
+  let closeRequested = false;
+  let stopPush: (() => void) | undefined;
+  /** What the listen callback is doing, so `close()` can wait for it before closing the store. */
+  let startup: Promise<void> = Promise.resolve();
+
+  const closedEarly = () => new Error('The gateway was closed before it finished starting.');
+  /** Whether `close()` came while starting; if so, `ready` says so and nothing more starts. */
+  const abandoned = (): boolean => {
+    if (!closeRequested) return false;
+    failReady(closedEarly());
+    return true;
+  };
+
+  const begin = async (listenError?: Error): Promise<void> => {
+    if (listenError) {
+      // Express hands a failed bind (address in use, no permission) to the
+      // callback; carrying on would leave a process that serves nothing.
+      logger.error(`Could not listen on ${host}:${port}: ${listenError.message}`);
+      failReady(listenError);
+      return;
+    }
     logger.info('Gateway started', { host, port, url: `http://${host}:${port}` });
     try {
       await initStore(config.dbPath);
       // Records past their expiry are removed; reads skip them either way.
-      pruneExpired();
+      if (!closeRequested) pruneExpired();
     } catch (e) {
       // A database from a newer OpenClerq, one that could not be backed up
       // before an upgrade, or one another process is still upgrading, is not
@@ -1418,6 +1461,7 @@ export function createGateway(config: GatewayConfig = {}): {
         err: e instanceof Error ? e.message : String(e),
       });
     }
+    if (abandoned()) return;
     if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
       logger.warn(
         'Gateway is bound to a non-loopback interface and is reachable from the network. ' +
@@ -1440,9 +1484,10 @@ export function createGateway(config: GatewayConfig = {}): {
     } else {
       startTriggers(runTriggered);
     }
-    startPushPublisher();
+    stopPush = startPushPublisher();
     try {
       await recoverAfterRestart();
+      if (abandoned()) return;
       // Queued runs, from before the restart too, start as the limits allow.
       startAutomationQueue(automationDeps);
       if (triggersPausedAt !== null) pauseAutomationQueue();
@@ -1458,7 +1503,20 @@ export function createGateway(config: GatewayConfig = {}): {
     } catch (e) {
       logger.warn('Module load error', { err: e instanceof Error ? e.message : String(e) });
     }
+    if (abandoned()) return;
     markReady();
+  };
+
+  const server = app.listen(port, host, (listenError?: Error) => {
+    startup = begin(listenError).catch((e: unknown) => {
+      logger.error('Gateway start failed', { err: e instanceof Error ? e.message : String(e) });
+      failReady(e);
+    });
+  });
+  // Settles when the server is listening or has failed to; `close()` waits for it.
+  const bound = new Promise<void>((resolve) => {
+    server.once('listening', () => resolve());
+    server.once('error', () => resolve());
   });
 
   server.on('close', () => {
@@ -1466,5 +1524,40 @@ export function createGateway(config: GatewayConfig = {}): {
     stopAutomationQueue();
   });
 
-  return { app, server, ready };
+  let closing: Promise<void> | undefined;
+  const close = (options: { graceMs?: number } = {}): Promise<void> => {
+    closing ??= (async () => {
+      closeRequested = true;
+      await bound;
+      // No new connections. Requests in flight get a moment, then go: an event
+      // stream or a long model call would otherwise hold the server open.
+      const ended = new Promise<void>((resolve) => {
+        if (!server.listening) resolve();
+        else server.close(() => resolve());
+      });
+      server.closeIdleConnections?.();
+      const drop = setTimeout(
+        () => server.closeAllConnections?.(),
+        Math.max(0, options.graceMs ?? CLOSE_GRACE_MS)
+      );
+      await ended;
+      clearTimeout(drop);
+      // Nothing new starts. A run already going is left to the next start.
+      stopAutomationSchedules();
+      stopAutomationQueue();
+      stopTriggers();
+      modules.triggers.pause();
+      stopPush?.();
+      stopPush = undefined;
+      // Whatever start-up was in the middle of finishes (or notices `closeRequested`)
+      // before the store is closed under it.
+      await startup;
+      // Let a request that was dropped write how it ended before the store goes.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      closeStore();
+    })();
+    return closing;
+  };
+
+  return { app, server, ready, close };
 }

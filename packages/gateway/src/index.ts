@@ -8,7 +8,8 @@
  * - Manages subscription/license validation (when used in a hosted context)
  */
 
-export { createGateway } from './gateway.js';
+export { createGateway, CLOSE_GRACE_MS, GATEWAY_VERSION, type Gateway } from './gateway.js';
+export { resolveGatewayToken } from './security/auth.js';
 export type { GatewayConfig, GatewayContext } from './types.js';
 export {
   loadModulesFromDir,
