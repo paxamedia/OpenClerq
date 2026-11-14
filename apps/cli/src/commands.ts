@@ -1,5 +1,5 @@
 /**
- * The commands, as a table. To add one (T11's `github login`, say), add an entry
+ * The commands, as a table. To add one (`github login` was added so), add an entry
  * here and a module with `run(ctx, call)` beside the others: parsing, help and
  * the `--help` text all read this table.
  */
@@ -92,6 +92,118 @@ export const COMMANDS: CommandDef[] = [
     options: [],
     examples: ['clerq repo show acme/app'],
     load: () => import('./cmd/repo.js').then((m) => ({ run: m.runShow })),
+  },
+  {
+    path: ['github', 'connect'],
+    summary: 'Create a GitHub App for OpenClerq on GitHub, in your browser',
+    args: [],
+    options: [
+      {
+        name: 'org',
+        kind: 'string',
+        value: 'login',
+        help: 'Create the app under this organisation instead of your own account.',
+      },
+      {
+        name: 'name',
+        kind: 'string',
+        value: 'name',
+        help: "The app's name on GitHub (at most 34 characters). Default OpenClerq-<six hex digits>.",
+      },
+      {
+        name: 'no-browser',
+        kind: 'boolean',
+        help: 'Print the path of the page to open yourself, instead of opening it.',
+      },
+    ],
+    examples: ['clerq github connect', 'clerq github connect --org acme --name "Acme Clerq"'],
+    load: () => import('./cmd/github.js').then((m) => ({ run: m.runConnect })),
+  },
+  {
+    path: ['github', 'import'],
+    summary: 'Use a GitHub App you made yourself (its id, client ID and private key file)',
+    args: [],
+    options: [
+      {
+        name: 'app-id',
+        kind: 'string',
+        value: 'number',
+        help: "The App ID, at the top of the app's settings page.",
+      },
+      { name: 'client-id', kind: 'string', value: 'id', help: 'The Client ID, on the same page.' },
+      {
+        name: 'private-key-file',
+        kind: 'string',
+        value: 'file',
+        help: 'The .pem file GitHub gave you. Refused if other users can read it.',
+      },
+      {
+        name: 'client-secret-file',
+        kind: 'string',
+        value: 'file',
+        help: 'A file with the client secret: lets a sign-in be renewed and revoked.',
+      },
+    ],
+    examples: [
+      'clerq github import --app-id 123456 --client-id Iv23liXXXX --private-key-file ~/Downloads/my-app.pem',
+    ],
+    load: () => import('./cmd/github.js').then((m) => ({ run: m.runImport })),
+  },
+  {
+    path: ['github', 'status'],
+    summary: 'Show the GitHub App, where it is installed, and who is signed in',
+    args: [],
+    options: [
+      { name: 'refresh', kind: 'boolean', help: 'Ask GitHub again where the app is installed.' },
+    ],
+    examples: ['clerq github status', 'clerq github status --refresh --json'],
+    load: () => import('./cmd/github.js').then((m) => ({ run: m.runStatus })),
+  },
+  {
+    path: ['github', 'disconnect'],
+    summary: 'Forget the GitHub App and its key, and sign out (the app stays on GitHub)',
+    args: [],
+    options: [{ name: 'yes', kind: 'boolean', help: 'Do not ask first.' }],
+    examples: ['clerq github disconnect', 'clerq github disconnect --yes'],
+    load: () => import('./cmd/github.js').then((m) => ({ run: m.runDisconnect })),
+  },
+  {
+    path: ['github', 'login'],
+    summary: 'Sign in to GitHub as yourself, with a code you type on GitHub (no password here)',
+    args: [],
+    options: [
+      {
+        name: 'no-browser',
+        kind: 'boolean',
+        help: 'Only print the address and the code; open it on any computer.',
+      },
+    ],
+    examples: ['clerq github login', 'clerq github login --no-browser'],
+    load: () => import('./cmd/github.js').then((m) => ({ run: m.runLogin })),
+  },
+  {
+    path: ['github', 'logout'],
+    summary:
+      "Sign out of GitHub, and revoke the sign-in on GitHub when the app's client secret allows",
+    args: [],
+    options: [],
+    examples: ['clerq github logout'],
+    load: () => import('./cmd/github.js').then((m) => ({ run: m.runLogout })),
+  },
+  {
+    path: ['github', 'repos'],
+    summary: 'List the repositories you reach through the app, or add one',
+    args: [],
+    options: [
+      {
+        name: 'add',
+        kind: 'string',
+        value: 'owner/name',
+        help: 'Add this repository to OpenClerq (what `repo add github:owner/name` does).',
+      },
+    ],
+    examples: ['clerq github repos', 'clerq github repos --add acme/app'],
+    load: () => import('./cmd/github.js').then((m) => ({ run: m.runRepos })),
   },
   {
     path: ['automation', 'apply'],

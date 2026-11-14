@@ -78,3 +78,34 @@ export function readSecret(io: Io, prompt: string): Promise<string> {
     stdin.resume();
   });
 }
+
+/**
+ * Ask a yes or no question on the terminal. Only `y` or `yes` is a yes, and
+ * Enter alone is a no. Without a terminal it does not guess: it says to pass
+ * `--yes`, so a script has to mean it.
+ */
+export function confirm(io: Io, question: string): Promise<boolean> {
+  const { stdin } = io;
+  if (!stdin.isTTY) {
+    return Promise.reject(
+      new CliError(
+        'There is no terminal to ask on. Pass --yes to go ahead without being asked.',
+        EXIT.usage
+      )
+    );
+  }
+  return new Promise((resolve) => {
+    io.stderr.write(`${question} [y/N] `);
+    stdin.setEncoding?.('utf8');
+    let line = '';
+    const onData = (chunk: string | Buffer) => {
+      line += chunk.toString();
+      if (!/[\r\n]/.test(line)) return;
+      stdin.off('data', onData);
+      stdin.pause();
+      resolve(/^y(es)?$/i.test(line.split(/[\r\n]/)[0].trim()));
+    };
+    stdin.on('data', onData);
+    stdin.resume();
+  });
+}

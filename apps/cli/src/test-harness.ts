@@ -80,6 +80,10 @@ export async function cli(
     pollMs?: number;
     localUrl?: string;
     retryMs?: number;
+    githubPollMs?: number;
+    githubWaitMs?: number;
+    /** What opens a file or address: a test's own, never a real browser. */
+    openUrl?: RunOptions['openUrl'];
   } & Partial<Pick<RunOptions, 'io'>>
 ): Promise<CliResult> {
   const c = capture(new FakeStdin(options.stdin ?? ''), options.tty ?? false);
@@ -92,6 +96,10 @@ export async function cli(
     pollMs: options.pollMs ?? 500,
     localUrl: options.localUrl,
     retryMs: options.retryMs ?? 10,
+    githubPollMs: options.githubPollMs ?? 20,
+    githubWaitMs: options.githubWaitMs,
+    // A test that does not say how things open must not open anything.
+    openUrl: options.openUrl ?? (async () => false),
   });
   const result = { code, stdout: c.stdout(), stderr: c.stderr() };
   // CLERQ_TEST_SHOW=1 prints every command and what it said, to read the output as a person would.

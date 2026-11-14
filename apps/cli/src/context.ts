@@ -19,5 +19,14 @@ export interface Context {
   pollMs: number;
   /** The wait before looking again after a lost connection, doubled by attempt. Default 1000. */
   retryMs: number;
+  /** How often `clerq github` looks at the gateway while it waits for GitHub. Default 2000. */
+  githubPollMs: number;
+  /** How long `clerq github connect` and `login` wait for the person on GitHub. Default 10 minutes. */
+  githubWaitMs: number;
+  /**
+   * Open a file or an address in the default application (the browser). False when there is
+   * none to open. Tests replace it: nothing in a test opens a real browser.
+   */
+  openUrl: (target: string) => Promise<boolean>;
   call: Call;
 }

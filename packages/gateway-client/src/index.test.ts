@@ -463,6 +463,90 @@ describe('repositories', () => {
   });
 });
 
+describe('GitHub', () => {
+  const seen = () =>
+    calls.map(
+      ([url, init]) => `${init?.method ?? 'GET'} ${url.replace('http://127.0.0.1:18790', '')}`
+    );
+  const bodyOf = (n: number) => JSON.parse(String(calls[n][1]?.body));
+
+  it('asks for a manifest, imports and reads the app, and forgets it', async () => {
+    stubFetch(() => Response.json({}));
+    await gateway.githubManifest({
+      baseUrl: 'http://127.0.0.1:18790',
+      owner: 'acme',
+      name: 'Clerq',
+    });
+    await gateway.importGithubApp({
+      appId: 12,
+      clientId: 'Iv23li',
+      privateKey: 'pem',
+      clientSecret: 's',
+    });
+    await gateway.githubApp();
+    await gateway.githubApp({ refresh: true });
+    await gateway.disconnectGithubApp();
+    expect(seen()).toEqual([
+      'POST /v1/github/app/manifest',
+      'POST /v1/github/app/import',
+      'GET /v1/github/app',
+      'GET /v1/github/app?refresh=1',
+      'DELETE /v1/github/app',
+    ]);
+    expect(bodyOf(0)).toEqual({ baseUrl: 'http://127.0.0.1:18790', owner: 'acme', name: 'Clerq' });
+    expect(bodyOf(1)).toEqual({
+      appId: 12,
+      clientId: 'Iv23li',
+      privateKey: 'pem',
+      clientSecret: 's',
+    });
+    expect((calls[0][1]?.headers as Record<string, string>).Authorization).toBe(
+      'Bearer test-token-123'
+    );
+  });
+
+  it('starts, reads and cancels a sign-in, with the flow id encoded into the path', async () => {
+    stubFetch(() => Response.json({}));
+    await gateway.startGithubLogin();
+    await gateway.githubLogin('a/b c');
+    await gateway.cancelGithubLogin('a/b c');
+    expect(seen()).toEqual([
+      'POST /v1/github/login',
+      'GET /v1/github/login/a%2Fb%20c',
+      'DELETE /v1/github/login/a%2Fb%20c',
+    ]);
+  });
+
+  it('reads who is signed in, signs out and lists the repositories', async () => {
+    stubFetch(() => Response.json({}));
+    await gateway.githubUser();
+    await gateway.githubSignOut();
+    await gateway.githubRepositories();
+    expect(seen()).toEqual([
+      'GET /v1/github/user',
+      'DELETE /v1/github/user',
+      'GET /v1/github/user/repositories',
+    ]);
+  });
+
+  it('hands a refusal back with its status and body, so a screen can say what to do', async () => {
+    stubFetch(() =>
+      Response.json(
+        {
+          error: 'device_flow_disabled',
+          message: 'Switch it on.',
+          settingsUrl: 'https://github.com/settings/apps/x',
+        },
+        { status: 409 }
+      )
+    );
+    await expect(gateway.startGithubLogin()).rejects.toMatchObject({
+      status: 409,
+      body: { error: 'device_flow_disabled', settingsUrl: 'https://github.com/settings/apps/x' },
+    });
+  });
+});
+
 describe('approvals', () => {
   it('answers with an empty body, as it always did', async () => {
     stubFetch(() => Response.json({ ok: true }));

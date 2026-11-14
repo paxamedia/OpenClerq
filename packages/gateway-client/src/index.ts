@@ -467,6 +467,171 @@ export interface AddRepoResult extends RepoSummary {
   check?: RepoCheck;
 }
 
+// --- GitHub: the app, and the person's sign-in -----------------------------------------
+//
+// Every address in these answers has been checked by the gateway (https, on GitHub's
+// website, and an avatar's only https), and a screen checks the scheme once more before it
+// makes a link. A token is in none of them: see docs/GITHUB.md.
+
+/** What `POST /github/app/manifest` answers: a page for the browser to post to, and what to post. */
+export interface GithubManifestOffer {
+  /** Where the browser posts a form with one field, `manifest`. */
+  url: string;
+  /** The JSON to put in that field. */
+  manifest: Record<string, unknown>;
+  state: string;
+  /** When the state stops working: ten minutes after it was made. */
+  expiresAt: string;
+  /** Where GitHub sends the browser back to. */
+  redirectUrl: string;
+}
+
+/** The connected GitHub App. Nothing in it is secret. */
+export interface GithubAppInfo {
+  appId: number;
+  slug: string;
+  name: string;
+  clientId: string;
+  owner: { login: string; type: string } | null;
+  htmlUrl: string;
+  /** Where to install the app on accounts and repositories. */
+  installUrl: string;
+  /** The app's settings page: its keys, "Enable Device Flow", and where it is deleted. */
+  settingsUrl: string;
+  source: 'manifest' | 'import';
+  createdAt: string;
+  keyUpdatedAt?: string;
+  warnings?: string[];
+}
+
+export interface GithubInstallation {
+  id: number;
+  account: string | null;
+  accountType: string | null;
+  repositorySelection: 'all' | 'selected' | null;
+  suspended: boolean;
+  permissions: Record<string, string>;
+  htmlUrl: string | null;
+}
+
+/** `GET /github/app`. */
+export interface GithubAppStatus {
+  connected: boolean;
+  app?: GithubAppInfo;
+  /** Which secrets are in the vault, never what they are. */
+  secrets?: { privateKey: boolean; clientSecret: boolean };
+  /** Where the app is installed; null when GitHub could not be asked (see `installationsError`). */
+  installations?: GithubInstallation[] | null;
+  /** Why GitHub could not be asked. A key GitHub refused says to generate a new one and import it. */
+  installationsError?: string;
+  warnings?: string[];
+}
+
+export interface GithubImportInput {
+  appId: number | string;
+  clientId: string;
+  /** The contents of the .pem file. */
+  privateKey: string;
+  clientSecret?: string;
+}
+
+export interface GithubImportResult {
+  connected: true;
+  app: GithubAppInfo;
+  /** The same app's key was replaced. */
+  replacedKey: boolean;
+}
+
+/** `DELETE /github/app`. The app itself stays on GitHub. */
+export interface GithubDisconnectResult {
+  disconnected: true;
+  slug: string;
+  appDeletedOnGitHub: false;
+  settingsUrl: string;
+  /** Present when somebody was signed in: they were signed out with the app. */
+  user?: GithubSignOutResult;
+  message: string;
+}
+
+/** `POST /github/login`: what to type on GitHub. */
+export interface GithubLoginStart {
+  flowId: string;
+  userCode: string;
+  verificationUri: string;
+  expiresAt: string;
+  /** Seconds between looks. */
+  interval: number;
+}
+
+export type GithubLoginState = 'pending' | 'approved' | 'denied' | 'expired' | 'disabled' | 'error';
+
+/** Who is signed in, as GitHub says. An address that is not safe is null. */
+export interface GithubUser {
+  login: string;
+  id: number;
+  name: string | null;
+  avatarUrl: string | null;
+  htmlUrl: string | null;
+}
+
+/** `GET /github/login/{flowId}`. */
+export interface GithubLoginStatus {
+  status: GithubLoginState;
+  message?: string;
+  /** For `disabled`: the app's settings page, where Enable Device Flow is. */
+  settingsUrl?: string;
+  user?: GithubUser | null;
+  /** While pending: when the code stops working, and the seconds between looks now. */
+  expiresAt?: string;
+  interval?: number;
+}
+
+/** `GET /github/user`. */
+export interface GithubUserStatus {
+  signedIn: boolean;
+  user?: GithubUser;
+  /** When the user token stops working, if the app expires them. */
+  expiresAt?: string;
+  /** A renewal is possible (a refresh token and the app's client secret). */
+  refreshable: boolean;
+  /** Why not signed in (ran out, revoked) or what is wrong, in words. */
+  message?: string;
+}
+
+/** `DELETE /github/user`. */
+export interface GithubSignOutResult {
+  signedOut: true;
+  /** GitHub revoked the authorization too. */
+  revoked: boolean;
+  message: string;
+  /** Where a person revokes an app's access on GitHub themselves. */
+  authorizationsUrl: string;
+}
+
+/** One repository the signed-in person reaches through the app. */
+export interface GithubUserRepository {
+  fullName: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  htmlUrl: string | null;
+  installationId: number;
+  account: string | null;
+  /** OpenClerq already has a repository row for it. */
+  added: boolean;
+  repoId?: string;
+}
+
+/** `GET /github/user/repositories`. */
+export interface GithubUserRepositories {
+  repositories: GithubUserRepository[];
+  /** The list stops at `limit`; there are more. */
+  truncated: boolean;
+  limit: number;
+  message?: string;
+  warnings?: string[];
+}
+
 export interface DriverInfo {
   id: string;
   available: boolean;
@@ -1528,6 +1693,73 @@ export const gateway = {
 
   automations(): Promise<{ automations: AutomationSummary[] }> {
     return fetchJson('/automations');
+  },
+
+  // --- GitHub: the app (operator only) --------------------------------------------------
+  //
+  // GET /github/app/callback is GitHub's own redirect to the browser, so it has no method
+  // here: a client never calls it.
+
+  /**
+   * Start creating the app from a manifest. `baseUrl` is the address the person's
+   * **browser** reaches this gateway at (GitHub sends it back there): http://127.0.0.1:<port>
+   * on this computer, https anywhere else. The browser then posts `manifest` to `url`
+   * as a form field named `manifest`; then poll `githubApp()` until it is connected.
+   */
+  githubManifest(input: {
+    baseUrl: string;
+    owner?: string;
+    name?: string;
+  }): Promise<GithubManifestOffer> {
+    return fetchJson('/github/app/manifest', { method: 'POST', body: JSON.stringify(input) });
+  },
+
+  /** Use an app that exists: its id, client ID and private key (and, to renew sign-ins, its client secret). */
+  importGithubApp(input: GithubImportInput): Promise<GithubImportResult> {
+    return fetchJson('/github/app/import', { method: 'POST', body: JSON.stringify(input) });
+  },
+
+  /** The connected app and where it is installed. `refresh` asks GitHub again instead of the minute's cache. */
+  githubApp(opts: { refresh?: boolean } = {}): Promise<GithubAppStatus> {
+    return fetchJson(`/github/app${opts.refresh ? '?refresh=1' : ''}`);
+  },
+
+  /** Forget the app and its key (and sign the person out). The app stays on GitHub; the answer says where to delete it. */
+  disconnectGithubApp(): Promise<GithubDisconnectResult> {
+    return fetchJson('/github/app', { method: 'DELETE' });
+  },
+
+  // --- GitHub: the person's sign-in (the app's device flow) ------------------------------
+  //
+  // The user token is for who is signed in and which repositories they reach through the
+  // app. It is not used to clone, push or open a pull request: runs use installation tokens.
+
+  /** Start a device flow. The person types `userCode` at `verificationUri`; poll `githubLogin(flowId)`. */
+  startGithubLogin(): Promise<GithubLoginStart> {
+    return fetchJson('/github/login', { method: 'POST', body: '{}' });
+  },
+
+  githubLogin(flowId: string): Promise<GithubLoginStatus> {
+    return fetchJson(`/github/login/${encodeURIComponent(flowId)}`);
+  },
+
+  cancelGithubLogin(flowId: string): Promise<{ cancelled: boolean }> {
+    return fetchJson(`/github/login/${encodeURIComponent(flowId)}`, { method: 'DELETE' });
+  },
+
+  /** Who is signed in to GitHub, if anyone. */
+  githubUser(): Promise<GithubUserStatus> {
+    return fetchJson('/github/user');
+  },
+
+  /** Sign out, and revoke the authorization on GitHub when the app's client secret allows it. */
+  githubSignOut(): Promise<GithubSignOutResult> {
+    return fetchJson('/github/user', { method: 'DELETE' });
+  },
+
+  /** The repositories the signed-in person reaches through the app (at most 1,000; `truncated` says). */
+  githubRepositories(): Promise<GithubUserRepositories> {
+    return fetchJson('/github/user/repositories');
   },
 
   automation(id: string): Promise<AutomationSummary & { source: string }> {

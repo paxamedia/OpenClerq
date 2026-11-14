@@ -180,6 +180,8 @@ export class FakeGithub {
   /** The status the login endpoints answer errors with: GitHub puts them in a 200's body. */
   loginErrorStatus = 200;
   readonly devices = new Map<string, FakeDevice>();
+  /** The people who approved a code, by login. */
+  private readonly people = new Map<string, FakeUser>();
   /** The answers the next polls give, in order, before the real state. */
   deviceScript: DeviceScript[] = [];
   readonly userTokens = new Map<string, FakeUserToken>();
@@ -277,6 +279,7 @@ export class FakeGithub {
     this.deviceVerificationUri = undefined;
     this.loginErrorStatus = 200;
     this.devices.clear();
+    this.people.clear();
     this.deviceScript = [];
     this.userTokens.clear();
     this.grantsRevoked.length = 0;
@@ -295,6 +298,7 @@ export class FakeGithub {
     if (!device) throw new Error(`No device with the code ${userCode}`);
     device.state = 'approved';
     device.approvedBy = { login: 'octocat', id: 583231, name: 'The Octocat', ...user };
+    this.people.set(device.approvedBy.login, device.approvedBy);
   }
 
   deny(userCode: string): void {
@@ -365,8 +369,7 @@ export class FakeGithub {
   }
 
   private userOf(login: string): FakeUser {
-    const done = [...this.devices.values()].find((d) => d.approvedBy?.login === login);
-    return done?.approvedBy ?? { login, id: 583231, name: 'The Octocat' };
+    return this.people.get(login) ?? { login, id: 583231, name: 'The Octocat' };
   }
 
   install(installation: Partial<FakeInstallation> & { repos: string[] }): FakeInstallation {

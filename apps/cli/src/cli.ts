@@ -12,6 +12,7 @@ import { DEFAULT_URL } from './connection.js';
 import type { Context } from './context.js';
 import { EXIT, describeFailure } from './errors.js';
 import { helpFor } from './help.js';
+import { systemOpen } from './open.js';
 import { Output, type Env, type Io } from './output.js';
 import { CLI_VERSION } from './version.js';
 
@@ -28,6 +29,12 @@ export interface RunOptions {
   pollMs?: number;
   /** The wait before looking again after a lost connection. Default 1000. */
   retryMs?: number;
+  /** How often `clerq github` looks while it waits for GitHub. Default 2000. */
+  githubPollMs?: number;
+  /** How long `clerq github connect` and `login` wait. Default 10 minutes. */
+  githubWaitMs?: number;
+  /** Open a file or address in the default application. Default: the system's (`open`, `xdg-open`). */
+  openUrl?: (target: string) => Promise<boolean>;
 }
 
 /** The account's home: where `~/.clerq` is. */
@@ -80,6 +87,9 @@ export async function runCli(argv: string[], options: RunOptions): Promise<numbe
     localUrl: options.localUrl ?? DEFAULT_URL,
     pollMs: options.pollMs ?? 3_000,
     retryMs: options.retryMs ?? 1_000,
+    githubPollMs: options.githubPollMs ?? 2_000,
+    githubWaitMs: options.githubWaitMs ?? 10 * 60_000,
+    openUrl: options.openUrl ?? systemOpen,
     call,
   };
   try {
