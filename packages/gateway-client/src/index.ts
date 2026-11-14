@@ -144,25 +144,28 @@ function redirectRefusal(): GatewayError {
   return new GatewayError(message, 0, { error: 'redirect_refused', message });
 }
 
-/** What `fetch` throws for `redirect: 'error'`: Node says "unexpected redirect", Bun "UnexpectedRedirect". */
-function isRedirectFailure(e: unknown): boolean {
-  const cause = (e as { cause?: unknown } | null)?.cause;
-  const text = [e, cause].map((x) => (x instanceof Error ? x.message : '')).join(' ');
-  return /unexpected ?redirect/i.test(text);
+/** The responses `fetch` follows, or, in a browser, the opaque one it gives for `redirect: 'manual'`. */
+function isRedirect(res: Response): boolean {
+  return res.type === 'opaqueredirect' || [301, 302, 303, 307, 308].includes(res.status);
 }
 
 /**
  * Every request to the gateway goes through here, and never follows a redirect:
  * the gateway does not redirect, so one is something else answering at the
  * address, and following it would send the request (a POST's body included) on.
+ *
+ * `redirect: 'manual'` and a look at the answer, not `redirect: 'error'`: with
+ * 'error', Node's fetch sometimes leaves a stream running after its signal is
+ * aborted (an event stream that never ended, in about one run in eight of the
+ * CLI's tests), and with 'manual' it does not.
  */
 async function gatewayFetch(url: string, init?: RequestInit): Promise<Response> {
-  try {
-    return await fetch(url, { ...init, redirect: 'error' });
-  } catch (e) {
-    if (isRedirectFailure(e)) throw redirectRefusal();
-    throw e;
+  const res = await fetch(url, { ...init, redirect: 'manual' });
+  if (isRedirect(res)) {
+    void res.body?.cancel().catch(() => undefined);
+    throw redirectRefusal();
   }
+  return res;
 }
 
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {

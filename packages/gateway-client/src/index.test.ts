@@ -722,7 +722,7 @@ describe('checkCompatibility', () => {
     const probe = calls.find(([url]) => url.endsWith('/health'));
     expect(probe?.[0]).toBe('http://127.0.0.1:18790/health');
     // No header and no token: a plain GET, so no CORS preflight. A redirect is never followed.
-    expect(probe?.[1]).toEqual({ redirect: 'error' });
+    expect(probe?.[1]).toEqual({ redirect: 'manual' });
   });
 
   it('says the same when an older gateway answers 401 because it has no public /version', async () => {
@@ -801,10 +801,9 @@ describe('checkCompatibility', () => {
 });
 
 describe('redirects', () => {
-  /** What Node's fetch throws for `redirect: 'error'`, and what Bun's does. */
-  const nodeStyle = () =>
-    new TypeError('fetch failed', { cause: new Error('unexpected redirect') });
-  const bunStyle = () => new Error('UnexpectedRedirect fetching "http://127.0.0.1:18790/v1/runs"');
+  /** What a gateway that is not one answers: a redirect. */
+  const redirect = (status = 307) =>
+    new Response(null, { status, headers: { location: 'http://elsewhere.example/v1/x' } });
 
   it('are never followed, whatever the request', async () => {
     stubFetch(() => Response.json({ ok: true, sessions: [], runs: [], items: [] }));
@@ -816,41 +815,57 @@ describe('redirects', () => {
     stop.abort();
     await gateway.streamEvents(() => undefined, { signal: stop.signal });
     expect(calls.length).toBeGreaterThanOrEqual(4);
-    for (const [url, init] of calls) expect(init?.redirect, url).toBe('error');
+    // 'manual': the answer is looked at, never followed ('error' left streams running in Node).
+    for (const [url, init] of calls) expect(init?.redirect, url).toBe('manual');
   });
 
-  it('become a plain refusal, from Node’s error or Bun’s, with nothing sent on', async () => {
-    for (const thrown of [nodeStyle, bunStyle]) {
-      vi.stubGlobal('fetch', async () => {
-        throw thrown();
-      });
+  it('become a plain refusal for every status fetch would follow, with the body not read on', async () => {
+    for (const status of [301, 302, 303, 307, 308]) {
+      stubFetch(() => redirect(status));
       const err = (await gateway.runs().catch((e: unknown) => e)) as GatewayError;
-      expect(err).toBeInstanceOf(GatewayError);
+      expect(err, String(status)).toBeInstanceOf(GatewayError);
       expect(err.body).toMatchObject({ error: 'redirect_refused' });
       expect(err.message).toContain('http://127.0.0.1:18790 answered with a redirect');
       expect(err.message).toContain('is not followed');
+      // Only the one request: nothing went to the Location.
+      expect(calls).toHaveLength(1);
     }
   });
 
-  it('say so when the version check meets one, instead of "nothing answered"', async () => {
-    vi.stubGlobal('fetch', async () => {
-      throw nodeStyle();
+  it('refuse a POST that is redirected, so its body goes nowhere else', async () => {
+    stubFetch(() => redirect(307));
+    await expect(gateway.createAutomation('name: x')).rejects.toMatchObject({
+      body: { error: 'redirect_refused' },
     });
+    expect(calls.map(([url]) => url)).toEqual(['http://127.0.0.1:18790/v1/automations']);
+  });
+
+  it('see a browser’s opaque redirect too', async () => {
+    stubFetch(() => {
+      const res = new Response(null, { status: 200 });
+      Object.defineProperty(res, 'type', { value: 'opaqueredirect' });
+      return res;
+    });
+    await expect(gateway.runs()).rejects.toMatchObject({ body: { error: 'redirect_refused' } });
+  });
+
+  it('say so when the version check meets one, instead of "nothing answered"', async () => {
+    stubFetch(() => redirect(302));
     const r = await gateway.checkCompatibility();
     expect(r).toMatchObject({ ok: false, kind: 'unexpected' });
     expect(r.reason).toContain('answered with a redirect');
   });
 
   it('end a followed stream at once instead of being retried', async () => {
-    vi.stubGlobal('fetch', async () => {
-      throw nodeStyle();
-    });
+    stubFetch(() => redirect(307));
     await expect(gateway.streamEvents(() => undefined, { retryMs: 1 })).rejects.toMatchObject({
       body: { error: 'redirect_refused' },
     });
   });
 
-  it('leave other failures as they were', async () => {
+  it('leave other answers and failures as they were', async () => {
+    stubFetch(() => new Response(null, { status: 304 }));
+    await expect(gateway.runs()).rejects.toMatchObject({ status: 304 });
     vi.stubGlobal('fetch', async () => {
       throw new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED') });
     });
