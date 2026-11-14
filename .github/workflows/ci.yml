@@ -44,6 +44,12 @@ jobs:
       - name: Unit and integration tests
         run: pnpm -r test
 
+      # The desktop app's built frontend, served with the Content-Security-Policy from
+      # tauri.conf.json, in the runner's Chrome, against a real gateway: every main screen must
+      # draw with no violation (scripts/check-csp.mjs). It uses the packages built above.
+      - name: Desktop CSP check
+        run: node scripts/check-csp.mjs
+
   # The security-critical tests that only mean anything on macOS: the seatbelt
   # sandbox (including the live egress-allowlist check) and the keychain
   # round-trip. On Linux they are skipped, so without this job they would
@@ -146,14 +152,23 @@ jobs:
           sudo install -m 0755 "shellcheck-$version/shellcheck" /usr/local/bin/shellcheck
           shellcheck --version
 
-      # install.sh against a fake release folder (the tarball, SHA256SUMS, install.sh)
-      # served on 127.0.0.1, into a temporary folder. The runner's passwordless sudo
-      # lets it also run the root cases: refusing to run as root, and --system.
+      # The real minisign, so the installer's signature check runs against the tool a user has
+      # and not against the stand-in the test falls back to.
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          minisign -v
+
+      # install.sh against a fake release folder (the tarball, SHA256SUMS with a signature made
+      # for the run, install.sh) served on 127.0.0.1, into a temporary folder. The runner's
+      # passwordless sudo lets it also run the root cases: refusing to run as root, and --system.
       - name: Test the installer
         run: apps/server/scripts/test-install.sh server-files/openclerq-server-*-${{ matrix.target }}.tar.gz
         env:
           CLERQ_TEST_SUDO: '1'
           CLERQ_TEST_REQUIRE_SHELLCHECK: '1'
+          CLERQ_TEST_REQUIRE_MINISIGN: '1'
 
       # systemd checks the files for unknown directives, bad values, a missing
       # ExecStart binary and an unknown user. The binary and the account are put

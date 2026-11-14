@@ -1,5 +1,8 @@
 name: Build desktop
 
+# macOS, Windows and Linux (x64, arm64) desktop builds, unsigned, plus the check that the updater
+# signing secret matches the key built into the app (on a push to main only).
+
 on:
   push:
     branches: [main, master]
@@ -69,3 +72,128 @@ jobs:
             apps/desktop/src-tauri/target/release/bundle/msi/*.msi
             apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: ignore
+
+  # Linux desktop packages (.deb, .rpm, AppImage), unsigned, on every push and pull request, so
+  # a Linux break shows before a tag. The release builds the same on the same two labels. After
+  # the build, stage-release-files.js runs on the real bundle folders (its names for Tauri's
+  # output are checked there first), and the packages are looked inside for the sidecars and
+  # the bundled plugin the app starts with.
+  build-linux:
+    name: build-linux (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            name: x64
+            artifact: clerq-linux
+          - platform: ubuntu-22.04-arm
+            name: arm64
+            artifact: clerq-linux-arm64
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            packages/calculation-core
+            apps/desktop/src-tauri
+
+      # Tauri v2's prerequisites for Debian and Ubuntu, plus patchelf for the AppImage.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build sidecars and desktop (unsigned)
+        run: pnpm run build:installers
+        env:
+          CI: true
+
+      - name: Stage the release files
+        run: node scripts/stage-release-files.js release-files
+
+      - name: Look inside the packages
+        run: |
+          set -eu
+          deb=$(ls release-files/*.deb)
+          dpkg-deb --field "$deb" Package Version Architecture Depends
+          dpkg-deb --contents "$deb" | tee deb-contents.txt
+          grep -q '/usr/bin/clerq-gateway$' deb-contents.txt
+          grep -q '/usr/bin/clerq-calc$' deb-contents.txt
+          grep -q 'bundled-plugins/chat/manifest.json$' deb-contents.txt
+          appimage=$(ls release-files/*.AppImage)
+          chmod +x "$appimage"
+          mkdir extracted && cd extracted
+          "../$appimage" --appimage-extract > /dev/null
+          find squashfs-root -name clerq-gateway -o -name clerq-calc -o -path '*bundled-plugins/chat/manifest.json' | sort
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: release-files/*
+          if-no-files-found: error
+
+  # Whether the updater key in the repository's secrets is the one the app trusts: a small file
+  # is signed with TAURI_SIGNING_PRIVATE_KEY and its password, and the signature is checked
+  # against the public key in tauri.conf.json (scripts/verify-signatures.js). If they differ,
+  # every update a release signed with that secret would be refused by every installed app, and
+  # this is where that shows, on main, before a tag. It runs only on a push to main of this
+  # repository: the secrets are not given to pull requests from forks, and a fork has no secrets
+  # of its own to check. Neither the key nor the password is printed.
+  updater-key:
+    name: updater-key (the signing secret matches the app's public key)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'paxamedia/OpenClerq'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Sign a file with the release key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error title=No updater signing key::The TAURI_SIGNING_PRIVATE_KEY secret is empty or missing: a release could not be signed. See docs/RELEASING.md."
+            exit 1
+          fi
+          printf 'OpenClerq updater key check\n' > "$RUNNER_TEMP/key-check.txt"
+          pnpm --dir apps/desktop exec tauri signer sign "$RUNNER_TEMP/key-check.txt" > /dev/null
+
+      - name: Check the signature against the key in tauri.conf.json
+        run: |
+          if node scripts/verify-signatures.js "$RUNNER_TEMP/key-check.txt"; then
+            echo "The signing secret is the key the app trusts."
+          else
+            echo "::error title=Wrong updater key::The signing secret does not match plugins.updater.pubkey in tauri.conf.json: updates signed with it would be refused by every installed app. See docs/RELEASING.md (rotation and recovery)."
+            exit 1
+          fi

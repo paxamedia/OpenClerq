@@ -2,17 +2,21 @@ name: Release
 
 # What a tag builds, and how the jobs depend on each other:
 #
-#   version ──┬─ release (macOS, Windows installers) ── publish (the GitHub Release, latest.json)
-#             │                                              │         │
-#             ├─ server (4 tarballs, in parallel) ───────────┤         │
-#             │                                              └─ publish-server (adds the tarballs,
-#             │                                                  SHA256SUMS and install.sh to it)
+#   version ──┬─ release (macOS, Windows, Linux x64 + arm64) ── publish (checks every signature,
+#             │                                            │      then the GitHub Release, latest.json)
+#             ├─ server (4 tarballs, in parallel) ─────────┤         │
+#             │                                            │         └─ publish-server (adds the tarballs,
+#             │                                            │             install.sh, SHA256SUMS and its
+#             │                                            │             signature to the release)
 #             └─ docker (one image per CPU) ───────────────────── docker-manifest (needs publish too:
 #                                                                  the version tags move only once
 #                                                                  the release exists)
 #
 # The desktop release never waits on the server or image jobs, and a failure in them
 # changes nothing that `publish` already published. Re-run the failed jobs to retry.
+# `publish` refuses to make a release whose updater signatures do not verify against the
+# public key in tauri.conf.json (an update every installed app would refuse): see
+# docs/RELEASING.md.
 # A tag with a "-" in it (v1.0.0-rc.1) is published as a pre-release, which GitHub never
 # serves as /releases/latest, and moves neither the `1` nor the `latest` image tag.
 
@@ -51,7 +55,17 @@ jobs:
             name: macos
           - platform: windows-latest
             name: windows
+          # Linux is built on 22.04, not the newest image: a package links the glibc (2.35)
+          # and the webkit2gtk of the machine that builds it, so an older build machine
+          # runs on more distributions. Which ones was not tested; docs/DISTRIBUTION.md
+          # says what is known. ubuntu-22.04-arm is GitHub's generally available label for
+          # the arm64 image of the same release.
+          - platform: ubuntu-22.04
+            name: linux
+          - platform: ubuntu-22.04-arm
+            name: linux-arm64
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -67,6 +81,26 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Install Rust (Linux)
+        if: startsWith(matrix.platform, 'ubuntu')
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust builds (Linux)
+        if: startsWith(matrix.platform, 'ubuntu')
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            packages/calculation-core
+            apps/desktop/src-tauri
+
+      # Tauri v2's prerequisites for Debian and Ubuntu, plus patchelf, which Tauri's own
+      # workflow examples install for the AppImage. rpm needs nothing: Tauri writes it itself.
+      - name: Install Linux build dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -110,6 +144,12 @@ jobs:
           merge-multiple: true
 
       - run: ls -la release/
+
+      # Before anything is published: every updater bundle has a signature, and every signature
+      # verifies against the public key built into the apps. A release that fails this would
+      # offer an update no installed app accepts, so the job stops here and nothing is released.
+      - name: Check every updater signature against the app's public key
+        run: node scripts/verify-signatures.js --require release/
 
       - name: Generate latest.json (updater manifest)
         run: |
@@ -227,11 +267,22 @@ jobs:
     name: Add the server files to the release
     needs: [publish, server]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
+
+      # The Tauri CLI, from this repository's lockfile, signs SHA256SUMS below.
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Download the server files
         uses: actions/download-artifact@v8
@@ -250,12 +301,46 @@ jobs:
           sha256sum --check SHA256SUMS
           ls -la
 
+      # SHA256SUMS is signed with the updater key (docs/RELEASING.md): the same minisign key
+      # that signs the desktop updates, whose public half is in tauri.conf.json and in
+      # install.sh. Tauri writes the signature base64-encoded, the way its updater wants it;
+      # minisign wants the file itself, which is what is released as SHA256SUMS.minisig. The
+      # key and its password reach this one step and are never printed. Then the signature is
+      # checked twice before anything is uploaded: by this repository's checker, and by
+      # minisign itself, with the command the docs give.
+      - name: Sign SHA256SUMS with the updater key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set, so SHA256SUMS cannot be signed and install.sh would refuse this release."
+            exit 1
+          fi
+          pnpm --dir apps/desktop exec tauri signer sign "$PWD/server-files/SHA256SUMS" > /dev/null
+          base64 -d server-files/SHA256SUMS.sig > server-files/SHA256SUMS.minisig
+          rm server-files/SHA256SUMS.sig
+          ls -la server-files/SHA256SUMS.minisig
+
+      - name: Check the signature, with this repository's checker and with minisign
+        run: |
+          set -eu
+          node scripts/verify-signatures.js --sig server-files/SHA256SUMS.minisig server-files/SHA256SUMS
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          key=$(node scripts/verify-signatures.js --key-line)
+          minisign -Vm server-files/SHA256SUMS -x server-files/SHA256SUMS.minisig -P "$key"
+          # install.sh carries the same key, and says so.
+          grep -qF "$key" server-files/install.sh
+
       - name: Add them to the GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
             server-files/openclerq-server-*.tar.gz
             server-files/SHA256SUMS
+            server-files/SHA256SUMS.minisig
             server-files/install.sh
           fail_on_unmatched_files: true
           prerelease: ${{ contains(github.ref_name, '-') }}
