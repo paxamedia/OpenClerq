@@ -15,6 +15,11 @@
  * command on the host: it checks what the gateway asks of the runtime, not
  * what a real engine does with it.
  *
+ * The last describe runs the container profile against a real engine, and only
+ * when CLERQ_TEST_CONTAINER_RUNTIME names one (`docker` or `podman`): the
+ * `container-profile` job in ci.yml. It pulls two small public images, runs a
+ * scripted builtin agent and its gate in containers, and sweeps real orphans.
+ *
  * HOME is a temporary directory for this file, so the credential paths the
  * profile denies are fakes and no real one is touched.
  */
@@ -24,14 +29,56 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { claudeCode } from '@clerq/drivers';
+import { fileURLToPath } from 'node:url';
+import { builtin, claudeCode } from '@clerq/drivers';
+import { parseRegistry } from '@clerq/providers';
+import { listLabelled, removeContainer, resolveRuntime, runtimeCall } from '@clerq/sandbox';
 import { cacheKey, type Fetcher } from '@clerq/workspaces';
+import { killLeftoverProcesses, removeOrphanContainers } from '../agent-processes.js';
 import { createGateway } from '../gateway.js';
+import { createRun } from '../runs.js';
+import { getStore } from '../store.js';
 
 const TOKEN = 'sandbox-test-token-0123456789';
 const FORGE_TOKEN = 'ghp_fake-forge-token-for-sandbox-tests';
 const LAB_TOKEN = 'gitlab-fake-token-for-sandbox-tests';
 const isMac = process.platform === 'darwin';
+
+/** The model registry the builtin agent and the gateway check a spec against. */
+const MODEL_REGISTRY_YAML = `
+providers:
+  - id: fake
+    label: Fake
+    adapter: anthropic
+    baseUrl: https://fake.invalid/v1
+    authEnv: FAKE_SANDBOX_MODEL_KEY
+    models:
+      - id: priced
+        context: 200000
+        inputPerM: 1
+        outputPerM: 2
+`;
+/** The builtin agent is the real driver over a scripted model: each reply is the next API response. */
+let modelReplies: Array<Array<Record<string, unknown>>> = [];
+const modelRequests: Array<{ body: Record<string, unknown> }> = [];
+const fakeModel = (async (_url: string, init: RequestInit) => {
+  modelRequests.push({ body: JSON.parse(String(init.body)) as Record<string, unknown> });
+  const content = modelReplies.shift() ?? [{ type: 'text', text: 'Done.' }];
+  return {
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        content,
+        stop_reason: content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn',
+        usage: { input_tokens: 1_000, output_tokens: 100 },
+      }),
+  } as Response;
+}) as unknown as typeof fetch;
+const builtinDriver = builtin({
+  registry: () => parseRegistry(MODEL_REGISTRY_YAML),
+  fetch: fakeModel,
+});
 
 let root: string;
 let home: string;
@@ -128,6 +175,7 @@ interface RunView {
   id: string;
   status: string;
   exitReason?: string;
+  branch?: string;
   prUrl?: string;
   steps: Array<{
     kind: string;
@@ -206,9 +254,17 @@ beforeAll(async () => {
       `[protocol "file"]\n\tallow = always\n`
   );
 
-  for (const k of ['HOME', 'GIT_CONFIG_GLOBAL', 'CLERQ_KEYCHAIN', 'CLERQ_CONTAINER_RUNTIME']) {
+  for (const k of [
+    'HOME',
+    'GIT_CONFIG_GLOBAL',
+    'CLERQ_KEYCHAIN',
+    'CLERQ_CONTAINER_RUNTIME',
+    'CLERQ_PROVIDERS_FILE',
+  ]) {
     saved[k] = process.env[k];
   }
+  fs.writeFileSync(path.join(root, 'providers.yaml'), MODEL_REGISTRY_YAML);
+  process.env.CLERQ_PROVIDERS_FILE = path.join(root, 'providers.yaml');
   process.env.HOME = home;
   process.env.GIT_CONFIG_GLOBAL = gitconfig;
   process.env.CLERQ_KEYCHAIN = 'off';
@@ -231,7 +287,10 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Added CHAN
     dbPath: ':memory:',
     modulesDir: '/nonexistent-modules-dir-xyz',
     automations: {
-      driverFor: () => claudeCode({ bin: path.join(bin, process.env.FAKE_AGENT ?? 'claude') }),
+      driverFor: (id) =>
+        id === 'builtin'
+          ? builtinDriver
+          : claudeCode({ bin: path.join(bin, process.env.FAKE_AGENT ?? 'claude') }),
       fetcher: fakeForge,
       getSecret: (name) => secrets[name],
       workspaceCacheDir: cacheDir,
@@ -876,3 +935,371 @@ exit 0
     expect(run.steps.some((s) => s.input?.action === 'worktree')).toBe(false);
   }, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// The container profile on a real engine
+// ---------------------------------------------------------------------------
+
+const REAL_RUNTIME = process.env.CLERQ_TEST_CONTAINER_RUNTIME;
+const ALPINE = 'docker.io/library/alpine:3.20';
+const testDir = path.dirname(fileURLToPath(import.meta.url));
+const DEBUG_SCRIPT = path.resolve(testDir, '../../../../scripts/container-debug.sh');
+const DEBUG_DIR =
+  process.env.CLERQ_TEST_DEBUG_DIR || path.join(os.tmpdir(), 'clerq-container-debug');
+const CALLS_LOG = path.join(DEBUG_DIR, 'docker-calls.log');
+
+describe.skipIf(!REAL_RUNTIME || process.platform === 'win32')(
+  REAL_RUNTIME
+    ? 'the container profile, on a real container engine'
+    : 'the container profile, on a real container engine ' +
+        '(skipped: set CLERQ_TEST_CONTAINER_RUNTIME=docker or podman to run it)',
+  () => {
+    let runtime = '';
+    /** The runtime as the gateway sees it: a wrapper that records each call's arguments. */
+    let shim = '';
+    let repoDir = '';
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+
+    const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+    function dump(why: string, callsFrom = 0): string {
+      let text = `\n##### Engine state after a failure: ${why}\n`;
+      try {
+        const r = spawnSync('sh', [DEBUG_SCRIPT, runtime, CALLS_LOG, String(callsFrom)], {
+          encoding: 'utf8',
+          timeout: 60_000,
+        });
+        text += `${r.stdout ?? ''}${r.stderr ?? ''}`;
+      } catch (e) {
+        text += `(could not run ${DEBUG_SCRIPT}: ${e instanceof Error ? e.message : e})\n`;
+      }
+      try {
+        fs.appendFileSync(path.join(DEBUG_DIR, 'failures.txt'), text);
+      } catch {
+        /* only a copy for the artifact */
+      }
+      return text;
+    }
+
+    /** A test that prints the engine's state when it fails. */
+    function realIt(name: string, fn: () => Promise<void>, ms = 240_000): void {
+      it(
+        name,
+        async () => {
+          // The log is shared by every test: a failure shows only what its own test asked of the engine.
+          const callsFrom = fs.existsSync(CALLS_LOG) ? fs.statSync(CALLS_LOG).size : 0;
+          try {
+            await fn();
+          } catch (e) {
+            console.error(
+              dump(
+                `${name}: ${e instanceof Error ? e.message.slice(0, 600) : String(e)}`,
+                callsFrom
+              )
+            );
+            throw e;
+          }
+        },
+        ms
+      );
+    }
+
+    async function ensureImage(image: string): Promise<void> {
+      if ((await runtimeCall(runtime, ['image', 'inspect', image])).code === 0) return;
+      let last = '';
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const r = await runtimeCall(runtime, ['pull', image], 300_000);
+        if (r.code === 0) return;
+        last = (r.stderr || r.stdout).trim().slice(-400);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 3_000));
+      }
+      throw new Error(`Could not pull ${image}: ${last}`);
+    }
+
+    /** What a gateway that died leaves: a network, an egress proxy and a command container, labelled. */
+    async function orphans(forRun: string, tag: string): Promise<string> {
+      const name = `clerq-${forRun}-${tag}`;
+      const label = ['--label', `clerq.run=${forRun}`];
+      const net = await runtimeCall(runtime, [
+        'network',
+        'create',
+        '--internal',
+        ...label,
+        `${name}-net`,
+      ]);
+      expect(net.code, net.stderr).toBe(0);
+      for (const n of [name, `${name}-egress`]) {
+        const r = await runtimeCall(runtime, [
+          'run',
+          '-d',
+          '--name',
+          n,
+          ...label,
+          ALPINE,
+          'sleep',
+          '300',
+        ]);
+        expect(r.code, r.stderr).toBe(0);
+      }
+      return name;
+    }
+
+    const running = async (name: string): Promise<boolean> =>
+      (
+        await runtimeCall(runtime, ['container', 'inspect', '--format', '{{.State.Running}}', name])
+      ).stdout.trim() === 'true';
+
+    const labelled = async (value: string) => {
+      const all = await listLabelled(runtime, 'clerq.run');
+      return {
+        containers: all.containers
+          .filter((c) => c.value === value)
+          .map((c) => c.name)
+          .sort(),
+        networks: all.networks
+          .filter((n) => n.value === value)
+          .map((n) => n.name)
+          .sort(),
+      };
+    };
+
+    async function deadPid(): Promise<number> {
+      const child = spawn('true', [], { stdio: 'ignore' });
+      const pid = child.pid as number;
+      await new Promise((resolve) => child.once('exit', resolve));
+      return pid;
+    }
+
+    beforeAll(async () => {
+      const found = resolveRuntime(REAL_RUNTIME);
+      if (!found) {
+        throw new Error(
+          `CLERQ_TEST_CONTAINER_RUNTIME=${REAL_RUNTIME} is set, but no such runtime was found on PATH.`
+        );
+      }
+      runtime = found;
+      fs.mkdirSync(DEBUG_DIR, { recursive: true });
+      shim = path.join(DEBUG_DIR, 'runtime-shim-gateway');
+      fs.writeFileSync(
+        shim,
+        [
+          '#!/bin/bash',
+          '# Appends the arguments of each call, never its environment, then runs the real runtime.',
+          `{ printf '%s %s' "$(date -u +%H:%M:%S)" "$$"; for a in "$@"; do a=\${a//$'\\n'/ }; [ \${#a} -gt 400 ] && a="\${a:0:400}...[+$((\${#a} - 400))]"; printf ' %s' "$a"; done; printf '\\n'; } >> ${quote(CALLS_LOG)} 2>/dev/null`,
+          `exec ${quote(runtime)} "$@"`,
+          '',
+        ].join('\n'),
+        { mode: 0o755 }
+      );
+      const version = await runtimeCall(runtime, ['version']);
+      expect(version.code, version.stderr).toBe(0);
+      await ensureImage(ALPINE);
+
+      // The repository the run works in: a local one, so nothing needs a forge.
+      repoDir = path.join(root, 'real-app');
+      fs.mkdirSync(repoDir);
+      sh(repoDir, 'init', '-q', '-b', 'main');
+      fs.writeFileSync(path.join(repoDir, 'README.md'), '# real-app\n');
+      sh(repoDir, 'add', '.');
+      sh(repoDir, 'commit', '-q', '-m', 'init');
+    }, 15 * 60_000);
+
+    beforeEach(() => {
+      // The file's own beforeEach clears it.
+      process.env.CLERQ_CONTAINER_RUNTIME = shim;
+    });
+
+    afterAll(async () => {
+      delete process.env.CLERQ_CONTAINER_RUNTIME;
+      const left = await listLabelled(runtime, 'clerq.run');
+      for (const c of left.containers) await removeContainer(runtime, c.name);
+      for (const n of left.networks) await removeContainer(runtime, n.name.replace(/-net$/, ''));
+    }, 120_000);
+
+    realIt(
+      'runs a scripted builtin agent and its gate in containers, and commits what they did',
+      async () => {
+        secrets.MODEL_KEY = 'vault-model-key-for-the-real-engine-test';
+        modelRequests.length = 0;
+        modelReplies = [
+          [
+            {
+              type: 'tool_use',
+              id: 'w1',
+              name: 'write_file',
+              input: { path: 'CHANGED.md', content: 'by builtin\n' },
+            },
+          ],
+          [
+            {
+              type: 'tool_use',
+              id: 's1',
+              name: 'run_shell',
+              input: {
+                command:
+                  "printf 'ignored.log\\n' > .gitignore && echo scratch > ignored.log && " +
+                  'echo "uid=$(id -u) gid=$(id -g) home=$HOME" && ' +
+                  '(touch /etc/clerq-probe 2>/dev/null && echo rootfs=writable || echo rootfs=readonly) && ' +
+                  "grep '^ID=' /etc/os-release",
+              },
+            },
+          ],
+          [{ type: 'text', text: 'Added CHANGED.md.' }],
+        ];
+        // True only inside the container, and only on a fresh checkout of the commit: the agent's
+        // ignored.log is not in it.
+        const gate =
+          'test ! -e ignored.log && test -f CHANGED.md && ' +
+          `test "$(id -u)" = "${uid}" && grep -q '^ID=alpine' /etc/os-release`;
+        const id = await create(
+          [
+            'name: real-container',
+            'targets:',
+            `  repos: [local:${repoDir}]`,
+            'agent:',
+            '  driver: builtin',
+            '  model: fake/priced',
+            '  api_key_secret: MODEL_KEY',
+            'prompt: Add CHANGED.md.',
+            'sandbox:',
+            '  profile: container',
+            `  image: ${ALPINE}`,
+            'gates:',
+            `  - run: ${JSON.stringify(gate)}`,
+            'publish:',
+            '  push: false',
+          ].join('\n')
+        );
+        const run = await waitForRun(await start(id), finished, 200_000);
+        expect(run.status, run.exitReason).toBe('done');
+        expect(run.exitReason).toMatch(/not pushed/);
+
+        // What the model was told the commands found: a container, not this machine.
+        const told = JSON.stringify(modelRequests[2]?.body.messages);
+        expect(told).toContain(`uid=${uid} gid=${gid} home=/tmp`);
+        expect(told).toContain('rootfs=readonly');
+        expect(told).toContain('ID=alpine');
+
+        // The gateway committed what they did, and left out what git ignores.
+        expect(sh(repoDir, 'show', `${run.branch}:CHANGED.md`)).toBe('by builtin');
+        const files = sh(repoDir, 'ls-tree', '--name-only', String(run.branch)).split('\n');
+        expect(files).toEqual(expect.arrayContaining(['CHANGED.md', '.gitignore', 'README.md']));
+        expect(files).not.toContain('ignored.log');
+
+        // Every command was recorded with its container, and each is over.
+        const rows = getStore()
+          .prepare(
+            'SELECT kind, container, container_runtime, ended_at FROM run_processes WHERE run_id = ? ORDER BY id'
+          )
+          .all(run.id) as Array<{
+          kind: string;
+          container: string | null;
+          container_runtime: string | null;
+          ended_at: string | null;
+        }>;
+        // The file tool, the shell command and the gate, at least.
+        expect(rows.length).toBeGreaterThanOrEqual(3);
+        for (const r of rows) {
+          expect(r.container).toMatch(new RegExp(`^clerq-${run.id}-[0-9a-f]{8}$`));
+          expect(r.container_runtime).toBe(shim);
+          expect(r.ended_at).not.toBeNull();
+        }
+        expect(rows[rows.length - 1].kind).toBe('gate');
+
+        // What was asked of the engine: each command in a container held down, the gate in a fresh checkout.
+        const lines = fs
+          .readFileSync(CALLS_LOG, 'utf8')
+          .split('\n')
+          .filter((l) => l.includes(' run --rm ') && l.includes(`clerq-${run.id}-`));
+        expect(lines.length).toBe(rows.length);
+        for (const l of lines) {
+          expect(l).toContain('--init');
+          expect(l).toContain('--read-only');
+          expect(l).toContain('--cap-drop ALL');
+          expect(l).toContain(`--user ${uid}:${gid}`);
+          expect(l).toContain('--network none');
+          expect(l).toContain(ALPINE);
+        }
+        const dirs = lines.map((l) => path.basename(/ -w (\S+)/.exec(l)?.[1] ?? ''));
+        expect(dirs[dirs.length - 1]).toMatch(/^gate-/);
+        expect(dirs.slice(0, -1).every((d) => !d.startsWith('gate-'))).toBe(true);
+        expect(lines[lines.length - 1]).toContain('test ! -e ignored.log');
+
+        // Nothing of the run is left in the engine.
+        expect(await labelled(run.id)).toEqual({ containers: [], networks: [] });
+      }
+    );
+
+    realIt('sweeps what runs that are over left behind, and nothing else', async () => {
+      const over = createRun({ trigger: 'manual', status: 'failed' });
+      const live = createRun({ trigger: 'manual', status: 'executing' });
+      const overName = await orphans(over, 'aaaa');
+      const liveName = await orphans(live, 'bbbb');
+      // Another OpenClerq install on the same engine: a run this store has never heard of.
+      const strangerRun = `run_not-in-this-store-${process.pid}`;
+      const strangerName = await orphans(strangerRun, 'cccc');
+      // A container of someone else's, with no label at all.
+      const plain = `clerq-plain-${process.pid}`;
+      const started = await runtimeCall(runtime, [
+        'run',
+        '-d',
+        '--name',
+        plain,
+        ALPINE,
+        'sleep',
+        '300',
+      ]);
+      expect(started.code, started.stderr).toBe(0);
+      try {
+        const removed = await removeOrphanContainers(new Set([live]), shim);
+        expect([...removed].sort()).toEqual(
+          [overName, `${overName}-egress`, `${overName}-net`].sort()
+        );
+        expect(await labelled(over)).toEqual({ containers: [], networks: [] });
+        // The run another gateway is working on, the stranger's and the unlabelled one are as they were.
+        expect(await labelled(live)).toEqual({
+          containers: [liveName, `${liveName}-egress`].sort(),
+          networks: [`${liveName}-net`],
+        });
+        expect(await labelled(strangerRun)).toEqual({
+          containers: [strangerName, `${strangerName}-egress`].sort(),
+          networks: [`${strangerName}-net`],
+        });
+        expect(await running(liveName)).toBe(true);
+        expect(await running(plain)).toBe(true);
+      } finally {
+        await removeContainer(runtime, liveName);
+        await removeContainer(runtime, strangerName);
+        await runtimeCall(runtime, ['rm', '-f', plain]);
+      }
+    });
+
+    realIt('removes the container of a gateway that is gone, by the name it recorded', async () => {
+      const lost = createRun({ trigger: 'manual', status: 'executing' });
+      const name = await orphans(lost, 'dddd');
+      const pid = await deadPid();
+      // As the dead gateway left it: the runtime CLI's pid is gone, and so is the owner's.
+      getStore()
+        .prepare(
+          `INSERT INTO run_processes
+             (run_id, kind, pid, pgid, command, proc_start, owner_pid, owner_start, started_at,
+              container, container_runtime)
+           VALUES (?, 'agent', ?, ?, 'docker', ?, ?, NULL, ?, ?, ?)`
+        )
+        .run(
+          lost,
+          pid,
+          pid,
+          new Date(Date.now() - 60_000).toISOString(),
+          await deadPid(),
+          new Date().toISOString(),
+          name,
+          shim
+        );
+      const found = (await killLeftoverProcesses()).find((p) => p.runId === lost);
+      expect(found).toMatchObject({ outcome: 'gone', container: name });
+      expect(await labelled(lost)).toEqual({ containers: [], networks: [] });
+    });
+  }
+);
