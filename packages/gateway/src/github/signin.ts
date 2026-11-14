@@ -237,6 +237,12 @@ export class GithubSignIn {
   private renewing: Promise<RenewResult> | null = null;
   private cache: { token: string; until: number; user: PublicUser } | null = null;
   private closed = false;
+  /**
+   * Bumped whenever the stored sign-in is forgotten or replaced by a new one. A renewal
+   * that was on its way to GitHub checks it before it writes, so it never puts back what
+   * a sign-out (or a newer sign-in) has just changed.
+   */
+  private generation = 0;
 
   constructor(options: SignInOptions) {
     this.vault = options.vault;
@@ -312,6 +318,7 @@ export class GithubSignIn {
   }
 
   private forget(): void {
+    this.generation += 1;
     this.cache = null;
     this.vault.delete(USER_TOKENS_SECRET);
   }
@@ -600,7 +607,18 @@ export class GithubSignIn {
       savedAt: now,
     };
     this.learn(tokens.accessToken, tokens.refreshToken);
+    // The app may have been disconnected (or another connected) while the person was on GitHub:
+    // these tokens belong to the app the flow began with, and nothing else may keep them.
+    if (flow.finishedAt !== undefined) return;
+    if (this.appOf()?.clientId !== flow.clientId) {
+      return this.end(
+        flow,
+        'error',
+        'The GitHub App was disconnected or changed while you were signing in, so nothing was kept. Sign in again.'
+      );
+    }
     try {
+      this.generation += 1;
       this.writeStored(tokens);
     } catch (e) {
       return this.end(
@@ -648,6 +666,17 @@ export class GithubSignIn {
     return true;
   }
 
+  /**
+   * End every flow that is still waiting, so none can store a sign-in afterwards: the
+   * app was disconnected. They stay readable, with the reason, for a window that is
+   * still watching one.
+   */
+  cancelAll(reason = 'The GitHub App was disconnected, so this sign-in was cancelled.'): void {
+    for (const flow of this.flows.values()) {
+      if (flow.finishedAt === undefined) this.end(flow, 'error', reason);
+    }
+  }
+
   /** Stop every flow (the gateway is closing). */
   close(): void {
     this.closed = true;
@@ -687,9 +716,9 @@ export class GithubSignIn {
   /** The user token as stored, whether it is still good or not. Null when nobody is signed in. */
   private heldFor(app: GithubAppConfig | null): StoredTokens | null {
     const stored = this.readStored();
-    if (!stored || !app) return null;
-    // Tokens of another app are no use to this one.
-    if (stored.clientId !== app.clientId) {
+    if (!stored) return null;
+    // With no app, or another one, tokens are no use to anybody (and could not be revoked): they go.
+    if (!app || stored.clientId !== app.clientId) {
       this.forget();
       return null;
     }
@@ -769,6 +798,7 @@ export class GithubSignIn {
       this.forget();
       return { ok: false, signedOut: true, message: 'Sign in again.' };
     }
+    const generation = this.generation;
     let answer;
     try {
       answer = await this.webPost('/login/oauth/access_token', {
@@ -820,6 +850,18 @@ export class GithubSignIn {
           `GitHub refused to renew your sign-in${text(b.error_description) ? `: ${text(b.error_description)}` : ''}. Sign in again.`
         ),
       };
+    }
+    // While GitHub was answering, the person signed out, signed in again, or the app was
+    // disconnected: what came back is for a sign-in that is no longer there. It is not written
+    // (GitHub spent the old refresh token, and signing out revoked the whole grant anyway).
+    if (generation !== this.generation || this.appOf()?.clientId !== app.clientId) {
+      // The app is gone or another: what is stored belongs to nobody.
+      if (this.appOf()?.clientId !== app.clientId) this.forget();
+      const latest = this.readStored();
+      if (latest && latest.clientId === app.clientId && !this.expired(latest)) {
+        return { ok: true, tokens: latest };
+      }
+      return { ok: false, signedOut: true, message: undefined };
     }
     const now = this.now();
     const expiresIn = num(b.expires_in);

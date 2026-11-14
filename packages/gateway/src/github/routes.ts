@@ -498,6 +498,8 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
           .status(404)
           .json({ error: 'app_not_connected', message: 'No GitHub App is connected.' });
       }
+      // A sign-in still waiting for the person would store tokens for an app that is going.
+      signin.cancelAll();
       // The person's sign-in belongs to this app, and revoking it needs the app's client secret:
       // before the secret is deleted.
       const signedOut = await signin.signOut().catch(() => null);

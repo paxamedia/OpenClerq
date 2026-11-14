@@ -448,6 +448,103 @@ describe('the device flow', () => {
   });
 });
 
+describe('a sign-in and the app it belongs to', () => {
+  it('stores nothing when the app is disconnected while the person is on GitHub', async () => {
+    const flow = await signin.start();
+    clearAppConfig();
+    fake.approve(flow.userCode);
+    await step(flow);
+    const view = signin.status(flow.flowId);
+    expect(view).toMatchObject({ status: 'error' });
+    expect(view?.message).toContain('disconnected');
+    expect(vault.get(USER_TOKENS_SECRET)).toBeUndefined();
+    // Connecting the same app again does not bring a sign-in back.
+    writeAppConfig(config());
+    expect(await signin.user()).toEqual({ signedIn: false, refreshable: false });
+    expect(vault.get(USER_TOKENS_SECRET)).toBeUndefined();
+  });
+
+  it('stores nothing when another app was connected meanwhile', async () => {
+    const flow = await signin.start();
+    writeAppConfig(config({ clientId: 'Iv23liANOTHERAPP0002' }));
+    fake.approve(flow.userCode);
+    await step(flow);
+    expect(signin.status(flow.flowId)).toMatchObject({ status: 'error' });
+    expect(vault.get(USER_TOKENS_SECRET)).toBeUndefined();
+  });
+
+  it('ends every waiting flow at once on cancelAll, and none stores anything even if approved', async () => {
+    const a = await signin.start();
+    const b = await signin.start();
+    signin.cancelAll();
+    for (const f of [a, b]) {
+      expect(signin.status(f.flowId)).toMatchObject({ status: 'error' });
+      expect(signin.status(f.flowId)?.message).toContain('disconnected');
+      fake.approve(f.userCode);
+    }
+    // Their polls are gone: nothing asks GitHub, nothing is kept.
+    expect(waiting).toHaveLength(0);
+    expect(fake.polls()).toHaveLength(0);
+    expect(vault.get(USER_TOKENS_SECRET)).toBeUndefined();
+    // A flow that had already finished keeps its own ending.
+    const done = await signin.start();
+    fake.deny(done.userCode);
+    await step(done);
+    signin.cancelAll();
+    expect(signin.status(done.flowId)).toMatchObject({ status: 'denied' });
+  });
+
+  it('forgets leftover tokens when there is no app at all', async () => {
+    await signedIn();
+    clearAppConfig();
+    expect(await signin.user()).toEqual({ signedIn: false, refreshable: false });
+    expect(vault.get(USER_TOKENS_SECRET)).toBeUndefined();
+  });
+
+  it('does not put a renewal back after a sign-out that happened while GitHub was answering', async () => {
+    await signedIn();
+    pastExpiry();
+    fake.delays.set('POST /login/oauth/access_token', 80);
+    const renewing = signin.user();
+    await new Promise((r) => setTimeout(r, 25));
+    const out = await signin.signOut();
+    expect(out).toMatchObject({ signedOut: true });
+    const view = await renewing;
+    expect(view).toMatchObject({ signedIn: false });
+    expect(vault.get(USER_TOKENS_SECRET)).toBeUndefined();
+    expect(fake.refreshes()).toHaveLength(1);
+    expect(await signin.user()).toEqual({ signedIn: false, refreshable: false });
+  });
+
+  it('does not put a renewal back after the app was disconnected meanwhile', async () => {
+    await signedIn();
+    pastExpiry();
+    fake.delays.set('POST /login/oauth/access_token', 80);
+    const renewing = signin.user();
+    await new Promise((r) => setTimeout(r, 25));
+    clearAppConfig();
+    expect(await renewing).toMatchObject({ signedIn: false });
+    expect(vault.get(USER_TOKENS_SECRET)).toBeUndefined();
+  });
+
+  it('does not overwrite a newer sign-in with a renewal of the older one', async () => {
+    await signedIn('octocat');
+    pastExpiry();
+    fake.delays.set('POST /login/oauth/access_token', 80);
+    const renewing = signin.user();
+    await new Promise((r) => setTimeout(r, 25));
+    // The person signs in again (as somebody else) while the renewal is on its way.
+    fake.delays.clear();
+    const flow = await signin.start();
+    fake.approve(flow.userCode, { login: 'hubot' });
+    await step(flow);
+    await renewing;
+    const kept = stored();
+    expect(fake.userTokens.get(kept.accessToken)?.login).toBe('hubot');
+    expect((await signin.user()).user?.login).toBe('hubot');
+  });
+});
+
 describe('who is signed in', () => {
   it('says nobody, then who, with the address checks', async () => {
     expect(await signin.user()).toEqual({ signedIn: false, refreshable: false });

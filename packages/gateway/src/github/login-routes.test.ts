@@ -306,6 +306,30 @@ describe('signing out', () => {
   });
 });
 
+describe('disconnecting while a sign-in is waiting', () => {
+  it('cancels it: approving afterwards stores nothing, and the same app again is signed out', async () => {
+    const started = (await call('POST', '/github/login')).json();
+    const out = await call('DELETE', '/github/app');
+    expect(out.status).toBe(200);
+    // The window that is watching it is told, not left waiting.
+    const view = (await call('GET', `/github/login/${started.flowId}`)).json();
+    expect(view.status).toBe('error');
+    expect(view.message).toContain('disconnected');
+    fake.approve(started.userCode);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(fake.polls()).toHaveLength(0);
+    expect(vault.entries.has(USER_TOKENS_SECRET)).toBe(false);
+    // Connect the same app again: nobody is signed in.
+    vault.set(APP_PRIVATE_KEY_SECRET, fake.privateKeyPem);
+    vault.set(APP_CLIENT_SECRET_SECRET, fake.clientSecret);
+    writeAppConfig(config());
+    expect((await call('GET', '/github/user')).json()).toEqual({
+      signedIn: false,
+      refreshable: false,
+    });
+  });
+});
+
 describe('the repositories', () => {
   it('lists what the person reaches, marking the ones OpenClerq already has', async () => {
     fake.install({
