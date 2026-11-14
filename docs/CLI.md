@@ -23,7 +23,19 @@ clerq approve <id> | deny <id>        answer one
 
 ## Install
 
-There is no installer or download yet. Build it from the repository (Node.js 24 or later):
+From 1.0.0, `clerq` comes with the server files: the installer puts `clerq`, `clerq-server` and
+`clerq-calc` in `~/.local/bin` (Linux and macOS, after checking the download against `SHA256SUMS`),
+and the [container image](SERVER.md#running-it-in-docker) has it at `/usr/local/bin/clerq`:
+
+```sh
+curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh | sh
+clerq --version
+```
+
+`clerq` is one standalone program (Bun-compiled, no Node needed) that needs nothing beside it; the
+server's tarball is the only release file that holds it. [SERVER.md](SERVER.md#installing) lists
+the installer's options and how to check and unpack the tarball by hand. To build it from the
+repository instead (Node.js 24 or later):
 
 ```sh
 pnpm install
@@ -42,7 +54,8 @@ install -m 0755 apps/cli/dist/bun-darwin-arm64/clerq /usr/local/bin/clerq
 `pnpm --filter @clerq/cli build:binary` runs the same compile for this machine. The binary does not
 read a `.env` or a `bunfig.toml` from the folder you run it in; it reads the settings named below
 and nothing else. Targets are the ones `scripts/build-binary.js` knows (see
-[DISTRIBUTION.md](DISTRIBUTION.md)); only the one for the machine you build on has been run.
+[DISTRIBUTION.md](DISTRIBUTION.md)); the release builds `linux-x64`, `linux-arm64`, `darwin-arm64`
+and `darwin-x64`.
 
 ## Connecting
 
@@ -324,8 +337,8 @@ approval".
 
 ## What it does not do
 
-- There is no installer or release download for it yet, and no GitHub sign-in (`clerq login` takes a
-  gateway token).
+- There is no GitHub sign-in (`clerq login` takes a gateway token), and no Windows build: the
+  release holds `clerq` for Linux and macOS only.
 - It cannot remove a repository or delete an automation (`disable` switches one off), and there is no
   command that lists runs: `automation show` and `repo show` give a last run's id, and `logs <name>` the
   latest run of an automation.

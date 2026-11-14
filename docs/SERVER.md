@@ -11,13 +11,23 @@ It has no screens of its own. You talk to it over HTTP with the gateway token (`
 `@clerq/gateway-client`), or with the `clerq` command line ([CLI.md](CLI.md)), which signs in with the
 gateway token, adds repositories, applies and runs automations and answers approvals.
 
-This page covers installing it under systemd, configuring it, where its data lives, upgrading,
-what to be careful about, and how to put a reverse proxy in front of it.
+This page covers installing it (a one-line installer, release files you can check by hand, or a
+container image), running it under systemd or in Docker, configuring it, where its data lives,
+upgrading, what to be careful about, and how to put a reverse proxy in front of it. The installer
+and the image ship with 1.0.0.
+
+The two one-liners:
+
+```bash
+curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh | sh
+docker run -d --name openclerq -p 127.0.0.1:18790:18790 -v openclerq-data:/data ghcr.io/paxamedia/openclerq:1
+```
 
 ## What you need on the machine
 
-- Linux (x64 or arm64) or macOS. Only the Linux x64 binary is started and tested in CI; the arm64
-  one is built, not run. Windows is not supported as a server.
+- Linux (x64 or arm64, with glibc: not Alpine) or macOS (Apple Silicon or Intel). CI builds, starts
+  and tests the two Linux binaries on every push; the macOS ones are built by the release, and the
+  Apple Silicon one is run there. Windows is not supported as a server.
 - `git`, and `ssh` for repositories over ssh. Automations work in git worktrees.
 - `ps` (procps). After a crash, the next start uses it to find and stop agent processes the old
   gateway left running; without it, it logs a warning and leaves them.
@@ -27,25 +37,91 @@ what to be careful about, and how to put a reverse proxy in front of it.
 - `lsof`, if an automation uses a sandbox profile: the gateway looks for processes a command left
   behind with it.
 
-## Getting the binary
+## Installing
 
-Release archives and a container image are not published yet; see [Distribution](#distribution-and-docker-not-published-yet).
-Until then, build it from a checkout of this repository (Node 24, pnpm, and Rust for the engine):
+### The installer
+
+```bash
+curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh | sh
+```
+
+`install.sh` is a release file like the others, one POSIX `sh` script you can read first. It works
+out whether this is Linux or macOS and which CPU, downloads that release's tarball and
+`SHA256SUMS` from GitHub (no API calls), refuses to go on unless the tarball matches its line in
+`SHA256SUMS`, and copies **`clerq-server`, `clerq` and `clerq-calc` into one folder**:
+`~/.local/bin` by default. The three go together because the server looks for `clerq-calc` next to
+itself. Each file is copied under a temporary name and moved into place, so installing over a
+running server is safe (the running one keeps going until you restart it). It ends by running
+`clerq-server version` and `clerq --version` and printing what to do next.
+
+What it never does: run as root unless you pass `--system`, edit your shell's startup files (it
+prints a `PATH` line if the folder is not on your `PATH`), create an account, or start a service.
+
+| Option or variable              | Meaning                                                                                                                                            |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLERQ_VERSION=1.0.0`           | Install that release (a leading `v` is fine). Default: the latest release.                                                                         |
+| `CLERQ_INSTALL_DIR=/opt/bin`    | Install there. Default: `~/.local/bin`, or `/usr/local/bin` with `--system`.                                                                       |
+| `--system`                      | Install to `/usr/local/bin` for every user. Run it as yourself: it uses `sudo` only for the copy (and refuses to run as root without it).          |
+| `--systemd-user`                | Linux: also write the user unit to `~/.config/systemd/user/openclerq.service` and print the `systemctl --user` commands. It runs none of them.     |
+| `--no-verify`                   | Skip the checksum check. Only for a machine with neither `sha256sum` nor `shasum`; it says so loudly. Without a tool and without this, it refuses. |
+| `CLERQ_DOWNLOAD_BASE=https://…` | Take `SHA256SUMS` and the tarball from here instead of GitHub (a mirror; the tests). Must be https, or http on this computer.                      |
+
+Options go after `sh -s --` when the script comes through a pipe:
+
+```bash
+curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh | sh -s -- --system
+curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh | CLERQ_VERSION=1.0.0 sh
+```
+
+Run the same command again to upgrade. To remove it, delete the three files (and, for a user
+service, `systemctl --user disable --now openclerq` and the unit). Your data in `~/.clerq` stays.
+
+What the checksum does and does not tell you: `SHA256SUMS` is a release file too, so it shows that
+the tarball you got is the one that was released and was not damaged on the way, not that GitHub
+or your connection is honest. The release files are not signed. On a Mac, a file saved by a
+browser carries a quarantine mark that makes Gatekeeper refuse an unsigned program; `curl` and
+this installer do not set it (for a browser download, `xattr -d com.apple.quarantine <file>`).
+
+### Check a download by hand
+
+For anyone who does not pipe a script to a shell. The release page lists, for each version
+`X.Y.Z`: `openclerq-server-X.Y.Z-<os>-<arch>.tar.gz` for `linux-x64`, `linux-arm64`,
+`darwin-arm64` and `darwin-x64`, `SHA256SUMS` and `install.sh`.
+
+```bash
+v=1.0.0; target=linux-x64        # linux-x64, linux-arm64, darwin-arm64 or darwin-x64
+base=https://github.com/paxamedia/OpenClerq/releases/download/v$v
+curl -fsSLO "$base/SHA256SUMS" -O "$base/openclerq-server-$v-$target.tar.gz"
+grep " openclerq-server-$v-$target.tar.gz\$" SHA256SUMS | sha256sum --check -     # macOS: shasum -a 256 --check -
+tar -xzf "openclerq-server-$v-$target.tar.gz"
+cd "openclerq-server-$v-$target"
+sudo install -m 0755 clerq-server clerq clerq-calc /usr/local/bin/      # or any folder; keep the three together
+```
+
+The tarball has one folder holding the three programs, `LICENSE`, `NOTICE`, the two example units
+under `systemd/` and a `README.txt`. `install -m 0755` is all the installer's copy does. With `install.sh` downloaded beside it, the same
+`grep " install.sh\$" SHA256SUMS | sha256sum --check -` checks that file too.
+
+### Build it yourself
+
+From a checkout of this repository (Node 24, pnpm, and Rust for the engine):
 
 ```bash
 pnpm install
 cargo build --release --manifest-path packages/calculation-core/Cargo.toml
-node scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server
-# for another machine: --target bun-linux-x64 | bun-linux-arm64 | bun-darwin-arm64 | bun-darwin-x64
+node scripts/package-server.js            # the tarball for this machine, in dist/server/
+# or only the programs: node scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server
+# for another machine: --target linux-x64 | linux-arm64 | darwin-arm64 | darwin-x64  (bun-… for build-binary.js)
 ```
 
-The result is `apps/server/dist/<target>/clerq-server` and, when `clerq-calc` was built for that
-target, `clerq-calc` beside it. The server uses a `clerq-calc` that sits next to its own
-executable; `CLERQ_CALC_PATH` overrides that. Cross-compiling (building the Linux binary on a Mac)
-works, and needs network access the first time, for Bun to fetch the target's runtime; the engine
-for another target needs `cargo build --release --target <triple>`. `build-binary.js` takes
-`--entry`, `--name`, `--target`, `--out-dir`, `--calc`, `--no-calc`, `--require-calc`,
-`--skip-build` and `--json`; its header says what each does.
+`package-server.js` leaves the programs in `apps/server/dist/<target>/` and
+`apps/cli/dist/<target>/` and the tarball (with its SHA-256) in `dist/server/`. The server uses a
+`clerq-calc` that sits next to its own executable; `CLERQ_CALC_PATH` overrides that.
+Cross-compiling (the Linux binary on a Mac) works, and needs network access the first time, for Bun
+to fetch the target's runtime; the engine for another target needs
+`cargo build --release --target <triple>`. `build-binary.js` takes `--entry`, `--name`, `--target`,
+`--out-dir`, `--calc`, `--no-calc`, `--require-calc`, `--skip-build` and `--json`; its header says
+what each does.
 
 Try it in a terminal first:
 
@@ -139,12 +215,15 @@ them; they say what each line is for and which ones were left out on purpose.
 
 ### As a system service
 
-A dedicated account, its own state directory, and a read-only view of the rest of the system:
+A dedicated account, its own state directory, and a read-only view of the rest of the system.
+The programs are the ones from the [release tarball](#installing) (`install.sh --system` puts
+them in `/usr/local/bin`, which is what the unit's `ExecStart` names; the unit is in the tarball
+under `systemd/` and in this repository):
 
 ```bash
 sudo useradd --system --user-group --no-create-home --home-dir /var/lib/openclerq \
   --shell /usr/sbin/nologin openclerq
-sudo install -m 0755 clerq-server clerq-calc /usr/local/bin/
+sudo install -m 0755 clerq-server clerq clerq-calc /usr/local/bin/
 sudo install -m 0644 apps/server/systemd/openclerq.service /etc/systemd/system/openclerq.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now openclerq
@@ -200,7 +279,7 @@ as abandoned, because it cannot always tell that their gateway is still alive):
 
 ```bash
 mkdir -p ~/.local/bin ~/.config/systemd/user
-install -m 0755 clerq-server clerq-calc ~/.local/bin/
+install -m 0755 clerq-server clerq clerq-calc ~/.local/bin/
 install -m 0644 apps/server/systemd/openclerq-user.service ~/.config/systemd/user/openclerq.service
 systemctl --user daemon-reload
 systemctl --user enable --now openclerq
@@ -209,18 +288,24 @@ journalctl --user -u openclerq -f
 ```
 
 Agents then run as you, with nothing confining them beyond what you already have.
+`install.sh --systemd-user` does the first three lines (it writes the unit with the install
+folder in `ExecStart`) and prints the rest without running it.
 
 ## Upgrading
 
 Replace the binaries and restart. The database is brought up to date by the new version, after a
 copy is written to `backups/`; an older version refuses a database from a newer one. The
-details, including the way back, are in [UPGRADING.md](UPGRADING.md).
+details, including the way back, are in [UPGRADING.md](UPGRADING.md). In a container, pull the
+new image and start a new container on the same volume ([above](#running-it-in-docker)).
 
 ```bash
-sudo install -m 0755 clerq-server clerq-calc /usr/local/bin/
+curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh | sh -s -- --system
 sudo systemctl restart openclerq
 clerq-server version
 ```
+
+(For a user service, the installer without `--system`, then `systemctl --user restart openclerq`.
+By hand: `sudo install -m 0755 clerq-server clerq clerq-calc /usr/local/bin/` from the new tarball.)
 
 A restart stops the old process (SIGTERM, as above) before starting the new one. A run that was
 in progress is not waited for: its lease stops being renewed, and the new process, on starting,
@@ -393,19 +478,161 @@ which leaves out those upstream failures, or keep that log as private as the tok
 | `Not started: Could not back up the database before upgrading it …`             | The disk is full or the data directory is not writable. Nothing was changed.                                                                                                                                                                 |
 | A run fails with "Read-only file system"                                        | The repository is outside the state directory; add `ReadWritePaths=` ([above](#as-a-system-service)).                                                                                                                                        |
 | `Calculation engine not found … ` at start                                      | `clerq-calc` is not next to `clerq-server` and `CLERQ_CALC_PATH` is not set. Calculations fail until it is.                                                                                                                                  |
+| `install.sh`: `could not download SHA256SUMS … may not be uploaded yet`         | The release exists but its server files are not on it (they follow the desktop installers by a few minutes), or `CLERQ_VERSION` names a release that has none. Try again, or name an older version.                                          |
+| `install.sh`: `the download does not match SHA256SUMS … Nothing was installed`  | The file was damaged or replaced on the way. Try again; if it persists, do not use that file.                                                                                                                                                |
 | `Did not stop within 10 s; exiting`, exit 1                                     | Something held the shutdown. The next start recovers whatever was in flight.                                                                                                                                                                 |
 | `healthcheck` is healthy but `store.schema` in `/v1/version` is `null`          | The store could not be opened (the log says why). The gateway answers, but memory and run history are unavailable.                                                                                                                           |
 
-## Distribution and Docker (not published yet)
+## Running it in Docker
 
-<!-- Filled in with the release of the container image and the installer. -->
+The image is `ghcr.io/paxamedia/openclerq`, for `linux/amd64` and `linux/arm64`, built from
+[`apps/server/Dockerfile`](../apps/server/Dockerfile). It holds `clerq-server`, the `clerq`
+command line and `clerq-calc` on Debian 12, with `git`, `ssh`, `ps` (procps) and CA certificates,
+under `tini`, as a user that is not root.
 
-A container image, a one-line install script and release archives with checksums are the
-remaining distribution items for 1.0; none exists yet, so this page names no image and no download
-address. Until they do, build the binary as above and run it under systemd.
+```bash
+docker run -d --name openclerq -p 127.0.0.1:18790:18790 -v openclerq-data:/data ghcr.io/paxamedia/openclerq:1
+```
 
-What a container will need, so that you can plan: the data directory on a volume (the whole of
-`$HOME/.clerq`, not only `clerq.db`, so that backups, the token and the vault key survive),
-`CLERQ_HOST=0.0.0.0` (a container's own network is the boundary; publish the port to loopback or
-behind your proxy), `git`, `ps` and `ssh` in the image, and `clerq-server healthcheck` as the health
-check command.
+Tags: `1.0.0` (that release, for good), `1` (the newest 1.x) and `latest`. A pre-release such as
+`1.0.0-rc.1` has its own tag and moves neither of the other two. Pin the full version if you want
+upgrades to be your decision.
+
+**The token.** The server makes one on first start. Read it with
+
+```bash
+docker exec openclerq cat /data/.clerq/gateway-token
+```
+
+or choose your own with `-e CLERQ_GATEWAY_TOKEN=<64 hex characters from openssl rand -hex 32>`.
+A token passed with `-e` is visible to anyone who can run `docker inspect` on the container, which
+is anyone with access to the Docker socket; if that matters, put `CLERQ_GATEWAY_TOKEN=…` in a
+`.env` file at `/data/.clerq/.env` inside the volume instead. The server's log says where the
+token is and never shows it.
+
+**Reaching it from the command line.** Inside the container, `clerq` needs no setup, because the
+token file is in its own home:
+
+```bash
+docker exec openclerq clerq status
+```
+
+From the machine that runs Docker, with the `clerq` command line installed there (the installer
+above puts it in the same tarball):
+
+```bash
+docker exec openclerq cat /data/.clerq/gateway-token | clerq login http://127.0.0.1:18790 --token-stdin
+clerq status
+```
+
+If something else on the host already uses port 18790 (the desktop app, a `clerq-server` of your
+own), publish another host port (`-p 127.0.0.1:18791:18790`), log in to that address, and give it
+a profile of its own (`clerq login http://127.0.0.1:18791 --profile docker --token-stdin`, then
+`--profile docker` on later commands). The CLI sends a saved token only to the address it was
+saved for ([CLI.md](CLI.md)). From another machine, put a reverse proxy in front and log in to its
+`https://` address.
+
+**Why the example publishes on `127.0.0.1` only.** The server inside the container listens on
+every interface of the container (`CLERQ_HOST=0.0.0.0`), because a container's own network is
+its boundary. `-p 18790:18790` with no address would publish that on every interface of the host,
+past a host firewall such as `ufw` (Docker writes its own rules ahead of it), as
+plain HTTP with only the token between the internet and your agents. With `127.0.0.1` the port is
+reachable from the machine itself, and anything that should reach it from outside goes through a
+[reverse proxy](#putting-a-reverse-proxy-in-front) that terminates TLS and talks to
+`127.0.0.1:18790`. The same is true of a Compose file or `--network host`: bind the published port
+to loopback.
+
+**What is in the image.** `clerq-server`, `clerq` and `clerq-calc` in `/usr/local/bin`; `git`,
+`openssh-client`, `procps`, `ca-certificates`, `tini`; nothing else: no Node.js, no `curl`, no
+agent CLI. The process runs as `openclerq`, uid and gid 10001, home `/data`, with a passwd entry
+(ssh needs one). `HOME=/data`, so the data directory is `/data/.clerq` and the whole of it is on
+the volume: the database, `backups/`, the token, the vault and its key, clones and worktrees. The
+image's health check is `clerq-server healthcheck`, which `docker ps` shows as `healthy` once the
+server answers; it takes up to 30 s to run the first time, and has 60 s of grace at start for a
+slow migration.
+
+**Stopping and upgrading.** `docker stop` sends SIGTERM to `tini`, which passes it to the server;
+a clean stop takes milliseconds (a chat reply still being written can take up to 8 s) and the
+container's exit code is 0. Docker's default wait before it kills is 10 s, the same as the server's
+own limit, so give it room: `--stop-timeout 15` (Compose: `stop_grace_period: 15s`). To upgrade,
+pull the new image and start a new container on the same volume:
+
+```bash
+docker pull ghcr.io/paxamedia/openclerq:1
+docker stop --time 15 openclerq && docker rm openclerq
+docker run -d --name openclerq --stop-timeout 15 -p 127.0.0.1:18790:18790 -v openclerq-data:/data ghcr.io/paxamedia/openclerq:1
+```
+
+The new version brings the database up to date after copying it to `/data/.clerq/backups`, as
+described in [Upgrading](#upgrading). A container started on a database from a newer version exits
+with code 1 and says why in `docker logs openclerq`; see
+[UPGRADING.md](UPGRADING.md#downgrades-are-refused). The backups are in the volume, so they
+do not survive losing it: copy `/data` somewhere else for a real backup, as in
+[Where things live](#where-things-live).
+
+A Compose file for the same thing (an example to adapt; not run as part of OpenClerq's tests):
+
+```yaml
+services:
+  openclerq:
+    image: ghcr.io/paxamedia/openclerq:1
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:18790:18790'
+    volumes:
+      - openclerq-data:/data
+    stop_grace_period: 15s
+    # environment:
+    #   ANTHROPIC_API_KEY: ...    # or put provider keys in /data/.clerq/.env
+volumes:
+  openclerq-data:
+```
+
+**A folder instead of a named volume.** A bind mount (`-v /srv/openclerq:/data`) keeps whatever
+owner the folder has, and the server runs as uid 10001, so make it that user's first:
+`sudo install -d -o 10001 -g 10001 -m 0700 /srv/openclerq`. Without that the server cannot create
+its data directory and does not start. A first start on an empty named volume needs nothing: the
+image's own `/data`, owned by 10001 with mode 0700, is what the volume starts from. Do not share one
+`/data` between two containers (or with a desktop app): one gateway per data directory.
+
+**Repositories.** `github:` and `gitlab:` targets are cloned into `/data/.clerq/workspaces`, with a
+token from the vault (`GITHUB_TOKEN`, `GITLAB_TOKEN`) or the spec's `publish.token_secret`. A
+repository on the host is reached by mounting it (`-v /srv/repos/app:/repos/app`), which must be
+writable by uid 10001 because a run adds its worktree to the repository's own `.git`; git must also
+trust it (`docker exec openclerq git config --global --add safe.directory /repos/app`).
+
+### Agents in the container
+
+- **They run as uid 10001**, inside the container, with the permissions of that user and the
+  container's network: the same model as the systemd service, except the host is one layer further
+  away. They can read everything the server's own user can, including the token file and the vault
+  key in `/data/.clerq` ([Security notes](#security-notes)). The container confines the server from
+  the host; it does not make an automation safe from the server.
+- **The `builtin` driver works out of the box.** It needs only a model: pass a provider key
+  (`-e ANTHROPIC_API_KEY=…`, or `OPENAI_API_KEY` and the others in the table above), or
+  `CLERQ_OLLAMA_URL` for a model server on the network.
+- **The CLI drivers (`claude-code`, `codex`, `cursor-agent`) need their program in the image**, which
+  the image does not contain. Make a derived image and name an API key in the spec
+  (`agent.api_key_secret`) so no sign-in is needed. This is an example of the idea; it has not been
+  built or run, and the install step is the vendor's, so follow its current instructions:
+
+  ```dockerfile
+  FROM ghcr.io/paxamedia/openclerq:1
+  USER root
+  # Node.js from the official image, for a CLI that installs with npm
+  COPY --from=node:24-bookworm-slim /usr/local/ /usr/local/
+  RUN npm install -g @anthropic-ai/claude-code
+  USER 10001
+  ```
+
+  A CLI's own state (`~/.claude`, `~/.codex`) would live under `/data`, so a sign-in made with
+  `docker exec -it openclerq claude` would persist in the volume.
+
+- **The `container` sandbox profile is not available inside this container, and giving it what it
+  needs is not recommended.** That profile starts a Docker or Podman container for each run, with the
+  worktree mounted at the same path the host sees. A gateway in a container would need the host's
+  Docker socket mounted into it (which is root on the host for anything that can use it, an agent
+  included, and defeats the isolation the profile is for) and its state directory mounted at the
+  same path on both sides. If an automation needs the container profile, run the server on the host
+  or in a VM, under systemd. The `seatbelt` profile is macOS only, so in this image automations run
+  as `native`.

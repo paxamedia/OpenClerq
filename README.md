@@ -59,11 +59,21 @@ Full text: [Installer disclaimer](docs/INSTALLER_DISCLAIMER.md).
 
 To **build installers** from this repo: `pnpm build:installers` (requires [Bun](https://bun.sh) — `pnpm add -D bun -w`; if Bun fails, run `cd node_modules/bun && node install.js`). Outputs: macOS → `apps/desktop/src-tauri/target/release/bundle/dmg/`; Windows → `apps/desktop/src-tauri/target/release/bundle/msi/` or `nsis/`.
 
-**On a server:** `clerq-server` runs the same gateway headless, for a Linux machine that keeps running automations with nobody logged in. Build it with `node scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server`; systemd units, settings and reverse-proxy examples are in [SERVER](docs/SERVER.md). A container image and an installer script are not published yet.
+**On a server (Linux or macOS), from 1.0.0:** `clerq-server` runs the same gateway headless, for a machine that keeps running automations with nobody logged in. Two one-liners:
 
-**From a terminal:** `clerq` signs in to a gateway (this computer's or a server's), adds repositories, applies an automation from a YAML file, runs it and follows it, and answers its approvals: `clerq login`, `repo add`, `automation apply -f`, `run --follow`, `logs`, `approve`. Build it with `node scripts/build-binary.js --entry apps/cli/src/main.ts --name clerq --no-calc`; see [CLI](docs/CLI.md). There is no installer for it yet.
+```bash
+# the programs (clerq-server, clerq, clerq-calc) in ~/.local/bin, after checking their SHA-256
+curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh | sh
 
-**Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS and Windows installers and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases). For signed macOS builds and in-app updates, see [Distribution](docs/DISTRIBUTION.md).
+# or the container image (linux/amd64 and linux/arm64), published on the loopback address only
+docker run -d --name openclerq -p 127.0.0.1:18790:18790 -v openclerq-data:/data ghcr.io/paxamedia/openclerq:1
+```
+
+The installer starts nothing, edits none of your files and refuses to run as root unless you pass `--system`; [SERVER](docs/SERVER.md) shows how to check a download by hand, run it under systemd, read the token, use a reverse proxy and what the image holds. To build it yourself: `node scripts/package-server.js`.
+
+**From a terminal:** `clerq` signs in to a gateway (this computer's or a server's), adds repositories, applies an automation from a YAML file, runs it and follows it, and answers its approvals: `clerq login`, `repo add`, `automation apply -f`, `run --follow`, `logs`, `approve`. The server installer and the container image above include it; see [CLI](docs/CLI.md).
+
+**Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS and Windows installers, the server tarballs (with `SHA256SUMS` and `install.sh`) and the container image, and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases) and `ghcr.io`. For signed macOS builds and in-app updates, see [Distribution](docs/DISTRIBUTION.md).
 
 ### macOS
 
