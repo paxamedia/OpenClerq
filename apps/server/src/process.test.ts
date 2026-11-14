@@ -185,9 +185,21 @@ describe.skipIf(!runnable || isWindows)('clerq-server running', () => {
     expect(out).toContain('Gateway token: from CLERQ_GATEWAY_TOKEN');
     expect(out).not.toContain(token);
 
+    // An event stream never ends by itself; the stop has to end it.
+    const stream = await fetch(`http://127.0.0.1:${port}/v1/events/stream`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const reader = (stream.body as ReadableStream<Uint8Array>).getReader();
+    await reader.read();
+    const streamEnded = reader.read().then(
+      (r) => r.done,
+      () => true
+    );
+
     const began = Date.now();
     server.child.kill('SIGTERM');
     const { code, signal } = await server.exit;
+    expect(await streamEnded).toBe(true);
     expect({ code, signal }).toEqual({ code: 0, signal: null });
     expect(Date.now() - began).toBeLessThan(10_000);
     expect(server.output()).toContain('Received SIGTERM');

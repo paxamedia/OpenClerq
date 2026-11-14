@@ -212,6 +212,32 @@ export interface Gateway {
   close(options?: { graceMs?: number }): Promise<void>;
 }
 
+/**
+ * End what is still open when the grace period is over, in the way each kind
+ * can be ended well: an event stream is finished (a client reconnects, or
+ * not), a request that has not been answered gets a 503, and anything else
+ * is cut. Works the same under Node and Bun.
+ */
+function endLiveResponses(live: ReadonlySet<Response>): void {
+  for (const res of [...live]) {
+    try {
+      if (res.writableEnded) continue;
+      if (String(res.getHeader('content-type') ?? '').startsWith('text/event-stream')) {
+        res.end();
+      } else if (!res.headersSent) {
+        res.status(503).set('Retry-After', '5').json({
+          error: 'server_stopping',
+          message: 'The server is stopping. Try again shortly.',
+        });
+      } else {
+        res.destroy();
+      }
+    } catch {
+      /* the connection is already gone */
+    }
+  }
+}
+
 export function createGateway(config: GatewayConfig = {}): Gateway {
   const port = config.port ?? DEFAULT_PORT;
   // Loopback unless an operator deliberately opts out. Binding a wider interface
@@ -257,6 +283,17 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       .map((o) => o.trim())
       .filter(Boolean)
   );
+  // Every response still open, so `close()` can end them. Under Bun,
+  // `closeAllConnections()` does not end an event stream (verified on 1.3.10),
+  // and the server would never finish closing.
+  const live = new Set<Response>();
+  app.use((_req, res, next) => {
+    live.add(res);
+    const done = () => live.delete(res);
+    res.once('finish', done);
+    res.once('close', done);
+    next();
+  });
   // First of all, so every response carries the API version: a preflight, a 401, a 404.
   app.use(stampApiVersion);
   app.use((req, res, next) => {
@@ -1537,7 +1574,10 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       });
       server.closeIdleConnections?.();
       const drop = setTimeout(
-        () => server.closeAllConnections?.(),
+        () => {
+          endLiveResponses(live);
+          server.closeAllConnections?.();
+        },
         Math.max(0, options.graceMs ?? CLOSE_GRACE_MS)
       );
       await ended;

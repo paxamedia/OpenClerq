@@ -14,7 +14,7 @@
  *   - the token in the working directory's .env is not accepted;
  *   - a clerq-calc beside the binary is the one it reports using;
  *   - `healthcheck` exits 0 while it runs and 1 once it has stopped;
- *   - SIGTERM exits 0 within 15 s, and leaves nothing in the write-ahead log (the
+ *   - SIGTERM, with an event stream open, exits 0 within 15 s, ends that stream, and leaves nothing in the write-ahead log (the
  *     database file alone is then the whole database).
  * Exits 0 when all hold, else 1 naming the first that did not.
  */
@@ -165,7 +165,17 @@ if (fs.existsSync(calc)) {
 const health = run(['healthcheck']);
 check('healthcheck exits 0 while it runs', health.status === 0, health.stdout + health.stderr);
 
-// --- stopping ---
+// --- stopping, with an event stream open (it never ends by itself) ---
+const stream = await fetch(`http://127.0.0.1:${port}/v1/events/stream`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+const reader = stream.body.getReader();
+await reader.read();
+check('an event stream is open before the stop', stream.status === 200);
+const streamEnded = reader.read().then(
+  (r) => r.done,
+  () => true
+);
 const began = Date.now();
 server.kill('SIGTERM');
 const timer = setTimeout(() => server.kill('SIGKILL'), STOP_WITHIN_MS);
@@ -177,6 +187,7 @@ check(
   code === 0 && signal === null && took < STOP_WITHIN_MS,
   `exit ${code} signal ${signal}\n${log}`
 );
+check('the open event stream was ended by the stop', await streamEnded);
 const wal = path.join(home, '.clerq', 'clerq.db-wal');
 check(
   'the database file holds everything: nothing is left in the write-ahead log',

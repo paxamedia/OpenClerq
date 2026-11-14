@@ -161,6 +161,34 @@ describe('close()', () => {
     await closing;
   });
 
+  it('answers 503 to a request still unanswered when the grace period is over', async () => {
+    const g = start(path.join(root, 'late', 'clerq.db'));
+    await g.ready;
+    const socket = net.connect(portOf(g), '127.0.0.1');
+    await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+    let received = '';
+    socket.on('data', (chunk) => {
+      received += String(chunk);
+    });
+    // The body never finishes arriving.
+    socket.write(
+      'POST /v1/nothing HTTP/1.1\r\nHost: x\r\n' +
+        `Authorization: Bearer ${TOKEN}\r\nContent-Type: application/json\r\n` +
+        'Content-Length: 50\r\n\r\n{"a"'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const began = Date.now();
+    await g.close({ graceMs: 200 });
+    expect(Date.now() - began).toBeLessThan(3_000);
+    await new Promise<void>((resolve) => {
+      if (socket.destroyed) resolve();
+      else socket.once('close', () => resolve());
+    });
+    expect(received).toMatch(/^HTTP\/1\.1 503 /);
+    expect(received).toContain('server_stopping');
+    expect(received).toMatch(/retry-after: 5/i);
+  });
+
   it('when called before the gateway has started, nothing starts and ready says why', async () => {
     const file = path.join(root, 'early', 'clerq.db');
     const g = start(file);
