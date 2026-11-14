@@ -650,6 +650,12 @@ name is kept in `run_processes.container` (store migration 19) so the next gatew
 crashed one left, and sweeps by label for what was made before the record. What each profile does and does not enforce is in
 [SECURITY.md §2.1](SECURITY.md#21-automation-sandbox-profiles).
 
+The container profile is tested against a fake runtime in every `pnpm test` (`profiles.test.ts`, `sandbox.integration.test.ts`) and
+against a real engine in CI, in the `container-profile` job: `packages/sandbox/src/container.real.test.ts` and the last describe of
+`packages/gateway/src/automations/sandbox.integration.test.ts` run only when `CLERQ_TEST_CONTAINER_RUNTIME` names a runtime
+(`docker`, `podman` or a path), and are skipped otherwise. Their runtime is a small wrapper that records each call's arguments, and
+`scripts/container-debug.sh` prints that record and the engine's labelled containers, networks and logs when a test fails.
+
 #### Remote repositories
 
 `targets.repos` takes one of `local:<path>`, `github:owner/name`, `gitlab:group/name` or an https
