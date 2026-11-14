@@ -36,6 +36,8 @@ import { SandboxError } from './errors.js';
 export const DEFAULT_EGRESS_IMAGE = 'docker.io/library/node:24-alpine';
 /** The port the egress proxy listens on inside its container. */
 export const EGRESS_PORT = 3128;
+/** How long starting the egress proxy may take, a first pull of its image included. */
+const START_MS = 300_000;
 
 /** Environment variables of the host that mean nothing inside a container. */
 const HOST_ONLY_ENV = new Set([
@@ -336,25 +338,31 @@ export async function startEgressSidecar(
   ]);
   if (created.code !== 0) await fail('create the internal network', created);
 
-  const started = await runtimeCall(runtime, [
-    'run',
-    '-d',
-    '--name',
-    proxy,
-    ...labels,
-    '--security-opt',
-    'no-new-privileges',
-    '--cap-drop',
-    'ALL',
-    '--read-only',
-    '--user',
-    '65534:65534',
-    options.image ?? process.env.CLERQ_EGRESS_IMAGE ?? DEFAULT_EGRESS_IMAGE,
-    'node',
-    '-e',
-    EGRESS_SIDECAR_SCRIPT,
-    JSON.stringify({ rules, port: EGRESS_PORT }),
-  ]);
+  const started = await runtimeCall(
+    runtime,
+    [
+      'run',
+      '-d',
+      '--name',
+      proxy,
+      ...labels,
+      '--security-opt',
+      'no-new-privileges',
+      '--cap-drop',
+      'ALL',
+      '--read-only',
+      '--user',
+      '65534:65534',
+      options.image ?? process.env.CLERQ_EGRESS_IMAGE ?? DEFAULT_EGRESS_IMAGE,
+      'node',
+      '-e',
+      EGRESS_SIDECAR_SCRIPT,
+      JSON.stringify({ rules, port: EGRESS_PORT }),
+    ],
+    // `run` pulls the image first when the engine does not have it, and 30 seconds is not enough
+    // for a first pull over a slow connection.
+    START_MS
+  );
   if (started.code !== 0) await fail('start the egress proxy', started);
 
   const joined = await runtimeCall(runtime, ['network', 'connect', network, proxy]);
