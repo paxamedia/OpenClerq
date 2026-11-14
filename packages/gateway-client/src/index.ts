@@ -29,6 +29,9 @@ export {
 };
 export type { ApiVersionMismatch, UnsupportedApiVersion, VersionInfo };
 
+// A run in plain words, shared by the desktop app and the command line.
+export { describeStep, previousModel, stepLabel, toolLabel, type StepWords } from './words.js';
+
 const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:18790';
 
 let gatewayBaseUrl: string = DEFAULT_GATEWAY_URL;
@@ -381,6 +384,25 @@ export interface RepoDetail extends RepoSummary {
   recentRuns: RunSummary[];
 }
 
+/** What `check: true` found out about a remote repository. Nothing in it is a token. */
+export interface RepoCheck {
+  reachable: boolean;
+  /** In words: what was reached, or why not. */
+  message: string;
+  /** The remote's default branch, when it said. */
+  defaultBranch?: string;
+  /** The vault secret asked for and whether the credential lookup found one; never its value. */
+  credential: { secret: string; present: boolean; source?: string };
+}
+
+/** The answer to adding a repository by hand. */
+export interface AddRepoResult extends RepoSummary {
+  /** False when the repository was already listed: the existing row is returned. */
+  created: boolean;
+  /** Present when `check` was asked for and the target is a remote. */
+  check?: RepoCheck;
+}
+
 export interface DriverInfo {
   id: string;
   available: boolean;
@@ -437,6 +459,8 @@ export interface AutomationSummary {
 }
 
 export interface AutomationPreview {
+  /** The spec as the gateway read it. Only `name` is promised here. */
+  spec?: { name: string; [key: string]: unknown };
   nextRunAt: string | null;
   nextFirings: string[];
   /**
@@ -1404,6 +1428,21 @@ export const gateway = {
     return fetchJson(`/repos/${encodeURIComponent(id)}`);
   },
 
+  /**
+   * Add a repository by hand, as an automation's `targets.repos` names it:
+   * `local:<absolute path>` (a git work tree), `github:owner/name`,
+   * `gitlab:group/name` or an https URL on either. Adding one that is listed
+   * returns its row (`created: false`). With `check`, a remote is reached first
+   * with the credential a run would use, and nothing is added if it cannot be:
+   * that is a 422 `repo_unreachable` whose body carries `check`.
+   */
+  addRepo(target: string, opts: { check?: boolean } = {}): Promise<AddRepoResult> {
+    return fetchJson('/repos', {
+      method: 'POST',
+      body: JSON.stringify(opts.check === undefined ? { target } : { target, check: opts.check }),
+    });
+  },
+
   automations(): Promise<{ automations: AutomationSummary[] }> {
     return fetchJson('/automations');
   },
@@ -1602,8 +1641,22 @@ export const gateway = {
     return fetchJson('/approvals');
   },
 
-  decideApproval(id: number, decision: 'approve' | 'deny'): Promise<{ ok: boolean }> {
-    return fetchJson(`/approvals/${id}/${decision}`, { method: 'POST', body: '{}' });
+  /**
+   * Answer a pending approval. `by` says who decided, for the audit log (default
+   * `operator`); `reason` is kept with the decision.
+   */
+  decideApproval(
+    id: number,
+    decision: 'approve' | 'deny',
+    opts: { by?: string; reason?: string } = {}
+  ): Promise<{ ok: boolean }> {
+    return fetchJson(`/approvals/${id}/${decision}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(opts.by ? { by: opts.by } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      }),
+    });
   },
 
   /** Newest first. `since` keeps runs created at or after it, and allows up to 5000. */

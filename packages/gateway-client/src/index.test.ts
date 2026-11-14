@@ -433,6 +433,50 @@ describe('repositories', () => {
     stubFetch(() => Response.json({ error: 'repo_not_found' }, { status: 404 }));
     await expect(gateway.repo('repo_x')).rejects.toMatchObject({ status: 404 });
   });
+
+  it('adds one by target, with check only when asked', async () => {
+    stubFetch(() => Response.json({ id: 'repo_1', created: true }, { status: 201 }));
+    await gateway.addRepo('github:acme/app');
+    await gateway.addRepo('github:acme/app', { check: true });
+    expect(calls.map(([url, init]) => `${init?.method} ${url}`)).toEqual([
+      'POST http://127.0.0.1:18790/v1/repos',
+      'POST http://127.0.0.1:18790/v1/repos',
+    ]);
+    expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ target: 'github:acme/app' });
+    expect(JSON.parse(String(calls[1][1]?.body))).toEqual({
+      target: 'github:acme/app',
+      check: true,
+    });
+  });
+
+  it('hands an unreachable remote back as a refusal that keeps the check', async () => {
+    stubFetch(() =>
+      Response.json(
+        { error: 'repo_unreachable', message: 'No.', check: { reachable: false } },
+        { status: 422 }
+      )
+    );
+    await expect(gateway.addRepo('github:acme/app', { check: true })).rejects.toMatchObject({
+      status: 422,
+      body: { error: 'repo_unreachable', check: { reachable: false } },
+    });
+  });
+});
+
+describe('approvals', () => {
+  it('answers with an empty body, as it always did', async () => {
+    stubFetch(() => Response.json({ ok: true }));
+    await gateway.decideApproval(7, 'approve');
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/approvals/7/approve');
+    expect(JSON.parse(String(calls[0][1]?.body))).toEqual({});
+  });
+
+  it('can say who decided and why', async () => {
+    stubFetch(() => Response.json({ ok: true }));
+    await gateway.decideApproval(8, 'deny', { by: 'cli', reason: 'not now' });
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/approvals/8/deny');
+    expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ by: 'cli', reason: 'not now' });
+  });
 });
 
 describe('routing', () => {

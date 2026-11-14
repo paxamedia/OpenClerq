@@ -6,17 +6,22 @@
     "MEMORY_TYPES",
     "SUPPORTED_API_VERSIONS",
     "apiPrefix",
+    "describeStep",
     "gateway",
     "hasGatewayToken",
     "incompatibilityReason",
     "parseApiVersion",
+    "previousModel",
     "setGatewayBaseUrl",
     "setGatewayTenant",
-    "setGatewayToken"
+    "setGatewayToken",
+    "stepLabel",
+    "toolLabel"
   ],
   "gateway": [
     "activities",
     "addMemoryRecord",
+    "addRepo",
     "approvals",
     "artifact",
     "automation",
