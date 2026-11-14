@@ -83,7 +83,7 @@ export async function run(ctx: Context, _call: Call): Promise<number> {
   }
   if (token === 'none') {
     out.error(
-      `There is no token for ${resolved.url}. Run \`clerq login\`, or set CLERQ_GATEWAY_TOKEN.`
+      `There is no token for ${resolved.url}. Run \`clerq login ${resolved.url}\`, or set CLERQ_GATEWAY_TOKEN.`
     );
     return EXIT.failed;
   }
