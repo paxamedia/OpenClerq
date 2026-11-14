@@ -5,6 +5,7 @@
  */
 
 import {
+  GatewayError,
   gateway,
   setGatewayBaseUrl,
   setGatewayTenant,
@@ -59,6 +60,26 @@ export function unusable(
     );
   }
   return new CliError(compat.reason ?? `The gateway at ${url} cannot be used.`, EXIT.gateway);
+}
+
+export type TokenState = 'accepted' | 'refused' | 'not-allowed';
+
+/**
+ * Whether the gateway takes the token set for this client, as its own: one call
+ * only the gateway's own token may make (`GET /routing`). A paired phone's token
+ * and a module's are valid, and are refused here: they reach a few routes each,
+ * not the ones this client needs. (`GET /approvals`, which a first version asked,
+ * is one a phone may read, so a phone's token passed.)
+ */
+export async function probeToken(): Promise<TokenState> {
+  try {
+    await gateway.routing();
+    return 'accepted';
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 401) return 'refused';
+    if (e instanceof GatewayError && e.status === 403) return 'not-allowed';
+    throw e;
+  }
 }
 
 /**

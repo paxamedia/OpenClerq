@@ -431,6 +431,79 @@ describe.skipIf(!runnable)('login, more ways', () => {
     expect(fs.existsSync(path.join(home, '.clerq', 'cli.json'))).toBe(false);
   });
 
+  it('refuses a paired phone’s token, which the gateway knows, and says it is not the gateway’s own', async () => {
+    const asOperator = (route: string, init: RequestInit = {}) =>
+      fetch(`${gatewayUrl}/v1${route}`, {
+        ...init,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      });
+    expect(
+      (
+        await asOperator('/remote', {
+          method: 'PUT',
+          body: JSON.stringify({ enabled: true, publicUrl: 'https://clerq.example.com' }),
+        })
+      ).status
+    ).toBe(200);
+    const { code } = (await (
+      await asOperator('/devices/pairing', { method: 'POST', body: '{}' })
+    ).json()) as { code: string };
+    const paired = await fetch(`${gatewayUrl}/v1/devices/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, deviceName: 'Test phone', platform: 'ios' }),
+    });
+    expect(paired.status).toBe(201);
+    const { token: phone, device } = (await paired.json()) as {
+      token: string;
+      device: { id: string };
+    };
+    try {
+      expect(phone).toMatch(/^clqd_/);
+      const asPhone = (route: string) =>
+        fetch(`${gatewayUrl}/v1${route}`, { headers: { Authorization: `Bearer ${phone}` } });
+      // A phone may read approvals (so asking for them proved nothing) but not the gateway's settings.
+      expect((await asPhone('/approvals')).status).toBe(200);
+      expect((await asPhone('/routing')).status).toBe(403);
+
+      const home = newHome();
+      const login = await cli(['login', gatewayUrl, '--token-stdin'], {
+        home,
+        stdin: `${phone}\n`,
+      });
+      expect(login.code).toBe(1);
+      expect(login.stderr).toContain("knows that token, but it is not the gateway's own");
+      expect(login.stderr).toContain('Nothing was saved.');
+      expect(login.stdout + login.stderr).not.toContain(phone);
+      expect(fs.existsSync(path.join(home, '.clerq', 'cli.json'))).toBe(false);
+
+      const status = await cli(['status', '--json', '--gateway', gatewayUrl], {
+        home,
+        env: { CLERQ_GATEWAY_TOKEN: phone },
+      });
+      expect(status.code).toBe(1);
+      expect(json<Record<string, any>>(status).token).toMatchObject({
+        present: true,
+        state: 'not-allowed',
+      });
+      const human = await cli(['status', '--gateway', gatewayUrl], {
+        home,
+        env: { CLERQ_GATEWAY_TOKEN: phone },
+      });
+      expect(human.stdout).toMatch(/Token is\s+known, but not the gateway's own/);
+      // The gateway's own token passes the same probe.
+      const own = await cli(['status', '--json', '--gateway', gatewayUrl], {
+        home,
+        env: { CLERQ_GATEWAY_TOKEN: TOKEN },
+      });
+      expect(json<Record<string, any>>(own).token.state).toBe('accepted');
+    } finally {
+      // Nothing of this stays paired: a paired device is pushed to on approvals.
+      await asOperator(`/devices/${device.id}`, { method: 'DELETE' });
+      await asOperator('/remote', { method: 'PUT', body: JSON.stringify({ enabled: false }) });
+    }
+  });
+
   it('signs in again to a profile’s own address when none is given, replacing the token', async () => {
     const home = await signedIn();
     const wrong = await cli(['login', '--profile', 'default', '--token-stdin'], {

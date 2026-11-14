@@ -1,19 +1,19 @@
 /** `clerq status`: what the CLI would talk to, and whether that works. Never prints the token. */
 
-import { API_VERSION, GatewayError, SUPPORTED_API_VERSIONS, gateway } from '@clerq/gateway-client';
+import { API_VERSION, SUPPORTED_API_VERSIONS, gateway } from '@clerq/gateway-client';
 import type { Call } from '../args.js';
-import { aim, resolve, unusable } from '../connect.js';
+import { aim, probeToken, resolve, unusable } from '../connect.js';
 import type { Context } from '../context.js';
 import { EXIT } from '../errors.js';
 import { tokenWords, urlWords } from '../connection.js';
 import { CLI_VERSION } from '../version.js';
 
-type TokenState = 'accepted' | 'refused' | 'not-allowed' | 'none' | 'not-checked';
+type TokenState = Awaited<ReturnType<typeof probeToken>> | 'none' | 'not-checked';
 
 const TOKEN_WORDS: Record<TokenState, string> = {
   accepted: 'accepted',
   refused: 'refused by the gateway',
-  'not-allowed': 'known, but not allowed to list approvals (the CLI needs the gateway token)',
+  'not-allowed': "known, but not the gateway's own (a paired phone's or a module's)",
   none: 'none to send',
   'not-checked': 'not checked',
 };
@@ -35,16 +35,7 @@ export async function run(ctx: Context, _call: Call): Promise<number> {
 
   let token: TokenState = 'not-checked';
   if (!resolved.token) token = 'none';
-  else if (compat.ok) {
-    try {
-      await gateway.approvals();
-      token = 'accepted';
-    } catch (e) {
-      if (e instanceof GatewayError && e.status === 401) token = 'refused';
-      else if (e instanceof GatewayError && e.status === 403) token = 'not-allowed';
-      else throw e;
-    }
-  }
+  else if (compat.ok) token = await probeToken();
 
   out.data({
     url: resolved.url,

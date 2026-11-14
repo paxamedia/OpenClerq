@@ -27,7 +27,7 @@ import {
   isLoopbackHost,
   normalizeUrl,
 } from '../connection.js';
-import { unusable } from '../connect.js';
+import { probeToken, unusable } from '../connect.js';
 import type { Context } from '../context.js';
 import { CliError, EXIT, UsageError } from '../errors.js';
 import { readSecret, readStdin } from '../prompt.js';
@@ -37,21 +37,18 @@ export const MIN_TOKEN_LENGTH = 16;
 
 type TokenSource = 'stdin' | 'prompt' | 'file' | 'local-file';
 
-/** Check the token is accepted: one call that needs it. */
+/** Check the token is the gateway's own, and accepted. */
 async function checkAccepted(url: string): Promise<void> {
-  try {
-    await gateway.approvals();
-  } catch (e) {
-    if (e instanceof GatewayError && e.status === 401) {
-      throw new CliError(`The gateway at ${url} refused that token. Nothing was saved.`);
-    }
-    if (e instanceof GatewayError && e.status === 403) {
-      throw new CliError(
-        `The gateway at ${url} knows that token but does not let it list approvals. ` +
-          "The command line needs the gateway's own token (not a phone's or a module's). Nothing was saved."
-      );
-    }
-    throw e;
+  const state = await probeToken();
+  if (state === 'refused') {
+    throw new CliError(`The gateway at ${url} refused that token. Nothing was saved.`);
+  }
+  if (state === 'not-allowed') {
+    throw new CliError(
+      `The gateway at ${url} knows that token, but it is not the gateway's own: it is a paired ` +
+        "phone's or a module's, and reaches only a few routes. The command line needs the gateway's " +
+        'own token. Nothing was saved.'
+    );
   }
 }
 
