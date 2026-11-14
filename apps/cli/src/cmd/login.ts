@@ -32,6 +32,9 @@ import type { Context } from '../context.js';
 import { CliError, EXIT, UsageError } from '../errors.js';
 import { readSecret, readStdin } from '../prompt.js';
 
+/** The shortest token `login` saves. */
+export const MIN_TOKEN_LENGTH = 16;
+
 type TokenSource = 'stdin' | 'prompt' | 'file' | 'local-file';
 
 /** Check the token is accepted: one call that needs it. */
@@ -137,6 +140,16 @@ export async function run(ctx: Context, call: Call): Promise<number> {
       'The token you typed'
     );
     source = 'prompt';
+  }
+  // A token typed or read here is saved and sent for good. A short one is easy to guess, and
+  // `Output` can only mask a value of eight characters or more (a shorter one would blot out
+  // ordinary words), so it is refused here instead. The gateway's own are 64 characters.
+  if (token.length < MIN_TOKEN_LENGTH) {
+    throw new CliError(
+      `That token is only ${token.length} characters; a token to save must have at least ${MIN_TOKEN_LENGTH}. ` +
+        "The gateway's own are 64: a short one is easy to guess, and clerq could not keep it out of its " +
+        'own output. Set a longer CLERQ_GATEWAY_TOKEN on the gateway. Nothing was saved.'
+    );
   }
   out.hide(token);
   setGatewayToken(token);

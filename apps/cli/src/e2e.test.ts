@@ -384,6 +384,45 @@ describe.skipIf(!runnable)('login, more ways', () => {
     ).toBe(TOKEN);
   });
 
+  it('refuses to save a token shorter than 16 characters, from any source, before sending it', async () => {
+    const home = newHome();
+    const short = 'abcdefghijklmno'; // 15
+    const stdin = await cli(['login', gatewayUrl, '--token-stdin'], { home, stdin: `${short}\n` });
+    expect(stdin.code).toBe(1);
+    expect(stdin.stderr).toContain(
+      'That token is only 15 characters; a token to save must have at least 16.'
+    );
+    expect(stdin.stderr).toContain('Nothing was saved.');
+    expect(stdin.stdout + stdin.stderr).not.toContain(short);
+
+    const file = path.join(home, 'short-token');
+    fs.writeFileSync(file, `${short}\n`);
+    const fromFile = await cli(['login', gatewayUrl, '--token-file', file], { home });
+    expect(fromFile.code).toBe(1);
+    expect(fromFile.stderr).toContain('only 15 characters');
+
+    const typed = new FakeStdin('', true);
+    const c = capture(typed, true);
+    const pending = runCli(['login', gatewayUrl], {
+      env: { HOME: home, NO_COLOR: '1' },
+      io: c.io,
+      home,
+      cwd: home,
+    });
+    await until(async () => (c.stderr().includes('Token for') ? true : undefined));
+    typed.type(`${short}\r`);
+    expect(await pending).toBe(1);
+    expect(c.stdout() + c.stderr()).not.toContain(short);
+    expect(fs.existsSync(path.join(home, '.clerq', 'cli.json'))).toBe(false);
+
+    // Sixteen is enough to be tried (and here refused, since the gateway does not know it).
+    const sixteen = await cli(['login', gatewayUrl, '--token-stdin'], {
+      home,
+      stdin: `${short}p\n`,
+    });
+    expect(sixteen.stderr).toContain('refused that token');
+  });
+
   it('does not take the token from the environment, and without a terminal says what to do', async () => {
     const home = newHome();
     const r = await cli(['login', gatewayUrl], { home, env: { CLERQ_GATEWAY_TOKEN: TOKEN } });
