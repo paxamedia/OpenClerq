@@ -13,6 +13,7 @@ import {
   MIGRATIONS,
   StoreBackupError,
   StoreTooNewError,
+  backupDatabase,
   backupsDir,
   listBackups,
   migrate,
@@ -344,5 +345,64 @@ describe('schemaVersion', () => {
     expect(schemaVersion(db)).toBe(newestKnownSchema());
     expect(schemaVersion(db)).toBe(NEWEST);
     db.close();
+  });
+});
+
+describe.skipIf(!posix)('a copy is private from the moment it exists', () => {
+  /** A database that only creates the file, the way SQLite does: with the process's umask. */
+  function creatingDb(seen: { mode?: number }, fail = false): Database {
+    return {
+      prepare: () => ({
+        run: (target: string) => {
+          fs.writeFileSync(target, 'copy');
+          seen.mode = modeOf(target);
+          if (fail) throw new Error('disk full');
+          return { changes: 0, lastInsertRowid: 0 };
+        },
+      }),
+    } as unknown as Database;
+  }
+
+  it('is 0600 while it is being written, not narrowed afterwards', () => {
+    const before = process.umask();
+    const seen: { mode?: number } = {};
+    // A wide umask, as most accounts have: a file made now would be 0644.
+    process.umask(0o022);
+    try {
+      backupDatabase(creatingDb(seen), file, 12);
+      expect(seen.mode).toBe(0o600);
+      // The umask is the caller's again.
+      expect(process.umask()).toBe(0o022);
+    } finally {
+      process.umask(before);
+    }
+  });
+
+  it('puts the umask back when the copy fails', () => {
+    const before = process.umask();
+    process.umask(0o022);
+    try {
+      expect(() => backupDatabase(creatingDb({}, true), file, 12)).toThrow(StoreBackupError);
+      expect(process.umask()).toBe(0o022);
+    } finally {
+      process.umask(before);
+    }
+  });
+
+  it('holds when the backups folder is wider than 0700 and was left that way', async () => {
+    const saved = process.env.CLERQ_KEEP_PERMISSIONS;
+    process.env.CLERQ_KEEP_PERMISSIONS = '1';
+    try {
+      await seedAt(12);
+      const dir = path.join(root, 'backups');
+      fs.mkdirSync(dir);
+      fs.chmodSync(dir, 0o755);
+      (await openStore(file)).close();
+      expect(modeOf(dir)).toBe(0o755);
+      expect(modeOf(backupsOf()[0].file)).toBe(0o600);
+    } finally {
+      if (saved === undefined) delete process.env.CLERQ_KEEP_PERMISSIONS;
+      else process.env.CLERQ_KEEP_PERMISSIONS = saved;
+    }
   });
 });

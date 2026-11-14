@@ -159,6 +159,25 @@ function pruneBackups(dir: string, keep: number, protect: string): void {
 }
 
 /**
+ * Run `fn` with new files created private from the first byte (umask 077),
+ * rather than narrowed after the data is in them. Nothing is changed where a
+ * process cannot set its umask (a worker thread); the copy is narrowed after.
+ */
+function withPrivateUmask<T>(fn: () => T): T {
+  let before: number | undefined;
+  try {
+    before = process.umask(0o077);
+  } catch {
+    /* a worker thread has no umask of its own */
+  }
+  try {
+    return fn();
+  } finally {
+    if (before !== undefined) process.umask(before);
+  }
+}
+
+/**
  * Write a consistent copy of `db` (a file at `dbPath`, now at schema `from`)
  * to `<dir>/backups/clerq-schema<from>-<UTC timestamp>.db`, and return its
  * path. The directory is 0700 and the copy 0600; older backups beyond the
@@ -182,10 +201,11 @@ export function backupDatabase(
     ensurePrivateDir(dir);
     if (fs.existsSync(file)) throw new Error(`${path.basename(file)} already exists`);
     // VACUUM INTO needs a path that does not exist yet (Bun's SQLite refuses
-    // even an empty file), so the copy is tightened as soon as it is made; the
-    // directory it is made in is private.
+    // even an empty file), so the file is created by SQLite itself, under a
+    // umask that makes it 0600 from the start: the folder it is in may be wider
+    // than 0700 (CLERQ_KEEP_PERMISSIONS leaves an existing one alone).
     fs.rmSync(partial, { force: true });
-    db.prepare('VACUUM INTO ?').run(partial);
+    withPrivateUmask(() => db.prepare('VACUUM INTO ?').run(partial));
     restrictFile(partial, true);
     fs.renameSync(partial, file);
   } catch (e) {
