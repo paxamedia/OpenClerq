@@ -4,3 +4,9 @@
 # rule. It is not a credential; the literal has since been renamed, but the
 # original blob remains in history.
 f4157cf490fa2e338c1bef861f6bcdb60adc0098:packages/sandbox/src/sandbox.test.ts:generic-api-key:34
+
+# The release public key in install.sh (MINISIGN_KEY, a minisign public key: it is meant to be
+# read by everyone, and is also plugins.updater.pubkey in tauri.conf.json). The generic-api-key
+# rule flags it by the variable's name. .gitleaks.toml exempts a value of that shape, but the CI's
+# gitleaks (8.24.3) did not read the allowlist the first time it scanned the commit that added it.
+94735d900481fb006bd7b8bcd8d10b5cd32526f3:apps/server/install.sh:generic-api-key:30

@@ -4,13 +4,16 @@ title = "OpenClerq"
 [extend]
 useDefault = true
 
-# apps/server/install.sh carries the release public key (the one in tauri.conf.json, the
-# key installers check SHA256SUMS with). A public key is meant to be read by everyone; the
-# generic-api-key rule flags it because the variable's name has "key" in it. Only a value of that
-# form (RW plus 54 characters: a minisign public key) in that one file is exempt, whatever the key
-# is, so a rotation needs no change here.
-[[allowlists]]
-description = "The release public key in install.sh"
-condition = "AND"
-paths = ['''^apps/server/install\.sh$''']
+# apps/server/install.sh carries the release public key (the one in tauri.conf.json, the key
+# installers check SHA256SUMS with), and docs and tests may show it. A public key is meant to be
+# read by everyone; the generic-api-key rule flags it because the variable's name has "key" in it.
+# Only a finding whose value is exactly a minisign public key (RW and 54 base64 characters) is
+# exempt, wherever it is and whatever the key is, so a key rotation needs no change here.
+#
+# This is the singular, global [allowlist] on purpose: the CI's secret scan runs gitleaks 8.24.3
+# (the default of gitleaks-action), which has no global [[allowlists]] (added in 8.25) and ignored
+# it, and no `condition` or `paths` here either. A path and a regex in this table are alternatives,
+# so only the regex is given.
+[allowlist]
+description = "A minisign public key"
 regexes = ['''^RW[A-Za-z0-9+/]{54}$''']
