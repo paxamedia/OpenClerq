@@ -238,8 +238,15 @@ a column per model with its latency, tokens and cost; a model that fails becomes
 an error rather than failing the comparison. The first answer stands as the turn until
 `/promote` chooses another, and the alternatives stay on the message.
 
-The console ships as a first-party desktop module over the same slot contract third-party
-modules use, so it can be removed without touching the gateway or the scheduler.
+The console is the reference first-party plugin ([PLUGINS.md](PLUGINS.md#the-chat-console-the-reference-plugin)).
+Its **page** is the package `@clerq/plugin-chat`: a version 1 manifest that declares the core endpoints the page
+calls, and a `PluginUI` over the slot contract in `@clerq/plugin-sdk/ui`, drawn with the one entry of the app a
+plugin's UI may import (`@clerq/web/plugin-ui`). The gateway lists it as a bundled plugin, approved by its
+checksum. Everything above, the sessions, the managed loop, approvals, drafts, the mode diff, is the gateway's
+own code and stays core, whether or not the page is in the app; moving those routes into the plugin is not part
+of 1.0. With plugin checks on, the page talks to the gateway through a client over a module UI token limited to
+the endpoints the manifest declares; with them off it uses the app's own client. Taking the page out of the app's
+bundled list removes the Chat page and changes nothing else.
 
 ### Cancellation and the kill switch
 
@@ -870,8 +877,8 @@ and host.
 - **Shell** — rail (bottom tabs at phone width), top bar with breadcrumb and actions, status bar,
   ⌘K palette over `/search`, and a hash router: every page is a route such as `#/runs/<id>`.
 - **Core pages** — Home, Inbox (approvals and module items), Runs, Repos, Records, Developer, Settings.
-- **Modules** — pages under `#/m/<id>/…`. Bundled modules (Automations, Chat) register through
-  the slot contract (`@clerq/plugin-sdk/ui`); modules the gateway runs appear from `GET /modules`
+- **Modules** — pages under `#/m/<id>/…`. Bundled modules (Automations, and Chat, which is the
+  `@clerq/plugin-chat` package) register through the slot contract (`@clerq/plugin-sdk/ui`); modules the gateway runs appear from `GET /modules`
   and their `nav` extensions, with their UI in a frame. Settings → Plugins lists every module and
   plugin, what it asks for and whether you approved it, and holds the enforcement switch.
 - **Live data** — one cache over the client, refetched from `GET /events/stream`, polled when the

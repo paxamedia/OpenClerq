@@ -9,14 +9,15 @@ Read [Enforcement and its limits](#enforcement-and-its-limits) before you rely o
 plugin runs **inside the OpenClerq service, with its access**. The checks cover what a plugin does
 _through its context_. They are not a sandbox.
 
-| You want to…                                              | Read                                                          |
-| --------------------------------------------------------- | ------------------------------------------------------------- |
-| write one                                                 | [Writing a plugin](#writing-a-plugin), then the example below |
-| know every field of `manifest.json`                       | [Manifest version 1](#manifest-version-1)                     |
-| know when your code is called, and what is cleaned up     | [Lifecycle](#lifecycle)                                       |
-| know what an approval is, and what changes need a new one | [Trust and approval](#trust-and-approval)                     |
-| know what turning enforcement on does and does not do     | [Enforcement and its limits](#enforcement-and-its-limits)     |
-| keep a module written before 1.0 working                  | [Legacy modules](#legacy-modules)                             |
+| You want to…                                              | Read                                                                             |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| write one                                                 | [Writing a plugin](#writing-a-plugin), then the example below                    |
+| know every field of `manifest.json`                       | [Manifest version 1](#manifest-version-1)                                        |
+| know when your code is called, and what is cleaned up     | [Lifecycle](#lifecycle)                                                          |
+| know what an approval is, and what changes need a new one | [Trust and approval](#trust-and-approval)                                        |
+| know what turning enforcement on does and does not do     | [Enforcement and its limits](#enforcement-and-its-limits)                        |
+| keep a module written before 1.0 working                  | [Legacy modules](#legacy-modules)                                                |
+| see a plugin that ships with OpenClerq, and the contract  | [The chat console: the reference plugin](#the-chat-console-the-reference-plugin) |
 
 Plugins are not skills. A **skill** is a `SKILL.md` that adds instructions to a prompt (see
 [MODULE_SYSTEM.md](MODULE_SYSTEM.md) §1–4). A plugin may ship skills, and its approval covers
@@ -288,9 +289,18 @@ and it is audited.
 bundled checksum: a plugin whose id is in `BUNDLED_PLUGINS`
 ([`packages/gateway/src/modules/bundled-plugins.ts`](../packages/gateway/src/modules/bundled-plugins.ts))
 and whose checksum is exactly the listed one is approved when it is first seen, recorded as
-approved by `bundled`. **No plugin is bundled yet: the list is empty.** The examples are not bundled
-and need approval like any other. The chat console, which moves onto this contract next, is the first
-planned. A bundled plugin with a file changed is treated like any other.
+approved by `bundled`. **One plugin is bundled: `chat`, the chat console**
+([below](#the-chat-console-the-reference-plugin)). The examples are not bundled and need approval like
+any other. A bundled plugin with a file changed is treated like any other: not approved by the list,
+and the approval it had is for what it was. A test recomputes every line of the list from the plugin's
+folder, so editing a bundled plugin without updating its line fails it.
+
+The app puts the bundled plugins' folders where the gateway looks for them: a release build of the desktop app carries each
+one as a resource and starts the gateway with `CLERQ_BUNDLED_PLUGINS_DIR` naming that folder (a `tauri dev` session
+starts no gateway of its own, so there you set the variable yourself). The gateway
+reads it before `CLERQ_MODULES_DIR`, so a folder in the modules directory cannot take a bundled plugin's id
+(the second one is skipped, with a line in the log). A gateway that is started without the variable, such
+as `clerq-server`, has no bundled plugin: nothing there draws the console, so nothing needs its manifest.
 
 ## Enforcement and its limits
 
@@ -465,9 +475,157 @@ optional palette commands, and optional `api`, the endpoints it calls. `GatewayC
 app's `ModuleUI`, `ModuleProps` and `ModuleContext` remain as aliases (the last is now
 `PluginUIContext`, since `ModuleContext` names the server's).
 
+**What such a UI may import.** The SDK (`@clerq/plugin-sdk/ui`), `@clerq/gateway-client`, `react`,
+`lucide-react`, and one entry of the app: **`@clerq/web/plugin-ui`**. It is the whole of what a plugin's
+UI takes from the app, a list of names and not a path into its source, and a test pins it so that it grows
+on purpose:
+
+| Group               | Names                                                                                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Controls            | `Button`, `IconButton`, `Checkbox`, `SegmentedControl`, `Input`, `Select`, `Textarea`, `Dialog`, `Drawer`, `Split`, `StatusTag`, `useToast`, `cx` |
+| Display             | `CodeBlock`, `KeyValue`, `ProgressLine`, `EmptyState`, `CompareBars`, `metricText`, `metricValue`, `When`                                         |
+| The page            | `Page`, `PageHeader`, `PageSkeleton`, `Loaded`, `ErrorState`, `useMedia`, `PHONE_QUERY`                                                           |
+| Data and navigation | `useClient`, `useResource`, `useLive`, `navigate`                                                                                                 |
+| Words and numbers   | `describeCron`, `duration`, `errorMessage`, `exactTime`, `money`, `tokens`                                                                        |
+
+`useClient()` is the client **the shell gave the plugin**, not the app's own (see
+[below](#how-the-scoped-client-works)). The surface has no host (so no config file, updater or
+notification), no live-store constructor and no app-wide client. A plugin's CSS is its own; it may use the
+app's design tokens (`var(--space-3)`, `var(--line)`) and these shared text classes: `page-hint`,
+`page-link`, `page-link-button`, `page-mono`, `page-muted`, `tone-text-err`. A plugin built apart from the
+app must resolve the same `react` and the same `@clerq/web` as the app, because its components read the app's
+contexts; a bundled plugin in this repository does, as a workspace package.
+
+`@clerq/web/testing` has `PluginTestFrame`, which supplies the client, live data and toasts to a plugin's
+components in a test, and `@clerq/web/fixtures` a fixture client to go with it.
+
+## The chat console: the reference plugin
+
+The chat console is the first-party plugin that proves the contract by using it:
+[`packages/plugin-chat`](../packages/plugin-chat). Everything it declares and takes, a third-party
+plugin can declare and take. What is in the package:
+
+| File                                              | What                                                                                                                     |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `manifest.json`                                   | the plugin's manifest, version 1: what it is and what it needs. This is what the app ships and what the gateway approves |
+| `src/index.ts`                                    | the `PluginUI` (id `chat`, one rail entry, palette commands, search) and `api`, which **is** the manifest's list         |
+| `src/Chat.tsx`, `src/Managed.tsx`, `src/chat.css` | the console's page: conversations, the transcript, the inspector, compare, managed activity and approvals, drafts        |
+
+### Its manifest
+
+```json
+{
+  "manifestVersion": 1,
+  "id": "chat",
+  "name": "Chat console",
+  "version": "1.0.0",
+  "description": "Talk to any model you have a key for, raw or managed. …",
+  "engines": { "api": 1 },
+  "permissions": {
+    "api": [
+      "GET /providers",
+      "GET /sessions",
+      "POST /sessions",
+      "GET /sessions/:id",
+      "POST /sessions/:id/update",
+      "DELETE /sessions/:id",
+      "POST /sessions/:id/send",
+      "POST /sessions/:id/compare",
+      "POST /sessions/:id/mode-diff",
+      "POST /sessions/:id/promote",
+      "GET /sessions/:id/drafts/:draftId",
+      "POST /sessions/:id/drafts/:draftId/dry-run",
+      "POST /sessions/:id/drafts/:draftId/save",
+      "POST /approvals/:id/approve",
+      "POST /approvals/:id/deny",
+      "POST /runs/:id/cancel"
+    ],
+    "llm": true,
+    "memory": {
+      "read": ["fact", "preference", "decision", "procedure", "note"],
+      "write": ["fact", "preference", "decision", "procedure", "note"]
+    }
+  }
+}
+```
+
+There is no `entry.server`: the console has no server code of its own (see [what stays core](#what-stays-core)).
+There is no `entry.ui` either. That key names a folder the gateway serves in a frame, and the console's page is a
+component in the app's bundle; naming a folder would either point at nothing or put the UI's source under the
+checksum, which would pin the approval to files that are not what runs. The `PluginUI` the app is given declares
+the same `api` list, taken from this file, so the two cannot differ.
+
+### Why each permission is there
+
+| Permission                                                                                                  | Why                                                                                                                                                                                                                          |
+| ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /providers`                                                                                            | the model picker: which providers have a key, and their models                                                                                                                                                               |
+| `GET /sessions`, `POST /sessions`, `GET /sessions/:id`, `POST /sessions/:id/update`, `DELETE /sessions/:id` | the conversation list, a new conversation, one conversation with its messages, changing its mode or folder or access, deleting it                                                                                            |
+| `POST /sessions/:id/send`                                                                                   | sending a message, raw or managed, and reading the answer as it streams (text, tool activity, approvals to answer, drafts)                                                                                                   |
+| `POST /sessions/:id/compare`, `POST /sessions/:id/promote`                                                  | one message to several models, and choosing which answer stands                                                                                                                                                              |
+| `POST /sessions/:id/mode-diff`                                                                              | the Inspector's "what managed adds over raw" (calls no model)                                                                                                                                                                |
+| `GET …/drafts/:draftId`, `POST …/dry-run`, `POST …/save`                                                    | a drafted automation: show it, check it against this machine, save it (switched off). The list of a conversation's drafts, `GET /sessions/:id/drafts`, is **not** declared: the page is told which drafts a message has      |
+| `POST /approvals/:id/approve`, `POST /approvals/:id/deny`                                                   | the inline approval card in a managed turn                                                                                                                                                                                   |
+| `POST /runs/:id/cancel`                                                                                     | the Stop button: stopping a streamed answer cancels its run by id, because a hang-up alone goes unseen under Bun                                                                                                             |
+| `llm: true`                                                                                                 | a message makes the gateway call a model with your key. **Declared and recorded only**: the context has no model helper, so nothing enforces it                                                                              |
+| `memory.read`, `memory.write` (all five types)                                                              | managed mode reads saved notes into the prompt and a model may save one (`preference` and `procedure` always ask first). **Declared and recorded only**, and the policy you set under Settings → Memory decides what is read |
+
+A scope names a **route**, not an object: `POST /approvals/:id/approve` lets the token approve any pending
+approval, not only one of the console's, and `POST /runs/:id/cancel` any run. That is what the console's buttons
+need, and it is why approving this plugin is a decision about what its page can do.
+
+**`fs` and `exec` are not declared, on purpose.** In managed mode a conversation can read and write files and
+run commands, but only in a folder you attach to that conversation, with the access you choose, and that happens
+in the gateway's managed loop under its own policy: the page only asks for it. The manifest cannot say "a folder
+the person picks later": `fs` takes folders and `exec` takes commands, fixed when the manifest is written. The
+console uses neither through a plugin context (it has none), so declaring one would claim something that is not
+true. The description in the manifest says it in words, so that the review shows it.
+
+### How the scoped client works
+
+`GatewayClient` is what a screen calls the gateway through. `gateway` in `@clerq/gateway-client` is one,
+bound to the address and token the app set. **`createGatewayClient({ baseUrl, token, tenant })`** makes
+another: independent, bound to what it was given, and unaffected by `setGatewayBaseUrl` and `setGatewayToken`.
+`token` may be a function, read at every request, so a renewed token needs no new client.
+
+What the shell gives a bundled plugin whose `PluginUI` declares `api`:
+
+| `plugins.enforce` | The plugin is…                                      | Its client                                                                                                                                                      |
+| ----------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **off** (default) | enabled, or not listed by the gateway               | **the app's own client**, as every screen has. The plugin's `api` is shown and recorded, and nothing is held to it                                              |
+| **on**            | enabled                                             | **its own client over a module UI token**, from `POST /modules/chat/token`: valid for `* /api/modules/chat/*` and the manifest's `permissions.api`, and no more |
+| either            | switched off, waiting for approval, failed, refused | **none**: the page says why and links to Settings → Plugins, and makes no call                                                                                  |
+| **on**            | not listed (its manifest is not installed)          | **none**: with checks on there is nothing that says what it may call                                                                                            |
+
+The token is issued only for an `enabled` plugin and is revoked when it stops (disable it, or turn on checks
+while it is unapproved). The shell asks for it with the **gateway token** (the app's own), keeps one per plugin,
+and **renews it when 70% of its life has passed**, on a timer, so a session outlives any one token. A token lasts
+15 minutes by default; a request that began with a token (a streamed answer, say) keeps it, since the gateway
+looks at a token when a request starts. If a renewal fails the shell tries again after ten seconds, and the
+token in hand keeps working until it ends. The palette's commands and search for the plugin use the same client.
+
+The gateway token never reaches the plugin: what `useClient()` returns is the scoped client, and the module token
+reaches nothing that is `/plugins`, `/secrets`, `/skills/:slug/trust`, a token route or anything else the gateway
+keeps for its own token. A call the manifest does not declare is `403`.
+
+A change to what the manifest declares follows the rules above: with checks on, the plugin is not approved by the
+bundled list any more (its checksum is not the listed one) and waits for approval, with no token, until you review
+and approve it; with checks off it loads and the token already reaches the new endpoint, as for any plugin.
+
+### What stays core
+
+**The console's server side is the gateway's own code**: sessions and their transcripts, the managed loop and its
+tools and policy, approvals, drafts and the dry run, the mode diff. Its routes are core routes, under `/v1`, and
+they stay when the plugin is left out. The plugin is **the console's UI plus its declared contract**. Moving the
+routes into the plugin, as `entry.server`, is not part of 1.0.
+
+Leaving the console out of the app's bundled list removes the Chat page (its rail entry, its palette commands and
+search) and changes nothing else; the desktop's list of bundled modules and its resource list name it together, and
+a test fails if they differ.
+
 ## Not in this release
 
 - Running plugins out of process, which is what would make enforcement a boundary.
 - A model or memory helper on the context (so `llm` and `memory` are enforced on nothing).
-- The chat console as a plugin.
+- The chat console's server routes in the plugin: only its UI and its declaration are a plugin.
 - Finding a plugin folder added while the gateway runs.

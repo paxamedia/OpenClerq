@@ -48,6 +48,7 @@ You can also override:
 
 - `CLERQ_PORT` (default `18790`)
 - `CLERQ_SKILLS_DIR` (where skills are loaded from)
+- `CLERQ_MODULES_DIR` (a folder of plugin and module folders) and `CLERQ_BUNDLED_PLUGINS_DIR` (the plugins that ship with the app, read first). From a checkout, `CLERQ_BUNDLED_PLUGINS_DIR=$PWD/packages` makes the gateway find the chat console's manifest in `packages/plugin-chat`; the desktop app sets it itself in a release build
 - `CLERQ_CALC_PATH` (path to `clerq-calc` if you build it elsewhere)
 
 ---

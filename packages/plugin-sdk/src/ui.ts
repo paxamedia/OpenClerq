@@ -23,8 +23,9 @@ export type PluginIcon = LucideIcon;
  * The gateway calls a screen makes: the `@clerq/gateway-client` object, or one
  * shaped like it. The desktop passes the real one. A plugin never imports a
  * client itself, so the host can hand it a client of any kind (a recorded one, a
- * phone's). See the T12c note in docs/PLUGINS.md for how a client limited to
- * a plugin's declared endpoints is made.
+ * phone's). With plugin checks on, the shell hands a bundled plugin one made by
+ * `createGatewayClient` over its module UI token, limited to the endpoints it
+ * declared: see "How the scoped client works" in docs/PLUGINS.md.
  */
 export type GatewayClient = typeof gateway;
 
@@ -145,8 +146,8 @@ export interface PluginUI {
   placeholder?: boolean;
   /**
    * The core endpoints this UI calls, as `METHOD /path` patterns: the same list as the
-   * manifest's `permissions.api`. A bundled plugin declares them here so the host can show
-   * and check them like any other plugin's.
+   * manifest's `permissions.api`. A bundled plugin declares them here; having them is what
+   * makes the shell give the plugin a client limited to them when plugin checks are on.
    */
   api?: string[];
 }

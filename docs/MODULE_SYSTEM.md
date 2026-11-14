@@ -118,6 +118,11 @@ under `CLERQ_MODULES_DIR` (or the single module there) at start, and lists them 
 > `@clerq/plugin-sdk`) keeps working through 1.x. The rest of this section is the legacy contract; the
 > context table is the plugin context's too.
 
+> **The page of a module that ships inside the app** (the slot contract: `PluginUI`, `PluginProps`, rail entries,
+> palette commands) is defined in `@clerq/plugin-sdk/ui`, not in the app, so a package can type its UI without
+> importing the app. The app's own pieces such a page may use are listed in `@clerq/web/plugin-ui`. The chat
+> console is built that way: see [PLUGINS.md](PLUGINS.md#for-a-plugin-ui-in-the-app-itself).
+
 The entry exports `register(ctx)`, or a default `{ register }`. Types are in `@clerq/module-sdk`;
 [`packages/module-sdk/examples/hello-world`](../packages/module-sdk/examples/hello-world) is a
 complete example.
