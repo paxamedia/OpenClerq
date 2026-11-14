@@ -19,6 +19,17 @@ import path from 'node:path';
 import type { PluginPermissions } from './index.js';
 import { canonicalPermissions } from './manifest.js';
 
+export {
+  readSkillDir,
+  skillChecksum,
+  SkillFilesError,
+  writeSkillChecksum,
+  SKILL_MAX_BYTES,
+  SKILL_MAX_FILES,
+  type SkillFile,
+  type SkillRead,
+} from './skill-node.js';
+
 /** Raised with a sentence that can be shown as it is. */
 export class PluginFilesError extends Error {
   constructor(message: string) {

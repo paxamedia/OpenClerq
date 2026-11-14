@@ -16,6 +16,11 @@
       "import": "./dist/manifest.js",
       "default": "./dist/manifest.js"
     },
+    "./skill": {
+      "types": "./dist/skill.d.ts",
+      "import": "./dist/skill.js",
+      "default": "./dist/skill.js"
+    },
     "./node": {
       "types": "./dist/node.d.ts",
       "import": "./dist/node.js",
