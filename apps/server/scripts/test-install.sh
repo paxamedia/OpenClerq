@@ -4,9 +4,9 @@
 #   apps/server/scripts/test-install.sh <openclerq-server-<version>-<os>-<arch>.tar.gz> [install.sh]
 #
 # The tarball must be the one for the machine this runs on (scripts/package-server.js
-# makes it). The script lays out what a release holds (the tarball, SHA256SUMS,
-# install.sh), serves it over HTTP on 127.0.0.1, runs the installer against it with a
-# temporary HOME and install folder, and checks that:
+# makes it), or see CLERQ_TEST_PRETEND_LINUX below. The script lays out what a release
+# holds (the tarball, SHA256SUMS, install.sh), serves it over HTTP on 127.0.0.1, runs the
+# installer against it with a temporary HOME and install folder, and checks that:
 #   - it installs the three programs, verifies the checksum, asks no API, touches
 #     nothing in HOME and starts nothing; it also works when read from a pipe;
 #   - the installed clerq-server and clerq run, and work together: the server
@@ -21,6 +21,13 @@
 #     CLERQ_TEST_REQUIRE_SHELLCHECK=1 it must be).
 # With CLERQ_TEST_SUDO=1 (CI: passwordless sudo) it also runs the root cases: refusal to
 # run as root without --system, and --system into /usr/local/bin (which it removes again).
+#
+# CLERQ_TEST_PRETEND_LINUX=1, on a machine that is not Linux (a Mac), runs the Linux branches
+# of all this, --systemd-user included: the darwin tarball is renamed as a linux one (the
+# programs in it still run here) and a `uname` that says Linux (and passes everything else
+# on to the real one) goes first on the PATH. It checks the installer's logic and this
+# script's Linux branches as far as this machine's shell and tools behave as Linux's; run it
+# under dash too (`dash test-install.sh ...`). It cannot show GNU tool behaviour.
 # Exits 0 when every check passed, else 1.
 # shellcheck disable=SC2329,SC2012
 # (SC2329: check() runs the helpers below by name. SC2012: ls is only used to list a
@@ -62,6 +69,24 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
+if [ "${CLERQ_TEST_PRETEND_LINUX:-}" = 1 ] && [ "$os" != linux ]; then
+  top="openclerq-server-$version-linux-$arch"
+  mkdir -p "$root/pretend/pack" "$root/pretend/bin"
+  tar -xzf "$tarball" -C "$root/pretend/pack"
+  mv "$root/pretend/pack/openclerq-server-$version-$platform" "$root/pretend/pack/$top"
+  tarball="$root/pretend/$top.tar.gz"
+  (cd "$root/pretend/pack" && COPYFILE_DISABLE=1 tar -czf "$tarball" "$top")
+  file=$top.tar.gz
+  os=linux
+  platform=linux-$arch
+  # shellcheck disable=SC2016 # the script written here is meant to expand its own $1 and $@
+  printf '#!/bin/sh\nif [ "${1:-}" = -s ]; then echo Linux; else exec "%s" "$@"; fi\n' "$(command -v uname)" >"$root/pretend/bin/uname"
+  chmod +x "$root/pretend/bin/uname"
+  PATH="$root/pretend/bin:$PATH"
+  export PATH
+  echo "(CLERQ_TEST_PRETEND_LINUX: $file, and a uname that says Linux)"
+fi
+
 failed=0
 ok() { printf 'ok   %s\n' "$1"; }
 bad() { # description [output file to show]
@@ -78,6 +103,8 @@ has() { grep -qF -- "$2" "$1"; } # file text
 lacks() { ! grep -qF -- "$2" "$1"; }
 empty_dir() { [ -z "$(ls -A "$1")" ]; }
 same_file() { [ "$(cksum <"$1")" = "$2" ]; }
+last_line_is() { [ "$(tail -n 1 "$1")" = "$2" ]; } # file text
+says() { "$1" "$2" 2>&1 | grep -qF -- "$3"; }      # program argument text it prints
 # run <label> <command...>: output in $root/<label>.out, exit status in $status
 run() {
   label=$1
@@ -146,8 +173,8 @@ run one env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$root/
 if [ "$status" -eq 0 ]; then ok "install with no version named exits 0"; else bad "install with no version named exits 0" "$root/one.out"; fi
 for f in clerq-server clerq clerq-calc; do check "$f is installed and executable" test -x "$root/bin1/$f"; done
 check "nothing else is in the install folder" test "$(ls -A "$root/bin1" | tr '\n' ' ')" = "clerq clerq-calc clerq-server "
-check "clerq-server version runs and names $version" sh -c "'$root/bin1/clerq-server' version | grep -qF '$version'"
-check "clerq --version runs and names $version" sh -c "'$root/bin1/clerq' --version | grep -qF '$version'"
+check "clerq-server version runs and names $version" says "$root/bin1/clerq-server" version "$version"
+check "clerq --version runs and names $version" says "$root/bin1/clerq" --version "$version"
 check "it says the checksum was checked" has "$root/one.out" "Checksum ok"
 check "it prints the next steps" has "$root/one.out" "Next steps"
 check "it says the folder is not on the PATH and edits no rc file" has "$root/one.out" "not on your PATH"
@@ -241,8 +268,7 @@ for t in systemctl loginctl journalctl; do
 done
 h7=$(new_home home7)
 if [ "$os" = linux ]; then
-  run unit env PATH="$fake:$PATH" FAKE_UNAME_S=Linux FAKE_UNAME_M="$(uname -m)" HOME="$h7" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$h7/.local/bin" sh "$installer" --systemd-user
-  # The fake uname above would say musl through the fake ldd; use the real one for this case.
+  # The fake ldd of case 6 says musl; this is a glibc system, so the real one is used here.
   rm -f "$fake/ldd"
   run unit env PATH="$fake:$PATH" FAKE_UNAME_S=Linux FAKE_UNAME_M="$(uname -m)" HOME="$h7" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$h7/.local/bin" sh "$installer" --systemd-user
   unit_file="$h7/.config/systemd/user/openclerq.service"
@@ -252,7 +278,9 @@ if [ "$os" = linux ]; then
   check "and ran none of systemctl, loginctl, journalctl" test ! -e "$calls"
   printf '# edited by hand\n' >>"$unit_file"
   run unit2 env PATH="$fake:$PATH" FAKE_UNAME_S=Linux FAKE_UNAME_M="$(uname -m)" HOME="$h7" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$h7/.local/bin" sh "$installer" --systemd-user
-  check "a unit that was edited is left alone, the new one beside it" sh -c "[ \$(tail -n 1 '$unit_file') = '# edited by hand' ] && [ -f '$unit_file.new' ]"
+  check "a unit that was edited is left alone" last_line_is "$unit_file" "# edited by hand"
+  check "and the new one is written beside it" test -f "$unit_file.new"
+  check "and the installer says which is which" has "$root/unit2.out" "left as it is"
   run unit3 env PATH="$fake:$PATH" FAKE_UNAME_S=Linux FAKE_UNAME_M="$(uname -m)" HOME="$h7" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$root/elsewhere/bin" XDG_CONFIG_HOME="$h7/xdg" sh "$installer" --systemd-user
   check "a folder outside HOME is written as an absolute path, under XDG_CONFIG_HOME" has "$h7/xdg/systemd/user/openclerq.service" "ExecStart=$root/elsewhere/bin/clerq-server"
 else
@@ -306,7 +334,7 @@ if [ "${CLERQ_TEST_SUDO:-}" = 1 ]; then
   run system env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/good" sh "$installer" --system
   if [ "$status" -eq 0 ] && [ -x /usr/local/bin/clerq-server ]; then ok "--system installs into /usr/local/bin with sudo for the copy"; else bad "--system installs into /usr/local/bin with sudo for the copy" "$root/system.out"; fi
   check "the files belong to root" test "$(ls -l /usr/local/bin/clerq-server | awk '{print $3}')" = root
-  check "and run" sh -c "/usr/local/bin/clerq-server version | grep -qF '$version'"
+  check "and run" says /usr/local/bin/clerq-server version "$version"
   check "HOME is still untouched" empty_dir "$h"
 else
   echo "skip the root cases (set CLERQ_TEST_SUDO=1 where sudo needs no password)"
