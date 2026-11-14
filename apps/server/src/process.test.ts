@@ -296,6 +296,17 @@ describe.skipIf(!runnable || isWindows)('clerq-server running', () => {
     expect((await server.exit).code).toBe(0);
   });
 
+  it('answers healthcheck for CLERQ_HOST=localhost, whichever loopback address that names', async () => {
+    const port = await freePort();
+    const env = { CLERQ_PORT: String(port), CLERQ_HOST: 'localhost' };
+    const server = launch({ home: newHome(), env });
+    await server.ready;
+    const check = await runOnce(['healthcheck'], env);
+    expect({ code: check.code, output: check.output }).toMatchObject({ code: 0 });
+    server.child.kill('SIGTERM');
+    expect((await server.exit).code).toBe(0);
+  });
+
   it('exits 1 with the reason when the port is taken', async () => {
     const taken = net.createServer();
     await new Promise<void>((resolve) => taken.listen(0, '127.0.0.1', resolve));

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
 import net from 'node:net';
-import { connectHost, healthcheck } from './healthcheck.js';
+import { connectHosts, healthcheck } from './healthcheck.js';
 
 const servers: http.Server[] = [];
 afterEach(async () => {
@@ -107,15 +107,97 @@ describe('healthcheck', () => {
   });
 });
 
-describe('connectHost', () => {
+describe('connectHosts', () => {
   it('goes to loopback for a wildcard or loopback listener, and to a named address as it is', () => {
-    expect(connectHost('0.0.0.0')).toBe('127.0.0.1');
-    expect(connectHost('127.0.0.1')).toBe('127.0.0.1');
-    expect(connectHost('localhost')).toBe('127.0.0.1');
-    expect(connectHost('::')).toBe('[::1]');
-    expect(connectHost('::1')).toBe('[::1]');
-    expect(connectHost('10.0.0.7')).toBe('10.0.0.7');
-    expect(connectHost('fd00::7')).toBe('[fd00::7]');
-    expect(connectHost('openclerq.lan')).toBe('openclerq.lan');
+    expect(connectHosts('0.0.0.0')).toEqual(['127.0.0.1']);
+    expect(connectHosts('127.0.0.1')).toEqual(['127.0.0.1']);
+    expect(connectHosts('::1')).toEqual(['[::1]']);
+    expect(connectHosts('10.0.0.7')).toEqual(['10.0.0.7']);
+    expect(connectHosts('fd00::7')).toEqual(['[fd00::7]']);
+    expect(connectHosts('openclerq.lan')).toEqual(['openclerq.lan']);
+  });
+
+  it('tries both loopback addresses for a name that can mean either', () => {
+    expect(connectHosts('localhost')).toEqual(['127.0.0.1', '[::1]']);
+    expect(connectHosts('::')).toEqual(['[::1]', '127.0.0.1']);
+  });
+});
+
+describe('healthcheck with a host that can mean either loopback address', () => {
+  const ok = () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+  const refused = () => {
+    throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+  };
+
+  it('is healthy when the server listens on IPv6 loopback only (localhost -> ::1)', async () => {
+    const urls: string[] = [];
+    const fake = (async (url: string) => {
+      urls.push(url);
+      return url.includes('[::1]') ? ok() : refused();
+    }) as unknown as typeof fetch;
+    const r = await healthcheck(
+      { CLERQ_HOST: 'localhost', CLERQ_PORT: '9000' },
+      { timeoutMs: 1_000, fetch: fake }
+    );
+    expect(r.ok).toBe(true);
+    expect(urls).toEqual(['http://127.0.0.1:9000/v1/health', 'http://[::1]:9000/v1/health']);
+  });
+
+  it('is healthy on IPv4 only without asking IPv6, and unhealthy naming both when neither answers', async () => {
+    const urls: string[] = [];
+    const v4 = (async (url: string) => {
+      urls.push(url);
+      return ok();
+    }) as unknown as typeof fetch;
+    expect(
+      (
+        await healthcheck(
+          { CLERQ_HOST: 'localhost', CLERQ_PORT: '9000' },
+          { timeoutMs: 1_000, fetch: v4 }
+        )
+      ).ok
+    ).toBe(true);
+    expect(urls).toEqual(['http://127.0.0.1:9000/v1/health']);
+
+    const none = (async () => refused()) as unknown as typeof fetch;
+    const r = await healthcheck(
+      { CLERQ_HOST: 'localhost', CLERQ_PORT: '9000' },
+      { timeoutMs: 1_000, fetch: none }
+    );
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('127.0.0.1:9000');
+    expect(r.message).toContain('[::1]:9000');
+  });
+
+  it('works against real listeners: localhost with the server on ::1 only, or on 127.0.0.1 only', async () => {
+    const v6 = http.createServer((_req, res) => json(res, 200, { status: 'ok' }));
+    servers.push(v6);
+    const bound = await new Promise<boolean>((resolve) => {
+      v6.once('error', () => resolve(false));
+      v6.listen(0, '::1', () => resolve(true));
+    });
+    if (!bound) return; // this machine has no IPv6 loopback
+    const port = (v6.address() as net.AddressInfo).port;
+    expect(
+      (
+        await healthcheck(
+          { CLERQ_HOST: 'localhost', CLERQ_PORT: String(port) },
+          { timeoutMs: 2_000 }
+        )
+      ).ok
+    ).toBe(true);
+    expect(
+      (await healthcheck({ CLERQ_HOST: '::1', CLERQ_PORT: String(port) }, { timeoutMs: 2_000 })).ok
+    ).toBe(true);
+
+    const v4Port = await serve((res) => json(res, 200, { status: 'ok' }));
+    expect(
+      (
+        await healthcheck(
+          { CLERQ_HOST: 'localhost', CLERQ_PORT: String(v4Port) },
+          { timeoutMs: 2_000 }
+        )
+      ).ok
+    ).toBe(true);
   });
 });
