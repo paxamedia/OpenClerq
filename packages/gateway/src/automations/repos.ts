@@ -27,8 +27,15 @@ import { forgeAuthEnv, git, isRepo } from '@clerq/workspaces';
 import { logger } from '../logger.js';
 import { listRepoRuns, type RunRecord } from '../runs.js';
 import { getStore } from '../store.js';
-import { vaultCredentials, type ForgeCredential } from './credentials.js';
+import {
+  describeSource,
+  vaultCredentials,
+  type ForgeCredential,
+  type PublishAuth,
+} from './credentials.js';
+import type { AppAccess } from '../github/app.js';
 import { cacheDirOf, type RunnerDeps } from './runner.js';
+import { splitProject } from '../github/config.js';
 import { parseRepoTarget, type RepoTarget } from './spec.js';
 import {
   ensureLocalRepoRow,
@@ -46,11 +53,34 @@ const QUEUED = ['queued', 'leased'];
 /** Holding the repository: its worktree is in use, or its owner has been asked something. */
 const RUNNING = ['preparing', 'executing', 'verifying', 'publishing', 'awaiting_approval'];
 
+/**
+ * How a run would reach a repository's forge: through the user's GitHub App
+ * (a short-lived token for this repository only), through the vault secret, or
+ * not at all. Read-only: nothing is made to find out.
+ */
+export interface ReachedWith {
+  /** `unknown`: the app is connected but GitHub could not say whether it is installed here. */
+  via: 'app' | 'secret' | 'none' | 'unknown';
+  /** The connected app and, when it is installed on this repository, the installation. */
+  app?: { slug: string; installationId?: number };
+  /** The vault secret that is used (`secret`) or that is missing (`none`). */
+  secret?: string;
+  /** What to know besides: why the app is not used, what a run would do. */
+  note?: string;
+}
+
 export interface RepoAutomation {
   id: string;
   name: string;
   enabled: boolean;
-  credential: { secret: string; present: boolean } | null;
+  credential: {
+    secret: string;
+    present: boolean;
+    /** The spec's `publish.auth`. */
+    auth: PublishAuth;
+    /** Null for a local repository (its forge is not known here). */
+    reachedWith: ReachedWith | null;
+  } | null;
 }
 
 export interface RepoView {
@@ -72,6 +102,12 @@ export interface RepoView {
    * this is what is left when none targets it now.
    */
   credential: { secret: string; present: boolean } | null;
+  /**
+   * How a run would reach a GitHub repository by default (`publish.auth: auto`)
+   * with the secret above: the GitHub App when it is installed here, else the
+   * secret. Null for a local repository and for GitLab.
+   */
+  reachedWith: ReachedWith | null;
   /**
    * The automations whose spec targets it now, each with the secret its own
    * spec reaches the forge with (`publish.token_secret`, or the forge's default
@@ -162,7 +198,9 @@ function targetIndex(
       id: a.id,
       name: a.name,
       enabled: a.enabled,
-      credential: needsToken ? { secret, present: inVault(secret) } : null,
+      credential: needsToken
+        ? { secret, present: inVault(secret), auth: spec.publish.auth, reachedWith: null }
+        : null,
     };
     index.set(key, [...(index.get(key) ?? []), entry]);
   }
@@ -251,11 +289,130 @@ function view(row: Record<string, unknown>, ctx: Context): RepoView {
         }
       : null,
     credential: secret ? { secret, present: ctx.inVault(secret) } : null,
-    automations: ctx.targets.get(key) ?? [],
+    reachedWith: null,
+    automations: (ctx.targets.get(key) ?? []).map((a) => ({
+      ...a,
+      credential: a.credential ? { ...a.credential } : null,
+    })),
     runs: figures.runs,
     lastRun: figures.lastRun,
     createdAt: String(row.created_at),
   };
+}
+
+/**
+ * How a run would reach a repository, from the spec's `publish.auth`, whether
+ * its secret is in the vault and what the app says. The same precedence a run
+ * applies (github/credentials.ts), as a plain function of its inputs.
+ */
+export function reachFor(input: {
+  auth: PublishAuth;
+  secret: string;
+  present: boolean;
+  app: AppAccess;
+}): ReachedWith {
+  const { auth, secret, present, app } = input;
+  const ref =
+    app.state === 'off'
+      ? undefined
+      : {
+          slug: app.slug,
+          ...(app.state === 'installed' ? { installationId: app.installationId } : {}),
+        };
+  const withApp = ref ? { app: ref } : {};
+  const missing = `${secret} is not in the vault.`;
+  if (auth === 'token') {
+    return present ? { via: 'secret', secret } : { via: 'none', secret, note: missing };
+  }
+  if (app.state === 'installed') return { via: 'app', app: ref };
+  if (auth === 'app') {
+    if (app.state === 'unknown') return { via: 'unknown', ...withApp, note: app.reason };
+    return {
+      via: 'none',
+      ...withApp,
+      note:
+        app.state === 'off'
+          ? 'publish.auth is "app", but no GitHub App is connected, so a run stops before any work.'
+          : `publish.auth is "app", but the GitHub App ${app.slug} is not installed on this repository, so a run stops before any work.`,
+    };
+  }
+  if (app.state === 'unknown') {
+    return {
+      via: 'unknown',
+      ...withApp,
+      secret,
+      note: `${app.reason} A run that pushes stops until GitHub answers; fetching falls back to ${secret}.`,
+    };
+  }
+  const note =
+    app.state === 'not_installed'
+      ? `The GitHub App ${app.slug} is connected but not installed on this repository.`
+      : undefined;
+  return present
+    ? { via: 'secret', secret, ...withApp, ...(note ? { note } : {}) }
+    : { via: 'none', secret, ...withApp, note: [note, missing].filter(Boolean).join(' ') };
+}
+
+/** How long the Repos page waits for GitHub to say where the app is installed. */
+const ACCESS_WAIT_MS = 5_000;
+
+/**
+ * Fill in `reachedWith` for the GitHub repositories (and for each automation
+ * that targets one): asks where the user's GitHub App is installed, through
+ * `deps.forgeApp`, which is cached and never makes a token. A slow answer is
+ * "unknown", not a slow page.
+ */
+export async function withAccess<T extends RepoView>(
+  views: T[],
+  deps: Pick<RunnerDeps, 'getSecret' | 'secretNames' | 'forgeApp'>
+): Promise<T[]> {
+  const inVault = vaultCheck(deps);
+  const asked = new Map<string, Promise<AppAccess>>();
+  const access = (project: string): Promise<AppAccess> => {
+    let found = asked.get(project);
+    if (!found) {
+      const ask = deps.forgeApp
+        ? deps.forgeApp('github', project)
+        : Promise.resolve<AppAccess>({ state: 'off' });
+      found = Promise.race([
+        ask.catch(
+          (e: unknown): AppAccess => ({
+            state: 'unknown',
+            slug: '',
+            reason: e instanceof Error ? e.message : String(e),
+          })
+        ),
+        new Promise<AppAccess>((resolve) =>
+          setTimeout(
+            () => resolve({ state: 'unknown', slug: '', reason: 'GitHub did not answer in time.' }),
+            ACCESS_WAIT_MS
+          ).unref()
+        ),
+      ]);
+      asked.set(project, found);
+    }
+    return found;
+  };
+  await Promise.all(
+    views.map(async (v) => {
+      if (v.kind !== 'github' || !v.url) return;
+      const project = projectOf(v.url);
+      if (!splitProject(project)) return;
+      const app = await access(project);
+      const secret = v.credential?.secret ?? 'GITHUB_TOKEN';
+      v.reachedWith = reachFor({ auth: 'auto', secret, present: inVault(secret), app });
+      for (const a of v.automations) {
+        if (!a.credential) continue;
+        a.credential.reachedWith = reachFor({
+          auth: a.credential.auth,
+          secret: a.credential.secret,
+          present: a.credential.present,
+          app,
+        });
+      }
+    })
+  );
+  return views;
 }
 
 export function listRepos(deps: Pick<RunnerDeps, 'getSecret' | 'secretNames'>): RepoView[] {
@@ -325,7 +482,27 @@ async function checkRemote(
       credential: { secret: secretName, present: false },
     };
   }
+  try {
+    return await reach(remote, where, secretName, credential, deps);
+  } finally {
+    // A GitHub App's token was made for this one check: it ends with it.
+    await credential?.release?.().catch(() => undefined);
+  }
+}
+
+/** The `git ls-remote` of a check, with the credential (if any) in the command's environment. */
+async function reach(
+  remote: Extract<RepoTarget, { project: string }>,
+  where: string,
+  secretName: string,
+  credential: ForgeCredential | undefined,
+  deps: RunnerDeps
+): Promise<RepoCheck> {
   const known = { secret: secretName, present: Boolean(credential), source: credential?.source };
+  // What the credential is called in the words of the answer.
+  const using = credential?.source.startsWith('github-app:')
+    ? describeSource(credential.source)
+    : secretName;
   const env = credential ? forgeAuthEnv(remote.kind, credential.token) : undefined;
   // The token, and the Basic form git would send it in, are taken out of anything said back.
   const hidden = credential
@@ -351,7 +528,7 @@ async function checkRemote(
       const branch = /^ref: refs\/heads\/(.+)\tHEAD$/m.exec(r.stdout)?.[1];
       return {
         reachable: true,
-        message: `Reached ${where}${credential ? ` with ${secretName}` : ' without a credential (a public repository)'}.`,
+        message: `Reached ${where}${credential ? ` with ${using}` : ' without a credential (a public repository)'}.`,
         ...(branch ? { defaultBranch: branch } : {}),
         credential: known,
       };
@@ -368,11 +545,11 @@ async function checkRemote(
       /could not read Username|Authentication failed|terminal prompts disabled/i.test(r.stderr)
     ) {
       why = credential
-        ? `${where} refused ${secretName}: it may be wrong, expired or without access to this repository.`
+        ? `${where} refused ${using}: it may be wrong, expired or without access to this repository.`
         : `${where} asked for a login. There is no ${secretName} in the vault: store a token as ${secretName} if this repository is private.`;
     } else if (/not found/i.test(r.stderr)) {
       why = credential
-        ? `${where} was not found, or ${secretName} cannot see it.`
+        ? `${where} was not found, or ${using} cannot see it.`
         : `${where} was not found. If it is private, store a token as ${secretName}.`;
     } else {
       why = `Could not reach ${where}.`;
@@ -511,13 +688,10 @@ async function addRepo(
   }
   const row = db.prepare('SELECT * FROM repos WHERE id = ?').get(made.id);
   if (!row) throw new AddRepoError(500, 'repo_add_failed', 'The repository was not saved.');
+  const [shown] = await withAccess([view(row, context(deps, made.id))], deps);
   return {
     status: made.created ? 201 : 200,
-    body: {
-      ...view(row, context(deps, made.id)),
-      created: made.created,
-      ...(check ? { check } : {}),
-    },
+    body: { ...shown, created: made.created, ...(check ? { check } : {}) },
   };
 }
 
@@ -527,9 +701,9 @@ async function addRepo(
  * scopes name them). The GETs only read; the POST adds a row.
  */
 export function mountRepoRoutes(app: Express, deps: RunnerDeps): void {
-  app.get('/repos', (_req: Request, res: Response) => {
+  app.get('/repos', async (_req: Request, res: Response) => {
     try {
-      res.json({ repos: listRepos(deps) });
+      res.json({ repos: await withAccess(listRepos(deps), deps) });
     } catch (e) {
       logger.error('repos list error', { err: e instanceof Error ? e.message : String(e) });
       res.status(500).json({ error: 'repos_list_failed' });
@@ -549,11 +723,12 @@ export function mountRepoRoutes(app: Express, deps: RunnerDeps): void {
     }
   });
 
-  app.get('/repos/:id', (req: Request, res: Response) => {
+  app.get('/repos/:id', async (req: Request, res: Response) => {
     const id = String(req.params.id);
     try {
-      const repo = getRepoDetail(id, deps);
-      if (!repo) return res.status(404).json({ error: 'repo_not_found', id });
+      const found = getRepoDetail(id, deps);
+      if (!found) return res.status(404).json({ error: 'repo_not_found', id });
+      const [repo] = await withAccess([found], deps);
       res.json(repo);
     } catch (e) {
       logger.error('repo get error', { id, err: e instanceof Error ? e.message : String(e) });

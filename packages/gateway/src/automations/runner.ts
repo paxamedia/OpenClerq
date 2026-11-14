@@ -88,11 +88,15 @@ import { SpendPool, subagentSpawner } from './subagents.js';
 import { isolationFor, profileProblem, type RunIsolation } from './isolation.js';
 import { pinWorktree, WorktreeTampered, type Pin } from './pin.js';
 import {
+  describeSource,
+  HeldCredentials,
   vaultCredentials,
   type CredentialPurpose,
   type ForgeCredential,
   type ForgeCredentials,
 } from './credentials.js';
+import { githubApiBase } from '../github/config.js';
+import type { AppAccess } from '../github/app.js';
 import {
   ensureRepoRow,
   expandHome,
@@ -124,6 +128,11 @@ export interface RunnerDeps {
    * the vault secret the spec names (`publish.token_secret`).
    */
   forgeCredentials?: ForgeCredentials;
+  /**
+   * Whether the user's GitHub App reaches a repository: read-only, no token is
+   * made. For the Repos page. Default: none connected.
+   */
+  forgeApp?(forge: Forge, project: string): Promise<AppAccess>;
   /** How long `POST /repos` with `check` waits for a forge to answer. Default 20 s; tests shorten it. */
   repoCheckTimeoutMs?: number;
   /** Automation runs allowed at once, across all automations. Default 2. */
@@ -322,10 +331,36 @@ function enforceMonthlyBudget(automation: Automation, spec: AutomationSpec): voi
   }
 }
 
+/**
+ * One attempt of a run. The forge credentials it is given (a GitHub App's
+ * installation tokens are made for it) are ended when it ends, whichever way:
+ * done, failed, cancelled or interrupted by an error, and taken out of the
+ * message of any error that carries one.
+ */
 async function execute(
   automation: Automation,
   spec: AutomationSpec,
   deps: RunnerDeps
+): Promise<void> {
+  // Vault values this run holds, taken out of everything it stores.
+  const inUse: Record<string, string> = {};
+  const held = new HeldCredentials(inUse);
+  try {
+    await executeWith(automation, spec, deps, held, inUse);
+  } catch (e) {
+    held.scrub(e);
+    throw e;
+  } finally {
+    await held.releaseAll();
+  }
+}
+
+async function executeWith(
+  automation: Automation,
+  spec: AutomationSpec,
+  deps: RunnerDeps,
+  held: HeldCredentials,
+  inUse: Record<string, string>
 ): Promise<void> {
   const runId = currentRunId() as string;
   const signal = currentRunSignal() as AbortSignal;
@@ -384,6 +419,7 @@ async function execute(
     const value = deps.getSecret(spec.agent.apiKeySecret);
     if (!value) throw new Error(`The secret ${spec.agent.apiKeySecret} is not in the vault.`);
     apiKey = { [DRIVER_CAPABILITIES[spec.agent.driver].apiKeyEnv]: value };
+    inUse.API_KEY = value;
   }
 
   // Checked before any work, so a run does not spend money and then fail to publish.
@@ -405,20 +441,31 @@ async function execute(
     forge = { forge: target.kind, project: target.project };
   }
   const credentials = deps.forgeCredentials ?? vaultCredentials(deps.getSecret);
+  // Asked each time it is needed: a GitHub App's token is made for the purpose and kept
+  // while it has more than five minutes left, so asking again right before a push that
+  // waited for approval gives the same token, or a fresh one.
   const credentialFor = async (purpose: CredentialPurpose) =>
     forge
-      ? await credentials({
-          forge: forge.forge,
-          project: forge.project,
-          purpose,
-          secretName: spec.publish.tokenSecret,
-          automationId: automation.id,
-          runId,
-        })
+      ? held.add(
+          await credentials({
+            forge: forge.forge,
+            project: forge.project,
+            purpose,
+            secretName: spec.publish.tokenSecret,
+            auth: spec.publish.auth,
+            automationId: automation.id,
+            runId,
+          })
+        )
       : undefined;
   if (spec.publish.pullRequest === 'draft' && !forge) {
     throw new Error(
       `The repository's origin (${remoteUrl ?? 'none'}) is not on GitHub or GitLab, so no pull request can be opened. Set publish.pull_request: none.`
+    );
+  }
+  if (spec.publish.auth === 'app' && !forge) {
+    throw new Error(
+      `publish.auth is "app", but the repository's origin (${remoteUrl ?? 'none'}) is not on GitHub. Set publish.auth: token.`
     );
   }
   const pushCredential = spec.publish.push ? await credentialFor('push') : undefined;
@@ -426,7 +473,9 @@ async function execute(
     spec.publish.pullRequest === 'draft' ? await credentialFor('pull_request') : undefined;
   if (spec.publish.pullRequest === 'draft' && !prCredential) {
     throw new Error(
-      `Opening a pull request needs a forge token: store one in the vault as ${spec.publish.tokenSecret}, or set publish.pull_request: none.`
+      `Opening a pull request needs a forge token: store one in the vault as ${spec.publish.tokenSecret}${
+        forge?.forge === 'github' ? `, install your GitHub App on ${forge.project}` : ''
+      }, or set publish.pull_request: none.`
     );
   }
   if (spec.publish.push && !remoteUrl) {
@@ -449,7 +498,7 @@ async function execute(
       throw new Error(
         `Could not clone ${target.target}${fetchCredential ? '' : ` (no ${spec.publish.tokenSecret} in the vault, so it was tried without credentials)`}: ${redact(
           e instanceof Error ? e.message : String(e),
-          fetchCredential ? { t: fetchCredential.token } : undefined
+          inUse
         ).slice(0, 1_000)}`
       );
     }
@@ -487,10 +536,10 @@ async function execute(
       input: { action: 'fetch', ref: baseBranch },
       output:
         fetched.code === 0
-          ? { startRef }
+          ? { startRef, ...(fetchCredential ? { credential: fetchCredential.source } : {}) }
           : {
               startRef,
-              error: tail(fetched.stderr.trim(), 2_000),
+              error: tail(redact(fetched.stderr.trim(), inUse), 2_000),
               note:
                 target.kind === 'local'
                   ? 'Starting from the local branch.'
@@ -526,11 +575,6 @@ async function execute(
     // model: the builtin agent in the middle of its run, a CLI by starting
     // again with the next model.
     const models: Array<string | undefined> = [verdict.start, ...plan.escalate];
-    // Vault values this run holds, taken out of everything it stores.
-    const inUse: Record<string, string> = { ...apiKey };
-    for (const [i, c] of [fetchCredential, pushCredential, prCredential].entries()) {
-      if (c) inUse[`FORGE_TOKEN_${i}`] = c.token;
-    }
     // What the run's agent and gates may touch (spec.sandbox): the same
     // profile for the agent, its commands and the gates.
     const gitDirs = await ws.gitDirs();
@@ -849,7 +893,11 @@ async function execute(
         async () => {
           // What was diffed and scanned is all that goes: the base plus the run's commit.
           await ws.verifyHistory();
-          await pushBranch(ws, branch, forge, pushCredential?.token);
+          // The approval may have taken hours: a token that is about to end is made again.
+          const current = pushCredential
+            ? ((await credentialFor('push')) ?? pushCredential)
+            : undefined;
+          await pushBranch(ws, branch, forge, current?.token);
         },
         async (verdict) => {
           setRunStatus(runId, 'awaiting_approval');
@@ -895,14 +943,24 @@ async function execute(
     addRunStep(runId, {
       kind: 'git',
       input: { action: 'push', branch },
-      output: { remote: remoteUrl },
+      output: {
+        remote: remoteUrl,
+        ...(pushCredential
+          ? {
+              credential: pushCredential.source,
+              ...(pushCredential.actor ? { pushedAs: pushCredential.actor } : {}),
+            }
+          : {}),
+      },
       status: 'ok',
     });
 
     let prUrl: string | undefined;
     if (spec.publish.pullRequest === 'draft') {
-      const pr = await guard(rules, TOOLS.pullRequest, budget, () =>
-        openPullRequest(
+      const pr = await guard(rules, TOOLS.pullRequest, budget, async () => {
+        // Asked again: the push may have waited for approval, and the token may be about to end.
+        const current = (await credentialFor('pull_request')) ?? prCredential;
+        return openPullRequest(
           {
             forge: forge?.forge ?? 'github',
             project: forge?.project as string,
@@ -914,16 +972,26 @@ async function execute(
             head: branch,
             base: baseBranch,
             draft: true,
-            token: prCredential?.token as string,
+            token: current?.token as string,
+            ...(forge?.forge === 'github' ? { apiBase: githubApiBase() } : {}),
           },
           deps.fetcher
-        )
-      );
+        );
+      });
       prUrl = pr.url;
       addRunStep(runId, {
         kind: 'git',
         input: { action: 'pull_request' },
-        output: pr,
+        output: {
+          ...pr,
+          ...(prCredential
+            ? {
+                credential: prCredential.source,
+                // An installation token opens the pull request as the app's bot, not as a person.
+                ...(prCredential.actor ? { openedBy: prCredential.actor } : {}),
+              }
+            : {}),
+        },
         status: 'ok',
       });
     }

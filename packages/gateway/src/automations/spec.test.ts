@@ -409,6 +409,50 @@ on:
     );
   });
 
+  describe('publish.auth', () => {
+    const withAuth = (value: string, repo = '[github:acme/app]') =>
+      MINIMAL.replace('[local:~/code/app]', repo) + `publish:\n  auth: ${value}\n`;
+
+    it('is auto unless the spec says app or token', () => {
+      expect(parseSpec(MINIMAL).publish.auth).toBe('auto');
+      for (const value of ['auto', 'app', 'token'] as const) {
+        expect(parseSpec(withAuth(value)).publish.auth).toBe(value);
+      }
+      // The secret it falls back to is read as before, whatever the auth.
+      expect(parseSpec(withAuth('app')).publish.tokenSecret).toBe('GITHUB_TOKEN');
+    });
+
+    it('refuses any other value, naming the key and its line', () => {
+      const e = errorOf(withAuth('oauth'));
+      expect(e.message).toContain('"publish.auth" must be one of: auto, app, token.');
+      expect(e.line).toBeGreaterThan(0);
+    });
+
+    it('refuses app for a GitLab project, but not token', () => {
+      const e = errorOf(withAuth('app', '[gitlab:group/lab-app]'));
+      expect(e.message).toMatch(/"publish.auth: app" is for GitHub repositories/);
+      expect(parseSpec(withAuth('token', '[gitlab:group/lab-app]')).publish.auth).toBe('token');
+      expect(parseSpec(withAuth('auto', '[gitlab:group/lab-app]')).publish.auth).toBe('auto');
+    });
+
+    it('lets a local repository say app (its forge is known only from its origin, at run time)', () => {
+      expect(parseSpec(withAuth('app', '[local:~/code/app]')).publish.auth).toBe('app');
+    });
+  });
+
+  it('refuses the GitHub App’s own secrets as a token or an agent key', () => {
+    const asToken = errorOf(`${MINIMAL}publish:\n  token_secret: GITHUB_APP_PRIVATE_KEY\n`);
+    expect(asToken.message).toContain('GITHUB_APP_PRIVATE_KEY');
+    expect(asToken.message).toContain('GitHub App connection keeps its private key');
+    const asKey = errorOf(
+      MINIMAL.replace(
+        'driver: claude-code',
+        'driver: claude-code\n  api_key_secret: GITHUB_APP_CLIENT_SECRET'
+      )
+    );
+    expect(asKey.message).toContain('GITHUB_APP_CLIENT_SECRET');
+  });
+
   it('reads remote repositories: github:, gitlab: and https URLs on either', () => {
     const gh = parseSpec(MINIMAL.replace('[local:~/code/app]', '[github:paxamedia/OpenClerq#dev]'));
     expect(gh.repo).toEqual({

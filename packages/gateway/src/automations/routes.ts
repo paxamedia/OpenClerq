@@ -33,7 +33,12 @@ import {
   policyFor,
   type RunnerDeps,
 } from './runner.js';
-import { vaultCredentials } from './credentials.js';
+import {
+  describeSource,
+  vaultCredentials,
+  type ForgeCredential,
+  type PublishAuth,
+} from './credentials.js';
 import { profileProblem } from './isolation.js';
 import { hasQueuedRun, runningAutomations, startAutomationRun } from './queue.js';
 import { checkModels, judgeChain, modelChoiceProblem, planModels } from './model-chain.js';
@@ -68,6 +73,33 @@ function fail(res: Response, e: unknown, code: string): Response {
   const message = e instanceof Error ? e.message : String(e);
   logger.error(code, { err: message });
   return res.status(500).json({ error: code, message });
+}
+
+/**
+ * The credential a run would use for one purpose, asked as a preview: no token
+ * is made (`dryRun`). An error is the reason a run would stop before any work.
+ */
+async function previewCredential(
+  deps: RunnerDeps,
+  forge: { forge: 'github' | 'gitlab'; project: string },
+  purpose: 'fetch' | 'push' | 'pull_request',
+  publish: { tokenSecret: string; auth: PublishAuth },
+  automationId?: string
+): Promise<{ credential?: ForgeCredential; error?: string }> {
+  try {
+    const credential = await (deps.forgeCredentials ?? vaultCredentials(deps.getSecret))({
+      ...forge,
+      purpose,
+      secretName: publish.tokenSecret,
+      auth: publish.auth,
+      automationId: automationId ?? '',
+      runId: '',
+      dryRun: true,
+    });
+    return { credential: credential ?? undefined };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 function specText(req: Request): string {
@@ -172,21 +204,23 @@ export async function previewSpec(spec: AutomationSpec, deps: RunnerDeps, automa
       repo.cache = clone;
       repo.base = spec.repo.ref ?? (await defaultBranch(clone));
     }
-    const credential = await (deps.forgeCredentials ?? vaultCredentials(deps.getSecret))({
-      ...forge,
-      purpose: 'fetch',
-      secretName: spec.publish.tokenSecret,
-      automationId: automationId ?? '',
-      runId: '',
-    });
-    checks.push({
-      level: 'ok',
-      message:
-        `${spec.repo.target} is cloned into the workspace cache on its first run and fetched before each run` +
-        (credential
-          ? `, with ${credential.source.replace(/^vault:/, '')} as the credential.`
-          : `. There is no ${spec.publish.tokenSecret} in the vault, so only a public repository can be cloned.`),
-    });
+    const found = await previewCredential(deps, forge, 'fetch', spec.publish, automationId);
+    checks.push(
+      found.error
+        ? { level: 'error', message: found.error }
+        : {
+            level: 'ok',
+            message:
+              `${spec.repo.target} is cloned into the workspace cache on its first run and fetched before each run` +
+              (found.credential
+                ? `, with ${
+                    found.credential.source.startsWith('github-app:')
+                      ? describeSource(found.credential.source)
+                      : found.credential.source.replace(/^vault:/, '')
+                  } as the credential.`
+                : `. There is no ${spec.publish.tokenSecret} in the vault, so only a public repository can be cloned.`),
+          }
+    );
   }
 
   // Every model a run may use is checked as the run itself will check it: the
@@ -235,22 +269,45 @@ export async function previewSpec(spec: AutomationSpec, deps: RunnerDeps, automa
     });
   }
 
-  if (
-    spec.publish.push &&
-    spec.publish.pullRequest === 'draft' &&
-    forge &&
-    !(await (deps.forgeCredentials ?? vaultCredentials(deps.getSecret))({
-      ...forge,
-      purpose: 'pull_request',
-      secretName: spec.publish.tokenSecret,
-      automationId: automationId ?? '',
-      runId: '',
-    }))
-  ) {
+  if (spec.publish.auth === 'app' && !forge) {
     checks.push({
       level: 'error',
-      message: `No ${spec.publish.tokenSecret} in the vault; opening a pull request needs one.`,
+      message: 'publish.auth is "app", but the repository\'s origin is not on GitHub.',
     });
+  }
+  if (
+    forge &&
+    (spec.publish.push || spec.publish.pullRequest === 'draft' || spec.publish.auth === 'app')
+  ) {
+    // What a run would push and open the pull request with. Nothing is made to find out.
+    const opens = spec.publish.pullRequest === 'draft';
+    const found = await previewCredential(
+      deps,
+      forge,
+      opens ? 'pull_request' : spec.publish.push ? 'push' : 'fetch',
+      spec.publish,
+      automationId
+    );
+    if (found.error) {
+      checks.push({ level: 'error', message: found.error });
+    } else if (found.credential?.source.startsWith('github-app:')) {
+      checks.push({
+        level: 'ok',
+        message:
+          `${spec.publish.push ? (opens ? 'The push and the pull request use' : 'The push uses') : 'A run uses'} ${describeSource(found.credential.source)}: ` +
+          `a token that lasts at most an hour and covers ${forge.project} only` +
+          (found.credential.actor && spec.publish.push
+            ? `, so the ${opens ? 'pull request is opened' : 'push is made'} as ${found.credential.actor}.`
+            : '.'),
+      });
+    } else if (!found.credential && spec.publish.push && opens) {
+      checks.push({
+        level: 'error',
+        message:
+          `No ${spec.publish.tokenSecret} in the vault; opening a pull request needs one` +
+          (forge.forge === 'github' ? ', or your GitHub App installed on this repository.' : '.'),
+      });
+    }
   }
   if (spec.agent.apiKeySecret && !deps.getSecret(spec.agent.apiKeySecret)) {
     checks.push({ level: 'error', message: `No ${spec.agent.apiKeySecret} in the vault.` });

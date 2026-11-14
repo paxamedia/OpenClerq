@@ -44,11 +44,17 @@ interface Repo {
   url: string | null;
   path: { value: string; exists: boolean; role: string } | null;
   credential: { secret: string; present: boolean } | null;
+  reachedWith: { via: string } | null;
   automations: Array<{
     id: string;
     name: string;
     enabled: boolean;
-    credential: { secret: string; present: boolean } | null;
+    credential: {
+      secret: string;
+      present: boolean;
+      auth: string;
+      reachedWith: { via: string } | null;
+    } | null;
   }>;
   runs: { queued: number; running: number };
   lastRun: { id: string; status: string; createdAt: string; finishedAt?: string } | null;
@@ -251,9 +257,24 @@ describe('the secret each automation reaches a repository with', () => {
     );
     const repo = (await list()).find((r) => r.id === repoId) as Repo;
     const byName = Object.fromEntries(repo.automations.map((a) => [a.name, a.credential]));
+    // No GitHub App is connected here: each reaches it with its own secret, or with nothing.
     expect(byName).toEqual({
-      'pair-a': { secret: 'ACME_TOKEN', present: true },
-      'pair-b': { secret: 'OTHER_TOKEN', present: false },
+      'pair-a': {
+        secret: 'ACME_TOKEN',
+        present: true,
+        auth: 'auto',
+        reachedWith: { via: 'secret', secret: 'ACME_TOKEN' },
+      },
+      'pair-b': {
+        secret: 'OTHER_TOKEN',
+        present: false,
+        auth: 'auto',
+        reachedWith: {
+          via: 'none',
+          secret: 'OTHER_TOKEN',
+          note: 'OTHER_TOKEN is not in the vault.',
+        },
+      },
     });
     // The detail gives the same, and neither answer holds a value.
     const detail = await api(`/repos/${repoId}`);
@@ -265,7 +286,13 @@ describe('the secret each automation reaches a repository with', () => {
   it('uses the forge’s default secret name when the spec names none', async () => {
     const { repoId } = repoFor('default-name', 'gitlab:lab/default-name');
     const repo = (await list()).find((r) => r.id === repoId) as Repo;
-    expect(repo.automations[0].credential).toEqual({ secret: 'GITLAB_TOKEN', present: false });
+    // GitLab has no app: nothing is said of one.
+    expect(repo.automations[0].credential).toEqual({
+      secret: 'GITLAB_TOKEN',
+      present: false,
+      auth: 'auto',
+      reachedWith: null,
+    });
   });
 
   it('gives a local repository a secret only when the automation pushes or opens a pull request', async () => {
@@ -276,9 +303,12 @@ describe('the secret each automation reaches a repository with', () => {
     expect(repo.automations.find((a) => a.name === 'local-quiet')?.credential).toBeNull();
     repoFor('local-pushes', `local:${dir}`, 'publish:\n  push: true\n  token_secret: ACME_TOKEN');
     repo = (await list()).find((r) => r.path?.value === dir) as Repo;
+    // A local repository's forge is not known here, so nothing is said of an app.
     expect(repo.automations.find((a) => a.name === 'local-pushes')?.credential).toEqual({
       secret: 'ACME_TOKEN',
       present: true,
+      auth: 'auto',
+      reachedWith: null,
     });
   });
 });

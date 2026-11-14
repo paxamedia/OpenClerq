@@ -113,11 +113,21 @@ function extractToken(req: Request): string | null {
  */
 const MODULE_UI = /^\/api\/modules\/[a-z][a-z0-9-]*\/ui(\/|$)/;
 
+/**
+ * Where GitHub sends the browser back after the app manifest is accepted. A
+ * browser lands on it, so it cannot send a header; it proves itself with the
+ * single-use `state` that `POST /github/app/manifest` made, checked in the
+ * handler. This is the only `/github` route without a token. `/v1` is taken
+ * off before auth, so `/v1/github/app/callback` arrives as this path.
+ */
+const GITHUB_CALLBACK = '/github/app/callback';
+
 /** Whether a request needs no token at all. */
 function isPublic(req: Request): boolean {
   if (PUBLIC_PATHS.has(req.path)) return true;
   // A phone pairing has no token yet; it proves itself with a single-use code.
   if (req.method === 'POST' && req.path === '/devices/pair') return true;
+  if (req.method === 'GET' && req.path === GITHUB_CALLBACK) return true;
   return (req.method === 'GET' || req.method === 'HEAD') && MODULE_UI.test(req.path);
 }
 

@@ -20,6 +20,8 @@ import {
 import { parseAllowlist } from '@clerq/sandbox';
 import { parseRemote, type Forge } from '@clerq/workspaces';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
+import { isReservedSecret } from '../github/config.js';
+import type { PublishAuth } from './credentials.js';
 import { AssertionSyntaxError, parseAssertion, type DiffAssertion } from './diff-assert.js';
 
 export type PermissionMode = 'acceptEdits' | 'default' | 'dontAsk' | 'plan';
@@ -130,6 +132,12 @@ export interface AutomationSpec {
     onNoChanges: 'skip';
     /** Vault secret holding the forge token for pushing and opening the PR. */
     tokenSecret: string;
+    /**
+     * Where the forge credential comes from: `auto` (the GitHub App when it is
+     * installed on the repository, else the vault secret), `app` (the app only)
+     * or `token` (the vault secret only).
+     */
+    auth: PublishAuth;
   };
   budget: { maxUsdPerRun?: number; maxUsdPerMonth?: number };
   approvals: { push: 'manual' | 'auto'; timeoutMs: number };
@@ -176,6 +184,7 @@ const NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const DEFAULT_BRANCH = 'auto/{{automation}}/{{date}}-{{run}}';
 const PERMISSION_MODES: PermissionMode[] = ['acceptEdits', 'default', 'dontAsk', 'plan'];
 const PROFILES: SandboxProfileName[] = ['native', 'seatbelt', 'container'];
+const PUBLISH_AUTH: PublishAuth[] = ['auto', 'app', 'token'];
 /** The most hosts `sandbox.network` may list. */
 export const MAX_NETWORK_HOSTS = 50;
 
@@ -341,6 +350,13 @@ class Reader {
     const v = this.text(path) ?? fallback;
     if (v !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(v)) {
       this.fail(path, `"${path.join('.')}" must be a secret name such as GITHUB_TOKEN.`);
+    }
+    if (v !== undefined && isReservedSecret(v)) {
+      this.fail(
+        path,
+        `"${v}" is where the GitHub App connection keeps its private key; a spec cannot use it. ` +
+          'To use the app, leave "publish.token_secret" out (or set "publish.auth: app").'
+      );
     }
     return v;
   }
@@ -843,7 +859,15 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
     };
   });
 
-  r.keys(['publish'], ['branch', 'push', 'pull_request', 'on_no_changes', 'token_secret']);
+  r.keys(['publish'], ['branch', 'push', 'pull_request', 'on_no_changes', 'token_secret', 'auth']);
+
+  const publishAuth = r.oneOf(['publish', 'auth'], PUBLISH_AUTH, 'auto');
+  if (publishAuth === 'app' && repo.kind === 'gitlab') {
+    r.fail(
+      ['publish', 'auth'],
+      '"publish.auth: app" is for GitHub repositories; a GitLab project uses a token (publish.token_secret).'
+    );
+  }
 
   const push = r.bool(['publish', 'push'], true);
   const pullRequest = r.oneOf(
@@ -942,6 +966,7 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
         ['publish', 'token_secret'],
         repo.kind === 'gitlab' ? 'GITLAB_TOKEN' : 'GITHUB_TOKEN'
       ) as string,
+      auth: publishAuth,
     },
     budget: {
       maxUsdPerRun: r.money(['budget', 'max_usd_per_run']),

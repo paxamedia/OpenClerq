@@ -104,6 +104,12 @@ import { defaultDriver } from './automations/runner.js';
 import { resolveTarget } from './agent/llm-provider.js';
 
 import { mountAutomationRoutes, recoverAfterRestart } from './automations/routes.js';
+import {
+  GithubApp,
+  githubAppCredentials,
+  isReservedSecret,
+  mountGithubRoutes,
+} from './github/index.js';
 import { mountRoutingRoutes } from './routing-routes.js';
 import { startAutomationSchedules, stopAutomationSchedules } from './automations/scheduler.js';
 import { readKillPause, writeKillPause } from './kill-state.js';
@@ -284,8 +290,13 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   const initialToolsConfig = config.toolsConfig ?? capabilitiesToToolConfig(loadCapabilities());
   let toolRegistry = createToolRegistry(initialToolsConfig);
 
+  const vaultGet =
+    config.automations?.getSecret ?? ((name: string) => getSecret(name) ?? undefined);
+  // The user's own GitHub App, when one is connected: installation tokens for runs.
+  // Its key is always read from the vault itself, whatever `getSecret` a caller gave the automations.
+  const githubApp = new GithubApp({ getSecret });
   const automationDeps: RunnerDeps = {
-    getSecret: config.automations?.getSecret ?? ((name) => getSecret(name) ?? undefined),
+    getSecret: vaultGet,
     secretNames:
       config.automations?.secretNames ??
       (config.automations?.getSecret
@@ -298,8 +309,11 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     driverFor: config.automations?.driverFor,
     fetcher: config.automations?.fetcher,
     workspaceCacheDir: config.automations?.workspaceCacheDir,
-    // Where a GitHub App's installation tokens plug in; the vault's secret when none is given.
-    forgeCredentials: config.automations?.forgeCredentials,
+    // The GitHub App's installation token when it is installed on the repository, else the
+    // vault's secret (docs/GITHUB.md). A caller may replace it.
+    forgeCredentials:
+      config.automations?.forgeCredentials ?? githubAppCredentials(githubApp, vaultGet),
+    forgeApp: config.automations?.forgeApp ?? ((_forge, project) => githubApp.access(project)),
     repoCheckTimeoutMs: config.automations?.repoCheckTimeoutMs,
     maxConcurrent:
       config.automations?.maxConcurrent ?? (Number(process.env.CLERQ_MAX_CONCURRENT_RUNS) || 2),
@@ -434,6 +448,11 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     if (!name) {
       return res.status(400).json({ error: 'name is required' });
     }
+    if (isReservedSecret(name)) {
+      return res.status(400).json({
+        error: `${name} belongs to the GitHub App connection. Import the app's key again with POST /github/app/import.`,
+      });
+    }
     const out = setSecret(name, value);
     if (out.ok) {
       res.json({ ok: true });
@@ -526,6 +545,11 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
 
   app.delete('/secrets/:name', (req: Request, res: Response) => {
     const name = (typeof req.params?.name === 'string' ? req.params.name : '') || '';
+    if (isReservedSecret(name)) {
+      return res.status(400).json({
+        error: `${name} belongs to the GitHub App connection. Forget it with DELETE /github/app.`,
+      });
+    }
     const out = deleteSecret(name);
     if (out.ok) {
       res.json({ ok: true });
@@ -1149,6 +1173,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   // Their schedules pause with the triggers under the kill switch.
   mountAutomationRoutes(app, automationDeps, () => triggersPausedAt === null);
   mountRoutingRoutes(app);
+  mountGithubRoutes(app, { app: githubApp });
 
   app.post('/calculate/eval', async (req: Request, res: Response) => {
     if (!fssync.existsSync(calcPath)) {

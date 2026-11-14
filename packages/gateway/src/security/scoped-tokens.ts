@@ -38,6 +38,8 @@ const OPERATOR_ONLY = [
   /^\/devices(?!\/me(\/|$))(\/|$)/,
   /^\/remote(\/|$)/,
   /^\/secrets(\/|$)/,
+  // The GitHub App connection: its private key can make a token for every repository it is installed on.
+  /^\/github(\/|$)/,
   // Every event and log line, of every tenant: /events/stream is the filtered form.
   /^\/events$/,
   /^\/logs(\/|$)/,
