@@ -4,6 +4,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
 const GATEWAY_PORT: u16 = 18790;
@@ -197,7 +198,27 @@ fn spawn_gateway(app: &tauri::App) {
                 cmd = cmd.current_dir(dir);
             }
             match cmd.spawn() {
-                Ok((mut _rx, _child)) => {
+                Ok((mut rx, _child)) => {
+                    // What the gateway prints, and why it stopped, goes to this app's
+                    // own log. Left unread it is dropped, and a gateway that refuses to
+                    // start (a database from a newer OpenClerq, say) would say nothing.
+                    tauri::async_runtime::spawn(async move {
+                        while let Some(event) = rx.recv().await {
+                            match event {
+                                CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
+                                    eprintln!(
+                                        "[gateway] {}",
+                                        String::from_utf8_lossy(&line).trim_end()
+                                    );
+                                }
+                                CommandEvent::Error(e) => eprintln!("[gateway] {}", e),
+                                CommandEvent::Terminated(end) => {
+                                    eprintln!("[gateway] stopped (exit code {:?})", end.code);
+                                }
+                                _ => {}
+                            }
+                        }
+                    });
                     // Give gateway a moment to bind
                     std::thread::sleep(std::time::Duration::from_millis(1500));
                 }
