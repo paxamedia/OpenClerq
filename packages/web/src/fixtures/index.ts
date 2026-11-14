@@ -954,6 +954,38 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         createdAt: iso(now - 12 * D),
       },
       {
+        id: 'repo_gh_gizmos',
+        kind: 'github',
+        name: 'example/gizmos',
+        url: 'https://github.com/example/gizmos.git',
+        path: null,
+        credential: { secret: 'GITHUB_TOKEN', present: true },
+        reachedWith: {
+          via: 'app',
+          app: { slug: 'openclerq-3fa91c', installationId: 4242 },
+        },
+        // Reached with the GitHub App: no vault secret is needed here.
+        automations: [
+          {
+            id: 'aut_gizmos',
+            name: 'gizmos-bumps',
+            enabled: true,
+            credential: {
+              secret: 'GITHUB_TOKEN',
+              present: false,
+              auth: 'auto',
+              reachedWith: {
+                via: 'app',
+                app: { slug: 'openclerq-3fa91c', installationId: 4242 },
+              },
+            },
+          },
+        ],
+        runs: { queued: 0, running: 0 },
+        lastRun: null,
+        createdAt: iso(now - 5 * D),
+      },
+      {
         id: 'repo_gl_tools',
         kind: 'gitlab',
         name: 'lab/tools',

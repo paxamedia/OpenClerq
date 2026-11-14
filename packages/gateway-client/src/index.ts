@@ -394,15 +394,26 @@ export interface RepoSummary {
    */
   credential: { secret: string; present: boolean } | null;
   /**
+   * How a run would reach this GitHub repository by default (`publish.auth:
+   * auto`): through the user's GitHub App when it is installed here, else the
+   * secret above. Null for a local repository and for GitLab.
+   */
+  reachedWith?: RepoReach | null;
+  /**
    * The automations whose spec targets it now, each with the secret its own spec
    * reaches the forge with (null for a local repository it neither pushes nor
-   * opens a pull request on).
+   * opens a pull request on), its `publish.auth`, and what that reaches it with.
    */
   automations: Array<{
     id: string;
     name: string;
     enabled: boolean;
-    credential: { secret: string; present: boolean } | null;
+    credential: {
+      secret: string;
+      present: boolean;
+      auth?: 'auto' | 'app' | 'token';
+      reachedWith?: RepoReach | null;
+    } | null;
   }>;
   /** Runs waiting for a place, and runs using it now (an approval wait counts). */
   runs: { queued: number; running: number };
@@ -414,6 +425,22 @@ export interface RepoSummary {
     finishedAt?: string;
   } | null;
   createdAt: string;
+}
+
+/**
+ * How a run would reach a repository's forge: through the GitHub App (a token
+ * for this repository only), the vault secret, or not at all. Read from GitHub's
+ * installation lookup, never by making a token.
+ */
+export interface RepoReach {
+  /** `unknown`: the app is connected, but GitHub could not say whether it is installed here. */
+  via: 'app' | 'secret' | 'none' | 'unknown';
+  /** The connected app, and the installation on this repository when there is one. */
+  app?: { slug: string; installationId?: number };
+  /** The vault secret that is used (`secret`) or is missing (`none`). */
+  secret?: string;
+  /** Why the app is not used, or what a run would do. */
+  note?: string;
 }
 
 /** One repository, with its latest 20 runs, newest first. */

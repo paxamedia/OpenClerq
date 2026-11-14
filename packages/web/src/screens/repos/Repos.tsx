@@ -2,8 +2,9 @@
  * Repos: the repositories automations work on, read-only. A repository is
  * listed once an automation that names it in `targets.repos` has been queued;
  * there is nothing to add here. The page says where each is on this computer,
- * which vault secret it is reached with (the name, never the value), what
- * targets it and what is running against it.
+ * what it is reached with (the user's GitHub App where it is installed, else
+ * the vault secret's name, never the value), what targets it and what is
+ * running against it.
  */
 
 import { FolderGit2, Plus } from 'lucide-react';
@@ -91,19 +92,41 @@ export function vaultState(present: boolean): CredentialState {
 export type Reach =
   | { kind: 'none' }
   | { kind: 'one'; secret: string; present: boolean; recorded: boolean }
+  /** Reached with the user's GitHub App, installed on this repository. */
+  | { kind: 'app'; slug: string; installationId?: number; recorded: boolean }
   | { kind: 'differ'; secrets: string[] };
+
+/** The GitHub App a way of reaching the repository names, when it is the app. */
+function appOf(
+  reached: RepoSummary['reachedWith']
+): { slug: string; installationId?: number } | null {
+  return reached?.via === 'app' && reached.app ? reached.app : null;
+}
 
 export function reachOf(repo: RepoSummary): Reach {
   if (repo.automations.length === 0) {
+    // With no automation left, what is known is the row's own secret, or the app by default.
+    const app = appOf(repo.reachedWith);
+    if (app) return { kind: 'app', ...app, recorded: true };
     return repo.credential ? { kind: 'one', ...repo.credential, recorded: true } : { kind: 'none' };
   }
   const named = repo.automations.flatMap((a) => (a.credential ? [a.credential] : []));
-  const secrets = [...new Set(named.map((c) => c.secret))];
-  if (secrets.length === 0) return { kind: 'none' };
-  if (secrets.length > 1) return { kind: 'differ', secrets };
+  // One entry per way: the app (by name), or the vault secret.
+  const ways = [
+    ...new Set(
+      named.map((c) => {
+        const app = appOf(c.reachedWith);
+        return app ? `the GitHub App ${app.slug}` : c.secret;
+      })
+    ),
+  ];
+  if (ways.length === 0) return { kind: 'none' };
+  if (ways.length > 1) return { kind: 'differ', secrets: ways };
+  const app = appOf(named[0].reachedWith);
+  if (app) return { kind: 'app', ...app, recorded: false };
   return {
     kind: 'one',
-    secret: secrets[0],
+    secret: named[0].secret,
     present: named.every((c) => c.present),
     recorded: false,
   };
@@ -114,7 +137,8 @@ export function missingSecrets(
   repo: RepoSummary
 ): Array<{ automation: string; secret: string; note: string }> {
   return repo.automations.flatMap((a) =>
-    a.credential && !a.credential.present
+    // The GitHub App stands in for the secret where it is installed.
+    a.credential && !a.credential.present && a.credential.reachedWith?.via !== 'app'
       ? [
           {
             automation: a.name,
@@ -186,7 +210,13 @@ export function RepoList() {
       cell: (r) => <ReachCell repo={r} />,
       sortValue: (r) => {
         const reach = reachOf(r);
-        return reach.kind === 'one' ? reach.secret : reach.kind === 'differ' ? '~differ' : null;
+        return reach.kind === 'one'
+          ? reach.secret
+          : reach.kind === 'app'
+            ? `GitHub App ${reach.slug}`
+            : reach.kind === 'differ'
+              ? '~differ'
+              : null;
       },
       width: 'md',
     },
@@ -283,11 +313,26 @@ export function ReachCell({ repo }: { repo: RepoSummary }) {
       </span>
     );
   }
+  if (reach.kind === 'app') return <AppReach slug={reach.slug} />;
   const state = vaultState(reach.present);
   return (
     <span className="repos-secret">
       <code>{reach.secret}</code>
       <StatusTag tone={state.tone}>{state.label}</StatusTag>
+    </span>
+  );
+}
+
+/** "The GitHub App x", installed on the repository: its tokens last an hour and cover this repository only. */
+function AppReach({ slug }: { slug: string }) {
+  return (
+    <span
+      className="repos-secret"
+      title="A token that lasts at most an hour and covers this repository only"
+    >
+      <span>GitHub App</span>
+      <code>{slug}</code>
+      <StatusTag tone="ok">Installed here</StatusTag>
     </span>
   );
 }
@@ -311,7 +356,10 @@ export function RepoFacts({ repo }: { repo: RepoSummary }) {
           },
           { label: 'On disk', value: <StatusTag tone={place.tone}>{place.label}</StatusTag> },
           {
-            label: reach.kind === 'one' && reach.recorded ? 'Last reached with' : 'Reached with',
+            label:
+              (reach.kind === 'one' || reach.kind === 'app') && reach.recorded
+                ? 'Last reached with'
+                : 'Reached with',
             value:
               reach.kind === 'differ' ? (
                 'Differs by automation, listed below'
@@ -338,6 +386,14 @@ export function RepoFacts({ repo }: { repo: RepoSummary }) {
           .
         </p>
       ))}
+      {repo.reachedWith?.note && <p className="page-hint">{repo.reachedWith.note}</p>}
+      {reach.kind === 'app' && (
+        <p className="page-hint">
+          The GitHub App makes a token for this repository for each run (fetch, push, pull request)
+          and revokes it when the run ends. A pull request it opens is authored by the app’s own
+          account, <code>{reach.slug}[bot]</code>.
+        </p>
+      )}
       {reach.kind === 'one' && reach.recorded && !reach.present && (
         <p className="page-hint">
           The last run named {reach.secret}, which is not in the vault. No automation targets this
@@ -417,14 +473,20 @@ export function RepoDetailView({ repo }: { repo: RepoDetail }) {
                   {a.name}
                 </Link>
                 <StatusTag tone={a.enabled ? 'ok' : 'muted'}>{a.enabled ? 'On' : 'Off'}</StatusTag>
-                {a.credential && (
-                  <span className="repos-secret">
-                    <code>{a.credential.secret}</code>
-                    <StatusTag tone={vaultState(a.credential.present).tone}>
-                      {vaultState(a.credential.present).label}
-                    </StatusTag>
-                  </span>
-                )}
+                {a.credential &&
+                  (appOf(a.credential.reachedWith) ? (
+                    <AppReach slug={appOf(a.credential.reachedWith)?.slug as string} />
+                  ) : (
+                    <span className="repos-secret">
+                      <code>{a.credential.secret}</code>
+                      <StatusTag tone={vaultState(a.credential.present).tone}>
+                        {vaultState(a.credential.present).label}
+                      </StatusTag>
+                      {a.credential.auth === 'app' && (
+                        <StatusTag tone="warn">publish.auth: app, not installed here</StatusTag>
+                      )}
+                    </span>
+                  ))}
               </li>
             ))}
           </ul>

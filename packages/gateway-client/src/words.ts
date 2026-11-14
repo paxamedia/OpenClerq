@@ -215,6 +215,12 @@ function toolStep(name: string, input: Fields, output: Fields): StepWords | null
   }
 }
 
+/** A credential's source in words: "the GitHub App my-app", or the vault secret's name. */
+function credentialWords(source: string): string {
+  const app = /^github-app:([^/]+)\//.exec(source);
+  return app ? `the GitHub App ${app[1]}` : source.replace(/^vault:/, '');
+}
+
 function gitStep(input: Fields, output: Fields): StepWords | null {
   const action = text(input.action);
   const repo = text(input.repo);
@@ -227,9 +233,7 @@ function gitStep(input: Fields, output: Fields): StepWords | null {
           : `Used the cached clone of ${repo ?? 'the repository'}`,
       note: [
         text(output.path) && `Clone: ${String(output.path)}.`,
-        credential
-          ? `Reached with ${credential.replace(/^vault:/, '')}.`
-          : 'No credential was used.',
+        credential ? `Reached with ${credentialWords(credential)}.` : 'No credential was used.',
         action === 'cached' &&
           'An existing clone was reused; the base branch is fetched into it next.',
       ]
@@ -275,7 +279,13 @@ export function describeStep(step: RunStep): StepWords {
         push: `Pushed ${String(input.branch ?? '')}`.trim(),
         pull_request: 'Opened a draft pull request',
       };
-      return { label: known[action] ?? `git ${action}` };
+      const credential = text(output.credential);
+      const actor = text(output.openedBy) ?? text(output.pushedAs);
+      const note = credential
+        ? `Used ${credentialWords(credential)}.` +
+          (actor ? ` Done as ${actor}, the app’s own account, not as a person.` : '')
+        : undefined;
+      return { label: known[action] ?? `git ${action}`, ...(note ? { note } : {}) };
     }
     case 'tool': {
       const name = String(input.name ?? '');

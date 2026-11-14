@@ -164,6 +164,83 @@ describe('credentials', () => {
   });
 });
 
+describe('the GitHub App', () => {
+  const app = { via: 'app' as const, app: { slug: 'openclerq-3fa91c', installationId: 4242 } };
+  const viaApp = (name: string, secret = 'GITHUB_TOKEN', present = false) => ({
+    id: `aut_${name}`,
+    name,
+    enabled: true,
+    credential: { secret, present, auth: 'auto' as const, reachedWith: app },
+  });
+
+  it('says the app where every automation reaches the repository with it', () => {
+    const repo = { ...remote, automations: [viaApp('a'), viaApp('b')] };
+    expect(reachOf(repo)).toEqual({
+      kind: 'app',
+      slug: 'openclerq-3fa91c',
+      installationId: 4242,
+      recorded: false,
+    });
+  });
+
+  it('says they differ when one uses the app and another a secret', () => {
+    const repo = {
+      ...remote,
+      automations: [
+        viaApp('a'),
+        {
+          id: 'aut_b',
+          name: 'b',
+          enabled: true,
+          credential: {
+            secret: 'ACME_TOKEN',
+            present: true,
+            auth: 'token' as const,
+            reachedWith: null,
+          },
+        },
+      ],
+    };
+    expect(reachOf(repo)).toEqual({
+      kind: 'differ',
+      secrets: ['the GitHub App openclerq-3fa91c', 'ACME_TOKEN'],
+    });
+  });
+
+  it('does not call a secret missing where the app stands in for it', () => {
+    // GITHUB_TOKEN is not in the vault, but the app reaches the repository.
+    expect(missingSecrets({ ...remote, automations: [viaApp('a')] })).toEqual([]);
+  });
+
+  it('falls back to the app by default when no automation targets the repository', () => {
+    expect(reachOf({ ...remote, automations: [], reachedWith: app })).toEqual({
+      kind: 'app',
+      slug: 'openclerq-3fa91c',
+      installationId: 4242,
+      recorded: true,
+    });
+  });
+
+  it('is on the page: the list and the repository’s own page say the app, and what it does', async () => {
+    const { repos } = await client.repos();
+    const gizmos = repos.find((r) => r.name === 'example/gizmos') as RepoSummary;
+    expect(gizmos).toBeDefined();
+    const list = listPage({ repos });
+    expect(list).toContain('GitHub App');
+    expect(list).toContain('openclerq-3fa91c');
+    expect(list).toContain('Installed here');
+    // The secret it does not need is not shown as missing.
+    expect(list).not.toContain(
+      '<code>GITHUB_TOKEN</code><span class="status-tag status-tag--warn"'
+    );
+    const detail = html(<RepoDetailView repo={{ ...gizmos, recentRuns: [] } as RepoDetail} />);
+    expect(detail).toContain('Reached with');
+    expect(detail).toContain('openclerq-3fa91c[bot]');
+    expect(detail).toContain('revokes it when the run ends');
+    expect(detail).not.toContain('Not in the vault');
+  });
+});
+
 describe('the list', () => {
   it('shows a secret only where the automations agree, and says when they differ', async () => {
     const { repos } = await client.repos();

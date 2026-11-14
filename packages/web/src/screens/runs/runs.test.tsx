@@ -123,6 +123,50 @@ describe('step labels', () => {
     expect(w.note).toBe('Pushing waits for approval.');
   });
 
+  it('says the GitHub App, and who it acts as, on the steps that used it', () => {
+    const source = 'github-app:openclerq-3fa91c/installation/4242';
+    const clone = describeStep(
+      step({
+        kind: 'git',
+        input: { action: 'clone', repo: 'github:a/b' },
+        output: { path: '/c/x', credential: source },
+      })
+    );
+    expect(clone.note).toContain('Reached with the GitHub App openclerq-3fa91c.');
+    const push = describeStep(
+      step({
+        kind: 'git',
+        input: { action: 'push', branch: 'auto/x' },
+        output: { credential: source, pushedAs: 'openclerq-3fa91c[bot]' },
+      })
+    );
+    expect(push.label).toBe('Pushed auto/x');
+    expect(push.note).toBe(
+      'Used the GitHub App openclerq-3fa91c. Done as openclerq-3fa91c[bot], the app’s own account, not as a person.'
+    );
+    const pr = describeStep(
+      step({
+        kind: 'git',
+        input: { action: 'pull_request' },
+        output: {
+          url: 'https://github.com/a/b/pull/1',
+          credential: source,
+          openedBy: 'openclerq-3fa91c[bot]',
+        },
+      })
+    );
+    expect(pr.note).toContain('openclerq-3fa91c[bot]');
+    // A vault secret reads as its name, as before.
+    const vault = describeStep(
+      step({
+        kind: 'git',
+        input: { action: 'push', branch: 'auto/x' },
+        output: { credential: 'vault:GITHUB_TOKEN' },
+      })
+    );
+    expect(vault.note).toBe('Used GITHUB_TOKEN.');
+  });
+
   it('tells a clone from a cached clone', () => {
     const fresh = describeStep(
       step({
