@@ -177,7 +177,7 @@ says so, with the link, whenever GitHub answers that it is off: `device_flow_dis
 
 1. `clerq github login`, or **Settings → GitHub → Sign in with GitHub**, or `POST /v1/github/login`.
    It answers a **code** to type (`userCode`), the address to type it at (`verificationUri`, on
-   github.com), when the code stops working (`expiresAt`, 15 minutes) and the interval GitHub asked
+   github.com), when the code stops working (`expiresAt`: GitHub's `expires_in`, normally 15 minutes) and the interval GitHub asked
    for.
 2. You open that address, type the code and approve. The command, the dialog or your own client
    watches `GET /v1/github/login/<flowId>`.
