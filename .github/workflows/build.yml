@@ -140,7 +140,14 @@ jobs:
           chmod +x "$appimage"
           mkdir extracted && cd extracted
           "../$appimage" --appimage-extract > /dev/null
-          find squashfs-root -name clerq-gateway -o -name clerq-calc -o -path '*bundled-plugins/chat/manifest.json' | sort
+          for name in clerq-gateway clerq-calc; do
+            found=$(find squashfs-root -name "$name" -type f | head -n 1)
+            test -n "$found" || { echo "::error::$name is not in the AppImage"; exit 1; }
+            echo "AppImage has $found"
+          done
+          found=$(find squashfs-root -path '*bundled-plugins/chat/manifest.json' | head -n 1)
+          test -n "$found" || { echo "::error::the bundled chat plugin is not in the AppImage"; exit 1; }
+          echo "AppImage has $found"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
