@@ -70,6 +70,62 @@ jobs:
       - name: Unit and integration tests
         run: pnpm -r test
 
+  # The server as the Linux binary people will install: compiled with Bun, started
+  # with a temporary HOME, asked over HTTP, stopped with SIGTERM; and both systemd
+  # units read by systemd itself. The unit tests of apps/server run in `verify`
+  # (node) and `verify-macos`; this is the compiled program on the platform it is
+  # for. The same smoke script runs on a developer's Mac against a darwin build.
+  server-linux:
+    name: Server binary and systemd units (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/calculation-core
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build clerq-calc
+        run: cargo build --release --manifest-path packages/calculation-core/Cargo.toml
+
+      # Builds the workspace packages the server imports, then compiles it with
+      # Bun into apps/server/dist/bun-linux-x64/ together with clerq-calc.
+      - name: Build the linux-x64 server binary
+        run: >-
+          node scripts/build-binary.js
+          --entry apps/server/src/main.ts --name clerq-server
+          --target bun-linux-x64 --require-calc
+
+      - name: Smoke test
+        run: node apps/server/scripts/smoke.mjs apps/server/dist/bun-linux-x64/clerq-server
+
+      # systemd checks the files for unknown directives, bad values, a missing
+      # ExecStart binary and an unknown user. The binary and the account are put
+      # where the units expect them first.
+      - name: Verify the systemd units
+        run: |
+          command -v systemd-analyze || sudo apt-get install -y systemd
+          systemd-analyze --version | head -n 1
+          bin=apps/server/dist/bun-linux-x64
+          sudo install -m 0755 "$bin/clerq-server" "$bin/clerq-calc" /usr/local/bin/
+          sudo useradd --system --user-group --home-dir /var/lib/openclerq --shell /usr/sbin/nologin openclerq
+          systemd-analyze verify --man=no apps/server/systemd/openclerq.service
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 "$bin/clerq-server" "$HOME/.local/bin/clerq-server"
+          systemd-analyze --user verify --man=no apps/server/systemd/openclerq-user.service
+
   rust:
     name: Rust tests
     runs-on: ubuntu-latest

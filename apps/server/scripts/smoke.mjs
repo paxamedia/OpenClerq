@@ -12,6 +12,7 @@
  *   - a protected route answers 401 without the token and with a wrong one, and
  *     200 with the token the server made (which the log never shows);
  *   - the token in the working directory's .env is not accepted;
+ *   - a clerq-calc beside the binary is the one it reports using;
  *   - `healthcheck` exits 0 while it runs and 1 once it has stopped;
  *   - SIGTERM exits 0 within 15 s, and leaves nothing in the write-ahead log (the
  *     database file alone is then the whole database).
@@ -147,6 +148,19 @@ check(
   log
 );
 check('the log names the data directory', log.includes(path.join(home, '.clerq')), log);
+
+// A clerq-calc beside the binary (the release layout) is the one it uses.
+const calc = path.join(
+  path.dirname(exe),
+  process.platform === 'win32' ? 'clerq-calc.exe' : 'clerq-calc'
+);
+if (fs.existsSync(calc)) {
+  check(
+    'the clerq-calc next to the binary is the one in use',
+    log.includes(`Calculation engine: ${calc} (next to this program)`),
+    log
+  );
+}
 
 const health = run(['healthcheck']);
 check('healthcheck exits 0 while it runs', health.status === 0, health.stdout + health.stderr);
