@@ -504,7 +504,7 @@ upgrades to be your decision.
 docker exec openclerq cat /data/.clerq/gateway-token
 ```
 
-or choose your own with `-e CLERQ_GATEWAY_TOKEN=<64 hex characters from openssl rand -hex 32>`.
+or choose your own with `-e CLERQ_GATEWAY_TOKEN=<a long random string>` (for example from `openssl rand -hex 32`; the CLI will not save a token shorter than 16 characters).
 A token passed with `-e` is visible to anyone who can run `docker inspect` on the container, which
 is anyone with access to the Docker socket; if that matters, put `CLERQ_GATEWAY_TOKEN=…` in a
 `.env` file at `/data/.clerq/.env` inside the volume instead. The server's log says where the

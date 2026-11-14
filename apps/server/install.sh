@@ -65,7 +65,7 @@ fetch() { # url destination
   case $1 in
     https://*)
       if have curl; then
-        curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 30 -o "$2" "$1"
+        curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 30 -o "$2" "$1"
       elif have wget; then
         wget --https-only -q -O "$2" "$1"
       else
