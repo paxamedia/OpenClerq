@@ -67,7 +67,8 @@ Exit codes: `0` stopped cleanly (or healthy); `1` failed to start, crashed, or d
 
 `healthcheck` needs no `curl` and reads the same settings as the server (`CLERQ_PORT`,
 `CLERQ_HOST`, and `~/.clerq/.env`). It connects to `127.0.0.1`, or to the address `CLERQ_HOST`
-names when that is one particular address. Healthy means the process is answering requests; the
+names when that is one particular address; for `localhost` (which may mean `127.0.0.1` or `::1`)
+and for `::` it tries both. Healthy means the process is answering requests; the
 store is open when `store.schema` in `GET /v1/version` is a number rather than `null`.
 
 ## Configuration
