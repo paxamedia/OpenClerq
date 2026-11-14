@@ -32,12 +32,12 @@ version: '1.2.0'
 triggers: ['quarterly report', 'q3 figures']
 description: 'Turns the ledger export into the quarterly report.'
 
-tools_required: [fs.read, fs.list, group:git]
+tools_required: [fs.read, fs.list, fs.write, runtime.shell]
 network_domains: [api.example.com, '*.example.org']
 filesystem_scope: [exports/**, reports/, ~/Notes]
 checksum: sha256:3f1c…
 ---
-Read the export, quote the figures, and write the report to reports/.
+Read the export, fetch the rates from api.example.com with curl, and write the report to reports/.
 ```
 
 | Key                | What it says                                                                                                                                                                                   |
@@ -107,12 +107,12 @@ you still decide whether to trust the author.
 
 ## Trust states
 
-| State       | Means                                                                                                                                   |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `untrusted` | You have not decided. Where a skill starts: new to OpenClerq, or after Untrust.                                                         |
-| `trusted`   | You trusted exactly these files, by their checksum. The decision records the checksum, what the skill declared, and which files it had. |
-| `modified`  | The files are not the ones you trusted, or they do not match the checksum in `SKILL.md`. It says what changed since you trusted it.     |
-| `blocked`   | You refused it. It stays blocked, whatever happens to its files, until you Untrust it.                                                  |
+| State       | Means                                                                                                                                                                  |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `untrusted` | You have not decided. Where a skill starts: new to OpenClerq, or after Untrust.                                                                                        |
+| `trusted`   | You trusted exactly these files, by their checksum. The decision records the checksum, what the skill declared, and which files it had.                                |
+| `modified`  | The files are not the ones you trusted, or they do not match the checksum in `SKILL.md`. It says what changed since you trusted it.                                    |
+| `blocked`   | You refused it. The block is a record for the slug its `SKILL.md` declares, in the place it was found; it holds through any change to the files, until you Untrust it. |
 
 The state is **never stored**: it is worked out each time a skill is read, from the checksum of the
 files that were read and the decision on record (`skill_trust`, store migration 23, keyed by where the
@@ -125,10 +125,15 @@ changing it does not lose it.
   who has seen that it does not: after that it is `trusted` (the mismatch is still shown).
 - **Block** and **Untrust** (`POST …/block`, `…/untrust`) need no checksum. Untrust forgets either
   decision.
-- A decision is about a skill's slug, in the place it was found. It is kept when the folder goes away:
-  a skill that comes back with the same name and exactly the same files is trusted (or blocked) again,
-  and one that comes back under another slug starts as `untrusted`, which is also how a blocked skill
-  that is renamed is seen (it is not blocked: block the new name).
+- A decision, a block included, is a record for **the pair of where a skill was found and the slug its
+  `SKILL.md` declares** (the folder's name when it declares none): `directory`, or one module, or one
+  plugin. Nothing else is part of it. It holds through any change to the files (a blocked skill stays
+  blocked; a trusted one is `modified`), and when the folder goes away: a skill that comes back with
+  the same slug in the same place is trusted (if its files are exactly the ones trusted) or blocked
+  again. **A skill whose slug is changed in its `SKILL.md`, or that is found in another place (a copy
+  in the skills folder of one that a module ships), is a different skill and starts `untrusted`, even
+  with the very same files**; a block does not follow it, and with enforcement off it is used. Block
+  the new one.
 - All three, and saving a skill's schemas (`PUT /v1/skills/<slug>`, which rewrites `SKILL.md`), are
   for the gateway token only: a module's or a phone's token gets `403`, whatever scopes it was given.
   Reading a skill (`GET`) is as it was. Each is an audit row (`skill.trusted`, `skill.blocked`, `skill.untrusted`, by the
@@ -268,12 +273,12 @@ name: 'Quarterly report'
 slug: 'quarterly-report'
 version: '1.2.0'
 triggers: ['quarterly report']
-tools_required: [fs.read, fs.list]
-filesystem_scope: [exports/, reports/]
+tools_required: [fs.read, fs.list, fs.write, runtime.shell]
+filesystem_scope: [exports/, templates/, reports/]
 network_domains: [rates.example.com]
 ---
-Read the export in exports/, fetch the rates from rates.example.com, and write reports/q.md from
-templates/report.md.
+Read the export in exports/, fetch the rates from rates.example.com with curl (run_shell), and
+write reports/q.md from templates/report.md.
 ```
 
 ```
@@ -283,6 +288,9 @@ Written to /…/my-skill/SKILL.md.
 ```
 
 Someone who installs it sees the three declarations, the checksum, and that it matches the one in
-`SKILL.md`; trusts it; and, with enforcement on, a chat that selects it is offered `read_file` and
-`list_files` only, limited to `exports/` and `reports/`, and in a Sandboxed chat its commands get a network that goes through a proxy allowing
-`rates.example.com` (and, on macOS, the proxy's port is the only one open).
+`SKILL.md`; trusts it; and, with enforcement on, a chat that selects it is offered `read_file`,
+`list_files`, `write_file` and `run_shell` only, and its file tools (not `run_shell`) are limited to
+`exports/`, `templates/` and `reports/`. In a Sandboxed chat, the `curl` it runs gets a network that
+goes through a proxy allowing `rates.example.com` (and, on macOS, the proxy's port is the only one
+open). In a chat that is not Sandboxed `curl` has your own network, and the `network_domains` line
+is shown and not enforced.
