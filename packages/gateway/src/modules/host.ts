@@ -62,6 +62,7 @@ import {
   type PluginRow,
   type PluginStateName,
 } from './plugin-state.js';
+import { emit } from '../events.js';
 import { actorOf } from '../records/routes.js';
 import { revokeTokens } from '../security/scoped-tokens.js';
 
@@ -335,6 +336,7 @@ export class ModuleHost {
         checksum: facts.checksum,
         permissions: facts.declared,
       });
+      this.changed(id);
       // A plugin that is running other code than what was just approved is stopped and
       // started again with it: the approval is of that code, and the old code is no longer covered.
       if (
@@ -354,6 +356,7 @@ export class ModuleHost {
     const was = enforcing();
     setEnforcing(on);
     if (was !== on) this.audit('plugins.enforce.changed', 'plugins', actor, { enforce: on });
+    this.changed('*');
     for (const entry of this.list()) {
       await this.serial(entry, () => this.settle(entry, true));
     }
@@ -609,6 +612,7 @@ export class ModuleHost {
     entry.loaded = state === 'enabled' ? entry.loaded : undefined;
     updatePluginRow(id, { state, reason });
     this.record(entry);
+    this.changed(id);
     if (state !== before && (state === 'awaiting_approval' || state === 'refused')) {
       this.audit(`plugin.${state}`, id, 'gateway', { reason });
     }
@@ -762,6 +766,7 @@ export class ModuleHost {
       startedVersion: String(d.manifest.version ?? '') || null,
     });
     this.record(entry);
+    this.changed(id);
     logger.info('Module loaded', { moduleId: id, version: d.manifest.version, kind: d.kind });
   }
 
@@ -833,6 +838,15 @@ export class ModuleHost {
         moduleId: entry.module.id,
         err: message(e),
       });
+    }
+  }
+
+  /** Tell the interface a plugin's state or approval changed: it reloads the list. */
+  private changed(id: string): void {
+    try {
+      emit('plugin.changed', { id });
+    } catch {
+      /* the bus is not the plugin's concern */
     }
   }
 

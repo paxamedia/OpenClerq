@@ -60,6 +60,7 @@ export function familiesOf(name: string): Family[] {
       return ['inbox'];
     case 'notify':
     case 'service':
+    case 'plugin':
     case 'module':
       return name === 'notify.posted' ? [] : ['modules'];
     case 'device':

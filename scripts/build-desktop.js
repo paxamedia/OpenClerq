@@ -48,8 +48,10 @@ const execOpts = { cwd: rootDir, stdio: 'inherit' };
 // On Windows, use shell so pnpm/npm scripts resolve correctly (pnpm.cmd)
 if (process.platform === 'win32') execOpts.shell = true;
 
-// Desktop depends on @clerq/gateway-client and @clerq/module-schema; build them first
+// Desktop depends on @clerq/gateway-client and @clerq/module-schema, and its web screens on
+// @clerq/plugin-sdk (which needs the client's protocol): build them first
 execSync('pnpm --filter @clerq/gateway-client build', execOpts);
+execSync('pnpm --filter @clerq/plugin-sdk build', execOpts);
 execSync('pnpm --filter @clerq/module-schema build', execOpts);
 
 // Skip updater artifacts (.sig) when private key is not available (build workflow, local test)

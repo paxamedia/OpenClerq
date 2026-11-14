@@ -6,79 +6,34 @@
  * as a third-party module would, so either can be left out.
  */
 
-import type { ComponentType, ReactNode } from 'react';
-import type { LucideIcon } from 'lucide-react';
-import type { AppConfig, GatewayClient, Host } from './client';
-import type { Route } from './router';
+import type { ReactNode } from 'react';
+import type {
+  PaletteCommand,
+  PluginProps,
+  PluginRenderer,
+  PluginUI,
+  PluginUIContext,
+  RailEntry,
+} from '@clerq/plugin-sdk/ui';
 
-export interface RailEntry {
-  /** Unique across the app, e.g. "automations". */
-  id: string;
-  label: string;
-  icon: LucideIcon;
-  /** The route the entry opens and owns, e.g. "/m/automations". */
-  path: string;
-  /** Where it sits in the rail: lower first. Core pages use 0–100 in steps of 10. */
-  order?: number;
-  /** Bottom group of the rail (Developer, Settings) rather than the top. */
-  group?: 'main' | 'end';
-  /** Keep it out of the phone's tab bar; it is listed under More instead. */
-  secondary?: boolean;
-  /** The module that adds it; core pages have none. */
-  module?: string;
-}
+export type { PaletteCommand, RailEntry };
 
-/** What a module's component receives. */
-export interface ModuleProps {
-  route: Route;
-  /** The route's segments after `/m/<id>`, e.g. ["weekly-deps", "edit"]. */
-  parts: string[];
-  /** "/m/<id>", for building links to the module's own pages. */
-  base: string;
-  client: GatewayClient;
-  host: Host;
-  config: AppConfig | null;
-  navigate: (to: string) => void;
-}
+// The slot contract is `@clerq/plugin-sdk/ui`, so a plugin can type its UI without importing the
+// app. The names this file always had stay, as aliases.
 
-export interface PaletteCommand {
-  id: string;
-  label: string;
-  /** Shown faint after the label, e.g. the module or record type. */
-  hint?: string;
-  icon?: LucideIcon;
-  keywords?: string;
-  run: () => void;
-}
-
-export interface ModuleContext {
-  client: GatewayClient;
-  navigate: (to: string) => void;
-  base: string;
-}
-
-export interface ModuleUI {
-  id: string;
-  name: string;
-  description?: string;
-  icon: LucideIcon;
-  rail: RailEntry[];
-  component: ComponentType<ModuleProps>;
-  /** Actions for the palette that need no query, e.g. "New automation". */
-  commands?: (ctx: ModuleContext) => PaletteCommand[];
-  /** Records and actions matching a query, for the palette. */
-  search?: (query: string, ctx: ModuleContext) => Promise<PaletteCommand[]>;
-  /** Known only from a manifest on disk; the gateway's own entry for the module replaces it. */
-  placeholder?: boolean;
-}
+/** @deprecated Use `PluginProps` from `@clerq/plugin-sdk/ui`. */
+export type ModuleProps = PluginProps;
+/** @deprecated Use `PluginUIContext` from `@clerq/plugin-sdk/ui`: `ModuleContext` is now the server's. */
+export type ModuleContext = PluginUIContext;
+/** @deprecated Use `PluginUI` from `@clerq/plugin-sdk/ui`. */
+export type ModuleUI = PluginUI;
+/** @deprecated Use `PluginRenderer` from `@clerq/plugin-sdk/ui`. */
+export type ModuleRenderer = PluginRenderer;
 
 /** The route base of a module's pages. */
 export const moduleBase = (id: string): string => `/m/${encodeURIComponent(id)}`;
 
-/** Draws a module's routes; the desktop supplies one that also hosts external module UIs. */
-export type ModuleRenderer = (module: ModuleUI, props: ModuleProps) => ReactNode;
-
-export const renderBundled: ModuleRenderer = (module, props) => {
+export const renderBundled = (module: PluginUI, props: PluginProps): ReactNode => {
   const Component = module.component;
   return <Component {...props} />;
 };

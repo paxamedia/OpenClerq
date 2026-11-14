@@ -1,6 +1,6 @@
 /**
  * Settings, in the main window, with its own section list: General, Models &
- * keys, Secrets, Skills, Memory, Triggers, Advanced.
+ * keys, Secrets, GitHub, Plugins, Skills, Memory, Triggers, Remote, Devices, Advanced.
  */
 
 import { useState } from 'react';
@@ -28,6 +28,7 @@ import { useExtensions } from '../../app/extensions';
 import { DevicesSection, RemoteSection } from './devices';
 import { GithubSection } from './github';
 import { MemorySection } from './memory';
+import { PluginsSection } from './plugins';
 import { FallbackSection } from './routing';
 import { AdvancedSection, SecretsSection, SkillsSection, TriggersSection } from './sections';
 import './settings.css';
@@ -40,6 +41,11 @@ export const SETTINGS_SECTIONS = [
     id: 'github',
     label: 'GitHub',
     keywords: 'app sign in device flow install repositories pull request token',
+  },
+  {
+    id: 'plugins',
+    label: 'Plugins',
+    keywords: 'modules permissions approve approval enforce enforcement trust checksum legacy',
   },
   { id: 'skills', label: 'Skills', keywords: 'schema' },
   { id: 'memory', label: 'Memory', keywords: 'entries' },
@@ -383,6 +389,8 @@ export function Settings({ section, config, saveConfig, modules }: SettingsProps
     <SecretsSection />
   ) : current.id === 'github' ? (
     <GithubSection />
+  ) : current.id === 'plugins' ? (
+    <PluginsSection />
   ) : current.id === 'skills' ? (
     <SkillsSection />
   ) : current.id === 'memory' ? (

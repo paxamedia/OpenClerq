@@ -1676,13 +1676,11 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       // before the store is closed under it.
       await startup;
       // Plugins stop while the store is still open, and after the requests they were serving.
-      await modules
-        .stopAll()
-        .catch((e: unknown) =>
-          logger.error('Plugins did not all stop', {
-            err: e instanceof Error ? e.message : String(e),
-          })
-        );
+      await modules.stopAll().catch((e: unknown) =>
+        logger.error('Plugins did not all stop', {
+          err: e instanceof Error ? e.message : String(e),
+        })
+      );
       // Let a request that was dropped write how it ended before the store goes.
       await new Promise<void>((resolve) => setImmediate(resolve));
       closeStore();

@@ -49,6 +49,7 @@ export type CoreEventName =
   | 'notify.posted'
   | 'notify.badge'
   | 'service.changed'
+  | 'plugin.changed'
   | 'record.created'
   | 'record.updated'
   | 'record.merged'

@@ -390,3 +390,114 @@
   margin: 0;
   color: var(--ink-2);
 }
+
+/* Settings → Plugins */
+
+.plugin-enforce {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 62ch;
+}
+
+.plugin-list {
+  margin-top: var(--space-4);
+}
+
+.plugin-row {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.plugin-main {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.plugin-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 500;
+}
+
+.plugin-version {
+  color: var(--ink-3);
+  font: var(--type-code);
+  font-weight: 400;
+}
+
+.plugin-tags {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.plugin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.plugin-review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.plugin-permissions,
+.plugin-permission-items,
+.plugin-changes ul,
+.plugin-warnings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-permissions {
+  display: flex;
+  flex-direction: column;
+  border: var(--line-width) solid var(--line);
+}
+
+.plugin-permissions > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--line-width) solid var(--line);
+}
+
+.plugin-permissions > li:last-child {
+  border-bottom: 0;
+}
+
+.plugin-permission-label {
+  font-weight: 500;
+}
+
+.plugin-permission-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+
+.plugin-changes ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.plugin-added {
+  color: var(--warn);
+}
+
+.plugin-warnings {
+  color: var(--ink-2);
+  font: var(--type-secondary);
+}

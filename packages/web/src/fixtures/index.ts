@@ -14,6 +14,7 @@ import type {
   ChatSession,
   MemoryRecord,
   MemoryType,
+  PluginInfo,
   ProviderInfo,
   RepoDetail,
   RepoSummary,
@@ -1417,6 +1418,178 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
           updatedAt: iso(now - 5 * D),
         },
       ];
+  const NO_PERMISSIONS = {
+    exec: [],
+    fs: { read: [], write: [] },
+    net: [],
+    secrets: [],
+    services: [],
+    llm: false,
+    api: [],
+    memory: { read: [], write: [] },
+  };
+  const approvedNow = (at: number, version: string) => ({
+    status: 'approved' as const,
+    approvedAt: iso(at),
+    approvedBy: 'operator',
+    approvedVersion: version,
+    changes: { code: false, permissions: false, version: false },
+    permissionChanges: [],
+  });
+  const notApproved = {
+    status: 'not_approved' as const,
+    approvedAt: null,
+    approvedBy: null,
+    approvedVersion: null,
+    changes: { code: false, permissions: false, version: false },
+    permissionChanges: [],
+  };
+  let pluginEnforce = false;
+  const plugins: PluginInfo[] = [
+    {
+      id: 'notes',
+      name: 'Notes',
+      version: '0.1.0',
+      description: 'Keeps notes next to people and organisations.',
+      kind: 'legacy',
+      dir: '~/.clerq/modules/notes',
+      state: 'enabled',
+      reason: null,
+      switchedOff: false,
+      engine: null,
+      permissions: { ...NO_PERMISSIONS, secrets: ['sync-token'], net: ['notes.example.com'] },
+      permissionsHash: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
+      checksum: '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0',
+      warnings: [],
+      approval: approvedNow(now - 9 * D, '0.1.0'),
+      needsRestart: false,
+      ui: '/api/modules/notes/ui/',
+    },
+    {
+      id: 'mailroom',
+      name: 'Mailroom',
+      version: '1.2.0',
+      description: 'Files incoming mail as inbox items.',
+      kind: 'plugin',
+      dir: '~/.clerq/modules/mailroom',
+      state: 'enabled',
+      reason: null,
+      switchedOff: false,
+      engine: 1,
+      permissions: {
+        ...NO_PERMISSIONS,
+        exec: ['/usr/bin/git'],
+        net: ['imap.example.com', '*.mailroom.example.org'],
+        secrets: ['imap-password'],
+        fs: { read: ['~/Mail'], write: [] },
+        api: ['GET /inbox', 'POST /inbox/items'],
+      },
+      permissionsHash: '1111111111111111111111111111111111111111111111111111111111111111',
+      checksum: '2222222222222222222222222222222222222222222222222222222222222222',
+      warnings: [],
+      approval: {
+        status: 'changed',
+        approvedAt: iso(now - 20 * D),
+        approvedBy: 'operator',
+        approvedVersion: '1.1.0',
+        changes: { code: true, permissions: true, version: true },
+        permissionChanges: [
+          {
+            change: 'added',
+            key: 'exec',
+            item: '/usr/bin/git',
+            text: 'Can now run /usr/bin/git',
+          },
+          {
+            change: 'added',
+            key: 'net',
+            item: '*.mailroom.example.org',
+            text: 'Can now connect to *.mailroom.example.org',
+          },
+        ],
+      },
+      needsRestart: true,
+      ui: null,
+    },
+    {
+      id: 'ledger-sync',
+      name: 'Ledger sync',
+      version: '0.3.0',
+      description: 'Copies paid invoices into the ledger.',
+      kind: 'plugin',
+      dir: '~/.clerq/modules/ledger-sync',
+      state: 'enabled',
+      reason: null,
+      switchedOff: false,
+      engine: 1,
+      permissions: { ...NO_PERMISSIONS, llm: true, memory: { read: ['fact'], write: [] } },
+      permissionsHash: '3333333333333333333333333333333333333333333333333333333333333333',
+      checksum: '4444444444444444444444444444444444444444444444444444444444444444',
+      warnings: [],
+      approval: notApproved,
+      needsRestart: false,
+      ui: null,
+    },
+    {
+      id: 'old-reports',
+      name: 'Old reports',
+      version: '2.0.0',
+      description: 'Weekly reports.',
+      kind: 'plugin',
+      dir: '~/.clerq/modules/old-reports',
+      state: 'disabled',
+      reason: null,
+      switchedOff: true,
+      engine: 1,
+      permissions: NO_PERMISSIONS,
+      permissionsHash: '5555555555555555555555555555555555555555555555555555555555555555',
+      checksum: '6666666666666666666666666666666666666666666666666666666666666666',
+      warnings: [],
+      approval: approvedNow(now - 40 * D, '2.0.0'),
+      needsRestart: false,
+      ui: null,
+    },
+    {
+      id: 'from-the-future',
+      name: 'From the future',
+      version: '1.0.0',
+      description: null,
+      kind: 'plugin',
+      dir: '~/.clerq/modules/from-the-future',
+      state: 'refused',
+      reason:
+        'This plugin needs OpenClerq API version 2, and this OpenClerq serves version 1. Update OpenClerq, or use an older release of the plugin.',
+      switchedOff: false,
+      engine: 2,
+      permissions: NO_PERMISSIONS,
+      permissionsHash: '7777777777777777777777777777777777777777777777777777777777777777',
+      checksum: '8888888888888888888888888888888888888888888888888888888888888888',
+      warnings: [],
+      approval: notApproved,
+      needsRestart: false,
+      ui: null,
+    },
+    {
+      id: 'broken',
+      name: 'Broken',
+      version: '0.0.1',
+      description: null,
+      kind: 'plugin',
+      dir: '~/.clerq/modules/broken',
+      state: 'failed',
+      reason: 'register() failed: cannot reach the database',
+      switchedOff: false,
+      engine: 1,
+      permissions: NO_PERMISSIONS,
+      permissionsHash: '9999999999999999999999999999999999999999999999999999999999999999',
+      checksum: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      warnings: [],
+      approval: approvedNow(now - 3 * D, '0.0.1'),
+      needsRestart: false,
+      ui: null,
+    },
+  ];
+  const planPlugin = (p: PluginInfo): PluginInfo => structuredClone(p);
   const modules = [
     {
       id: 'notes',
@@ -1768,6 +1941,65 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
       return ok({ item: i, result: { ok: true } });
     },
     modules: () => ok({ modules: opts.empty ? [] : modules }),
+    plugins: () =>
+      ok({ plugins: opts.empty ? [] : plugins.map(planPlugin), enforce: pluginEnforce }),
+    enablePlugin: (id: string) => {
+      const p = plugins.find((x) => x.id === id);
+      if (p) {
+        p.switchedOff = false;
+        p.state =
+          p.approval.status !== 'approved' && pluginEnforce ? 'awaiting_approval' : 'enabled';
+        p.reason = null;
+      }
+      return ok({ plugin: p && planPlugin(p) });
+    },
+    disablePlugin: (id: string) => {
+      const p = plugins.find((x) => x.id === id);
+      if (p) {
+        p.switchedOff = true;
+        p.state = 'disabled';
+        p.reason = null;
+      }
+      return ok({ plugin: p && planPlugin(p) });
+    },
+    approvePlugin: (id: string, seen: { permissionsHash: string; checksum: string }) => {
+      const p = plugins.find((x) => x.id === id);
+      if (!p) return Promise.reject(new Error('No such plugin.'));
+      if (seen.permissionsHash !== p.permissionsHash || seen.checksum !== p.checksum) {
+        return Promise.reject(
+          Object.assign(new Error('Gateway 409'), {
+            status: 409,
+            body: { error: 'approval_stale', message: 'The plugin changed since you reviewed it.' },
+          })
+        );
+      }
+      p.approval = {
+        status: 'approved',
+        approvedAt: iso(now),
+        approvedBy: 'operator',
+        approvedVersion: p.version,
+        changes: { code: false, permissions: false, version: false },
+        permissionChanges: [],
+      };
+      p.needsRestart = false;
+      if (p.state === 'awaiting_approval') p.state = 'enabled';
+      return ok({ plugin: planPlugin(p) });
+    },
+    pluginSettings: () => ok({ enforce: pluginEnforce }),
+    setPluginSettings: (s: { enforce: boolean }) => {
+      pluginEnforce = s.enforce;
+      for (const p of plugins) {
+        if (pluginEnforce && p.state === 'enabled' && p.approval.status !== 'approved') {
+          p.state = 'awaiting_approval';
+          p.reason =
+            'It has not been approved yet. Review what it asks for and approve it to run it.';
+        } else if (!pluginEnforce && p.state === 'awaiting_approval' && !p.switchedOff) {
+          p.state = 'enabled';
+          p.reason = null;
+        }
+      }
+      return ok({ enforce: pluginEnforce });
+    },
     moduleToken: () =>
       ok({ token: 'clqm_fixture', expiresAt: iso(Date.now() + 15 * 60_000), scopes: [] }),
     revokeModuleTokens: () => ok({ ok: true, revoked: 0 }),
