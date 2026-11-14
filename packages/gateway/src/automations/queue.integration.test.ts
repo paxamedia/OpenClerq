@@ -556,10 +556,15 @@ describe.skipIf(isWindows)('lease expiry', () => {
       status: 'ok',
     });
     const checking = reclaimExpiredLeases();
-    // The other gateway's claim, as claimAbandonedRun writes it.
+    // The other gateway's claim, as claimAbandonedRun writes it: its owner and a fresh lease. Without
+    // the lease the run still looked abandoned (a dead owner, a lease that ended), and this
+    // gateway's own reaper, started in beforeAll, could take it from the claimant on a busy
+    // machine while `ps` is being read.
     getStore()
-      .prepare('UPDATE runs SET owner_pid = ?, owner_start = NULL WHERE id = ? AND owner_pid = ?')
-      .run(other, id, dead);
+      .prepare(
+        'UPDATE runs SET owner_pid = ?, owner_start = NULL, lease_until = ? WHERE id = ? AND owner_pid = ?'
+      )
+      .run(other, new Date(Date.now() + 60_000).toISOString(), id, dead);
     expect(await checking).not.toContain(id);
     expect(fs.existsSync(worktree)).toBe(true);
     expect(row(id)).toMatchObject({ status: 'executing', owner_pid: other, attempt: 1 });
