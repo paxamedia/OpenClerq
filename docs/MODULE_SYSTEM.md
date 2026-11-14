@@ -87,7 +87,7 @@ You can test this behaviour by:
 ## 5. Server modules
 
 A module is a directory with a `manifest.json` and a server entry (`dist/routes.js`, or the
-manifest's `entryPoints.routes[0]`): one self-contained ES module. The gateway loads every module
+manifest's `entryPoints.routes[0]`): an ES module whose folder is the module's code. The gateway loads every module
 under `CLERQ_MODULES_DIR` (or the single module there) at start, and lists them at `GET /modules`.
 
 > **Plugins.** A manifest that says `"manifestVersion": 1` is a _plugin_, with a lifecycle
@@ -105,7 +105,7 @@ complete example.
 | `ctx.`                      | What it is                                                                                                                             |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `routes`                    | `get/post/put/patch/delete(path, handler)`, served at `/api/modules/<id>/<path>`                                                       |
-| `store`                     | the gateway's SQLite store; `table('x')` is `mod_<id>__x`                                                                              |
+| `store`                     | the gateway's SQLite store; `table('x')` is `mod_<id>__x`. Raw SQL may name only the module's own tables when enforcement is on        |
 | `secrets`                   | vault entries named `<id>/<name>`                                                                                                      |
 | `events`                    | `emit('x', payload)` puts `module.<id>.x` on the bus (and `GET /events/stream`); `subscribe(prefix, fn)`                               |
 | `triggers`                  | `register({ id, kind: 'cron' \| 'file' \| 'webhook', handler })`; each firing is a run                                                 |
@@ -161,8 +161,9 @@ Like core migrations they are append-only: one edited after it ran is refused.
 
 A module whose migrations or `register` throw is listed as `failed` and gets no routes. Module code runs in the
 gateway process with the gateway's access: the context is a namespace, not a sandbox. Modules that
-export a `routes` array (the earlier contract) still load. A module's code is loaded once per start,
-from where it lies; if its files change, switching it off and on again says it needs a restart.
+export a `routes` array (the earlier contract) still load. The gateway hashes the entry's folder (`dist/`
+for `dist/routes.js`), `dist/ui`, `skills` and `migrations`, and runs and serves the module from a copy of
+those files (see [PLUGINS.md](PLUGINS.md)): what it imports from outside them is not there.
 
 ---
 

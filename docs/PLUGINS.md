@@ -27,7 +27,7 @@ them, but a skill by itself runs no code. Trust states for skills on their own a
 ```
 my-plugin/
   manifest.json          what it is, what it needs, what it adds to the app
-  dist/server.js         the server entry: one self-contained ES module
+  dist/server.js         the server entry; everything in dist/ is the plugin's code
   dist/ui/index.html     optional: a page, shown in a frame in the app
   skills/…               optional: SKILL.md files
   migrations/0001_x.sql  optional: tables, named mod_<id>__*
@@ -63,10 +63,21 @@ Everything is typed in **`@clerq/plugin-sdk`**:
 | `@clerq/plugin-sdk/node`     | `pluginChecksum(dir)`, `permissionsHash(p)`, `readManifestFile(dir)`: what an approval names                                     |
 | `@clerq/plugin-sdk/ui`       | `PluginUI`, `PluginProps`, `RailEntry`, `PaletteCommand`, `GatewayClient`, `Host`, `AppConfig`: for a UI that is part of the app |
 
-**The server entry must be one self-contained file.** Bundle what it imports into it. The file is
-copied and run from a copy named by its hash (see [Checksums](#checksums-and-what-runs)), so an
-`import './helper.js'` or a bare `import 'express'` fails to load, with a message that says so.
-Read your own assets from `ctx.dir`, not from `import.meta.url`.
+**What the plugin is, for the approval, is a set of folders:** the whole folder the server entry is in
+(`dist/` for `dist/server.js`), the UI folder, the skills folder and `migrations/`, with the manifest.
+They are hashed, and the gateway runs and serves the plugin from a copy of exactly those files (see
+[Checksums and what runs](#checksums-and-what-runs)). So the entry may import other files from its own
+folder (`import './lib/util.js'`), and nothing it imports from outside those folders is there to
+import: a path to a sibling of its folder fails to load. **A bare package name (`import 'express'`) and an
+absolute path are outside the approval.** Node finds a bare name by walking up from the copy to
+`~/node_modules`, and an absolute path is whatever is there, in or out of the plugin's own folder, so
+that code is never hashed or approved. Bundle what you need into the entry's folder. An entry that sits
+at the plugin's root (`server.js`) is its own folder of one file: put it in a folder (`dist/`) to ship more.
+
+`ctx.dir` is the copy: read-only, and holding only what was hashed. Read your own assets from it, not
+from `import.meta.url` or from where the plugin was installed. A relative folder in `permissions.fs`
+(`"write": ["data"]`) is relative to the plugin's folder on disk, which is where a plugin keeps data
+that must outlast an update.
 
 ### The example
 
@@ -135,7 +146,7 @@ Every list is optional. A permission that is not listed is not asked for.
 
 | Key        | Value                                                    | What it lets the plugin do through its context                                                                                        |
 | ---------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `exec`     | commands, written exactly as they are run                | `ctx.exec(cmd, args)`; `cmd` must be one of these strings                                                                             |
+| `exec`     | commands, written exactly as they are run                | `ctx.exec(cmd, args)`; `cmd` must be one of these strings. **Arguments are not checked**: see below                                   |
 | `fs.read`  | folders (`~/…`, absolute, or relative to the plugin)     | `ctx.fs.readFile(path)` for a path inside one                                                                                         |
 | `fs.write` | folders                                                  | `ctx.fs.writeFile(path, data)` for a path inside one                                                                                  |
 | `net`      | hosts: `host`, `*.host`, `host:port`                     | `ctx.fetch(url)` to one. `host` allows any port; `*.host` allows subdomains, not `host` itself; `host:port` only that port            |
@@ -144,6 +155,16 @@ Every list is optional. A permission that is not listed is not asked for.
 | `llm`      | `true` or `false`                                        | **Declared and recorded only.** The context has no model helper in this release                                                       |
 | `api`      | `METHOD /path` patterns, `GET /runs/:id`, `* /records/*` | The core endpoints its UI token may call. This replaces the legacy `coreEndpoints`. The first path segment is fixed                   |
 | `memory`   | `{ read?: types, write?: types }`                        | **Declared and recorded only.** The types are `fact`, `preference`, `decision`, `procedure`, `note`; the context has no memory helper |
+
+**Declaring `exec` is a serious thing to ask for.** Only the command is checked, not its arguments or
+its working directory, so a command that can run code from its arguments amounts to allowing any
+command: `sh`, `bash`, `node`, `python`, `perl`, `env`, `xargs`, `find -exec`, and `git` (`git -c
+alias.x='!…' x`, a hook or `core.fsmonitor` in the repository it is run in). Declare a command only
+if you would let the plugin run anything with it, and tell the person why. The command is looked up once,
+on the gateway's own `PATH`, and that file is run, so a `PATH` in the plugin's environment cannot point it at
+the plugin's own script; with enforcement on, `PATH`, `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `GIT_EXEC_PATH`,
+`GIT_CONFIG_*`, `BASH_ENV`, `ENV` and a few like them (`NODE_PATH`, `PYTHONPATH`, `GIT_SSH`, …) cannot be
+set at all.
 
 Validation is strict because what is declared is what you approve. An unknown key under
 `permissions`, `engines` or `entry` is an error (a newer plugin may need a newer OpenClerq), and so
@@ -189,12 +210,12 @@ migration 22):
 1. reads the manifest and validates it (a bad manifest is `failed`);
 2. checks the engine (`refused`);
 3. checks your choice (`disabled`) and, with enforcement on, the approval (`awaiting_approval`);
-4. copies the server entry to a path named by its hash and imports it;
-5. runs the plugin's `migrations/` (as for any module: only `mod_<id>__*` objects, append-only);
+4. copies the files that were hashed to `~/.clerq/plugin-cache/<id>/<hash>/` (a file that is not what was approved means the decision is made again) and imports the entry from the copy;
+5. runs the copy's `migrations/` (as for any module: only `mod_<id>__*` objects, append-only);
 6. calls `upgrade(ctx, { from })` if the version differs from the last one that started;
 7. calls `register(ctx)`;
 8. calls `start(ctx)`;
-9. mounts its routes and its UI. The plugin is `enabled`.
+9. mounts its routes, and its UI from the copy. The plugin is `enabled`.
 
 Each of `upgrade`, `register` and `start` has 30 seconds. `upgrade` can run again if a later step
 failed, so write it to be safe to repeat.
@@ -220,14 +241,13 @@ still switched off if you had switched it off. Enabling a failed plugin tries it
 
 **Enabling and disabling need no restart.** Routes are served by one handler that looks the plugin
 up on every request, so a plugin can be stopped and started again while the gateway runs. What
-cannot be done without a restart:
+cannot be done without a restart: **finding a new plugin folder**. Folders are read at start.
 
-- **Finding a new plugin folder.** Folders are read at start.
-- **Running new code for a legacy module.** A legacy module's code is loaded once per start; if its
-  files changed, enabling it again says it needs a restart.
-
-A plugin's own files can change while it runs: the list then shows **needs restart** and the version
-on disk is what is approved or reviewed. Disable and enable it, or approve it, to run the new code.
+A plugin's own files can change while it runs: the list then shows **needs restart**, and says it
+changed since you approved it. **The running plugin, its UI and its skills keep running from the copy
+that was approved; an edit on disk is not served.** The new files take effect when the plugin is
+turned off and on again (with enforcement on, only once you have approved them), or when you approve
+them, which restarts the plugin on them.
 
 Timers: `ctx.setInterval` and `ctx.setTimeout` never keep the process alive, log (and survive) a
 callback that throws or rejects, and an interval skips a call when the last one is still running.
@@ -279,34 +299,47 @@ planned. A bundled plugin with a file changed is treated like any other.
 The switch is **Settings → Plugins → Enforce plugin permissions**. It is off by default. With it
 **off**, declarations are shown, recorded and audited, and nothing is blocked. With it **on**:
 
-| Through the context                   | Checked against                                           | Refused when                                                                                                                     |
-| ------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `ctx.secrets.get/set/delete`          | `permissions.secrets`                                     | the name is not declared. `list()` shows only declared names                                                                     |
-| `ctx.services.status/start/stop`      | `permissions.services`                                    | the label is not declared there. `list()` shows only declared labels                                                             |
-| `ctx.exec(cmd, args, opts)`           | `permissions.exec`                                        | `cmd` is not a declared string, written exactly (`echo` is not `/bin/echo`). Arguments and what the command does are not checked |
-| `ctx.fetch(url, init)`                | `permissions.net`                                         | the host (and port, when declared with one) of the URL, or of any redirect it follows, is not declared. `http` and `https` only  |
-| `ctx.fs.readFile`, `ctx.fs.writeFile` | `permissions.fs.read`, `fs.write`                         | the path, after `..` and symbolic links are resolved, is not inside a declared folder. Reading is not writing                    |
-| a module UI's token                   | `permissions.api` (and a legacy module's `coreEndpoints`) | the endpoint is not declared. This holds whether or not enforcement is on                                                        |
+| Through the context                   | Checked against                                           | Refused when                                                                                                                                                                                                                                                                                                |
+| ------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.secrets.get/set/delete`          | `permissions.secrets`                                     | the name is not declared. `list()` shows only declared names                                                                                                                                                                                                                                                |
+| `ctx.services.status/start/stop`      | `permissions.services`                                    | the label is not declared there. `list()` shows only declared labels                                                                                                                                                                                                                                        |
+| `ctx.exec(cmd, args, opts)`           | `permissions.exec`                                        | `cmd` is not a declared string, written exactly (`echo` is not `/bin/echo`), or `opts.env` sets `PATH`, `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `GIT_EXEC_PATH`, `GIT_CONFIG_*`, `BASH_ENV` or `ENV`. The file is looked up once on the gateway's `PATH`. **Arguments and what the command does are not checked** |
+| `ctx.store.exec`, `ctx.store.prepare` | its own tables, `mod_<id>__*` (nothing to declare)        | the statement names any other table or view (a core table, another module's), `sqlite_master`, or uses `ATTACH`, `DETACH`, `PRAGMA` or `VACUUM`. This is a check of the statement's text: see below                                                                                                         |
+| `ctx.fetch(url, init)`                | `permissions.net`                                         | the host (and port, when declared with one) of the URL, or of any redirect it follows, is not declared. `http` and `https` only. Only standard `RequestInit` fields are passed on: a runtime option such as `dispatcher` is dropped                                                                         |
+| `ctx.fs.readFile`, `ctx.fs.writeFile` | `permissions.fs.read`, `fs.write`                         | the path, after `..` and symbolic links are resolved, is not inside a declared folder. Reading is not writing                                                                                                                                                                                               |
+| a module UI's token                   | `permissions.api` (and a legacy module's `coreEndpoints`) | the endpoint is not declared. This holds whether or not enforcement is on                                                                                                                                                                                                                                   |
 
 A refusal throws `PluginPermissionError` (`code: 'plugin_permission_denied'`, with `permission` and
 `subject`) and writes an audit row. With enforcement **off** the same call goes ahead and writes an
-audit row of its own (`plugin.permission.undeclared`). `ctx.exec`, `ctx.fetch` and `ctx.fs` work
+audit row of its own (`plugin.permission.undeclared`); for `ctx.store` that is a statement that
+changes a core table (a read of one is not audited when enforcement is off), or `ATTACH`, `DETACH`,
+`PRAGMA` and `VACUUM`. `ctx.exec`, `ctx.fetch` and `ctx.fs` work
 the same way in both modes. A command gets a small environment (`PATH`, `HOME`, `LANG`, `TMPDIR`,
 `USER`, …) and not the gateway's own, so tokens and keys do not pass to it by accident.
 
 **What is not covered, plainly:**
 
 - Anything a plugin does without the context: its own `child_process`, `fs`, `fetch`, `net`, `process`,
-  an `import` of any module. It can read `~/.clerq`, the vault key and the gateway token.
+  an `import` of any module (a bare package name or an absolute path is not part of the approval). It can read `~/.clerq`,
+  the vault key and the gateway token, and write the database file or the settings directly.
+- **`ctx.store` is a check of statement text, not a database permission system.** The plugin runs its SQL
+  through the gateway's own database handle, which can reach every table; the check reads the words of the
+  statement (bare, `"quoted"`, `[bracketed]`, `` `backticked` `` and `'string'` names, comments skipped) and
+  refuses one that names a table that is not the plugin's own. It is over-eager on purpose (a column or a string
+  that equals a core table's name, such as `memory` or `runs`, is refused too), it does not see inside a
+  function the plugin calls itself, and `ctx.store.transaction(fn)` runs whatever `fn` does. It keeps the
+  settings, the approvals and the audit log out of reach of a plugin that goes through the context; it does
+  not keep them out of reach of one that does not.
 - `llm` and `memory`: the context offers no model call or memory helper in this release, so these
   are declared, shown, hashed into the approval, and enforced on nothing.
-- What an allowed command does with its arguments, and what an allowed host does with a request.
+- What an allowed command does with its arguments or in its working directory (see `exec` above), and
+  what an allowed host does with a request.
 - DNS: a declared host that resolves to a private address is reached.
 - The plugin's own routes: a plugin that sends a request to the gateway's own address with
   `ctx.fetch` needs that address declared like any host, but a request it makes some other way is not checked.
 - Time of check and time of use for files: the path is resolved and checked, then opened; a link
   swapped in between is possible.
-- Code the manifest's `checksum` does not cover (see below).
+- Code the `checksum` does not cover (see below): a bare or absolute import.
 
 These are rows in the audit log (the `audit_log` table of `~/.clerq/clerq.db`; no route reads it
 yet). Each has the actor `plugin:<id>`, `gateway` or `operator`:
@@ -327,12 +360,17 @@ The same refusal or undeclared use is written once a minute, with the number of 
 
 ## Checksums and what runs
 
-The `checksum` is a SHA-256 over the plugin's `manifest.json` and **every file under the paths it
-names as code**, sorted by path: `entry.server`, `entry.ui`, `skills` (for a legacy module its
-`entryPoints.routes`, `dist/ui` and `skills`), and `migrations/`, which run against the store.
-Each file counts by its path and its bytes, so renaming, adding, removing or editing one changes it.
-Files the system adds on its own (`.DS_Store`, `Thumbs.db`, `._*`) do not count. A link is followed
-and its target counted.
+The `checksum` is a SHA-256 over the plugin's `manifest.json` and **every file under the folders that
+are its code**, sorted by path:
+
+- the **whole folder the server entry is in** (`dist/` for `dist/server.js`, so what the entry imports from
+  its own folder is covered; an entry at the plugin's root covers only itself),
+- `entry.ui`, `skills`, and `migrations/`, which run against the store.
+
+For a legacy module the entry is `entryPoints.routes` or the default `dist/routes.js`, `dist/routes.cjs` and
+`build/routes.js`, the UI is `dist/ui` and the skills `skills`. Each file counts by its path and its bytes, so
+renaming, adding, removing or editing one changes it. Files the system adds on its own (`.DS_Store`,
+`Thumbs.db`, `._*`) do not count. A link is followed and its target counted.
 
 The host computes it when it loads the plugin. An author can too:
 
@@ -341,15 +379,24 @@ import { pluginChecksum } from '@clerq/plugin-sdk/node';
 console.log(pluginChecksum('./my-plugin'));
 ```
 
-**What the checksum does not cover:** files the entry imports from elsewhere (so the entry must be
-one self-contained file), `node_modules`, and files outside the named paths.
+**What the checksum does not cover:** files outside those folders, and code that is not in the copy: a
+bare package name, which Node resolves by walking up to `~/node_modules`, and an absolute path.
 
-**What runs is what was approved.** A plugin's server entry is read, hashed, and compared with the
-hash recorded when the approval was decided; then those bytes are written to
-`~/.clerq/plugin-cache/<id>/<hash>/` and imported from there. A change to the file between the
-decision and the import is noticed (the decision is made again), and a new version is a new module
-for both Node and Bun, neither of which will import a changed file from the same path. Copies of
-other versions are removed. Migrations are verified the same way.
+**What runs is what was approved, and it runs from a copy.** The host reads each of the files that were
+hashed, checks it against the hash recorded when the decision was made, and writes exactly those bytes (the
+manifest as it was validated) to `~/.clerq/plugin-cache/<id>/<first 32 hex of the checksum>/` (owner only).
+The server entry is imported from there, the UI is served from there, the skills are read from there, the
+migrations come from there, and `ctx.dir` is there. A file that is not what was approved (edited since,
+gone) means the decision is made again; an edit on disk shows as _changed since you approved it_ and takes
+effect only when you approve it (with enforcement on) and the plugin is started again. With enforcement off
+behaviour is as it was, except that it is served from the copy, which is refreshed when the hash changes
+(when the plugin is enabled again). A new version is a new path, so a new module for both Node and Bun,
+neither of which will import a changed file from the same path. Copies of other versions are removed, and a
+copy that was altered is written again.
+
+A file the checksum does not cover is not copied, so it cannot be imported from the copy. A **legacy module**
+is staged the same way, so a legacy module that imports a package from its own `node_modules`, or reads a file
+beside its folder by a relative path, must bundle it into its entry folder.
 
 ## Legacy modules
 
@@ -362,6 +409,8 @@ states and approval; with enforcement off nothing is blocked; with it on, it is 
 approved, and what it does through its context is checked like a plugin's. Its `permissions` are
 read as before, with `api` and `memory` added; a legacy `coreEndpoints` list is read together
 with `permissions.api`. Its `start`, `stop` and `upgrade` exports, if it has any, are not called.
+It is run and served from a staged copy like a plugin (its entry's folder, `dist/ui`, `skills` and
+`migrations` are what is hashed and copied), but `ctx.dir` stays its own folder on disk.
 
 ## Routes
 
