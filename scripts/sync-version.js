@@ -79,6 +79,13 @@ const targets = [
     replace: (v) => `export const GATEWAY_VERSION = '${v}';`,
     current: (m) => m[0].match(/'([^']+)'/)[1],
   },
+  {
+    // The release `clerq --version` prints.
+    file: 'apps/cli/src/version.ts',
+    pattern: /export const CLI_VERSION = '[^']+';/,
+    replace: (v) => `export const CLI_VERSION = '${v}';`,
+    current: (m) => m[0].match(/'([^']+)'/)[1],
+  },
 ];
 
 const drift = [];

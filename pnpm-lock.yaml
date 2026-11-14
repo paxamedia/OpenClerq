@@ -25,6 +25,28 @@ importers:
         specifier: ^5.6.0
         version: 5.9.3
 
+  apps/cli:
+    dependencies:
+      '@clerq/gateway-client':
+        specifier: workspace:^
+        version: link:../../packages/gateway-client
+    devDependencies:
+      '@clerq/drivers':
+        specifier: workspace:^
+        version: link:../../packages/drivers
+      '@clerq/gateway':
+        specifier: workspace:^
+        version: link:../../packages/gateway
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.11
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@types/node@22.19.11)(vite@7.3.7(@types/node@22.19.11)(lightningcss@1.33.0)(yaml@2.9.0))
+
   apps/desktop:
     dependencies:
       '@clerq/gateway-client':

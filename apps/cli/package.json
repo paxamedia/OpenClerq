@@ -1,0 +1,26 @@
+{
+  "name": "@clerq/cli",
+  "version": "0.5.1",
+  "description": "The OpenClerq command line: sign in to a gateway, add repositories, apply automations, run them and follow them",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "clerq": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "build:binary": "node ../../scripts/build-binary.js --entry apps/cli/src/main.ts --name clerq --no-calc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clerq/gateway-client": "workspace:^"
+  },
+  "devDependencies": {
+    "@clerq/drivers": "workspace:^",
+    "@clerq/gateway": "workspace:^",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.5"
+  }
+}

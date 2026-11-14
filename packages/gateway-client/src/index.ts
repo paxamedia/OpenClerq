@@ -615,7 +615,14 @@ export interface ClerqEvent<T = unknown> {
   /** e.g. `run.started`, `approval.requested`, `module.<id>.<name>`. */
   name: string;
   at: string;
-  context: { requestId?: string; sessionId?: string; runId?: string; toolCallId?: string };
+  context: {
+    requestId?: string;
+    sessionId?: string;
+    runId?: string;
+    /** For a sub-agent's run: the run whose agent started it. */
+    parentRunId?: string;
+    toolCallId?: string;
+  };
   payload: T;
 }
 
