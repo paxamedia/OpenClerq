@@ -7,7 +7,9 @@ and you can turn on checks on what it does.
 
 Read [Enforcement and its limits](#enforcement-and-its-limits) before you rely on any of it. A
 plugin runs **inside the OpenClerq service, with its access**. The checks cover what a plugin does
-_through its context_. They are not a sandbox.
+_through its context_. They are not a sandbox. What an approved plugin can do, what enforcement adds and
+how to review a plugin before you approve it are set out in one place in the
+[threat model](THREAT_MODEL.md#the-plugin-and-skill-trust-boundary).
 
 | You want to…                                              | Read                                                                             |
 | --------------------------------------------------------- | -------------------------------------------------------------------------------- |

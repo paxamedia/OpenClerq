@@ -347,8 +347,8 @@ nothing and does not start.
   kernel); it is not a sandbox for an automation.
 - **Native is the default; isolation is opt-in, per automation.** An automation that should be
   confined asks for it with `sandbox.profile` in its spec. `seatbelt` is macOS only, so on Linux the
-  choices are `native` and `container`. The container profile has not yet been run against a real
-  Docker or Podman engine; read [SECURITY.md](SECURITY.md#21-automation-sandbox-profiles) before
+  choices are `native` and `container`. The container profile runs against a real Docker engine on
+  Linux in CI (amd64 and arm64); Podman has not been run. Read [SECURITY.md](SECURITY.md#21-automation-sandbox-profiles) before
   relying on it.
 - **Do not give a containerised server the host's Docker socket.** The container profile starts
   containers through the engine it finds, at the host's paths, so a gateway in a container would need
@@ -356,6 +356,9 @@ nothing and does not start.
   the same path on both sides. That is not recommended. Run the server on the host, or a VM, if its
   automations use the container profile.
 - **Updates are yours to apply.** The server does not update itself.
+
+The whole model, with the proxy, the container and the token each in their place, is in
+[THREAT_MODEL.md](THREAT_MODEL.md#server-mode-behind-a-reverse-proxy).
 
 ## Putting a reverse proxy in front
 

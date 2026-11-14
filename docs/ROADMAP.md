@@ -315,6 +315,13 @@ retry: # only after a crash, a provider outage or an expired lease
   backoff: 1m # doubles with each retry, at most 1h
 ```
 
+**Gates and profiles.** Under `sandbox.profile: seatbelt` or `container` the gates run on a fresh
+checkout of the run's commit, not in the agent's worktree, so they test what will be published. Files
+that git ignores and the agent made there (`node_modules`, build output) are not in it: **a spec's
+gates must install what they need**, as the first gate above does, and `sandbox.network` must list the
+host they install from (`registry.npmjs.org` above). Under `native` the gates run in the worktree, where
+those files still are ([SECURITY.md](SECURITY.md#21-automation-sandbox-profiles)).
+
 `version` is the version of this format. Leave it out and it is 1; an empty `version:` is not the
 same as leaving it out and is refused. A spec that names another version is refused when saved,
 previewed or read, with its line: "This automation was written for

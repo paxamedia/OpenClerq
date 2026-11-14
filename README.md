@@ -32,8 +32,9 @@
 > curl -H "Authorization: Bearer $(cat ~/.clerq/gateway-token)" http://127.0.0.1:18790/skills
 > ```
 >
-> Treat that token as a credential — it permits tool execution on your machine. See
-> [SECURITY.md](docs/SECURITY.md) for the threat model and what is still open.
+> Treat that token as a credential — it permits tool execution on your machine. See the
+> [threat model](docs/THREAT_MODEL.md) for what OpenClerq defends against and what it does not, and
+> [SECURITY.md](docs/SECURITY.md) for the mechanisms and what is still open.
 
 ## Why Clerq?
 
@@ -259,7 +260,8 @@ clerq/
 | [SERVER](docs/SERVER.md)                             | The headless server: systemd, settings, data, reverse proxy    |
 | [CLI](docs/CLI.md)                                   | The `clerq` command line: sign in, apply, run, follow, approve |
 | [GITHUB](docs/GITHUB.md)                             | Your own GitHub App: short-lived, per-repository tokens        |
-| [SECURITY](docs/SECURITY.md)                         | Threat model, binding rules, release checklist                 |
+| [THREAT_MODEL](docs/THREAT_MODEL.md)                 | Assets, actors, trust boundaries, what 1.0 does not defend     |
+| [SECURITY](docs/SECURITY.md)                         | What is protected today, binding rules, release checklist      |
 | [DISTRIBUTION](docs/DISTRIBUTION.md)                 | Code signing, notarization, and the updater                    |
 | [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution     |
 | [RELEASING](docs/RELEASING.md)                       | The signing key, checking a download, rotation, recovery       |

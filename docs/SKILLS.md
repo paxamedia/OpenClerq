@@ -8,7 +8,9 @@ which text will be sent, and that it is the text you read.
 A skill can **declare** what its instructions expect: the tools, the websites and the files. You
 **decide** whether to trust it, and the decision is of the exact files you looked at. **Enforcement**
 is a switch, off by default, that makes those declarations count. Off, they are shown and recorded
-and nothing is held back, except that a skill you blocked is never used.
+and nothing is held back, except that a skill you blocked is never used. What an approved skill can do,
+what enforcement adds and how to review a skill before you trust it are set out in one place in the
+[threat model](THREAT_MODEL.md#the-plugin-and-skill-trust-boundary).
 
 | You want to…                                     | Read                                            |
 | ------------------------------------------------ | ----------------------------------------------- |
