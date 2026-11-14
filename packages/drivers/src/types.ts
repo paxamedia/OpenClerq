@@ -81,6 +81,7 @@ export type SandboxOptions = Pick<
   | 'runtime'
   | 'egressImage'
   | 'tagFile'
+  | 'onProgress'
 >;
 
 /** A tool call the agent wants to make that policy says a person must approve. */

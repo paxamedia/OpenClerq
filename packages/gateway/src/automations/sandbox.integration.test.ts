@@ -36,6 +36,7 @@ import { listLabelled, removeContainer, resolveRuntime, runtimeCall } from '@cle
 import { cacheKey, type Fetcher } from '@clerq/workspaces';
 import { killLeftoverProcesses, removeOrphanContainers } from '../agent-processes.js';
 import { createGateway } from '../gateway.js';
+import { getLogBuffer } from '../log-stream.js';
 import { createRun } from '../runs.js';
 import { getStore } from '../store.js';
 
@@ -906,6 +907,12 @@ exit 0
       port: 3128,
     });
     expect(runs[0]).toContain(`--network ${agentName}-net`);
+    // A slow start of the proxy (a first pull) is said in the log, by run.
+    const said = getLogBuffer().filter((e) => e.data?.runId === run.id);
+    expect(said.map((e) => e.msg)).toEqual([
+      expect.stringMatching(/^Starting the egress proxy /),
+      expect.stringMatching(/^The egress proxy is listening /),
+    ]);
     expect(runs[0]).toContain('-e HTTPS_PROXY');
     expect(runs[1]).toContain('--network none');
     expect(lines).toContain(`network rm ${agentName}-net`);

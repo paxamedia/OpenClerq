@@ -30,6 +30,7 @@ import path from 'node:path';
 import { DRIVER_CAPABILITIES, type DriverId, type SandboxOptions } from '@clerq/drivers';
 import { resolveRuntime, stopStragglers, type Straggler } from '@clerq/sandbox';
 import type { GitDirs } from '@clerq/workspaces';
+import { logger } from '../logger.js';
 import type { AutomationSpec } from './spec.js';
 
 /**
@@ -172,6 +173,9 @@ export function isolationFor(
           image: spec.sandbox.image,
           containerName: `clerq-${options.runId}`,
           labels: { 'clerq.run': options.runId },
+          // Starting the egress proxy can take minutes the first time (it pulls its image):
+          // said in the log, so that a run that seems to hang can be told from one that waits.
+          onProgress: (message: string) => logger.info(message, { runId: options.runId }),
         }
       : {}),
   });
