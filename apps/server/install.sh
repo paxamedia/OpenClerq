@@ -9,29 +9,43 @@
 # What it does: finds out which Linux or macOS machine this is, downloads the
 # release's tarball and SHA256SUMS from GitHub, checks the tarball against the
 # checksum (and refuses on a mismatch), unpacks it in a temporary folder and
-# copies the three programs into the install folder. What it never does: run as
-# root unless you pass --system, edit your shell's startup files, create a user
-# or an account, or start a service.
+# copies the three programs into the install folder. When minisign is installed it
+# first checks SHA256SUMS against its signature, SHA256SUMS.minisig, with the
+# release key below; without minisign it says so, and has checked integrity only.
+# What it never does: run as root unless you pass --system, edit your shell's
+# startup files, create a user or an account, or start a service.
 #
-# docs/SERVER.md has the same steps by hand, and how to check a download yourself.
+# docs/SERVER.md has the same steps by hand, and how to check a download yourself;
+# docs/RELEASING.md says what the signature is worth and how the key is kept.
 
 set -eu
 
 REPO_URL="https://github.com/paxamedia/OpenClerq"
 
+# The release key: the public half of the key that signs SHA256SUMS and the desktop
+# app's updates, in the form `minisign -P` takes. It is the same key as
+# plugins.updater.pubkey in apps/desktop/src-tauri/tauri.conf.json (a test checks they
+# agree), and this file is itself a release file, so a release that changes the key
+# (docs/RELEASING.md, rotation) ships its own.
+MINISIGN_KEY="RWTFlGuiTPSUETaZWif94VNcMaFH/nl43EDHam+1QGY7Vje8nOqAdMRG"
+
 usage() {
   cat <<'EOF'
 OpenClerq server installer
 
-Usage: install.sh [--system] [--systemd-user] [--no-verify] [--help]
+Usage: install.sh [--system] [--systemd-user] [--no-signature] [--no-verify] [--help]
 
   --system         Install to /usr/local/bin (needs root: uses sudo for the copy, only
                    when it is not already root). Without it, nothing needs root and
                    it refuses to run as root.
   --systemd-user   Linux: also put the example user unit in ~/.config/systemd/user/
                    and print the systemctl commands to start it. It starts nothing.
-  --no-verify      Do not check the download against SHA256SUMS. Only for a machine
-                   with no sha256sum or shasum, and only if you trust the connection.
+  --no-signature   Do not look for SHA256SUMS.minisig or check it, even when minisign
+                   is installed (a release without one, say). The checksum is still
+                   checked.
+  --no-verify      Do not check the download against SHA256SUMS (or its signature). Only
+                   for a machine with no sha256sum or shasum, and only if you trust the
+                   connection.
   --help           This text.
 
 Environment
@@ -43,7 +57,10 @@ Environment
                        GitHub (a mirror, or a test). Must be https, or http on this
                        computer; no user name, query or redirect to elsewhere.
 
-It needs curl, tar and sha256sum or shasum.
+It needs curl, tar and sha256sum or shasum. With minisign installed (apt install
+minisign, brew install minisign) it also checks that SHA256SUMS was signed with the
+OpenClerq release key; without it, only the checksum is checked, which shows the
+download is what the release lists but not who made the release.
 
 It installs clerq-server, clerq and clerq-calc, and runs `clerq-server version`
 and `clerq --version` at the end to show they start.
@@ -187,10 +204,12 @@ main() {
   system=0
   systemd_user=0
   verify=1
+  signature=1
   while [ $# -gt 0 ]; do
     case $1 in
       --system) system=1 ;;
       --systemd-user) systemd_user=1 ;;
+      --no-signature) signature=0 ;;
       --no-verify) verify=0 ;;
       -h | --help)
         usage
@@ -262,6 +281,19 @@ main() {
     say "Downloading $base/SHA256SUMS"
     fetch "$base/SHA256SUMS" "$sums" || die "could not download SHA256SUMS from $base. If this is the newest release, its server files may not be uploaded yet (they follow the desktop installers by a few minutes); try again, or name a version with CLERQ_VERSION."
   fi
+  # SHA256SUMS is checked against its signature before anything is taken from it, the file
+  # name and version included.
+  signed=0
+  if [ "$verify" -eq 1 ] && [ "$signature" -eq 1 ] && have minisign; then
+    say "Downloading $base/SHA256SUMS.minisig"
+    fetch "$base/SHA256SUMS.minisig" "$work/SHA256SUMS.minisig" || die "could not download SHA256SUMS.minisig from $base, and minisign is installed, so the signature is checked. A release made before 1.0.0 has none: run this again with --no-signature to check the checksum only."
+    if ! minisign -Vm "$sums" -x "$work/SHA256SUMS.minisig" -P "$MINISIGN_KEY" >"$work/minisign.out" 2>&1; then
+      sed 's/^/  minisign: /' "$work/minisign.out" >&2
+      die "SHA256SUMS does not match its signature, or was not signed with the OpenClerq release key. Nothing was installed. Do not use these files; see docs/RELEASING.md."
+    fi
+    signed=1
+    say "Signature ok: SHA256SUMS was signed with the OpenClerq release key (minisign)."
+  fi
   if [ -z "$version" ]; then
     found=$(awk -v suffix="-$platform.tar.gz" '
       { n = $2; sub(/^\*/, "", n) }
@@ -296,6 +328,13 @@ main() {
       die "the download does not match SHA256SUMS (expected $expected, got $actual). Nothing was installed. Try again; if it persists, do not use this file."
     fi
     say "Checksum ok (sha256 $actual)."
+    if [ "$signed" -eq 0 ]; then
+      if [ "$signature" -eq 0 ]; then
+        warn "--no-signature: the signature of SHA256SUMS was not checked, so this checked integrity only: the file is the one the release lists, not proof of who made the release."
+      else
+        warn "minisign is not installed, so this checked integrity only: the file is the one the release lists, not proof of who made the release. To check the signature too, install minisign and run this again (docs/RELEASING.md)."
+      fi
+    fi
   else
     warn "--no-verify: NOT checking the download against SHA256SUMS."
     warn "Anything that can alter what you download (a proxy, a mirror, a captured connection) can give you a program that is not OpenClerq."

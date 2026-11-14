@@ -16,12 +16,24 @@
 #     really a path, an unknown version, a download address with a user name and a
 #     redirect are refused and leave an earlier install as it was; no curl is said so;
 #   - with no sha256sum or shasum it refuses, and --no-verify installs with a warning;
+#   - SHA256SUMS is signed with a key made for the run (the installer under test is a copy
+#     with that key in place of the release key): with minisign it is checked, and a
+#     SHA256SUMS changed after signing, one signed by another key and one with no signature
+#     are refused; --no-signature installs with a warning, and with no minisign on the PATH
+#     it installs and says it checked integrity only;
 #   - an unsupported system or a musl one gets a plain message;
 #   - --systemd-user writes the unit and prints the commands without running them;
 #   - shellcheck is clean on the three shell scripts (when it is installed; with
 #     CLERQ_TEST_REQUIRE_SHELLCHECK=1 it must be).
 # With CLERQ_TEST_SUDO=1 (CI: passwordless sudo) it also runs the root cases: refusal to
 # run as root without --system, and --system into /usr/local/bin (which it removes again).
+#
+# minisign: the real one is used when it is installed (CI installs it and sets
+# CLERQ_TEST_REQUIRE_MINISIGN=1, so a runner without it fails instead of skipping). Where it
+# is not (a Mac without Homebrew's minisign), a stand-in with the same command line
+# (`minisign -Vm FILE -x SIG -P KEY`) goes first on the PATH, built on
+# scripts/verify-signatures.js, which was checked against the verifier the desktop updater
+# uses; the output then says so. That tests the installer's logic, not minisign.
 #
 # CLERQ_TEST_PRETEND_LINUX=1, on a machine that is not Linux (a Mac), runs the Linux branches
 # of all this, --systemd-user included: the darwin tarball is renamed as a linux one (the
@@ -60,6 +72,7 @@ platform=$os-$arch
 unset CLERQ_VERSION CLERQ_INSTALL_DIR CLERQ_DOWNLOAD_BASE CLERQ_GATEWAY_URL CLERQ_GATEWAY_TOKEN XDG_CONFIG_HOME
 root=$(mktemp -d "${TMPDIR:-/tmp}/clerq-test-install.XXXXXX")
 root=$(cd "$root" && pwd -P)
+verifier="$here/../../../scripts/verify-signatures.js"
 server_pid=""
 http_pid=""
 system_installed=0
@@ -122,6 +135,76 @@ run() {
   if "$@" >"$root/$label.out" 2>&1 </dev/null; then status=0; else status=$?; fi
 }
 
+# ---- signing: a key made for this run, and a minisign to check with
+cat >"$root/keys.mjs" <<'EOF'
+// node keys.mjs new <dir>          a key pair: <dir>/key.json and <dir>/pub (the line minisign -P takes)
+// node keys.mjs sign <dir> <file>  <file>.minisig, in minisign's format, by that key (prehashed, "ED")
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+const [, , cmd, dir, file] = process.argv;
+if (cmd === 'new') {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url');
+  const keyId = crypto.randomBytes(8);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(`${dir}/key.json`, JSON.stringify({ keyId: keyId.toString('hex'), private: privateKey.export({ format: 'der', type: 'pkcs8' }).toString('hex') }));
+  fs.writeFileSync(`${dir}/pub`, Buffer.concat([Buffer.from('Ed'), keyId, raw]).toString('base64') + '\n');
+} else if (cmd === 'sign') {
+  const k = JSON.parse(fs.readFileSync(`${dir}/key.json`, 'utf8'));
+  const key = crypto.createPrivateKey({ key: Buffer.from(k.private, 'hex'), format: 'der', type: 'pkcs8' });
+  const hash = crypto.createHash('blake2b512').update(fs.readFileSync(file)).digest();
+  const sig = crypto.sign(null, hash, key);
+  const comment = `timestamp:1\tfile:${file.split('/').pop()}`;
+  const global = crypto.sign(null, Buffer.concat([sig, Buffer.from(comment)]), key);
+  const body = Buffer.concat([Buffer.from('ED'), Buffer.from(k.keyId, 'hex'), sig]).toString('base64');
+  fs.writeFileSync(`${file}.minisig`, `untrusted comment: signature from a test key\n${body}\ntrusted comment: ${comment}\n${global.toString('base64')}\n`);
+} else {
+  process.exit(2);
+}
+EOF
+node "$root/keys.mjs" new "$root/key-release"
+node "$root/keys.mjs" new "$root/key-other"
+test_key=$(tr -d '\n' <"$root/key-release/pub")
+sign_sums() { node "$root/keys.mjs" sign "$root/key-release" "$1/SHA256SUMS"; } # folder: sign its SHA256SUMS
+
+# The installer under test is a copy with the test key where the release key is, so that the
+# signatures made here are the ones it accepts. The original keeps the release key.
+installer_original=$installer
+installer="$root/install.sh"
+sed "s|^MINISIGN_KEY=.*|MINISIGN_KEY=\"$test_key\"|" "$installer_original" >"$installer"
+check "the installer carries a release key, as a minisign -P line" grep -Eq '^MINISIGN_KEY="RW[A-Za-z0-9+/]{54}"$' "$installer_original"
+check "the copy under test differs from the original in that one line" test "$(diff "$installer_original" "$installer" | grep -c '^>')" = 1
+check "and the test key is not the release key" test "$test_key" != "$(sed -n 's/^MINISIGN_KEY="\(.*\)"$/\1/p' "$installer_original")"
+
+# minisign: the real one, or a stand-in with the same command line, backed by the repository's own checker.
+if command -v minisign >/dev/null 2>&1; then
+  ok "using the real minisign: $(command -v minisign)"
+elif [ "${CLERQ_TEST_REQUIRE_MINISIGN:-}" = 1 ]; then
+  bad "minisign is installed (CLERQ_TEST_REQUIRE_MINISIGN=1 requires it)"
+else
+  mkdir -p "$root/shim"
+  cat >"$root/shim/minisign" <<EOF
+#!/bin/sh
+# Stand-in for: minisign -Vm FILE -x SIGFILE -P KEY   (the one form install.sh uses)
+[ "\$1" = -Vm ] || { echo "stand-in minisign: only -Vm FILE -x SIG -P KEY" >&2; exit 2; }
+file=\$2
+shift 2
+while [ \$# -gt 0 ]; do
+  case \$1 in
+    -x) sig=\$2 ;;
+    -P) key=\$2 ;;
+    *) echo "stand-in minisign: unexpected \$1" >&2; exit 2 ;;
+  esac
+  shift 2
+done
+exec node "$verifier" --pubkey "\$key" --sig "\$sig" "\$file"
+EOF
+  chmod +x "$root/shim/minisign"
+  PATH="$root/shim:$PATH"
+  export PATH
+  echo "(minisign is not installed: a stand-in built on scripts/verify-signatures.js is used. CI uses the real one.)"
+fi
+
 # ---- the fake release, and a server for it
 srv="$root/srv"
 mkdir -p "$srv/good" "$srv/tampered" "$srv/nosums" "$srv/empty" "$srv/evil"
@@ -142,6 +225,18 @@ cp "$tarball" "$srv/nosums/$file"
 grep ' install.sh$' "$srv/good/SHA256SUMS" >"$srv/nosums/SHA256SUMS"
 # A SHA256SUMS whose server file has a path where its version should be.
 printf '%s  openclerq-server-../../x-%s.tar.gz\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$platform" >"$srv/evil/SHA256SUMS"
+# Each of those is signed, as a release's is, so that the cases below fail for their own reason
+# and not for want of a signature. Three more folders are about the signature itself.
+for folder in good tampered nosums evil; do sign_sums "$srv/$folder"; done
+mkdir -p "$srv/badsig" "$srv/otherkey" "$srv/nosig"
+for folder in badsig otherkey nosig; do
+  cp "$tarball" "$srv/$folder/$file"
+  cp "$srv/good/SHA256SUMS" "$srv/$folder/SHA256SUMS"
+done
+sign_sums "$srv/badsig"
+# Changed after it was signed, and still a correct list of checksums: the checksum check alone accepts it.
+printf '%s  unrelated-file\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >>"$srv/badsig/SHA256SUMS"
+node "$root/keys.mjs" sign "$root/key-other" "$srv/otherkey/SHA256SUMS"
 
 cat >"$root/serve.mjs" <<'EOF'
 import http from 'node:http';
@@ -195,7 +290,8 @@ check "it says the checksum was checked" has "$root/one.out" "Checksum ok"
 check "it prints the next steps" has "$root/one.out" "Next steps"
 check "it says the folder is not on the PATH and edits no rc file" has "$root/one.out" "not on your PATH"
 check "HOME is untouched" empty_dir "$h"
-check "it asked for SHA256SUMS and the tarball, and nothing else" test "$(tr '\n' ' ' <"$root/requests")" = "GET /good/SHA256SUMS GET /good/$file "
+check "it says the signature was checked, by the release key" has "$root/one.out" "Signature ok"
+check "it asked for SHA256SUMS, its signature and the tarball, and nothing else" test "$(tr '\n' ' ' <"$root/requests")" = "GET /good/SHA256SUMS GET /good/SHA256SUMS.minisig GET /good/$file "
 
 # ---- 2. a named version; installing over an install
 : >"$root/requests"
@@ -257,6 +353,26 @@ run redirect env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/redirect" CLERQ_INSTALL_DI
 if [ "$status" -ne 0 ] && [ ! -e "$root/bin4h" ]; then ok "a local http address that redirects is not followed"; else bad "a local http address that redirects is not followed" "$root/redirect.out"; fi
 check "and only the first request was made" test "$(tr '\n' ' ' <"$root/requests")" = "GET /redirect/SHA256SUMS "
 
+# ---- 4b. the signature of SHA256SUMS
+run badsig env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/badsig" CLERQ_INSTALL_DIR="$root/bin4s" sh "$installer"
+if [ "$status" -ne 0 ] && has "$root/badsig.out" "does not match its signature"; then ok "a SHA256SUMS changed after it was signed is refused, though its checksums are right"; else bad "a SHA256SUMS changed after it was signed is refused, though its checksums are right" "$root/badsig.out"; fi
+check "and nothing was installed" test ! -e "$root/bin4s"
+run otherkey env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/otherkey" CLERQ_INSTALL_DIR="$root/bin4t" sh "$installer"
+if [ "$status" -ne 0 ] && has "$root/otherkey.out" "does not match its signature"; then ok "a SHA256SUMS signed by another key is refused"; else bad "a SHA256SUMS signed by another key is refused" "$root/otherkey.out"; fi
+check "and nothing was installed" test ! -e "$root/bin4t"
+run nosig env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/nosig" CLERQ_INSTALL_DIR="$root/bin4u" sh "$installer"
+if [ "$status" -ne 0 ] && has "$root/nosig.out" "SHA256SUMS.minisig"; then ok "with minisign installed and no signature in the release, it refuses"; else bad "with minisign installed and no signature in the release, it refuses" "$root/nosig.out"; fi
+check "and says how to go on without it" has "$root/nosig.out" "--no-signature"
+check "and nothing was installed" test ! -e "$root/bin4u"
+run nosig_ok env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/nosig" CLERQ_INSTALL_DIR="$root/bin4v" sh "$installer" --no-signature
+if [ "$status" -eq 0 ] && [ -x "$root/bin4v/clerq-server" ]; then ok "--no-signature installs on the checksum alone"; else bad "--no-signature installs on the checksum alone" "$root/nosig_ok.out"; fi
+check "and says it checked integrity only" has "$root/nosig_ok.out" "checked integrity only"
+check "and still checked the checksum" has "$root/nosig_ok.out" "Checksum ok"
+: >"$root/requests"
+run noverify_sig env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/nosig" CLERQ_INSTALL_DIR="$root/bin4w" sh "$installer" --no-verify
+if [ "$status" -eq 0 ]; then ok "--no-verify installs from a release with no signature"; else bad "--no-verify installs from a release with no signature" "$root/noverify_sig.out"; fi
+check "and never asked for the signature" lacks "$root/requests" "minisig"
+
 # ---- 5. no sha256sum or shasum: refuse, unless told otherwise
 minpath="$root/minpath"
 mkdir -p "$minpath"
@@ -276,6 +392,22 @@ for t in "$minpath"/*; do
 done
 run nocurl env PATH="$nocurl" HOME="$h" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$root/bin5b" /bin/sh "$installer"
 if [ "$status" -ne 0 ] && has "$root/nocurl.out" "curl is not installed" && [ ! -e "$root/bin5b" ]; then ok "with no curl it says so (wget is not a fallback: it cannot refuse an http redirect)"; else bad "with no curl it says so" "$root/nocurl.out"; fi
+
+# No minisign on the PATH (the tools the installer needs, and nothing else): it installs, and says plainly
+# that it checked the checksum only. The release it is given has no signature at all.
+nominisign="$root/nominisign"
+mkdir -p "$nominisign"
+for t in "$minpath"/*; do ln -s "$(readlink "$t")" "$nominisign/$(basename "$t")"; done
+for t in sha256sum shasum; do
+  if p=$(command -v "$t" 2>/dev/null) && [ -x "$p" ]; then ln -s "$p" "$nominisign/$t"; fi
+done
+: >"$root/requests"
+run nominisign env PATH="$nominisign" HOME="$h" CLERQ_DOWNLOAD_BASE="$base/nosig" CLERQ_INSTALL_DIR="$root/bin5c" /bin/sh "$installer"
+if [ "$status" -eq 0 ] && [ -x "$root/bin5c/clerq-server" ]; then ok "with no minisign installed it still installs"; else bad "with no minisign installed it still installs" "$root/nominisign.out"; fi
+check "and says minisign is not installed and that it checked integrity only" has "$root/nominisign.out" "minisign is not installed, so this checked integrity only"
+check "and never asked for the signature" lacks "$root/requests" "minisig"
+run nominisign_bad env PATH="$nominisign" HOME="$h" CLERQ_DOWNLOAD_BASE="$base/tampered" CLERQ_INSTALL_DIR="$root/bin5d" /bin/sh "$installer"
+if [ "$status" -ne 0 ] && [ ! -e "$root/bin5d" ]; then ok "without minisign a tampered tarball is still refused by the checksum"; else bad "without minisign a tampered tarball is still refused by the checksum" "$root/nominisign_bad.out"; fi
 
 # ---- 6. systems it does not support
 fake="$root/fakebin"
@@ -384,7 +516,7 @@ fi
 
 # ---- 10. shellcheck
 if command -v shellcheck >/dev/null 2>&1; then
-  scripts="$installer $here/test-install.sh"
+  scripts="$installer_original $here/test-install.sh"
   [ -f "$here/test-image.sh" ] && scripts="$scripts $here/test-image.sh"
   # shellcheck disable=SC2086 # the paths have no spaces; splitting is the point
   if shellcheck -s sh $scripts >"$root/shellcheck.out" 2>&1; then ok "shellcheck is clean on the shell scripts"; else bad "shellcheck is clean on the shell scripts" "$root/shellcheck.out"; fi
