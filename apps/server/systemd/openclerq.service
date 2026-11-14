@@ -1,8 +1,8 @@
 # OpenClerq server as a system service. An example to adapt, not a promise that
 # every line suits every machine. docs/SERVER.md walks through installing it.
 #
-#   sudo useradd --system --user-group --home-dir /var/lib/openclerq \
-#        --shell /usr/sbin/nologin openclerq
+#   sudo useradd --system --user-group --no-create-home \
+#        --home-dir /var/lib/openclerq --shell /usr/sbin/nologin openclerq
 #   sudo install -m 0755 clerq-server clerq-calc /usr/local/bin/
 #   sudo install -m 0644 openclerq.service /etc/systemd/system/openclerq.service
 #   sudo systemctl daemon-reload
@@ -39,9 +39,12 @@ User=openclerq
 Group=openclerq
 
 # The data directory is $HOME/.clerq, so HOME is the state directory: one place
-# for the database, backups, token, vault, clones and worktrees. systemd makes
-# /var/lib/openclerq, owned by the service account, mode 0700.
+# for the database, backups, token, vault, clones and worktrees, and the
+# account's ~/.ssh and ~/.gitconfig. systemd makes /var/lib/openclerq, owned by
+# the service account. Its mode must be set: the default is 0755, which lets
+# every user on the machine list what is in it.
 StateDirectory=openclerq
+StateDirectoryMode=0700
 WorkingDirectory=/var/lib/openclerq
 Environment=HOME=/var/lib/openclerq
 Environment=CLERQ_HOST=127.0.0.1

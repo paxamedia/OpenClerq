@@ -25,8 +25,8 @@
 [Unit]
 Description=OpenClerq server
 Documentation=https://github.com/paxamedia/OpenClerq/blob/main/docs/SERVER.md
-After=network-online.target
-Wants=network-online.target
+# No network-online.target here: it exists only in the system manager. If the
+# network is not up yet, Restart=on-failure below tries again.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 

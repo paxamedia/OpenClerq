@@ -120,7 +120,7 @@ jobs:
           systemd-analyze --version | head -n 1
           bin=apps/server/dist/bun-linux-x64
           sudo install -m 0755 "$bin/clerq-server" "$bin/clerq-calc" /usr/local/bin/
-          sudo useradd --system --user-group --home-dir /var/lib/openclerq --shell /usr/sbin/nologin openclerq
+          sudo useradd --system --user-group --no-create-home --home-dir /var/lib/openclerq --shell /usr/sbin/nologin openclerq
           systemd-analyze verify --man=no apps/server/systemd/openclerq.service
           mkdir -p "$HOME/.local/bin"
           install -m 0755 "$bin/clerq-server" "$HOME/.local/bin/clerq-server"
