@@ -668,25 +668,32 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"done","tot
   }, 60_000);
 
   it("does not kill the user's own process that sits in the worktree", async () => {
+    // The user's shell: started before the run, it moves into the worktree once there is one,
+    // as a person cd-ing into it would. Two files order it with the run, so the test does not
+    // depend on how fast either side is: `where` names the worktree (written whole, then
+    // renamed into place, so the shell never reads half of it) and `ack` is written by the
+    // shell once it is in. The fake agent waits for `ack` before it finishes, so the scan
+    // that follows the agent always finds the shell under the worktree.
+    const where = path.join(root, `user-shell-${Date.now()}`);
+    const ack = `${where}.ack`;
     fs.writeFileSync(
       path.join(bin, 'claude-plain'),
       `#!/bin/sh
 [ "$1" = "--version" ] && { echo "9.9.9 (Claude Code)"; exit 0; }
 echo changed > CHANGED.md
-sleep 2
+# Up to 30 s for the user's shell to say it is in the worktree.
+n=0
+while [ ! -e "${ack}" ] && [ "$n" -lt 600 ]; do sleep 0.05; n=$((n + 1)); done
 echo '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0,"usage":{}}'
 `,
       { mode: 0o755 }
     );
     process.env.FAKE_AGENT = 'claude-plain';
-    // The user's shell: started before the run, it moves into the worktree
-    // once there is one, as a person cd-ing into it would.
-    const where = path.join(root, `user-shell-${Date.now()}`);
     const own = spawn(
       '/usr/bin/perl',
       [
         '-e',
-        `until (-e "${where}") { select(undef,undef,undef,0.05) } open F, "${where}"; chomp($p = <F>); chdir $p or die; sleep 30`,
+        `until (-e "${where}") { select(undef,undef,undef,0.05) } open F, "${where}" or die; chomp($p = <F>); chdir $p or die "cannot enter [$p]"; open A, ">${ack}" or die; close A; sleep 30`,
       ],
       { stdio: 'ignore', detached: true }
     );
@@ -704,13 +711,16 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"done","tot
         const { body } = await json<RunView>(`/runs/${runId}`);
         const p = body.steps.find((s) => s.input?.action === 'worktree')?.output?.path;
         if (p) {
-          fs.writeFileSync(where, `${p}\n`);
+          fs.writeFileSync(`${where}.tmp`, `${p}\n`);
+          fs.renameSync(`${where}.tmp`, where);
           break;
         }
         await new Promise((r) => setTimeout(r, 20));
       }
       const run = await waitForRun(runId, finished);
       expect(run.status, run.exitReason).toBe('done');
+      // The shell got into the worktree before the agent finished.
+      expect(fs.existsSync(ack)).toBe(true);
       // Found under the worktree, reported, and left running.
       const left = stepsNamed(run, 'process.stragglers').flatMap(
         (s) => (s.output?.leftRunning as Array<{ pid: number }> | undefined) ?? []
