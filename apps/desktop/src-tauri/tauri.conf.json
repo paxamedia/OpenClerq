@@ -27,10 +27,10 @@
         "default-src": "'self'",
         "script-src": "'self'",
         "style-src": "'self'",
-        "img-src": "'self' data:",
+        "img-src": "'self'",
         "font-src": "'self' data:",
-        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:*",
-        "frame-src": "http://127.0.0.1:* http://localhost:*",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:*",
+        "frame-src": "http://127.0.0.1:*",
         "object-src": "'none'",
         "base-uri": "'none'",
         "form-action": "'none'"

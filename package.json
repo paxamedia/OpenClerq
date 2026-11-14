@@ -28,6 +28,7 @@
     "format": "prettier --write --ignore-path .gitignore --ignore-path .prettierignore --ignore-path .git/info/exclude \"**/*.{ts,tsx,json,md}\"",
     "format:check": "prettier --check --ignore-path .gitignore --ignore-path .prettierignore --ignore-path .git/info/exclude \"**/*.{ts,tsx,json,md}\"",
     "ui:shots": "node scripts/ui-shots.mjs",
+    "csp:check": "node scripts/check-csp.mjs",
     "build:installers": "pnpm build:sidecars && node scripts/build-desktop.js",
     "build:installers:local": "UNSET_CI=1 pnpm run build:installers",
     "build:sidecars": "node scripts/build-sidecars.js",
