@@ -10,6 +10,7 @@
 
 export { createGateway, CLOSE_GRACE_MS, GATEWAY_VERSION, type Gateway } from './gateway.js';
 export { resolveGatewayToken } from './security/auth.js';
+export { getCalcBinaryPath } from './calc.js';
 export type { GatewayConfig, GatewayContext } from './types.js';
 export {
   loadModulesFromDir,

@@ -1,0 +1,28 @@
+{
+  "name": "@clerq/server",
+  "version": "0.5.1",
+  "description": "OpenClerq server: the gateway as a headless daemon (systemd, containers, a home server)",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "clerq-server": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "build:binary": "node ../../scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server --with-calc",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clerq/gateway": "workspace:^",
+    "@clerq/gateway-client": "workspace:^",
+    "@clerq/store": "workspace:^",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.5"
+  }
+}
