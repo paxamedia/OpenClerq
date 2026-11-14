@@ -294,6 +294,15 @@ describe('signing out', () => {
     expect(out.json().user).toMatchObject({ signedOut: true, revoked: true });
     expect(out.json().message).toContain('revoked');
     expect(fake.grantsRevoked).toEqual(['octocat']);
+    // Both ends of it are in the audit log, without a token.
+    const rows = getStore()
+      .prepare("SELECT action, detail FROM audit_log WHERE action LIKE 'github.user.%' ORDER BY id")
+      .all()
+      .map((r) => `${r.action} ${r.detail}`);
+    expect(rows).toEqual([
+      'github.user.signed_in {"login":"octocat"}',
+      'github.user.signed_out {"revoked":true}',
+    ]);
     expect(vault.entries.has(USER_TOKENS_SECRET)).toBe(false);
     expect(vault.entries.has(APP_CLIENT_SECRET_SECRET)).toBe(false);
     expect(vault.entries.has(APP_PRIVATE_KEY_SECRET)).toBe(false);

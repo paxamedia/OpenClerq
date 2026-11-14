@@ -24,7 +24,6 @@
 
 import type { Express, Request, Response } from 'express';
 import { parseRemote } from '@clerq/workspaces';
-import { audit } from '@clerq/store';
 import { logger } from '../logger.js';
 import { getStore } from '../store.js';
 import { GithubApiError } from './api.js';
@@ -587,12 +586,6 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
           .status(404)
           .json({ error: 'not_signed_in', message: 'Nobody is signed in to GitHub.' });
       }
-      audit(getStore(), {
-        actor: 'operator',
-        action: 'github.user.signed_out',
-        subject: 'github',
-        detail: { revoked: out.revoked },
-      });
       res.json(out);
     } catch (e) {
       refuse(res, e, 'signout');

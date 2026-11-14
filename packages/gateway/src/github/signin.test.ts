@@ -24,7 +24,7 @@ import {
   SignInError,
   type FlowStart,
 } from './signin.js';
-import { closeStore, initStore } from '../store.js';
+import { closeStore, getStore, initStore } from '../store.js';
 
 let fake: FakeGithub;
 const saved = { api: process.env.CLERQ_GITHUB_API, web: process.env.CLERQ_GITHUB_WEB };
@@ -158,7 +158,21 @@ afterAll(async () => {
   }
 });
 
+/** What was written to the audit log about a sign-in, in order. */
+const audited = () =>
+  getStore()
+    .prepare(
+      "SELECT action, subject, detail FROM audit_log WHERE action LIKE 'github.user.%' ORDER BY id"
+    )
+    .all()
+    .map((r) => ({
+      action: String(r.action),
+      subject: String(r.subject),
+      detail: JSON.parse(String(r.detail ?? 'null')),
+    }));
+
 beforeEach(() => {
+  getStore().prepare('DELETE FROM audit_log').run();
   fake.reset();
   fake.installations.length = 0;
   clock = Date.UTC(2026, 10, 14, 9, 0, 0);
@@ -743,6 +757,25 @@ describe('renewing', () => {
     expect(up).toMatchObject({ signedIn: true, user: { login: 'octocat' } });
   });
 
+  it('keeps the sign-in when GitHub is limiting how fast it is asked (403 or 429, no error code)', async () => {
+    await signedIn();
+    pastExpiry();
+    for (const status of [429, 403]) {
+      fake.failNext.set('/login/oauth/access_token', {
+        status,
+        message: 'You have exceeded a rate limit.',
+      });
+      const limited = await signin.user();
+      expect(limited).toMatchObject({ signedIn: false, refreshable: true });
+      expect(limited.message).toContain(`right now (${status})`);
+      expect(limited.message).toContain('tried again');
+      expect(vault.get(USER_TOKENS_SECRET)).toBeDefined();
+    }
+    // When the limit is over, the next question renews it.
+    expect(await signin.user()).toMatchObject({ signedIn: true, user: { login: 'octocat' } });
+    expect(fake.refreshes()).toHaveLength(3);
+  });
+
   it('keeps the sign-in and says so when the client secret is wrong', async () => {
     await signedIn();
     pastExpiry();
@@ -776,6 +809,67 @@ describe('renewing', () => {
     const view = await signin.user();
     expect(view).toMatchObject({ signedIn: false });
     expect(view.message).toContain('could not be stored');
+  });
+});
+
+describe('the audit log', () => {
+  it('records a sign-in with who, and a sign-out with whether it was revoked, and no token', async () => {
+    await signedIn('hubot');
+    await signin.signOut();
+    const rows = audited();
+    expect(rows).toEqual([
+      { action: 'github.user.signed_in', subject: 'github', detail: { login: 'hubot' } },
+      { action: 'github.user.signed_out', subject: 'github', detail: { revoked: true } },
+    ]);
+    expect(JSON.stringify(rows)).not.toMatch(/ghu_|ghr_/);
+  });
+
+  it('writes nothing for a sign-in that was refused, expired or cancelled', async () => {
+    const a = await signin.start();
+    fake.deny(a.userCode);
+    await step(a);
+    const b = await signin.start();
+    signin.cancel(b.flowId);
+    expect(audited()).toEqual([]);
+  });
+
+  it('says a sign-out that GitHub did not revoke', async () => {
+    await signedIn();
+    vault.delete(APP_CLIENT_SECRET_SECRET);
+    await signin.signOut();
+    expect(audited().at(-1)).toEqual({
+      action: 'github.user.signed_out',
+      subject: 'github',
+      detail: { revoked: false },
+    });
+  });
+
+  it('does not let a failing audit undo a sign-in or a sign-out', async () => {
+    signin.close();
+    signin = new GithubSignIn({
+      vault,
+      now: () => clock,
+      audit: () => {
+        throw new Error('the log is full');
+      },
+      sleep: (ms, signal) =>
+        new Promise<void>((resolve) => {
+          sleeps.push(ms);
+          if (signal.aborted) return resolve();
+          waiting.push(() => {
+            clock += ms;
+            resolve();
+          });
+          signal.addEventListener('abort', () => resolve(), { once: true });
+        }),
+    });
+    const flow = await signin.start();
+    fake.approve(flow.userCode);
+    await step(flow);
+    expect(signin.status(flow.flowId)).toMatchObject({ status: 'approved' });
+    expect(vault.get(USER_TOKENS_SECRET)).toBeDefined();
+    expect(await signin.signOut()).toMatchObject({ signedOut: true, revoked: true });
+    expect(vault.get(USER_TOKENS_SECRET)).toBeUndefined();
   });
 });
 
@@ -825,6 +919,21 @@ describe('signing out', () => {
     const out = await signin.signOut();
     expect(out).toMatchObject({ signedOut: true, revoked: false });
     expect(out?.message).toContain('had expired');
+  });
+
+  it('cuts the app’s client secret out of what GitHub says, before anything has used it', async () => {
+    // A fresh object that has not read the secret yet.
+    const fresh = makeSignIn();
+    expect(fresh.scrub(`the secret ${fake.clientSecret} was sent`)).toBe(
+      'the secret «redacted» was sent'
+    );
+    fresh.close();
+    // And in an answer: GitHub echoes the basic credentials of a revoke.
+    await signedIn();
+    fake.failNext.set('/grant', { status: 500, message: 'oops {secret}' });
+    const out = await signin.signOut();
+    expect(out?.message).toContain('«redacted»');
+    expect(JSON.stringify(out)).not.toContain(fake.clientSecret);
   });
 
   it('answers null when nobody is signed in', async () => {

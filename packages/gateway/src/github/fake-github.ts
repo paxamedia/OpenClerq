@@ -514,8 +514,14 @@ export class FakeGithub {
           access_token?: string;
         };
         const echoed = bearer ?? sent.device_code ?? sent.refresh_token ?? sent.access_token ?? '';
+        // `{secret}` becomes the app's client secret, as sent in a body or as basic credentials.
+        const basic = /^Basic (.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+        const secret =
+          (body as { client_secret?: string } | undefined)?.client_secret ??
+          (basic ? Buffer.from(basic, 'base64').toString().split(':')[1] : '') ??
+          '';
         return reply(failure.status, {
-          message: failure.message.replace('{token}', echoed),
+          message: failure.message.replace('{token}', echoed).replace('{secret}', secret ?? ''),
         });
       }
     }

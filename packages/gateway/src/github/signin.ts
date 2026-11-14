@@ -24,7 +24,9 @@
  */
 
 import crypto from 'node:crypto';
+import { audit } from '@clerq/store';
 import { logger } from '../logger.js';
+import { getStore, isStoreOpen } from '../store.js';
 import { GithubApiError, githubRequest, nextPage } from './api.js';
 import {
   APP_CLIENT_SECRET_SECRET,
@@ -161,6 +163,8 @@ export interface SignInOptions {
   app?: () => GithubAppConfig | null;
   maxFlows?: number;
   userCacheMs?: number;
+  /** Record that somebody signed in or out (never a token). Default: the audit log. */
+  audit?: (action: 'github.user.signed_in' | 'github.user.signed_out', detail: object) => void;
 }
 
 interface StoredTokens {
@@ -191,6 +195,12 @@ interface Flow {
   finishedAt?: number;
   abort: AbortController;
 }
+
+/** The audit log, when there is one. */
+const auditLog: NonNullable<SignInOptions['audit']> = (action, detail) => {
+  if (!isStoreOpen()) return;
+  audit(getStore(), { actor: 'operator', action, subject: 'github', detail });
+};
 
 const realSleep = (ms: number, signal: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
@@ -230,6 +240,7 @@ export class GithubSignIn {
   private readonly appOf: () => GithubAppConfig | null;
   private readonly maxFlows: number;
   private readonly userCacheMs: number;
+  private readonly record: NonNullable<SignInOptions['audit']>;
   private readonly flows = new Map<string, Flow>();
   /** Every secret seen, newest last: cut out of any text that came from GitHub. */
   private readonly known: string[] = [];
@@ -253,6 +264,15 @@ export class GithubSignIn {
     this.appOf = options.app ?? readAppConfig;
     this.maxFlows = options.maxFlows ?? MAX_FLOWS;
     this.userCacheMs = options.userCacheMs ?? USER_CACHE_MS;
+    const write = options.audit ?? auditLog;
+    // A row that cannot be written must not undo (or stop) a sign-in or a sign-out.
+    this.record = (action, detail) => {
+      try {
+        write(action, detail);
+      } catch {
+        logger.warn('Could not write a GitHub sign-in to the audit log');
+      }
+    };
   }
 
   // ---- words from GitHub, with every secret cut out ---------------------------------
@@ -268,6 +288,8 @@ export class GithubSignIn {
   /** `value` with no token, code or secret in it, and not long. */
   scrub(value: string): string {
     let out = value;
+    // The client secret goes in a refresh's body and a revoke's Basic header: it is one of them too.
+    this.clientSecret();
     for (const secret of this.known) out = out.split(secret).join('«redacted»');
     // Whatever else looks like a GitHub token, in case one was not seen first.
     out = out.replace(/\b(gh[opsur]_[A-Za-z0-9]{8,})/g, '«redacted»');
@@ -324,7 +346,9 @@ export class GithubSignIn {
   }
 
   private clientSecret(): string | null {
-    return this.vault.get(APP_CLIENT_SECRET_SECRET) ?? null;
+    const secret = this.vault.get(APP_CLIENT_SECRET_SECRET) ?? null;
+    this.learn(secret ?? undefined);
+    return secret;
   }
 
   // ---- requests to GitHub's website (the login endpoints) -----------------------------
@@ -638,6 +662,7 @@ export class GithubSignIn {
       }`;
     }
     this.end(flow, 'approved', message, { user });
+    this.record('github.user.signed_in', { login: user?.login ?? null });
   }
 
   /** A flow's state, or null when there is no such flow (never started, or forgotten). */
@@ -835,7 +860,14 @@ export class GithubSignIn {
             'GitHub no longer accepts the saved sign-in (it expired or was revoked). Sign in again.',
         };
       }
-      if (answer.status >= 500 || answer.status === 0) {
+      // A server error, or GitHub limiting how fast it is asked (a 403 or 429 with no error code):
+      // nothing is wrong with the sign-in, so it is kept and tried again later.
+      if (
+        answer.status >= 500 ||
+        answer.status === 0 ||
+        answer.status === 408 ||
+        ((answer.status === 403 || answer.status === 429) && !error)
+      ) {
         return {
           ok: false,
           signedOut: false,
@@ -969,6 +1001,12 @@ export class GithubSignIn {
 
   /** `DELETE /github/user`: forget the tokens, and revoke the authorization when that is possible. Null when nobody was signed in. */
   async signOut(): Promise<SignOutView | null> {
+    const out = await this.signOutNow();
+    if (out) this.record('github.user.signed_out', { revoked: out.revoked });
+    return out;
+  }
+
+  private async signOutNow(): Promise<SignOutView | null> {
     const app = this.appOf();
     const stored = this.readStored();
     if (!stored) return null;
