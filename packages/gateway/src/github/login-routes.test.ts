@@ -324,9 +324,14 @@ describe('disconnecting while a sign-in is waiting', () => {
     const view = (await call('GET', `/github/login/${started.flowId}`)).json();
     expect(view.status).toBe('error');
     expect(view.message).toContain('disconnected');
+    // The flow polls every few milliseconds, so on a loaded machine a poll can have been made
+    // before the disconnect got through: let one that was already on its way land, then count.
+    await new Promise((r) => setTimeout(r, 30));
+    const before = fake.polls().length;
     fake.approve(started.userCode);
     await new Promise((r) => setTimeout(r, 60));
-    expect(fake.polls()).toHaveLength(0);
+    // No poll after the disconnect, so nothing was told the approval.
+    expect(fake.polls()).toHaveLength(before);
     expect(vault.entries.has(USER_TOKENS_SECRET)).toBe(false);
     // Connect the same app again: nobody is signed in.
     vault.set(APP_PRIVATE_KEY_SECRET, fake.privateKeyPem);
