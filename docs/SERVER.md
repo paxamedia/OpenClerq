@@ -53,7 +53,8 @@ curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/insta
 to do; with no `curl` it says so and stops), `tar` and `sha256sum` or `shasum`. It works
 out whether this is Linux or macOS and which CPU, downloads that release's tarball and
 `SHA256SUMS` from GitHub (no API calls), refuses to go on unless the tarball matches its line in
-`SHA256SUMS`, and copies **`clerq-server`, `clerq` and `clerq-calc` into one folder**:
+`SHA256SUMS` (and, when `minisign` is installed, unless `SHA256SUMS` carries a signature by the
+OpenClerq release key), and copies **`clerq-server`, `clerq` and `clerq-calc` into one folder**:
 `~/.local/bin` by default. The three go together because the server looks for `clerq-calc` next to
 itself. Each file is copied under a temporary name and moved into place, so installing over a
 running server is safe (the running one keeps going until you restart it). It ends by running
@@ -68,6 +69,7 @@ prints a `PATH` line if the folder is not on your `PATH`), create an account, or
 | `CLERQ_INSTALL_DIR=/opt/bin`    | Install there. Default: `~/.local/bin`, or `/usr/local/bin` with `--system`.                                                                                                                                                              |
 | `--system`                      | Install to `/usr/local/bin` for every user. Run it as yourself: it uses `sudo` only for the copy (and refuses to run as root without it).                                                                                                 |
 | `--systemd-user`                | Linux: also write the user unit to `~/.config/systemd/user/openclerq.service` and print the `systemctl --user` commands. It runs none of them.                                                                                            |
+| `--no-signature`                | Do not look for `SHA256SUMS.minisig` or check it, even with `minisign` installed (a release made before there was one, say). The checksum is still checked.                                                                               |
 | `--no-verify`                   | Skip the checksum check. Only for a machine with neither `sha256sum` nor `shasum`; it says so loudly. Without a tool and without this, it refuses.                                                                                        |
 | `CLERQ_DOWNLOAD_BASE=https://…` | Take `SHA256SUMS` and the tarball from here instead of GitHub (a mirror; the tests). Must be https, or http on this computer (127.0.0.1, `localhost`, `[::1]`, and then no redirect is followed); no user name, space, query or fragment. |
 
@@ -81,22 +83,28 @@ curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/insta
 Run the same command again to upgrade. To remove it, delete the three files (and, for a user
 service, `systemctl --user disable --now openclerq` and the unit). Your data in `~/.clerq` stays.
 
-What the checksum does and does not tell you: `SHA256SUMS` is a release file too, so it shows that
+What the checks do and do not tell you. `SHA256SUMS` is a release file, so by itself it shows that
 the tarball you got is the one that was released and was not damaged on the way, not that GitHub
-or your connection is honest. The release files are not signed. On a Mac, a file saved by a
-browser carries a quarantine mark that makes Gatekeeper refuse an unsigned program; `curl` and
-this installer do not set it (for a browser download, `xattr -d com.apple.quarantine <file>`).
+or your connection is honest. Each release also has `SHA256SUMS.minisig`, a signature of it by the
+project's key (the one that signs the desktop updates; [RELEASING.md](RELEASING.md) has the key and
+how it is kept). When `minisign` is installed (`apt install minisign`, `brew install minisign`)
+the installer checks it, with the key it carries, and says `Signature ok`. When it is not, the
+installer says plainly that it **checked integrity only**: the file is the one the release lists, and
+that is all. Neither is code signing: the programs are **not signed or notarized**. On a Mac, a file
+saved by a browser carries a quarantine mark that makes Gatekeeper refuse an unsigned program; `curl`
+and this installer do not set it (for a browser download, `xattr -d com.apple.quarantine <file>`).
 
 ### Check a download by hand
 
 For anyone who does not pipe a script to a shell. The release page lists, for each version
 `X.Y.Z`: `openclerq-server-X.Y.Z-<os>-<arch>.tar.gz` for `linux-x64`, `linux-arm64`,
-`darwin-arm64` and `darwin-x64`, `SHA256SUMS` and `install.sh`.
+`darwin-arm64` and `darwin-x64`, `SHA256SUMS`, `SHA256SUMS.minisig` and `install.sh`.
 
 ```bash
 v=1.0.0; target=linux-x64        # linux-x64, linux-arm64, darwin-arm64 or darwin-x64
 base=https://github.com/paxamedia/OpenClerq/releases/download/v$v
-curl -fsSLO "$base/SHA256SUMS" -O "$base/openclerq-server-$v-$target.tar.gz"
+curl -fsSLO "$base/SHA256SUMS" -O "$base/SHA256SUMS.minisig" -O "$base/openclerq-server-$v-$target.tar.gz"
+minisign -Vm SHA256SUMS -P RWTFlGuiTPSUETaZWif94VNcMaFH/nl43EDHam+1QGY7Vje8nOqAdMRG   # or: node scripts/verify-signatures.js --sig SHA256SUMS.minisig SHA256SUMS
 grep " openclerq-server-$v-$target.tar.gz\$" SHA256SUMS | sha256sum --check -     # macOS: shasum -a 256 --check -
 tar -xzf "openclerq-server-$v-$target.tar.gz"
 cd "openclerq-server-$v-$target"
@@ -491,6 +499,8 @@ which leaves out those upstream failures, or keep that log as private as the tok
 | A run fails with "Read-only file system"                                        | The repository is outside the state directory; add `ReadWritePaths=` ([above](#as-a-system-service)).                                                                                                                                        |
 | `Calculation engine not found … ` at start                                      | `clerq-calc` is not next to `clerq-server` and `CLERQ_CALC_PATH` is not set. Calculations fail until it is.                                                                                                                                  |
 | `install.sh`: `could not download SHA256SUMS … may not be uploaded yet`         | The release exists but its server files are not on it (they follow the desktop installers by a few minutes), or `CLERQ_VERSION` names a release that has none. Try again, or name an older version.                                          |
+| `install.sh`: `SHA256SUMS does not match its signature … Nothing was installed` | `SHA256SUMS` was changed after it was signed, or was signed with another key. Do not use these files ([RELEASING.md](RELEASING.md)).                                                                                                         |
+| `install.sh`: `could not download SHA256SUMS.minisig`                           | `minisign` is installed, so the signature is required, and the release has none (one made before there was a signature). Run again with `--no-signature` to check the checksum only.                                                         |
 | `install.sh`: `the download does not match SHA256SUMS … Nothing was installed`  | The file was damaged or replaced on the way. Try again; if it persists, do not use that file.                                                                                                                                                |
 | `Did not stop within 10 s; exiting`, exit 1                                     | Something held the shutdown. The next start recovers whatever was in flight.                                                                                                                                                                 |
 | `healthcheck` is healthy but `store.schema` in `/v1/version` is `null`          | The store could not be opened (the log says why). The gateway answers, but memory and run history are unavailable.                                                                                                                           |

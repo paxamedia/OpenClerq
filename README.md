@@ -48,7 +48,9 @@ You can run **OpenClerq** from source on **macOS** or **Windows**. For prebuilt 
 
 ### Download installers (download and run)
 
-Prebuilt **macOS** (.dmg) and **Windows** (.msi or .exe) installers give users a **download-and-run** experience: install, launch the app, and the **gateway and calculation engine start automatically** — no separate terminal or Node setup needed.
+Prebuilt **macOS** (.dmg), **Windows** (.msi or .exe) and **Linux** (.deb, .rpm or AppImage) installers give users a **download-and-run** experience: install, launch the app, and the **gateway and calculation engine start automatically** — no separate terminal or Node setup needed.
+
+**On Linux**, from 1.0.0, for x64 and arm64: `sudo apt install ./Clerq_<version>_amd64.deb` on Debian and Ubuntu, `sudo dnf install ./Clerq-<version>-1.x86_64.rpm` on Fedora, or the AppImage anywhere else (`chmod +x Clerq_<version>_x86_64.AppImage`, then run it). They need WebKitGTK 4.1 and a glibc as new as Ubuntu 22.04's. In-app updates work for the AppImage; a `.deb` or `.rpm` is updated by installing the new package. Which file for which distribution, FUSE for AppImages, and what has and has not been tried: [Distribution](docs/DISTRIBUTION.md#linux).
 
 The bundle description and the in-app **About** screen state clearly:
 
@@ -57,7 +59,7 @@ The bundle description and the in-app **About** screen state clearly:
 
 Full text: [Installer disclaimer](docs/INSTALLER_DISCLAIMER.md).
 
-To **build installers** from this repo: `pnpm build:installers` (requires [Bun](https://bun.sh) — `pnpm add -D bun -w`; if Bun fails, run `cd node_modules/bun && node install.js`). Outputs: macOS → `apps/desktop/src-tauri/target/release/bundle/dmg/`; Windows → `apps/desktop/src-tauri/target/release/bundle/msi/` or `nsis/`.
+To **build installers** from this repo: `pnpm build:installers` (requires [Bun](https://bun.sh) — `pnpm add -D bun -w`; if Bun fails, run `cd node_modules/bun && node install.js`). Outputs: macOS → `apps/desktop/src-tauri/target/release/bundle/dmg/`; Windows → `apps/desktop/src-tauri/target/release/bundle/msi/` or `nsis/`; Linux → `bundle/deb/`, `bundle/rpm/` and `bundle/appimage/` (build dependencies are listed in [Distribution](docs/DISTRIBUTION.md#linux)).
 
 **On a server (Linux or macOS), from 1.0.0:** `clerq-server` runs the same gateway headless, for a machine that keeps running automations with nobody logged in. Two one-liners:
 
@@ -73,7 +75,7 @@ The installer starts nothing, edits none of your files and refuses to run as roo
 
 **From a terminal:** `clerq` signs in to a gateway (this computer's or a server's), adds repositories, applies an automation from a YAML file, runs it and follows it, and answers its approvals: `clerq login`, `repo add`, `automation apply -f`, `run --follow`, `logs`, `approve`. The server installer and the container image above include it; see [CLI](docs/CLI.md). **GitHub:** connect a GitHub App of your own and runs push and open pull requests with tokens that last at most an hour and cover one repository, instead of a personal token, and sign in to GitHub as yourself with a code you type there (`clerq github connect`, `import`, `login`, `repos`, or Settings, GitHub); see [GitHub](docs/GITHUB.md).
 
-**Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS and Windows installers, the server tarballs (with `SHA256SUMS` and `install.sh`) and the container image, and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases) and `ghcr.io`. For signed macOS builds and in-app updates, see [Distribution](docs/DISTRIBUTION.md).
+**Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS, Windows and Linux installers, the server tarballs (with `SHA256SUMS`, its signature and `install.sh`) and the container image, and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases) and `ghcr.io`. Updater bundles and `SHA256SUMS` are signed with the project's key, which is not the same as the macOS and Windows code signing the project does not have yet (the OS warns on first run); how to check a download, and how the key is kept, rotated and recovered: [Releasing](docs/RELEASING.md). Signed macOS builds and in-app updates: [Distribution](docs/DISTRIBUTION.md).
 
 ### macOS
 
@@ -260,6 +262,7 @@ clerq/
 | [SECURITY](docs/SECURITY.md)                         | Threat model, binding rules, release checklist                 |
 | [DISTRIBUTION](docs/DISTRIBUTION.md)                 | Code signing, notarization, and the updater                    |
 | [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution     |
+| [RELEASING](docs/RELEASING.md)                       | The signing key, checking a download, rotation, recovery       |
 
 ## License
 

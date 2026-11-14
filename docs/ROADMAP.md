@@ -226,7 +226,7 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [x] `apps/cli` — `clerq login | repo add | automation apply | run | logs | approve`
 - [ ] Linux packages in the release matrix (`.deb`, `.rpm`, AppImage)
 - [x] `curl | sh` installer and a one-line `docker run`
-- [ ] Restrictive Tauri CSP replacing `null`
+- [x] Restrictive Tauri CSP replacing `null`: scripts and styles from the app's own files only, no `unsafe-*`, connections and frames to `127.0.0.1` only, `data:` for fonts alone; a test holds the policy to that and `pnpm csp:check` runs the built app under it in headless Chrome against a real gateway (checked in Chrome's engine, not in the app's own webview; [SECURITY.md](SECURITY.md))
 - [ ] Real updater signing keys, signed artifacts, documented rotation and recovery
 - [x] `packages/plugin-sdk` — declared permissions, lifecycle, treated as code not prompt text ([PLUGINS.md](PLUGINS.md)): manifest v1, `definePlugin` with `upgrade`/`register`/`start`/`stop`, a checksum of the plugin's code, approval by hash, and opt-in enforcement of what a plugin does through its context. Enforcement is not a sandbox: plugins run in the gateway process
 - [x] Chat console migrated onto `plugin-sdk` as the reference first-party plugin — proving the contract by using it ([PLUGINS.md](PLUGINS.md#the-chat-console-the-reference-plugin)): its page is the package `@clerq/plugin-chat`, with a version 1 manifest that declares its endpoints, bundled and approved by its checksum, and with plugin checks on it calls the gateway through a client limited to those endpoints. Its server routes stay core gateway code
@@ -484,4 +484,5 @@ Restraint is a feature. A smaller core with stronger boundaries is the position.
 - [TOOLS.md](TOOLS.md) — tool reference and capability configuration
 - [MODULE_SYSTEM.md](MODULE_SYSTEM.md) — skills and modules
 - [DEVELOPER_SETUP.md](DEVELOPER_SETUP.md) — running locally
-- [DISTRIBUTION.md](DISTRIBUTION.md) — signing, notarization, updater
+- [DISTRIBUTION.md](DISTRIBUTION.md) — signing, notarization, updater, Linux packages
+- [RELEASING.md](RELEASING.md) — the signing key, checking a download, the release checklist, rotation and recovery
