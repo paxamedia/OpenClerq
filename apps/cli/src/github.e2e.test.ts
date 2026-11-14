@@ -595,13 +595,15 @@ describe.skipIf(!runnable)('login, logout and repos', () => {
     home: string,
     answer: (code: string) => void,
     extra: string[] = [],
-    openUrl?: (t: string) => Promise<boolean>
+    openUrl?: (t: string) => Promise<boolean>,
+    githubWaitMs?: number
   ) {
     const c = capture(new FakeStdin());
     const run = cli(['github', 'login', ...extra], {
       home,
       io: c.io,
       openUrl: openUrl ?? (async () => true),
+      githubWaitMs,
     });
     const code = await until(() => /([0-9A-F]{4}-[0-9A-F]{4})/.exec(c.stdout() + c.stderr())?.[1]);
     answer(code);
@@ -635,6 +637,16 @@ describe.skipIf(!runnable)('login, logout and repos', () => {
       refreshable: true,
       user: { login: 'hubot' },
     });
+  });
+
+  it('waits as long as the code lasts, not as long as connect does', async () => {
+    const home = await signedIn();
+    await connectApp(home);
+    // connect's wait would be over before the gateway looks at GitHub even once (it never goes faster than every second).
+    const { result } = await login(home, (code) => fake.approve(code), [], undefined, 50);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Signed in to GitHub as @octocat');
+    expect(result.stderr).not.toContain('Gave up waiting');
   });
 
   it('with --no-browser opens nothing; with --json, the code is on stderr and the result on stdout', async () => {

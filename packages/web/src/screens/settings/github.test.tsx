@@ -19,6 +19,7 @@ import {
   ExternalLink,
   GithubSection,
   httpsUrl,
+  waitingIsOver,
   ImportForm,
   InstallationsBlock,
   KEY_REFUSED_NOTE,
@@ -255,6 +256,13 @@ describe('waiting for GitHub', () => {
     expect(text).toContain('Start again');
     expect(text).toContain('Cancel');
     expect(text).toContain('role="progressbar"');
+  });
+
+  it('is over at the manifest’s end, and only then (so the polling stops)', () => {
+    expect(waitingIsOver(null, 1_000_000)).toBe(false);
+    expect(waitingIsOver({ expiresAt: 600_000 }, 599_999)).toBe(false);
+    expect(waitingIsOver({ expiresAt: 600_000 }, 600_000)).toBe(true);
+    expect(waitingIsOver({ expiresAt: 600_000 }, 700_000)).toBe(true);
   });
 
   it('says it took too long after ten minutes, and still offers to start again', () => {

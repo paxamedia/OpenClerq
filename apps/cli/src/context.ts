@@ -21,7 +21,7 @@ export interface Context {
   retryMs: number;
   /** How often `clerq github` looks at the gateway while it waits for GitHub. Default 2000. */
   githubPollMs: number;
-  /** How long `clerq github connect` and `login` wait for the person on GitHub. Default 10 minutes. */
+  /** How long `clerq github connect` waits for the app to come back from GitHub. Default 10 minutes (the manifest's own). */
   githubWaitMs: number;
   /**
    * Open a file or an address in the default application (the browser). False when there is

@@ -135,7 +135,7 @@ export const COMMANDS: CommandDef[] = [
         name: 'private-key-file',
         kind: 'string',
         value: 'file',
-        help: 'The .pem file GitHub gave you. Refused if other users can read it.',
+        help: 'The .pem file GitHub gave you. Refused if any other user of the computer has access to it (chmod 600).',
       },
       {
         name: 'client-secret-file',

@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from './args.js';
 import { COMMANDS } from './commands.js';
-import { assertCallbackAddress, formPage, safeLink } from './cmd/github.js';
+import { assertCallbackAddress, formPage, loginWaitMs, safeLink } from './cmd/github.js';
 import { helpFor } from './help.js';
 import { openerFor } from './open.js';
 import { cli } from './test-harness.js';
@@ -169,6 +169,17 @@ describe('addresses it follows', () => {
     expect(() => assertCallbackAddress('http://clerq.example.com')).toThrow(
       'must not cross the network in the clear'
     );
+  });
+});
+
+describe('how long login waits', () => {
+  it('is as long as the code lasts, and a minute more for the gateway to say it ran out', () => {
+    const now = Date.parse('2026-11-14T10:00:00Z');
+    expect(loginWaitMs('2026-11-14T10:15:00.000Z', now)).toBe(15 * 60_000 + 60_000);
+    expect(loginWaitMs('2026-11-14T10:00:30.000Z', now)).toBe(30_000 + 60_000);
+    // A code that has already run out, or an address that is no time: a minute, not nothing and not for ever.
+    expect(loginWaitMs('2026-11-14T09:00:00.000Z', now)).toBe(60_000);
+    expect(loginWaitMs('soon', now)).toBe(60_000);
   });
 });
 

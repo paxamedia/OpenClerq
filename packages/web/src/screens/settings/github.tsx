@@ -861,6 +861,11 @@ interface Waiting {
 
 const POLL_MS = 2_000;
 
+/** Whether the manifest's ten minutes are up: nothing can come back from GitHub after that. */
+export function waitingIsOver(waiting: { expiresAt: number } | null, now: number): boolean {
+  return waiting !== null && now >= waiting.expiresAt;
+}
+
 /** Post a form to `url` in a window the click opened (the web host has no `openForm`). */
 function postFormToWindow(url: string, fields: Record<string, string>, target: string): void {
   const form = document.createElement('form');
@@ -921,8 +926,10 @@ export function GithubSection() {
   // The app comes back from GitHub by itself: look every two seconds while waiting.
   const reload = useRef(app.reload);
   reload.current = app.reload;
+  // ...until the ten minutes are up: then the page says so and offers Start again, and stops asking.
+  const waitOver = waitingIsOver(waiting, now);
   useEffect(() => {
-    if (!waiting) return;
+    if (!waiting || waitOver) return;
     let stopped = false;
     const id = setInterval(async () => {
       try {
@@ -940,7 +947,7 @@ export function GithubSection() {
       stopped = true;
       clearInterval(id);
     };
-  }, [waiting, client, toast]);
+  }, [waiting, waitOver, client, toast]);
 
   const create = async () => {
     setCreating(true);

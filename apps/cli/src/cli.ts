@@ -31,7 +31,7 @@ export interface RunOptions {
   retryMs?: number;
   /** How often `clerq github` looks while it waits for GitHub. Default 2000. */
   githubPollMs?: number;
-  /** How long `clerq github connect` and `login` wait. Default 10 minutes. */
+  /** How long `clerq github connect` waits. Default 10 minutes. (`login` waits as long as the code lasts.) */
   githubWaitMs?: number;
   /** Open a file or address in the default application. Default: the system's (`open`, `xdg-open`). */
   openUrl?: (target: string) => Promise<boolean>;

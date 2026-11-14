@@ -416,6 +416,15 @@ function printDisabled(ctx: Context, message: string, settingsUrl?: string): voi
   }
 }
 
+/**
+ * How long `login` waits: as long as the code itself lasts (GitHub's `expires_in`, normally 15
+ * minutes), and a minute more for the gateway to say that it ran out.
+ */
+export function loginWaitMs(expiresAt: string, now: number): number {
+  const end = Date.parse(expiresAt);
+  return Math.max(0, Number.isFinite(end) ? end - now : 0) + 60_000;
+}
+
 export async function runLogin(ctx: Context, call: Call): Promise<number> {
   const { out } = ctx;
   await connect(ctx);
@@ -454,10 +463,14 @@ export async function runLogin(ctx: Context, call: Call): Promise<number> {
   );
 
   let last: GithubLoginStatus = { status: 'pending' };
-  const result = await waitFor<GithubLoginStatus>(ctx, ctx.githubWaitMs, async () => {
-    last = await gateway.githubLogin(start.flowId);
-    return last.status === 'pending' ? undefined : last;
-  });
+  const result = await waitFor<GithubLoginStatus>(
+    ctx,
+    loginWaitMs(start.expiresAt, Date.now()),
+    async () => {
+      last = await gateway.githubLogin(start.flowId);
+      return last.status === 'pending' ? undefined : last;
+    }
+  );
   if ('ended' in result) {
     await gateway.cancelGithubLogin(start.flowId).catch(() => undefined);
     out.error(
