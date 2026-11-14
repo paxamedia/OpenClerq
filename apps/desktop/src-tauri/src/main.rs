@@ -394,9 +394,50 @@ fn bundled_plugins_in(resources: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-/// Starts the bundled gateway sidecar, pointed at the bundled calculation engine.
+/// Where the Linux packages put the gateway, from the folder of the program (`usr/bin`): in
+/// `usr/share/clerq`, in the .deb, the .rpm and the AppImage alike (`bundle.linux` in
+/// tauri.linux.conf.json). Not beside the program, as a sidecar is on macOS and Windows: linuxdeploy,
+/// which makes the AppImage, runs `ldd` on every ELF file it finds in `usr/bin` and `usr/lib`, and
+/// that fails on a program compiled by Bun and stops the whole AppImage. Nothing looks in `usr/share`.
+const LINUX_GATEWAY: &str = "../share/clerq/clerq-gateway";
+
+fn linux_gateway_path(exe_dir: &Path) -> PathBuf {
+    exe_dir.join(LINUX_GATEWAY)
+}
+
+/// The command that starts the gateway: the sidecar next to the program on macOS and Windows, the
+/// file in `usr/share/clerq` on Linux. A reason is printed when there is none.
+fn gateway_command(app: &tauri::App) -> Option<tauri_plugin_shell::process::Command> {
+    if cfg!(target_os = "linux") {
+        let path = match std::env::current_exe() {
+            Ok(exe) => linux_gateway_path(exe.parent()?),
+            Err(e) => {
+                eprintln!("[Clerq] Could not find the gateway: current_exe: {}", e);
+                return None;
+            }
+        };
+        if !path.is_file() {
+            eprintln!(
+                "[Clerq] Could not find the gateway: {} is missing",
+                path.display()
+            );
+            return None;
+        }
+        Some(app.shell().command(path))
+    } else {
+        match app.shell().sidecar("clerq-gateway") {
+            Ok(command) => Some(command),
+            Err(e) => {
+                eprintln!("[Clerq] Could not find the gateway sidecar: {}", e);
+                None
+            }
+        }
+    }
+}
+
+/// Starts the bundled gateway, pointed at the bundled calculation engine.
 fn spawn_gateway(app: &tauri::App) {
-    if let Ok(shell) = app.shell().sidecar("clerq-gateway") {
+    if let Some(shell) = gateway_command(app) {
         if let Ok(calc_path) = clerq_calc_path() {
             let exe_dir = std::env::current_exe()
                 .ok()
@@ -473,9 +514,13 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{bundled_plugins_in, form_page, gateway_line, log_writer, upsert_env_line};
+    use super::{
+        bundled_plugins_in, form_page, gateway_line, linux_gateway_path, log_writer,
+        upsert_env_line,
+    };
     use std::collections::BTreeMap;
     use std::io::Write;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc::TrySendError;
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
@@ -733,5 +778,33 @@ mod tests {
             Some(root.join("bundled-plugins"))
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `..` resolved without touching the file system.
+    fn resolved(path: &Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for part in path.components() {
+            match part {
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                other => out.push(other.as_os_str()),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_linux_gateway_is_in_usr_share_clerq_beside_usr_bin() {
+        // The .deb and .rpm: the program is in /usr/bin.
+        assert_eq!(
+            resolved(&linux_gateway_path(Path::new("/usr/bin"))),
+            Path::new("/usr/share/clerq/clerq-gateway")
+        );
+        // The AppImage runs from its mount point, with the same layout.
+        assert_eq!(
+            resolved(&linux_gateway_path(Path::new("/tmp/.mount_ClerqX/usr/bin"))),
+            Path::new("/tmp/.mount_ClerqX/usr/share/clerq/clerq-gateway")
+        );
     }
 }

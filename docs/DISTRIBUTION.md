@@ -77,7 +77,7 @@ The release has the desktop app for Linux on x64 and arm64, in three forms, each
 | `Clerq_<version>_x86_64.AppImage`, `Clerq_<version>_aarch64.AppImage` | any other glibc distribution, and anywhere you do not want to install a package     |
 
 Pick the package your distribution installs, else the AppImage. Each leaves the same app: the window,
-the gateway and the calculation engine (`clerq-gateway` and `clerq-calc`, next to the program), and
+the calculation engine (`clerq-calc`, next to the program in `usr/bin`), the gateway (`clerq-gateway`, in `/usr/share/clerq`: linuxdeploy, which makes the AppImage, runs `ldd` on every program it finds in `usr/bin` and `usr/lib`, and that fails on a program compiled by Bun, so on Linux the gateway is not a sidecar next to the program; `tauri.linux.conf.json` puts it there for all three packages and the desktop starts it from there; macOS and Windows are unchanged), and
 the bundled chat plugin. Your data is in `~/.clerq`, as everywhere.
 
 **The AppImage** is one file that needs no installation:

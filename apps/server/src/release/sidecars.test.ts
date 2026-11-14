@@ -13,6 +13,8 @@ interface Target {
   bunTarget: string;
   rustTarget: string;
   exeExt: string;
+  gatewayFile: string;
+  calcFile: string;
 }
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const load = async <T>(name: string) =>
@@ -56,8 +58,26 @@ describe('the sidecar target of each build machine', () => {
       fs.readFileSync(path.join(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8')
     ) as { bundle: { externalBin: string[] } };
     expect(conf.bundle.externalBin).toEqual(['binaries/clerq-gateway', 'binaries/clerq-calc']);
-    const script = fs.readFileSync(path.join(root, 'scripts/build-sidecars.js'), 'utf8');
-    expect(script).toContain('`clerq-gateway-${rustTarget}${exeExt}`');
-    expect(script).toContain('`clerq-calc-${rustTarget}${exeExt}`');
+    // macOS and Windows: both are sidecars, named for the Rust target.
+    for (const [platform, arch] of [
+      ['darwin', 'arm64'],
+      ['darwin', 'x64'],
+      ['win32', 'x64'],
+    ] as const) {
+      const t = sidecars.sidecarTarget(platform, arch)!;
+      expect(t.gatewayFile).toBe(`clerq-gateway-${t.rustTarget}${t.exeExt}`);
+      expect(t.calcFile).toBe(`clerq-calc-${t.rustTarget}${t.exeExt}`);
+    }
+  });
+
+  it('on Linux, writes the gateway under one name for both CPUs, and the calculation engine as a sidecar', () => {
+    // The gateway is not a sidecar there (tauri.linux.conf.json puts it in /usr/share/clerq): one
+    // name, so the config can name it whatever the CPU. The engine stays a sidecar.
+    const x64 = sidecars.sidecarTarget('linux', 'x64')!;
+    const arm = sidecars.sidecarTarget('linux', 'arm64')!;
+    expect(x64.gatewayFile).toBe('clerq-gateway-linux');
+    expect(arm.gatewayFile).toBe('clerq-gateway-linux');
+    expect(x64.calcFile).toBe('clerq-calc-x86_64-unknown-linux-gnu');
+    expect(arm.calcFile).toBe('clerq-calc-aarch64-unknown-linux-gnu');
   });
 });

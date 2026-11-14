@@ -9,6 +9,12 @@
  * (`clerq-gateway-<triple>`). x64 on macOS and Linux is Bun's baseline build, which runs on a
  * CPU without AVX2; the default one dies with SIGILL there.
  *
+ * On Linux the gateway is not a Tauri sidecar: it is `clerq-gateway-linux` (the same name for both
+ * CPUs, so that tauri.linux.conf.json can name it), which the .deb, the .rpm and the AppImage put in
+ * /usr/share/clerq. linuxdeploy, which makes the AppImage, runs `ldd` on every ELF file in usr/bin
+ * (where a sidecar goes) and usr/lib, and that fails on a program Bun compiled. The calculation
+ * engine is an ordinary program and stays a sidecar.
+ *
  * This compiles with `bun build --compile` itself and not through scripts/build-binary.js (the
  * server's and the CLI's compile): that script starts pnpm without a shell, which does not work
  * for pnpm.cmd on Windows, where this runs on a release.
@@ -27,25 +33,25 @@ const BINARIES_DIR = path.join(ROOT, 'apps', 'desktop', 'src-tauri', 'binaries')
  * desktop build. Windows stays on Bun's default x64 build.
  */
 export function sidecarTarget(platform = process.platform, arch = process.arch) {
+  const target = (bunTarget, rustTarget, exeExt = '') => ({
+    bunTarget,
+    rustTarget,
+    exeExt,
+    // The files written to src-tauri/binaries.
+    gatewayFile: platform === 'linux' ? 'clerq-gateway-linux' : `clerq-gateway-${rustTarget}${exeExt}`,
+    calcFile: `clerq-calc-${rustTarget}${exeExt}`,
+  });
   if (platform === 'darwin') {
     return arch === 'arm64'
-      ? { bunTarget: 'bun-darwin-arm64', rustTarget: 'aarch64-apple-darwin', exeExt: '' }
-      : { bunTarget: 'bun-darwin-x64-baseline', rustTarget: 'x86_64-apple-darwin', exeExt: '' };
+      ? target('bun-darwin-arm64', 'aarch64-apple-darwin')
+      : target('bun-darwin-x64-baseline', 'x86_64-apple-darwin');
   }
   if (platform === 'win32' && arch === 'x64') {
-    return { bunTarget: 'bun-windows-x64', rustTarget: 'x86_64-pc-windows-msvc', exeExt: '.exe' };
+    return target('bun-windows-x64', 'x86_64-pc-windows-msvc', '.exe');
   }
   if (platform === 'linux') {
-    if (arch === 'x64') {
-      return {
-        bunTarget: 'bun-linux-x64-baseline',
-        rustTarget: 'x86_64-unknown-linux-gnu',
-        exeExt: '',
-      };
-    }
-    if (arch === 'arm64') {
-      return { bunTarget: 'bun-linux-arm64', rustTarget: 'aarch64-unknown-linux-gnu', exeExt: '' };
-    }
+    if (arch === 'x64') return target('bun-linux-x64-baseline', 'x86_64-unknown-linux-gnu');
+    if (arch === 'arm64') return target('bun-linux-arm64', 'aarch64-unknown-linux-gnu');
   }
   return null;
 }
@@ -63,7 +69,7 @@ function main() {
     );
     process.exit(1);
   }
-  const { bunTarget, rustTarget, exeExt } = target;
+  const { bunTarget, exeExt, gatewayFile, calcFile } = target;
   fs.mkdirSync(BINARIES_DIR, { recursive: true });
 
   // 1. Build gateway (TypeScript) and core (Rust)
@@ -96,7 +102,7 @@ function main() {
     }
   }
 
-  const gatewayOut = path.join(BINARIES_DIR, `clerq-gateway-${rustTarget}${exeExt}`);
+  const gatewayOut = path.join(BINARIES_DIR, gatewayFile);
   run(
     `${bun} build packages/gateway/src/cli.ts --compile --target=${bunTarget} --outfile=${gatewayOut}`
   );
@@ -114,7 +120,7 @@ function main() {
     console.error('[build-sidecars] clerq-calc not found at', calcSrc);
     process.exit(1);
   }
-  const calcOut = path.join(BINARIES_DIR, `clerq-calc-${rustTarget}${exeExt}`);
+  const calcOut = path.join(BINARIES_DIR, calcFile);
   fs.copyFileSync(calcSrc, calcOut);
 
   console.log('[build-sidecars] Done. Binaries:', gatewayOut, calcOut);

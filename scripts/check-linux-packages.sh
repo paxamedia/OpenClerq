@@ -35,12 +35,16 @@ only() { # pattern what
   esac
 }
 
-# Run the gateway from an unpacked package.
+# Run the gateway from an unpacked package. It is in usr/share/clerq (tauri.linux.conf.json), not
+# in usr/bin or usr/lib, which linuxdeploy scans with ldd, and that fails on a program Bun compiled.
 smoke() { # root-of-the-unpacked-package where
-  gateway=$(find "$1" -name clerq-gateway -type f | head -n 1)
-  calc=$(find "$1" -name clerq-calc -type f | head -n 1)
-  [ -n "$gateway" ] || fail "clerq-gateway is not in $2"
-  [ -n "$calc" ] || fail "clerq-calc is not in $2"
+  gateway="$1/usr/share/clerq/clerq-gateway"
+  calc="$1/usr/bin/clerq-calc"
+  [ -f "$gateway" ] || fail "clerq-gateway is not in usr/share/clerq in $2"
+  [ -x "$gateway" ] || fail "clerq-gateway in $2 is not executable"
+  [ -f "$calc" ] || fail "clerq-calc is not in usr/bin in $2"
+  stray=$(find "$1/usr/bin" "$1/usr/lib" -name 'clerq-gateway*' -type f 2>/dev/null | head -n 1)
+  [ -z "$stray" ] || fail "the gateway is also in $stray: linuxdeploy runs ldd on files in usr/bin and usr/lib"
   manifest=$(find "$1" -path '*bundled-plugins/chat/manifest.json' | head -n 1)
   [ -n "$manifest" ] || fail "the bundled chat plugin's manifest is not in $2"
   echo "$2 has $gateway, $calc and $manifest"

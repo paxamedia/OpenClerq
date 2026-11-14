@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/clerq-calc"],
+    "linux": {
+      "appimage": {
+        "files": { "/usr/share/clerq/clerq-gateway": "binaries/clerq-gateway-linux" }
+      },
+      "deb": {
+        "files": { "/usr/share/clerq/clerq-gateway": "binaries/clerq-gateway-linux" }
+      },
+      "rpm": {
+        "files": { "/usr/share/clerq/clerq-gateway": "binaries/clerq-gateway-linux" }
+      }
+    }
+  }
+}
