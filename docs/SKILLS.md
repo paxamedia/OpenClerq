@@ -129,8 +129,9 @@ changing it does not lose it.
   a skill that comes back with the same name and exactly the same files is trusted (or blocked) again,
   and one that comes back under another slug starts as `untrusted`, which is also how a blocked skill
   that is renamed is seen (it is not blocked: block the new name).
-- All three are for the gateway token only: a module's or a phone's token gets `403`, whatever scopes
-  it was given. Each is an audit row (`skill.trusted`, `skill.blocked`, `skill.untrusted`, by the
+- All three, and saving a skill's schemas (`PUT /v1/skills/<slug>`, which rewrites `SKILL.md`), are
+  for the gateway token only: a module's or a phone's token gets `403`, whatever scopes it was given.
+  Reading a skill (`GET`) is as it was. Each is an audit row (`skill.trusted`, `skill.blocked`, `skill.untrusted`, by the
   actor), and the gateway also writes `skill.modified` the first time it sees a trusted skill
   changed, `skill.used` when a skill that is not trusted is used (enforcement off) and `skill.skipped`
   when one is passed over, the last two at most once a minute for each skill and state.

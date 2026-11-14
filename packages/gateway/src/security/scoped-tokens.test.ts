@@ -6,6 +6,7 @@ import {
   revokeTokens,
   scopeAllows,
   principalAllows,
+  operatorOnly,
   declarableScope,
   normalisePath,
   lastSeen,
@@ -53,6 +54,16 @@ describe('scopes', () => {
     // Reading the list is not a decision.
     expect(principalAllows(p, 'GET', '/skills')).toBe(true);
     expect(principalAllows(p, 'GET', '/skills/a')).toBe(true);
+    // Rewriting a skill's file is not for a scoped token either, in any case or spelling.
+    for (const method of ['PUT', 'POST', 'PATCH', 'DELETE', 'put']) {
+      for (const path of ['/skills/a', '/SKILLS/A', '/skills/a/', '/skills/%61', '//skills//a']) {
+        expect([method, path, principalAllows(p, method, path)]).toEqual([method, path, false]);
+      }
+    }
+    expect(principalAllows(p, 'HEAD', '/skills/a')).toBe(true);
+    expect(operatorOnly('/skills/a')).toBe(false);
+    expect(operatorOnly('/skills/a', 'PUT')).toBe(true);
+    expect(operatorOnly('/skills', 'PUT')).toBe(false);
     expect(principalAllows({ kind: 'operator' }, 'POST', '/skills/a/trust')).toBe(true);
   });
 

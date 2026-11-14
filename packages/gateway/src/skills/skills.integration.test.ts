@@ -504,6 +504,29 @@ describe('skill trust through the API', () => {
       expect(getStore().prepare('SELECT count(*) AS n FROM skill_trust').get()?.n).toBe(0);
     });
 
+    it('saving a skill’s schemas is the gateway token’s too: a module with every scope cannot rewrite a trusted skill', async () => {
+      await trust('report');
+      const module = issueToken({ kind: 'module', subject: 'm', scopes: ['* /*'], ttlMs: 60_000 });
+      const before = fs.readFileSync(body('report'), 'utf8');
+      for (const prefix of ['', '/v1']) {
+        const res = await call(
+          `${prefix}/skills/report`,
+          { method: 'PUT', body: JSON.stringify({ dependsOn: ['plain'] }) },
+          module.token
+        );
+        expect([prefix, res.status]).toEqual([prefix, 403]);
+      }
+      expect(fs.readFileSync(body('report'), 'utf8')).toBe(before);
+      expect((await info('report')).trust).toBe('trusted');
+      // Reading one is still allowed with a scope that says so, and the operator may save.
+      expect((await call('/skills/report', {}, module.token)).status).toBe(200);
+      const saved = await call('/skills/report', {
+        method: 'PUT',
+        body: JSON.stringify({ dependsOn: ['plain'] }),
+      });
+      expect(saved.status).toBe(200);
+    });
+
     it('the list may be read by a module, as it always could, and a call with no token is 401', async () => {
       const module = issueToken({
         kind: 'module',

@@ -347,7 +347,7 @@ domains, paths }`), the checksum its author wrote (`checksum`), the checksum of 
 list also says whether enforcement is on (`enforce`). `POST /skills/:slug/trust { checksum }` (the
 `computedChecksum` you saw; `409 trust_stale` when the files are not those any more, `409
 not_trustable` for a plugin's skill or files that cannot be hashed), `POST /skills/:slug/block` and
-`POST /skills/:slug/untrust` are for the gateway token only. The switch is the plugins one
+`POST /skills/:slug/untrust`, and now `PUT /skills/:slug` (which rewrites `SKILL.md`), are for the gateway token only; `GET`s are as they were. The switch is the plugins one
 (`GET|PUT /plugins/settings`). They are additions to version 1, and [SKILLS.md](SKILLS.md) describes
 them.
 

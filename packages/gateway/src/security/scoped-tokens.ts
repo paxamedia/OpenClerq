@@ -94,9 +94,23 @@ export function normalisePath(path: string): string | null {
   }
 }
 
-export function operatorOnly(path: string): boolean {
+/**
+ * Paths a scoped token may read, with the scopes it was given, but never change: the answer is
+ * the same for the gateway token alone whatever the scope says.
+ */
+const OPERATOR_ONLY_WRITES = [
+  // `PUT /skills/:slug` rewrites a skill's SKILL.md: a token that could do that to a trusted skill
+  // would be editing what the user trusted.
+  /^\/skills\/[^/]+$/,
+];
+
+/** Whether only the gateway token reaches `path`, for a request of `method` (a read by default). */
+export function operatorOnly(path: string, method = 'GET'): boolean {
   const p = normalisePath(path);
-  return p === null || OPERATOR_ONLY.some((re) => re.test(p));
+  if (p === null || OPERATOR_ONLY.some((re) => re.test(p))) return true;
+  const m = method.toUpperCase();
+  const reads = m === 'GET' || m === 'HEAD' || m === 'OPTIONS';
+  return !reads && OPERATOR_ONLY_WRITES.some((re) => re.test(p));
 }
 
 /** Whether one scope admits `method path`. */
@@ -129,7 +143,7 @@ export function declarableScope(scope: string): boolean {
 
 export function principalAllows(p: Principal, method: string, path: string): boolean {
   if (p.kind === 'operator') return true;
-  if (operatorOnly(path)) return false;
+  if (operatorOnly(path, method)) return false;
   if ((p.tenantId ?? DEFAULT_TENANT) !== DEFAULT_TENANT) {
     const n = normalisePath(path) as string;
     if (!TENANT_AWARE.some((re) => re.test(n))) return false;
