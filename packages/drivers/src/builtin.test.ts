@@ -1084,20 +1084,70 @@ describe('builtin driver: a file scope', () => {
     expect(results[2].isError).toBe(true);
   });
 
-  it('needs git_diff to name a path in scope', async () => {
-    fs.writeFileSync(path.join(repo, 'secrets', 'key.txt'), 'changed\n');
-    fs.writeFileSync(path.join(repo, 'src', 'index.ts'), 'export const answer = 7;\n');
+  it('shows git_diff only for the files in scope, whatever path it is asked about', async () => {
+    fs.mkdirSync(path.join(repo, 'src', 'app'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'src', 'other'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'app', 'b.ts'), 'export const b = 1;\n');
+    fs.writeFileSync(path.join(repo, 'src', 'other', 'c.ts'), 'export const c = 1;\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'more files');
+    fs.writeFileSync(path.join(repo, 'secrets', 'key.txt'), 'SECRET-CHANGED\n');
+    fs.writeFileSync(path.join(repo, 'src', 'index.ts'), 'export const answer = 7; // INDEX\n');
+    fs.writeFileSync(path.join(repo, 'src', 'app', 'b.ts'), 'export const b = 2; // APP\n');
+    fs.writeFileSync(path.join(repo, 'src', 'other', 'c.ts'), 'export const c = 2; // OTHER\n');
+    const diffs: Array<[string, Record<string, unknown>]> = [
+      ['no path', {}],
+      ['.', { path: '.' }],
+      ['./', { path: './' }],
+      ['the parent', { path: 'src' }],
+      ['the folder', { path: 'src/app' }],
+      ['the file', { path: 'src/app/b.ts' }],
+      ['a sibling', { path: 'src/other' }],
+      ['the secrets', { path: 'secrets' }],
+      ['stat, no path', { stat: true }],
+      ['stat, the parent', { path: 'src', stat: true }],
+    ];
+    const { results } = await calls(
+      ['src/app/**'],
+      diffs.map(([, input]) => ['git_diff', input])
+    );
+    const out = Object.fromEntries(diffs.map(([name], i) => [name, results[i]]));
+    for (const name of ['no path', '.', './', 'the parent', 'the folder', 'the file']) {
+      expect(out[name].isError, name).toBe(false);
+      expect(out[name].output, name).toContain('// APP');
+    }
+    for (const [name, r] of Object.entries(out)) {
+      for (const outside of [
+        'SECRET-CHANGED',
+        '// INDEX',
+        '// OTHER',
+        'secrets/key.txt',
+        'src/other/c.ts',
+        'src/index.ts',
+      ]) {
+        expect(r.output, `${name}: ${outside}`).not.toContain(outside);
+      }
+    }
+    expect(out['a sibling'].output).toBe('No changes in the paths this task may use.');
+    expect(out['the secrets'].output).toBe('No changes in the paths this task may use.');
+    expect(out['stat, no path'].output).toContain('src/app/b.ts');
+    expect(out['stat, the parent'].output).toContain('src/app/b.ts');
+    expect(out['stat, no path'].output).not.toContain('src/index.ts');
+  });
+
+  it('git_diff outside the folder is still refused, and a path with a glob in its name is a name', async () => {
+    fs.writeFileSync(path.join(repo, 'src', 'index.ts'), 'export const answer = 8; // INDEX\n');
+    fs.writeFileSync(path.join(repo, 'secrets', 'key.txt'), 'SECRET-CHANGED\n');
     const { results } = await calls(SCOPE, [
-      ['git_diff', {}],
-      ['git_diff', { path: 'secrets' }],
+      ['git_diff', { path: '../elsewhere' }],
+      ['git_diff', { path: 'secrets/*' }],
+      ['git_diff', { path: ':(top)secrets' }],
       ['git_diff', { path: 'src' }],
     ]);
     expect(results[0].isError).toBe(true);
-    expect(results[0].output).toContain('needs a path while a file scope is in force');
-    expect(results[1].isError).toBe(true);
-    expect(results[1].output).not.toContain('changed');
-    expect(results[2].isError).toBe(false);
-    expect(results[2].output).toContain('answer = 7');
+    expect(results[1].output).toBe('No changes in the paths this task may use.');
+    expect(results[2].output).not.toContain('SECRET-CHANGED');
+    expect(results[3].output).toContain('// INDEX');
   });
 
   it('does not look at commands: run_shell is not a file tool', async () => {

@@ -761,6 +761,77 @@ const gitStatus: BuiltinTool = {
   },
 };
 
+/** The most changed files a scoped diff will name to git in one go. */
+const MAX_SCOPED_DIFF_FILES = 500;
+
+/**
+ * `git_diff` under a file scope. A diff is file contents, and a folder that is on the way to the
+ * scope (the top of the worktree, a parent of it) holds files outside it, so the paths asked about
+ * only say where to look. The changed files there are listed first (NUL-separated, literally, no
+ * rename pairing) and only those the scope covers are diffed, each named to git on its own.
+ */
+async function scopedDiff(
+  ctx: ToolContext,
+  under: string | undefined,
+  stat: boolean
+): Promise<ToolOutcome> {
+  const scope = ctx.fileScope ?? [];
+  const where = under && under !== '.' ? ['--', under] : [];
+  const listed = await command(
+    ctx,
+    'git',
+    [
+      '--literal-pathspecs',
+      'diff',
+      'HEAD',
+      '--name-only',
+      '-z',
+      '--no-renames',
+      '--relative',
+      ...where,
+    ],
+    60_000
+  );
+  if (listed.code !== 0) {
+    return { output: listed.out || `git diff exited with ${listed.code}.`, isError: true };
+  }
+  const files = listed.out
+    .split('\0')
+    .filter((f) => f && !f.startsWith('\n[stderr]'))
+    .filter((f) => pathInScope(scope, f));
+  if (files.length === 0) {
+    return { output: 'No changes in the paths this task may use.', isError: false };
+  }
+  if (files.length > MAX_SCOPED_DIFF_FILES) {
+    return {
+      output: `${files.length} changed files are in the paths this task may use; name a narrower path or use stat: true.`,
+      isError: true,
+    };
+  }
+  const args = [
+    '--literal-pathspecs',
+    'diff',
+    'HEAD',
+    '--no-color',
+    '--no-ext-diff',
+    '--no-renames',
+    '--relative',
+    ...(stat ? ['--stat'] : []),
+    '--',
+    ...files,
+  ];
+  const r = await command(ctx, 'git', args, 60_000);
+  if (r.code !== 0) return { output: r.out || `git diff exited with ${r.code}.`, isError: true };
+  return {
+    output: truncateOutput(r.out || 'No changes in the paths this task may use.', {
+      maxChars: MAX_RESULT_CHARS,
+      tailShare: 0,
+      hint: 'Diff one path at a time, or use stat: true.',
+    }).text,
+    isError: false,
+  };
+}
+
 const gitDiff: BuiltinTool = {
   name: 'git.diff',
   risk: 'read',
@@ -778,21 +849,12 @@ const gitDiff: BuiltinTool = {
   },
   async run(input, ctx) {
     const only = str(input, 'path');
-    if (ctx.fileScope) {
-      // A diff shows file contents: with a scope it must name a path, and the path must be in it.
-      if (!only) {
-        return {
-          output:
-            'git_diff needs a path while a file scope is in force; name a file or folder inside the paths the skill declares.',
-          isError: true,
-        };
-      }
-      const refused = scopeRefusal(ctx, cleanRel(only), 'folder');
-      if (refused) return refused;
-    }
+    // Where it is looked at, as a path of the worktree (the containment check throws outside it).
+    const under = only ? relative(ctx.cwd, within(ctx.cwd, only)) : undefined;
+    if (ctx.fileScope) return scopedDiff(ctx, under, input.stat === true);
     const args = ['diff', 'HEAD', '--no-color', '--no-ext-diff'];
     if (input.stat === true) args.push('--stat');
-    if (only) args.push('--', relative(ctx.cwd, within(ctx.cwd, only)));
+    if (under) args.push('--', under);
     const r = await command(ctx, 'git', args, 60_000);
     if (r.code !== 0) return { output: r.out || `git diff exited with ${r.code}.`, isError: true };
     return {

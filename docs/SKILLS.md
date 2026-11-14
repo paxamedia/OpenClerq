@@ -179,7 +179,9 @@ The `<memory>` block in the prompt follows the memory policy, not the skill's to
 **Files.** With a folder attached, `read_file`, `list_files`, `search_files`, `write_file` and
 `edit_file` refuse a path outside `filesystem_scope`, judged by where the path really leads (a link
 inside the folder to somewhere outside the scope does not get through). A listing shows only what is
-in scope, a search only matches in scope, and `git_diff` must name a path in scope. **Not checked:**
+in scope, a search only matches in scope, and `git_diff` shows only the changed files in scope
+(whatever path it is asked about: `.` or a parent folder gives the files of it that are in scope,
+not the rest). **Not checked:**
 `run_shell` (a command is any command) and `git_status` (it shows names of changed files). A
 `~/…` entry cannot match anything inside an attached folder.
 

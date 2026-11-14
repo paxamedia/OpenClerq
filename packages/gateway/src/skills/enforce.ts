@@ -10,8 +10,8 @@
  *    list with `narrowRules` from `packages/policy`, which only takes away. A skill that lists no
  *    tools narrows nothing; an empty list declares nothing.
  *  - `filesystem_scope`: with a folder attached, the file tools (read, list, search, write, edit)
- *    and `git_diff` refuse a path outside the list. Commands run by `run_shell` are not path
- *    checked, and neither is `git_status`.
+ *    refuse a path outside the list, and `git_diff` shows only the changed files in it. Commands
+ *    run by `run_shell` are not path checked, and neither is `git_status`.
  *  - `network_domains`: in a Sandboxed conversation, commands get a network through the sandbox's
  *    egress proxy, which allows these hosts (instead of no network at all). macOS filters by
  *    port, not by host, so a command can still reach an outside host on the proxy's own port
