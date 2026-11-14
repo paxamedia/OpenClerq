@@ -21,6 +21,8 @@ import { runTask } from './agent/task.js';
 import { selectSkill } from './agent/skill-selector.js';
 import { getModuleSkillsDirs } from './module-loader.js';
 import { ModuleHost } from './modules/host.js';
+import { BUNDLED_PLUGINS } from './modules/bundled-plugins.js';
+import { mountPluginRoutes } from './modules/plugin-routes.js';
 import { mountModuleRoutes } from './modules/routes.js';
 import { mountRecordRoutes } from './records/routes.js';
 import { mountInboxRoutes } from './inbox/routes.js';
@@ -325,7 +327,11 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   };
 
   const app = express();
-  const modules = new ModuleHost(app);
+  const modules = new ModuleHost(app, {
+    bundled: config.plugins?.bundled ?? BUNDLED_PLUGINS,
+    fetchImpl: config.plugins?.fetch,
+    hookTimeoutMs: config.plugins?.hookTimeoutMs,
+  });
 
   // Origins are reflected only when explicitly allow-listed. There is no wildcard
   // path: a wildcard lets any page the user visits drive their local gateway.
@@ -1166,6 +1172,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   });
 
   mountModuleRoutes(app, modules);
+  mountPluginRoutes(app, modules);
   mountRecordRoutes(app);
   mountInboxRoutes(app);
   mountRemoteRoutes(app);
@@ -1668,6 +1675,14 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       // Whatever start-up was in the middle of finishes (or notices `closeRequested`)
       // before the store is closed under it.
       await startup;
+      // Plugins stop while the store is still open, and after the requests they were serving.
+      await modules
+        .stopAll()
+        .catch((e: unknown) =>
+          logger.error('Plugins did not all stop', {
+            err: e instanceof Error ? e.message : String(e),
+          })
+        );
       // Let a request that was dropped write how it ended before the store goes.
       await new Promise<void>((resolve) => setImmediate(resolve));
       closeStore();

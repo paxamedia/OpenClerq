@@ -1,7 +1,9 @@
 /**
- * Manifest permissions: what a module says it needs. Parsed, stored and shown
- * to the operator; not enforced yet. Module code runs with the gateway's
- * access whatever it declares.
+ * Manifest permissions: what a module says it needs. Parsed, stored, shown to
+ * the operator and part of what they approve. They are checked against what the
+ * module does through its context only when the operator has turned plugin
+ * enforcement on (docs/PLUGINS.md); module code runs with the gateway's access
+ * whatever it declares.
  *
  *   "permissions": {
  *     "exec": ["/usr/bin/git"],                       exact commands it runs
@@ -9,13 +11,22 @@
  *     "net": ["api.example.com"],                      hosts
  *     "secrets": ["api-key"],                          its vault names
  *     "services": ["org.example.worker"],              launchd labels
- *     "llm": true                                      model calls
+ *     "llm": true,                                     model calls
+ *     "api": ["GET /runs/:id"],                        core endpoints
+ *     "memory": { "read": ["fact"], "write": [] }      memory types
  *   }
+ *
+ * `GET /modules` keeps showing the first six, as it always has; `GET /plugins`
+ * shows all of them.
  */
 
 import { audit } from '@clerq/store';
+import { readPermissions } from '@clerq/plugin-sdk/manifest';
+import type { PluginPermissions } from '@clerq/plugin-sdk';
 import { getStore } from '../store.js';
+import { declarableScope } from '../security/scoped-tokens.js';
 
+/** The permissions a module had before `api` and `memory`. */
 export interface ModulePermissions {
   exec: string[];
   fs: { read: string[]; write: string[] };
@@ -34,18 +45,16 @@ export const NO_PERMISSIONS: ModulePermissions = {
   llm: false,
 };
 
-const KNOWN = new Set(['exec', 'fs', 'net', 'secrets', 'services', 'llm']);
-
-function strings(v: unknown, where: string, warnings: string[]): string[] {
-  if (v === undefined) return [];
-  if (!Array.isArray(v)) {
-    warnings.push(`permissions.${where} should be a list of strings.`);
-    return [];
-  }
-  const out = v.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
-  if (out.length !== v.length)
-    warnings.push(`permissions.${where} has entries that are not strings.`);
-  return [...new Set(out.map((x) => x.trim()))];
+/** The first six permissions of a full set. */
+export function legacyView(p: PluginPermissions): ModulePermissions {
+  return {
+    exec: p.exec,
+    fs: { read: p.fs.read, write: p.fs.write },
+    net: p.net,
+    secrets: p.secrets,
+    services: p.services,
+    llm: p.llm,
+  };
 }
 
 /** Read `manifest.permissions`, keeping what is well-formed and saying what is not. */
@@ -53,36 +62,30 @@ export function parsePermissions(manifest: Record<string, unknown>): {
   permissions: ModulePermissions;
   warnings: string[];
 } {
-  const raw = manifest.permissions;
-  const warnings: string[] = [];
-  if (raw === undefined) return { permissions: NO_PERMISSIONS, warnings };
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { permissions: NO_PERMISSIONS, warnings: ['permissions should be an object.'] };
-  }
-  const p = raw as Record<string, unknown>;
-  for (const key of Object.keys(p)) {
-    if (!KNOWN.has(key)) warnings.push(`permissions.${key} is not a known permission.`);
-  }
-  const fs = (p.fs ?? {}) as Record<string, unknown>;
-  if (p.fs !== undefined && (typeof p.fs !== 'object' || Array.isArray(p.fs))) {
-    warnings.push('permissions.fs should be { "read": [...], "write": [...] }.');
-  }
-  if (p.llm !== undefined && typeof p.llm !== 'boolean')
-    warnings.push('permissions.llm should be true or false.');
-  return {
-    permissions: {
-      exec: strings(p.exec, 'exec', warnings),
-      fs: {
-        read: strings(typeof p.fs === 'object' ? fs.read : undefined, 'fs.read', warnings),
-        write: strings(typeof p.fs === 'object' ? fs.write : undefined, 'fs.write', warnings),
-      },
-      net: strings(p.net, 'net', warnings),
-      secrets: strings(p.secrets, 'secrets', warnings),
-      services: strings(p.services, 'services', warnings),
-      llm: p.llm === true,
-    },
-    warnings,
-  };
+  const { permissions, warnings } = readPermissions(manifest.permissions);
+  return { permissions: legacyView(permissions), warnings };
+}
+
+/** The manifest's `coreEndpoints` that are well-formed scopes. */
+export function coreEndpointsOf(manifest: Record<string, unknown>): string[] {
+  const raw = manifest.coreEndpoints;
+  return Array.isArray(raw)
+    ? raw.filter((s): s is string => typeof s === 'string' && declarableScope(s))
+    : [];
+}
+
+/**
+ * Everything a manifest declares, in full: the `permissions` object, with `api`
+ * read together with the older `coreEndpoints`. This is what a person approves,
+ * what `ctx.permissions` holds and what the checks use.
+ */
+export function declaredPermissions(manifest: Record<string, unknown>): {
+  permissions: PluginPermissions;
+  warnings: string[];
+} {
+  const { permissions, warnings } = readPermissions(manifest.permissions);
+  const api = [...new Set([...permissions.api, ...coreEndpointsOf(manifest)])];
+  return { permissions: { ...permissions, api }, warnings };
 }
 
 /**

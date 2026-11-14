@@ -10,6 +10,17 @@ export interface GatewayConfig {
   calculationEnginePath?: string;
   /** Directory containing pluggable modules (or CLERQ_MODULES_DIR env). */
   modulesDir?: string;
+  /**
+   * Plugin host overrides. `bundled` lists first-party plugins shipped with the
+   * gateway, by id and the checksum they ship with: one found with exactly that
+   * checksum is approved when it is first seen. None is bundled yet. Tests pass a
+   * `fetch` for `ctx.fetch` and a shorter limit for hooks.
+   */
+  plugins?: {
+    bundled?: Readonly<Record<string, string>>;
+    fetch?: typeof fetch;
+    hookTimeoutMs?: number;
+  };
   /** Development conveniences. Does NOT affect authentication. */
   devMode?: boolean;
   model?: string;

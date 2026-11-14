@@ -1,0 +1,177 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { PluginPermissionError } from '@clerq/plugin-sdk';
+import { EMPTY_PERMISSIONS } from '@clerq/plugin-sdk/manifest';
+import { closeStore, getStore, initStore } from '../store.js';
+import { AUDIT_REPEAT_MS, PluginGuard, containedIn, expandHome } from './plugin-guard.js';
+
+let tmp = '';
+let enforcing = true;
+let clock = 1_000_000;
+
+const guard = (declared: Partial<typeof EMPTY_PERMISSIONS> = {}) =>
+  new PluginGuard({
+    id: 'g',
+    dir: path.join(tmp, 'plugin'),
+    declared: () => ({ ...EMPTY_PERMISSIONS, ...declared }),
+    enforcing: () => enforcing,
+    now: () => clock,
+  });
+
+const rows = () =>
+  getStore()
+    .prepare("SELECT action, detail FROM audit_log WHERE action LIKE 'plugin.permission.%'")
+    .all();
+
+beforeAll(async () => {
+  await initStore(':memory:');
+  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-guard-')));
+  fs.mkdirSync(path.join(tmp, 'plugin', 'data'), { recursive: true });
+});
+
+afterAll(() => {
+  closeStore();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+  enforcing = true;
+  clock = 1_000_000;
+  getStore().prepare('DELETE FROM audit_log').run();
+});
+
+describe('the audit trail of a check', () => {
+  it('writes one row, and counts the repeats in the next', () => {
+    const g = guard();
+    for (let i = 0; i < 5; i++) expect(() => g.secret('x', 'read')).toThrow(PluginPermissionError);
+    expect(rows()).toHaveLength(1);
+    clock += AUDIT_REPEAT_MS;
+    expect(() => g.secret('x', 'read')).toThrow();
+    const all = rows();
+    expect(all).toHaveLength(2);
+    expect(JSON.parse(String(all[1].detail)).repeatedBefore).toBe(4);
+  });
+
+  it('keeps a row for each different thing, and for denied apart from undeclared', () => {
+    const g = guard();
+    expect(() => g.secret('a', 'read')).toThrow();
+    expect(() => g.secret('b', 'read')).toThrow();
+    expect(() => g.command('/bin/ls')).toThrow();
+    enforcing = false;
+    g.secret('a', 'read');
+    expect(rows().map((r) => r.action)).toEqual([
+      'plugin.permission.denied',
+      'plugin.permission.denied',
+      'plugin.permission.denied',
+      'plugin.permission.undeclared',
+    ]);
+  });
+
+  it('does not grow without bound for a plugin that tries a new name every time', () => {
+    const g = guard();
+    for (let i = 0; i < 700; i++) {
+      clock += AUDIT_REPEAT_MS;
+      expect(() => g.secret(`name${i}`, 'write')).toThrow();
+    }
+    expect(rows().length).toBe(700);
+  });
+
+  it('says what was refused, and how to find the cause', () => {
+    try {
+      guard().secret('other', 'read');
+      expect.unreachable();
+    } catch (e) {
+      const err = e as PluginPermissionError;
+      expect(err.code).toBe('plugin_permission_denied');
+      expect(err.permission).toBe('secrets');
+      expect(err.subject).toBe('other');
+      expect(err.message).toBe(
+        'The plugin "g" may not read the secret "other": it is not in permissions.secrets. Plugin permission enforcement is on.'
+      );
+    }
+  });
+
+  it('is asked about enforcement every time, so turning it on reaches a running plugin', () => {
+    const g = guard();
+    enforcing = false;
+    expect(() => g.command('/bin/ls')).not.toThrow();
+    enforcing = true;
+    expect(() => g.command('/bin/ls')).toThrow();
+  });
+});
+
+describe('hosts', () => {
+  const url = (u: string) => new URL(u);
+
+  it('matches a host exactly, a subdomain by wildcard, and a port when the declaration has one', () => {
+    const g = guard({ net: ['api.example.com', '*.cdn.example.org', 'ports.example.com:8443'] });
+    for (const ok of [
+      'https://api.example.com/x',
+      'http://API.EXAMPLE.COM/x',
+      'https://api.example.com:9999/x',
+      'https://a.cdn.example.org/x',
+      'https://a.b.cdn.example.org/x',
+      'https://ports.example.com:8443/x',
+    ]) {
+      expect(() => g.host(url(ok)), ok).not.toThrow();
+    }
+    for (const bad of [
+      'https://example.com/x',
+      'https://api.example.com.evil.net/x',
+      'https://xapi.example.com/x',
+      'https://cdn.example.org/x',
+      'https://evilcdn.example.org/x',
+      'https://ports.example.com/x',
+      'https://ports.example.com:8444/x',
+    ]) {
+      expect(() => g.host(url(bad)), bad).toThrow(PluginPermissionError);
+    }
+  });
+
+  it('refuses everything when nothing is declared, and survives a malformed entry', () => {
+    expect(() => guard().host(url('https://a.example.com/'))).toThrow();
+    const g = guard({ net: ['ok.example.com:notaport', 'fine.example.com'] });
+    expect(() => g.host(url('https://fine.example.com/'))).not.toThrow();
+    expect(() => g.host(url('https://ok.example.com/'))).toThrow();
+  });
+});
+
+describe('paths', () => {
+  it('reads ~ as the home folder, and a relative root against the plugin folder', () => {
+    expect(expandHome('~/x')).toBe(path.join(os.homedir(), 'x'));
+    expect(expandHome('~')).toBe(os.homedir());
+    expect(expandHome('~other/x')).toBe('~other/x');
+    const g = guard({ fs: { read: ['data'], write: [] } });
+    const file = path.join(tmp, 'plugin', 'data', 'f.txt');
+    fs.writeFileSync(file, 'x');
+    expect(g.path(file, 'read')).toBe(file);
+    expect(() => g.path(path.join(tmp, 'plugin', 'other.txt'), 'read')).toThrow();
+  });
+
+  it('answers with the real path, so what was checked is what is opened', () => {
+    const real = path.join(tmp, 'plugin', 'data');
+    const alias = path.join(tmp, 'alias-of-data');
+    fs.symlinkSync(real, alias);
+    const g = guard({ fs: { read: [alias], write: [] } });
+    fs.writeFileSync(path.join(real, 'g.txt'), 'x');
+    expect(g.path(path.join(alias, 'g.txt'), 'read')).toBe(path.join(real, 'g.txt'));
+  });
+
+  it('allows the folder itself and refuses its sibling that shares a prefix', () => {
+    const root = path.join(tmp, 'plugin', 'data');
+    fs.mkdirSync(path.join(tmp, 'plugin', 'data-secrets'), { recursive: true });
+    expect(containedIn(root, root)).toBe(root);
+    expect(containedIn(root, path.join(tmp, 'plugin', 'data-secrets', 'x'))).toBeNull();
+    expect(containedIn(root, path.join(root, '..', 'data-secrets', 'x'))).toBeNull();
+  });
+
+  it('refuses a path with a NUL, an empty one and a relative one in either mode', () => {
+    enforcing = false;
+    const g = guard({ fs: { read: [tmp], write: [] } });
+    for (const bad of ['', 'a\0b', 'relative/x']) {
+      expect(() => g.path(bad, 'read')).toThrow(Error);
+    }
+  });
+});

@@ -3,7 +3,7 @@
  * SQL is plain and portable: equality filters, one ORDER BY, a LIMIT.
  */
 
-import type { SqlParam, TenantTable } from '@clerq/module-sdk';
+import type { SqlParam, TenantTable } from '@clerq/plugin-sdk';
 import { getStore } from '../store.js';
 import { currentTenant } from '../tenant.js';
 

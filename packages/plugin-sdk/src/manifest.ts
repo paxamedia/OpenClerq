@@ -459,7 +459,11 @@ export function validateManifest(raw: unknown): ManifestResult {
   }
 
   for (const key of Object.keys(raw)) {
-    if (!TOP_LEVEL.has(key) && !INFORMATIONAL.has(key)) {
+    if (key === 'coreEndpoints') {
+      warnings.push(
+        '"coreEndpoints" belongs to the older manifest and is ignored here: list those endpoints under permissions.api.'
+      );
+    } else if (!TOP_LEVEL.has(key) && !INFORMATIONAL.has(key)) {
       warnings.push(`"${key}" is not a field of manifest version 1 and is ignored.`);
     }
   }

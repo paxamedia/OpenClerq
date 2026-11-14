@@ -1,0 +1,2 @@
+# This example is a plugin as it ships: its dist/ is the plugin, not a build output.
+!dist/

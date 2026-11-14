@@ -589,4 +589,35 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE automation_drafts ADD COLUMN dry_run_at TEXT;
     `,
   },
+  {
+    id: 22,
+    name: 'plugin_state',
+    // What the gateway knows about each plugin beyond the `modules` row it already
+    // keeps: whether the person turned it off, the state its last start ended in,
+    // and what they approved (the hash of its declared permissions, the checksum of
+    // its code and its version, with the permissions themselves so a later change
+    // can be shown as a difference). `started_version` is the version that last
+    // finished starting, which is what `upgrade(ctx, { from })` is given.
+    sql: `
+      CREATE TABLE plugin_state (
+        id                        TEXT PRIMARY KEY,
+        kind                      TEXT NOT NULL CHECK (kind IN ('plugin','legacy')),
+        desired                   TEXT NOT NULL DEFAULT 'enabled' CHECK (desired IN ('enabled','disabled')),
+        state                     TEXT NOT NULL CHECK (state IN ('disabled','awaiting_approval','enabled','failed','refused')),
+        reason                    TEXT,
+        version                   TEXT,
+        permissions_hash          TEXT,
+        checksum                  TEXT,
+        started_version           TEXT,
+        approved_version          TEXT,
+        approved_permissions_hash TEXT,
+        approved_checksum         TEXT,
+        approved_permissions      TEXT,
+        approved_at               TEXT,
+        approved_by               TEXT,
+        first_seen_at             TEXT NOT NULL,
+        updated_at                TEXT NOT NULL
+      );
+    `,
+  },
 ];

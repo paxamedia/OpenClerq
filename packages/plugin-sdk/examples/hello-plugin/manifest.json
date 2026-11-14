@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "id": "hello-plugin",
+  "name": "Hello plugin",
+  "version": "1.0.0",
+  "description": "The smallest plugin that uses the plugin SDK: a route, a trigger, a declared secret, a call to a declared host, and start and stop.",
+  "engines": { "api": 1 },
+  "entry": { "server": "dist/server.js", "ui": "dist/ui" },
+  "config": {
+    "greeting": "Hello",
+    "zenUrl": "https://api.github.com/zen"
+  },
+  "permissions": {
+    "secrets": ["token"],
+    "net": ["api.github.com"],
+    "api": ["GET /runs"]
+  },
+  "extensions": {
+    "nav": [{ "id": "main", "title": "Hello plugin", "path": "/" }]
+  }
+}

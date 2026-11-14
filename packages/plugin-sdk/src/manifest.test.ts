@@ -194,6 +194,14 @@ describe('manifest v1', () => {
     ]);
   });
 
+  it('says where coreEndpoints went', () => {
+    const r = validateManifest(good({ coreEndpoints: ['GET /runs'] }));
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([
+      '"coreEndpoints" belongs to the older manifest and is ignored here: list those endpoints under permissions.api.',
+    ]);
+  });
+
   it('checks the engine against what this OpenClerq serves, in plain words', () => {
     expect(engineProblem(API_VERSION)).toBeNull();
     expect(engineProblem(2, [1])).toBe(

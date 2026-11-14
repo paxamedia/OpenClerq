@@ -10,7 +10,7 @@
 
 import cron, { type ScheduledTask } from 'node-cron';
 import chokidar from 'chokidar';
-import type { ModuleTriggerDef, TriggerEvent, TriggerSource } from '@clerq/module-sdk';
+import type { ModuleTriggerDef, TriggerEvent, TriggerSource } from '@clerq/plugin-sdk';
 import { logger } from '../logger.js';
 import { addRunStep, currentRunId, currentRunSignal, recordRun, type RunTrigger } from '../runs.js';
 import { nextRunOf } from '../automations/scheduler.js';

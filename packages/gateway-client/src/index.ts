@@ -883,10 +883,13 @@ export interface ModuleInfo {
   error: string | null;
   /** Core endpoints its UI token may call, e.g. `GET /runs/:id`. */
   coreEndpoints: string[];
+  /** `plugin` has a manifest of version 1; `legacy` is a module written before it. */
+  kind?: 'plugin' | 'legacy';
+  state?: PluginState;
   /** Where its UI is served, e.g. `/api/modules/<id>/ui/`; null without one. */
   ui: string | null;
   badge: string | null;
-  /** What the manifest declares it needs. Not enforced. */
+  /** What the manifest declares it needs. Checked only when plugin enforcement is on. */
   permissions: {
     exec: string[];
     fs: { read: string[]; write: string[] };
@@ -907,6 +910,65 @@ export interface ModuleInfo {
     running: boolean;
     lastFiredAt: string | null;
   }>;
+}
+
+/** What a plugin declares it needs; shown, recorded and approved. */
+export interface PluginPermissionsInfo {
+  exec: string[];
+  fs: { read: string[]; write: string[] };
+  net: string[];
+  secrets: string[];
+  services: string[];
+  llm: boolean;
+  /** Core endpoints, as `METHOD /path`. */
+  api: string[];
+  memory: { read: string[]; write: string[] };
+}
+
+export type PluginState = 'disabled' | 'awaiting_approval' | 'enabled' | 'failed' | 'refused';
+
+/** One thing that changed in what a plugin declares since it was approved. */
+export interface PluginPermissionChange {
+  change: 'added' | 'removed';
+  key: string;
+  item: string;
+  /** "Can now connect to api.example.com". */
+  text: string;
+}
+
+/** A module or plugin, as GET /plugins lists it. */
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string | null;
+  description: string | null;
+  /** `plugin` has a manifest of version 1; `legacy` is a module written before it. */
+  kind: 'plugin' | 'legacy';
+  dir: string;
+  state: PluginState;
+  /** Why it is not enabled: the error, the engine, what it waits for. */
+  reason: string | null;
+  /** The person turned it off. */
+  switchedOff: boolean;
+  /** The API version it needs; null for a legacy module. */
+  engine: number | null;
+  /** What its manifest declares. */
+  permissions: PluginPermissionsInfo;
+  /** Of what it declares and of its code: an approval names both. */
+  permissionsHash: string | null;
+  checksum: string | null;
+  warnings: string[];
+  approval: {
+    status: 'approved' | 'not_approved' | 'changed';
+    approvedAt: string | null;
+    approvedBy: string | null;
+    approvedVersion: string | null;
+    changes: { code: boolean; permissions: boolean; version: boolean };
+    permissionChanges: PluginPermissionChange[];
+  };
+  /** The files on disk differ from what is running. */
+  needsRestart: boolean;
+  ui: string | null;
 }
 
 /** The payload of a `notify.posted` event. */
@@ -1827,6 +1889,44 @@ export const gateway = {
 
   revokeModuleTokens(id: string): Promise<{ ok: boolean; revoked: number }> {
     return fetchJson(`/modules/${encodeURIComponent(id)}/tokens`, { method: 'DELETE' });
+  },
+
+  /** Every module and plugin, with its state, what it declares and what was approved. */
+  plugins(): Promise<{ plugins: PluginInfo[]; enforce: boolean }> {
+    return fetchJson('/plugins');
+  },
+
+  /** Turn a plugin on. With enforcement on and no approval it waits for one. */
+  enablePlugin(id: string): Promise<{ plugin: PluginInfo }> {
+    return fetchJson(`/plugins/${encodeURIComponent(id)}/enable`, { method: 'POST', body: '{}' });
+  },
+
+  /** Turn a plugin off: it is stopped and what it set up is removed. */
+  disablePlugin(id: string): Promise<{ plugin: PluginInfo }> {
+    return fetchJson(`/plugins/${encodeURIComponent(id)}/disable`, { method: 'POST', body: '{}' });
+  },
+
+  /**
+   * Approve a plugin: send the `permissionsHash` and `checksum` the list showed. A plugin
+   * that has changed since gets 409 `approval_stale`: list it again and review what changed.
+   */
+  approvePlugin(
+    id: string,
+    seen: { permissionsHash: string; checksum: string }
+  ): Promise<{ plugin: PluginInfo }> {
+    return fetchJson(`/plugins/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(seen),
+    });
+  },
+
+  /** Whether plugin permissions are enforced. Off unless the person turned it on. */
+  pluginSettings(): Promise<{ enforce: boolean }> {
+    return fetchJson('/plugins/settings');
+  },
+
+  setPluginSettings(settings: { enforce: boolean }): Promise<{ enforce: boolean }> {
+    return fetchJson('/plugins/settings', { method: 'PUT', body: JSON.stringify(settings) });
   },
 
   /** Fire a module's trigger now. Resolves once its run exists. */

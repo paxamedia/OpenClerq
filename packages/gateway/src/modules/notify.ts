@@ -5,7 +5,7 @@
  */
 
 import crypto from 'node:crypto';
-import type { ModuleNotify } from '@clerq/module-sdk';
+import type { ModuleNotify } from '@clerq/plugin-sdk';
 import { emit } from '../events.js';
 import { logger } from '../logger.js';
 

@@ -16,7 +16,7 @@
   "dependencies": {
     "@clerq/drivers": "workspace:^",
     "@clerq/gateway-client": "workspace:^",
-    "@clerq/module-sdk": "workspace:^",
+    "@clerq/plugin-sdk": "workspace:^",
     "@clerq/policy": "workspace:^",
     "@clerq/providers": "workspace:^",
     "@clerq/sandbox": "workspace:^",

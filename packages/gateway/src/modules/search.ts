@@ -4,7 +4,7 @@
  * that fails or is slow is reported, not fatal.
  */
 
-import type { SearchHandler, SearchResult } from '@clerq/module-sdk';
+import type { SearchHandler, SearchResult } from '@clerq/plugin-sdk';
 import {
   listRecords,
   normaliseEmail,

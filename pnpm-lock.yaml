@@ -157,9 +157,9 @@ importers:
       '@clerq/gateway-client':
         specifier: workspace:^
         version: link:../gateway-client
-      '@clerq/module-sdk':
+      '@clerq/plugin-sdk':
         specifier: workspace:^
-        version: link:../module-sdk
+        version: link:../plugin-sdk
       '@clerq/policy':
         specifier: workspace:^
         version: link:../policy

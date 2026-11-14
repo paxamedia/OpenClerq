@@ -40,6 +40,8 @@ const OPERATOR_ONLY = [
   /^\/secrets(\/|$)/,
   // The GitHub App connection: its private key can make a token for every repository it is installed on.
   /^\/github(\/|$)/,
+  // Which plugins run and what they were approved for: a plugin's own UI token must never approve itself.
+  /^\/plugins(\/|$)/,
   // Every event and log line, of every tenant: /events/stream is the filtered form.
   /^\/events$/,
   /^\/logs(\/|$)/,
