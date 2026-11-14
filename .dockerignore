@@ -13,11 +13,13 @@
 apps/desktop/src-tauri/binaries
 apps/desktop/src-tauri/gen
 
-# Local state, notes and secrets
+# Local state, notes and secrets: the updater's signing keys (.tauri/, wherever it is),
+# environment files at any depth
 docs/internal
 ui-shots
-.env
-.env.*
-!.env.example
+**/.tauri
+**/.env
+**/.env.*
+!**/.env.example
 **/.DS_Store
 **/*.log
