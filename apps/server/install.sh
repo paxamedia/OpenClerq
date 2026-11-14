@@ -41,7 +41,9 @@ Environment
                        with --system).
   CLERQ_DOWNLOAD_BASE  Fetch SHA256SUMS and the tarball from this address instead of
                        GitHub (a mirror, or a test). Must be https, or http on this
-                       computer.
+                       computer; no user name, query or redirect to elsewhere.
+
+It needs curl, tar and sha256sum or shasum.
 
 It installs clerq-server, clerq and clerq-calc, and runs `clerq-server version`
 and `clerq --version` at the end to show they start.
@@ -61,28 +63,49 @@ priv() {
   if [ -n "$sudo" ]; then sudo "$@"; else "$@"; fi
 }
 
+# curl is the only downloader: wget cannot be told to refuse a redirect to plain http
+# (GNU wget's --https-only works only when it recurses, busybox wget has no such option).
 fetch() { # url destination
   case $1 in
     https://*)
-      if have curl; then
-        curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 30 -o "$2" "$1"
-      elif have wget; then
-        wget --https-only -q -O "$2" "$1"
-      else
-        die "neither curl nor wget is installed."
-      fi
+      curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 30 -o "$2" "$1"
       ;;
     *)
-      # Only reached for a CLERQ_DOWNLOAD_BASE on this computer (checked above).
-      if have curl; then
-        curl -fsSL --connect-timeout 30 -o "$2" "$1"
-      elif have wget; then
-        wget -q -O "$2" "$1"
-      else
-        die "neither curl nor wget is installed."
-      fi
+      # Only reached for a CLERQ_DOWNLOAD_BASE on this computer (checked in main): plain http,
+      # and no redirect at all, so it cannot be sent anywhere else.
+      curl --proto '=http' --max-redirs 0 -fsSL --connect-timeout 30 -o "$2" "$1"
       ;;
   esac
+}
+
+# Is this an http address on this computer (127.0.0.1, localhost or [::1], and a port that is
+# only digits, if any)? Plain http is allowed nowhere else.
+local_http() {
+  rest=${1#http://}
+  [ "$rest" != "$1" ] || return 1
+  auth=${rest%%/*}
+  case $auth in
+    127.0.0.1 | localhost | '[::1]') return 0 ;;
+    127.0.0.1:* | localhost:*) port=${auth#*:} ;;
+    '[::1]':*) port=${auth#'[::1]:'} ;;
+    *) return 1 ;;
+  esac
+  case $port in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# A version as the release names it: 1.0.0, 1.0.0-rc.1. Nothing that could be a path.
+valid_version() {
+  case $1 in
+    [0-9]*) ;;
+    *) return 1 ;;
+  esac
+  case $1 in
+    *[!0-9A-Za-z.+-]*) return 1 ;;
+  esac
+  return 0
 }
 
 sha256_of() { # file: its SHA-256 in lower-case hex, or non-zero when there is no tool
@@ -186,6 +209,8 @@ main() {
     sudo="sudo"
   fi
 
+  have curl || die "curl is not installed, and it is how this installer downloads (over TLS, refusing any step down to http). Install it with your package manager (for example: apt install curl, dnf install curl) and run this again."
+
   detect_platform
   if [ "$systemd_user" -eq 1 ] && [ "$os" != linux ]; then
     die "--systemd-user is for Linux; macOS has no systemd. Run clerq-server in a terminal, or use the desktop app."
@@ -206,14 +231,8 @@ main() {
 
   version=${CLERQ_VERSION:-}
   version=${version#v}
-  if [ -n "$version" ]; then
-    case $version in
-      [0-9]*) ;;
-      *) die "CLERQ_VERSION must look like 1.0.0." ;;
-    esac
-    case $version in
-      *[!0-9A-Za-z.+-]*) die "CLERQ_VERSION must look like 1.0.0." ;;
-    esac
+  if [ -n "$version" ] && ! valid_version "$version"; then
+    die "CLERQ_VERSION must look like 1.0.0."
   fi
   if [ -n "${CLERQ_DOWNLOAD_BASE:-}" ]; then
     base=${CLERQ_DOWNLOAD_BASE%/}
@@ -222,10 +241,14 @@ main() {
   else
     base="$REPO_URL/releases/latest/download"
   fi
+  # No user name or password (http://127.0.0.1:1@evil.example is a request to evil.example),
+  # no query or fragment, nothing that is not plain.
+  case $base in
+    *[[:space:]]* | *@* | *\\* | *\?* | *\#*) die "the download address must have no user name, spaces, query or fragment: $base" ;;
+  esac
   case $base in
     https://*) ;;
-    http://127.0.0.1 | http://127.0.0.1[:/]* | http://localhost | http://localhost[:/]* | 'http://[::1]' | 'http://[::1]'[:/]*) ;;
-    *) die "the download address must start with https:// (or be an http address on this computer): $base" ;;
+    *) local_http "$base" || die "the download address must start with https:// (or be an http address on this computer): $base" ;;
   esac
 
   work=$(mktemp -d "${TMPDIR:-/tmp}/openclerq-install.XXXXXX") || die "could not make a temporary folder."
@@ -252,6 +275,7 @@ main() {
     file=$found
     version=${file#openclerq-server-}
     version=${version%-"$platform".tar.gz}
+    valid_version "$version" || die "SHA256SUMS names a server file whose version is not a version number ($found); refusing to use it."
   else
     file="openclerq-server-$version-$platform.tar.gz"
   fi

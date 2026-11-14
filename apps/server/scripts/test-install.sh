@@ -12,8 +12,9 @@
 #   - the installed clerq-server and clerq run, and work together: the server
 #     starts from the install folder with the clerq-calc beside it, answers, the
 #     clerq command talks to it, and SIGTERM stops it with exit 0;
-#   - a tampered tarball, a missing checksum line and an unknown version are
-#     refused and leave an earlier install as it was;
+#   - a tampered tarball, a missing checksum line, a version in SHA256SUMS that is
+#     really a path, an unknown version, a download address with a user name and a
+#     redirect are refused and leave an earlier install as it was; no curl is said so;
 #   - with no sha256sum or shasum it refuses, and --no-verify installs with a warning;
 #   - an unsupported system or a musl one gets a plain message;
 #   - --systemd-user writes the unit and prints the commands without running them;
@@ -114,7 +115,7 @@ run() {
 
 # ---- the fake release, and a server for it
 srv="$root/srv"
-mkdir -p "$srv/good" "$srv/tampered" "$srv/nosums" "$srv/empty"
+mkdir -p "$srv/good" "$srv/tampered" "$srv/nosums" "$srv/empty" "$srv/evil"
 cp "$tarball" "$srv/good/$file"
 cp "$installer" "$srv/good/install.sh"
 sums() { # folder: write SHA256SUMS for the folder's tarball and installer
@@ -130,6 +131,8 @@ cp "$tarball" "$srv/tampered/$file"
 printf 'x' >>"$srv/tampered/$file"
 cp "$tarball" "$srv/nosums/$file"
 grep ' install.sh$' "$srv/good/SHA256SUMS" >"$srv/nosums/SHA256SUMS"
+# A SHA256SUMS whose server file has a path where its version should be.
+printf '%s  openclerq-server-../../x-%s.tar.gz\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$platform" >"$srv/evil/SHA256SUMS"
 
 cat >"$root/serve.mjs" <<'EOF'
 import http from 'node:http';
@@ -139,6 +142,10 @@ const [dirArg, requests, portFile] = process.argv.slice(2);
 const dir = path.resolve(dirArg);
 const server = http.createServer((req, res) => {
   fs.appendFileSync(requests, `${req.method} ${req.url}\n`);
+  if (req.url.startsWith('/redirect/')) {
+    res.writeHead(302, { location: req.url.replace('/redirect/', '/good/') }).end();
+    return;
+  }
   const file = path.join(dir, decodeURIComponent(new URL(req.url, 'http://x').pathname));
   if (!file.startsWith(dir + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
     res.writeHead(404).end();
@@ -223,6 +230,22 @@ if [ "$status" -ne 0 ] && has "$root/nosum.out" "no server file for $platform"; 
 run nosums_at_all env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/empty" CLERQ_INSTALL_DIR="$root/bin4e" sh "$installer"
 if [ "$status" -ne 0 ] && has "$root/nosums_at_all.out" "may not be uploaded yet"; then ok "a release with no SHA256SUMS explains the likely reason"; else bad "a release with no SHA256SUMS explains the likely reason" "$root/nosums_at_all.out"; fi
 
+: >"$root/requests"
+run evilsums env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/evil" CLERQ_INSTALL_DIR="$root/bin4f" sh "$installer"
+if [ "$status" -ne 0 ] && has "$root/evilsums.out" "not a version number"; then ok "a version in SHA256SUMS that is really a path is refused"; else bad "a version in SHA256SUMS that is really a path is refused" "$root/evilsums.out"; fi
+check "and nothing was asked for with it" lacks "$root/requests" "tar.gz"
+check "and nothing was created" test ! -e "$root/bin4f"
+run userinfo env HOME="$h" CLERQ_DOWNLOAD_BASE="http://127.0.0.1:1@evil.example/good" CLERQ_INSTALL_DIR="$root/bin4g" sh "$installer"
+if [ "$status" -ne 0 ] && has "$root/userinfo.out" "no user name"; then ok "a download address with a user name (127.0.0.1:1@evil.example) is refused before any request"; else bad "a download address with a user name (127.0.0.1:1@evil.example) is refused before any request" "$root/userinfo.out"; fi
+for odd in "http://127.0.0.1.evil.example/good" "http://localhost:80x/good" "https://example.com/a b" "https://example.com/a?b=c"; do
+  run odd env HOME="$h" CLERQ_DOWNLOAD_BASE="$odd" CLERQ_INSTALL_DIR="$root/bin4g" sh "$installer"
+  if [ "$status" -ne 0 ] && [ ! -e "$root/bin4g" ]; then ok "a download address of '$odd' is refused"; else bad "a download address of '$odd' is refused" "$root/odd.out"; fi
+done
+: >"$root/requests"
+run redirect env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/redirect" CLERQ_INSTALL_DIR="$root/bin4h" sh "$installer"
+if [ "$status" -ne 0 ] && [ ! -e "$root/bin4h" ]; then ok "a local http address that redirects is not followed"; else bad "a local http address that redirects is not followed" "$root/redirect.out"; fi
+check "and only the first request was made" test "$(tr '\n' ' ' <"$root/requests")" = "GET /redirect/SHA256SUMS "
+
 # ---- 5. no sha256sum or shasum: refuse, unless told otherwise
 minpath="$root/minpath"
 mkdir -p "$minpath"
@@ -234,6 +257,14 @@ if [ "$status" -ne 0 ] && has "$root/nohash.out" "neither sha256sum nor shasum" 
 run noverify env PATH="$minpath" HOME="$h" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$root/bin5" /bin/sh "$installer" --no-verify
 if [ "$status" -eq 0 ] && [ -x "$root/bin5/clerq-server" ]; then ok "--no-verify installs without one"; else bad "--no-verify installs without one" "$root/noverify.out"; fi
 check "and warns that nothing was checked" has "$root/noverify.out" "NOT checking the download"
+
+nocurl="$root/nocurl"
+mkdir -p "$nocurl"
+for t in "$minpath"/*; do
+  [ "$(basename "$t")" = curl ] || ln -s "$(readlink "$t")" "$nocurl/$(basename "$t")"
+done
+run nocurl env PATH="$nocurl" HOME="$h" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$root/bin5b" /bin/sh "$installer"
+if [ "$status" -ne 0 ] && has "$root/nocurl.out" "curl is not installed" && [ ! -e "$root/bin5b" ]; then ok "with no curl it says so (wget is not a fallback: it cannot refuse an http redirect)"; else bad "with no curl it says so" "$root/nocurl.out"; fi
 
 # ---- 6. systems it does not support
 fake="$root/fakebin"
