@@ -90,27 +90,37 @@ A module is a directory with a `manifest.json` and a server entry (`dist/routes.
 manifest's `entryPoints.routes[0]`): one self-contained ES module. The gateway loads every module
 under `CLERQ_MODULES_DIR` (or the single module there) at start, and lists them at `GET /modules`.
 
+> **Plugins.** A manifest that says `"manifestVersion": 1` is a _plugin_, with a lifecycle
+> (`upgrade`, `register`, `start`, `stop`), a validated manifest, an approval and optional
+> enforcement of its declared permissions. That is documented in [PLUGINS.md](PLUGINS.md), and new
+> work should start there. A module without `manifestVersion` is a **legacy module**: it loads as
+> described below, is labelled "legacy" in the list, and `@clerq/module-sdk` (which now re-exports
+> `@clerq/plugin-sdk`) keeps working through 1.x. The rest of this section is the legacy contract; the
+> context table is the plugin context's too.
+
 The entry exports `register(ctx)`, or a default `{ register }`. Types are in `@clerq/module-sdk`;
 [`packages/module-sdk/examples/hello-world`](../packages/module-sdk/examples/hello-world) is a
 complete example.
 
-| `ctx.`      | What it is                                                                                                   |
-| ----------- | ------------------------------------------------------------------------------------------------------------ |
-| `routes`    | `get/post/put/patch/delete(path, handler)`, served at `/api/modules/<id>/<path>`                             |
-| `store`     | the gateway's SQLite store; `table('x')` is `mod_<id>__x`                                                    |
-| `secrets`   | vault entries named `<id>/<name>`                                                                            |
-| `events`    | `emit('x', payload)` puts `module.<id>.x` on the bus (and `GET /events/stream`); `subscribe(prefix, fn)`     |
-| `triggers`  | `register({ id, kind: 'cron' \| 'file' \| 'webhook', handler })`; each firing is a run                       |
-| `notify`    | `notify({ title, body, level, link })` and `notify.badge('3/10')`: `notify.posted` and `notify.badge` events |
-| `services`  | `status/start/stop(label)` for the launchd agents the manifest lists under `services` (macOS)                |
-| `records`   | shared people, organisations and activities: `resolve`, `link`, `addActivity`, `ref(type, id)`               |
-| `search`    | `register((q, { limit, types }) => results)` for global search                                               |
-| `inbox`     | `add({ kind, title, ref, externalId })`, `resolve(id)`, `onRespond(handler)`                                 |
-| `approvals` | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                       |
-| `audit`     | `append(action)`, recorded as `module.<id>.<action>`                                                         |
-| `logger`    | the gateway log, tagged with the module id                                                                   |
-| `tenant`    | the current tenant (`default` on a single-tenant install); `withTenant(id, fn)`                              |
-| `config`    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                                            |
+| `ctx.`                      | What it is                                                                                                                             |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `routes`                    | `get/post/put/patch/delete(path, handler)`, served at `/api/modules/<id>/<path>`                                                       |
+| `store`                     | the gateway's SQLite store; `table('x')` is `mod_<id>__x`                                                                              |
+| `secrets`                   | vault entries named `<id>/<name>`                                                                                                      |
+| `events`                    | `emit('x', payload)` puts `module.<id>.x` on the bus (and `GET /events/stream`); `subscribe(prefix, fn)`                               |
+| `triggers`                  | `register({ id, kind: 'cron' \| 'file' \| 'webhook', handler })`; each firing is a run                                                 |
+| `notify`                    | `notify({ title, body, level, link })` and `notify.badge('3/10')`: `notify.posted` and `notify.badge` events                           |
+| `services`                  | `status/start/stop(label)` for the launchd agents the manifest lists under `services` (macOS)                                          |
+| `records`                   | shared people, organisations and activities: `resolve`, `link`, `addActivity`, `ref(type, id)`                                         |
+| `search`                    | `register((q, { limit, types }) => results)` for global search                                                                         |
+| `inbox`                     | `add({ kind, title, ref, externalId })`, `resolve(id)`, `onRespond(handler)`                                                           |
+| `approvals`                 | `request({ action, reason })` into the approvals inbox, and `wait(id)`                                                                 |
+| `audit`                     | `append(action)`, recorded as `module.<id>.<action>`                                                                                   |
+| `logger`                    | the gateway log, tagged with the module id                                                                                             |
+| `exec`, `fetch`, `fs`       | a command, an HTTP call and files, each checked against the declared permissions when enforcement is on (see [PLUGINS.md](PLUGINS.md)) |
+| `setInterval`, `setTimeout` | timers the gateway cancels when the module stops                                                                                       |
+| `tenant`                    | the current tenant (`default` on a single-tenant install); `withTenant(id, fn)`                                                        |
+| `config`                    | the manifest's `config`, overlaid by `~/.clerq/modules/<id>.json`                                                                      |
 
 **Triggers.** A firing is recorded as a run with `moduleId` and `triggerId`; the handler's return
 value is stored on it, and a throw fails it. `POST /api/modules/<id>/triggers/<triggerId>` fires
@@ -124,9 +134,12 @@ launchd does not have it and kickstarts it; stop boots it out. Over HTTP:
 start and stop is audited and emits `service.changed`. Labels not in the manifest get `404`.
 
 **Permissions.** A manifest may declare `permissions`: `exec` (exact commands), `fs.read` and
-`fs.write` (paths), `net` (hosts), `secrets`, `services` and `llm`. They are parsed, shown at
-`GET /modules` with any warnings, given to the module as `ctx.permissions`, and recorded; a change
-since the last start goes in the audit log. **They are not enforced yet.**
+`fs.write` (paths), `net` (hosts), `secrets`, `services`, `llm`, and `api` and `memory`. They are
+parsed, shown at `GET /modules` (the first six) and `GET /plugins` (all) with any warnings, given to the
+module as `ctx.permissions`, and recorded; a change since the last start goes in the audit log. They
+are **checked only when the user turns on plugin enforcement** (Settings → Plugins; off by
+default), and then only for what goes through the context: [PLUGINS.md](PLUGINS.md) says what is
+and is not covered. **It is not a sandbox.**
 
 **UI.** A module that ships `dist/ui/index.html` has it served at `/api/modules/<id>/ui/`, without
 a token: these are static files with no data in them, and an iframe cannot send a header. The UI
@@ -148,7 +161,8 @@ Like core migrations they are append-only: one edited after it ran is refused.
 
 A module whose migrations or `register` throw is listed as `failed` and gets no routes. Module code runs in the
 gateway process with the gateway's access: the context is a namespace, not a sandbox. Modules that
-export a `routes` array (the earlier contract) still load.
+export a `routes` array (the earlier contract) still load. A module's code is loaded once per start,
+from where it lies; if its files change, switching it off and on again says it needs a restart.
 
 ---
 
@@ -234,4 +248,5 @@ Modules and skills must respect the **safety guarantees** of the OSS core:
 - Tools should be **scoped** (filesystem roots, HTTP allow‑lists, etc.).
 - Skills should describe any constraints, required approvals, and audit notes.
 
-See `docs/SECURITY.md` for the binding rules and the checklist to run before you ship or share a module.
+See `docs/SECURITY.md` for the binding rules and the checklist to run before you ship or share a module,
+and [PLUGINS.md](PLUGINS.md) for the manifest, approval and enforcement a plugin goes through.

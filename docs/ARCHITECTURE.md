@@ -760,6 +760,7 @@ version 1 changes are additive only. See [API.md](API.md). Endpoints:
 | Remote      | `GET \| PUT /remote`, `POST /devices/pairing`, `POST /devices/pair` (no token), `GET /devices`, `DELETE /devices/:id`, `GET \| DELETE /devices/me`                                                                      |
 | Search      | `GET /search`, `GET /extensions`                                                                                                                                                                                        |
 | Modules     | `GET /modules`, `POST /modules/:id/token`, `DELETE /modules/:id/tokens`; module routes at `/api/modules/:id/*`, with `ui/`, `triggers/:id` and `services` reserved (see [MODULE_SYSTEM.md](MODULE_SYSTEM.md))           |
+| Plugins     | `GET /plugins`, `POST /plugins/:id/enable\|disable\|approve`, `GET \| PUT /plugins/settings`: gateway token only (see [PLUGINS.md](PLUGINS.md))                                                                         |
 
 Responsibilities: loading skills from disk and normalising metadata (`inputSchema`,
 `outputSchema`, `dependsOn`); hosting tools under capability restrictions; store-backed memory,
@@ -862,8 +863,9 @@ and host.
   ⌘K palette over `/search`, and a hash router: every page is a route such as `#/runs/<id>`.
 - **Core pages** — Home, Inbox (approvals and module items), Runs, Repos, Records, Developer, Settings.
 - **Modules** — pages under `#/m/<id>/…`. Bundled modules (Automations, Chat) register through
-  the slot contract; modules the gateway runs appear from `GET /modules` and their `nav`
-  extensions, with their UI in a frame.
+  the slot contract (`@clerq/plugin-sdk/ui`); modules the gateway runs appear from `GET /modules`
+  and their `nav` extensions, with their UI in a frame. Settings → Plugins lists every module and
+  plugin, what it asks for and whether you approved it, and holds the enforcement switch.
 - **Live data** — one cache over the client, refetched from `GET /events/stream`, polled when the
   stream is down.
 
@@ -902,7 +904,7 @@ writers can clobber each other; they move into the store as the rest of 0.5 land
 
 ## 7. Extending
 
-1. Add skills or modules — see [MODULE_SYSTEM.md](MODULE_SYSTEM.md)
+1. Add skills or modules — see [MODULE_SYSTEM.md](MODULE_SYSTEM.md); add a plugin (a manifest, a lifecycle, an approval, optional enforcement) — see [PLUGINS.md](PLUGINS.md)
 2. Add tools or calculation operations — see [TOOLS.md](TOOLS.md) and [ARITHMETIC_API.md](ARITHMETIC_API.md)
 3. Wire them into your own workflows from the desktop or an external client
 

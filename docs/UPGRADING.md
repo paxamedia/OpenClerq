@@ -31,7 +31,7 @@ If the database was written by an older version, OpenClerq first writes a copy, 
 
 An older OpenClerq cannot know what a newer one changed in the database, so it will not open one:
 
-> This database was written by a newer OpenClerq (schema 23); this build knows schema 21. Install
+> This database was written by a newer OpenClerq (schema 24); this build knows schema 22. Install
 > the newer version, or restore a backup from ~/.clerq/backups.
 
 The background service stops with that message instead of starting half-working; the desktop app
@@ -44,7 +44,7 @@ to the older one properly by restoring a copy:
    would be replayed over the copy and damage it.
 3. Copy a backup from `~/.clerq/backups/` to `~/.clerq/clerq.db`. The number in a backup's name
    (`clerq-schema12-…` is a database at schema 12) must not be higher than the one in the message
-   ("this build knows schema 21"), since the older version refuses a newer database whether it came
+   ("this build knows schema 22"), since the older version refuses a newer database whether it came
    from a backup or not; take the newest one that fits. It holds everything up to the moment of the
    upgrade and nothing after it. Copy only the `.db` file.
 4. Start the older version. Once you are sure of the result, delete the files you moved away.

@@ -255,7 +255,8 @@ by every user.
 What the unit does at stop: systemd sends SIGTERM to `clerq-server` alone (`KillMode=mixed`).
 At once it stops starting anything (a run waiting for a slot stays queued for the next start),
 refuses new requests with 503 and ends the open event streams; requests already under way get up
-to 8 s to finish; then it closes the store and exits 0 (or exits 1 if that has not happened by 10 s). Whatever agent
+to 8 s to finish; then each running plugin's `stop` hook runs, at the same time, with 2 s each (see
+[PLUGINS.md](PLUGINS.md)); then it closes the store and exits 0 (or exits 1 if that has not happened by 10 s). Whatever agent
 processes remain are then killed by systemd. A chat reply still being generated when the 8 s are
 over is lost: the message you sent is kept, the reply is not stored, and the run is settled as
 interrupted at the next start; send the message again. A failed start is retried every 5 s, at

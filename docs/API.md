@@ -328,6 +328,14 @@ Other additions in the same change:
   for the app, `pushedAs` / `openedBy` (`<slug>[bot]`). `POST /repos` with `check` may say
   `github-app:<slug>/installation/<id>` as its `credential.source`.
 
+## Plugins
+
+`GET /plugins`, `POST /plugins/:id/enable`, `POST /plugins/:id/disable`, `POST /plugins/:id/approve`
+and `GET|PUT /plugins/settings` are for the gateway token only: no scoped token reaches them,
+whatever its scopes say, so a plugin cannot approve itself. They are additions to version 1, and
+[PLUGINS.md](PLUGINS.md) describes them. A plugin declares the API version it needs as
+`engines.api`; a plugin whose version this gateway does not serve is refused with the reason.
+
 ## The 1.x promise
 
 Within API version 1, changes are additive only:

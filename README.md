@@ -38,7 +38,7 @@
 ## Why Clerq?
 
 - **Local-first calculations** — All numeric work runs locally on your machine (Rust-based calculation engine). AI provides guidance and explanations only.
-- **Extensible skills** — You decide which domains and workflows to implement as skills or modules.
+- **Extensible skills** — You decide which domains and workflows to implement as skills, modules or plugins. A plugin declares what it needs, you approve exactly that, and you can turn on checks on what it does through OpenClerq (not a sandbox: see [Plugins](docs/PLUGINS.md)).
 - **Open-source** — Use the code as is, program it, build your own modules. No warranty; use at your own risk.
 - **Hosted option** — If you work with us commercially, we can build and host custom modules for your use case on our infrastructure. These are not part of the OSS distribution.
 
@@ -193,25 +193,26 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 
 ### API (gateway on :18790)
 
-| Method          | Path                                     | Description                                                                                                        |
-| --------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| GET             | /health                                  | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider`                                          |
-| GET             | /version                                 | The gateway's release, the API versions it serves and the database schema; no token. See [API](docs/API.md)        |
-| GET             | /skills                                  | List skills (from disk or fallback)                                                                                |
-| GET             | /skills/:slug                            | Get skill detail (meta, body). PUT to update schemas/dependencies.                                                 |
-| GET             | /metrics                                 | Observability: uptime, LLM calls, latency, token usage                                                             |
-| POST            | /context/preview                         | Preview the LLM request (no API call). Body: `question`, optional `context`, `skillSlug`, `sessionId`              |
-| GET             | /memory                                  | List memory records (typed: fact, preference, decision, procedure, note). POST to set; `/memory/search?q=` to find |
-| GET             | /capabilities                            | Filesystem/network restrictions. POST to save.                                                                     |
-| GET/POST        | /reasoning                               | Temperature, max tokens. POST to save.                                                                             |
-| GET/POST        | /system-prompt                           | System prompt editor. POST to save.                                                                                |
-| POST            | /calculate/eval                          | Arithmetic engine (body: expression or spec+inputs). Deterministic, auditable.                                     |
-| POST            | /explain                                 | AI explanation (body: question, optional context). Uses configured LLM.                                            |
-| POST            | /task                                    | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`.            |
-| POST            | /automations                             | Save an automation from its YAML spec (body: `spec`). It starts disabled. `POST /automations/:id/run` runs it now. |
-| GET             | /repos                                   | Repositories automations target, with what runs against them. `/repos/:id` adds the latest runs.                   |
-| POST            | /repos                                   | Add a repository by hand. Body: `target` (`local:<path>`, `github:owner/name`, …), optional `check: true`.         |
-| GET/POST/DELETE | /github/app, /github/login, /github/user | Your GitHub App, and your sign-in to GitHub (device flow). Gateway token only; see [GITHUB](docs/GITHUB.md).       |
+| Method          | Path                                     | Description                                                                                                                               |
+| --------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| GET             | /health                                  | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider`                                                                 |
+| GET             | /version                                 | The gateway's release, the API versions it serves and the database schema; no token. See [API](docs/API.md)                               |
+| GET             | /skills                                  | List skills (from disk or fallback)                                                                                                       |
+| GET             | /skills/:slug                            | Get skill detail (meta, body). PUT to update schemas/dependencies.                                                                        |
+| GET             | /metrics                                 | Observability: uptime, LLM calls, latency, token usage                                                                                    |
+| POST            | /context/preview                         | Preview the LLM request (no API call). Body: `question`, optional `context`, `skillSlug`, `sessionId`                                     |
+| GET             | /memory                                  | List memory records (typed: fact, preference, decision, procedure, note). POST to set; `/memory/search?q=` to find                        |
+| GET             | /capabilities                            | Filesystem/network restrictions. POST to save.                                                                                            |
+| GET/POST        | /reasoning                               | Temperature, max tokens. POST to save.                                                                                                    |
+| GET/POST        | /system-prompt                           | System prompt editor. POST to save.                                                                                                       |
+| POST            | /calculate/eval                          | Arithmetic engine (body: expression or spec+inputs). Deterministic, auditable.                                                            |
+| POST            | /explain                                 | AI explanation (body: question, optional context). Uses configured LLM.                                                                   |
+| POST            | /task                                    | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`.                                   |
+| POST            | /automations                             | Save an automation from its YAML spec (body: `spec`). It starts disabled. `POST /automations/:id/run` runs it now.                        |
+| GET             | /repos                                   | Repositories automations target, with what runs against them. `/repos/:id` adds the latest runs.                                          |
+| POST            | /repos                                   | Add a repository by hand. Body: `target` (`local:<path>`, `github:owner/name`, …), optional `check: true`.                                |
+| GET/POST/DELETE | /github/app, /github/login, /github/user | Your GitHub App, and your sign-in to GitHub (device flow). Gateway token only; see [GITHUB](docs/GITHUB.md).                              |
+| GET/POST/PUT    | /plugins, /plugins/:id/approve, …        | Modules and plugins: state, what each asks for, approval, and the enforcement switch. Gateway token only; see [PLUGINS](docs/PLUGINS.md). |
 
 ## Project Structure
 
@@ -223,6 +224,7 @@ clerq/
 │   └── cli/              # clerq: the command line (login, repo add, automation apply, run, logs, approve)
 ├── packages/
 │   ├── gateway/          # OpenClerq agent runtime
+│   ├── plugin-sdk/       # The plugin contract: manifest v1, context and lifecycle types, UI types, checksums
 │   └── calculation-core/ # Rust — advanced arithmetic engine (deterministic, auditable)
 ├── docs/                # ROADMAP, ARCHITECTURE, SECURITY, TOOLS, etc.
 └── package.json

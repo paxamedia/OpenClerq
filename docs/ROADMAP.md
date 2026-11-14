@@ -228,7 +228,7 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [x] `curl | sh` installer and a one-line `docker run`
 - [ ] Restrictive Tauri CSP replacing `null`
 - [ ] Real updater signing keys, signed artifacts, documented rotation and recovery
-- [ ] `packages/plugin-sdk` — declared permissions, lifecycle, treated as code not prompt text
+- [x] `packages/plugin-sdk` — declared permissions, lifecycle, treated as code not prompt text ([PLUGINS.md](PLUGINS.md)): manifest v1, `definePlugin` with `upgrade`/`register`/`start`/`stop`, a checksum of the plugin's code, approval by hash, and opt-in enforcement of what a plugin does through its context. Enforcement is not a sandbox: plugins run in the gateway process
 - [ ] Chat console migrated onto `plugin-sdk` as the reference first-party plugin — proving the contract by using it
 - [ ] Skill manifests with `tools_required`, `network_domains`, `filesystem_scope`, checksum, trust states
 - [x] Versioned API protocol + migration system
