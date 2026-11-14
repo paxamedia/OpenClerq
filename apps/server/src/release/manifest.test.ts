@@ -111,7 +111,8 @@ describe('latest.json', () => {
       'Clerq-1.0.0-1.x86_64.rpm',
       'Clerq-1.0.0-1.aarch64.rpm',
     ];
-    const signed = bundles.filter((b) => /(tar\.gz|msi|exe|AppImage)$/.test(b));
+    // Tauri 2.10 signs the .deb and the .rpm as well; they are in the release with their .sig.
+    const signed = bundles.filter((b) => /(tar\.gz|msi|exe|AppImage|deb|rpm)$/.test(b));
     const m = manifestOf([...bundles, ...signed.map((b) => `${b}.sig`)])!;
     expect(Object.keys(m.platforms).sort()).toEqual([
       'darwin-aarch64',
@@ -128,7 +129,8 @@ describe('latest.json', () => {
     });
     expect(m.platforms['linux-aarch64-appimage'].url).toBe(`${BASE}/Clerq_1.0.0_aarch64.AppImage`);
     expect(m).toMatchObject({ version: '1.0.0', pub_date: '2026-11-14T00:00:00.000Z' });
-    // The .deb and .rpm are in the release, and in no entry.
+    // The .deb and .rpm are in the release, signed, and in no entry: a choice (the updater would
+    // install them as root), see generate-updater-manifest.js.
     expect(JSON.stringify(m)).not.toMatch(/\.deb|\.rpm/);
   });
 
@@ -208,16 +210,19 @@ describe('staging a build’s files', () => {
     return { outDir, staged };
   };
 
-  it('stages an x86_64 Linux build: the AppImage renamed with its signature, the .deb and .rpm as they are', () => {
+  it('stages an x86_64 Linux build: the AppImage renamed, the .deb and .rpm as they are, each with its signature', () => {
     const dir = bundles({
       appimage: ['Clerq_1.0.0_amd64.AppImage', 'Clerq_1.0.0_amd64.AppImage.sig'],
-      deb: ['Clerq_1.0.0_amd64.deb'],
-      rpm: ['Clerq-1.0.0-1.x86_64.rpm'],
+      // Tauri 2.10 signs the .deb and .rpm too, so each comes with its .sig.
+      deb: ['Clerq_1.0.0_amd64.deb', 'Clerq_1.0.0_amd64.deb.sig'],
+      rpm: ['Clerq-1.0.0-1.x86_64.rpm', 'Clerq-1.0.0-1.x86_64.rpm.sig'],
     });
     const { outDir, staged } = stage(dir, 'x86_64');
     expect(staged.sort()).toEqual([
       'Clerq-1.0.0-1.x86_64.rpm',
+      'Clerq-1.0.0-1.x86_64.rpm.sig',
       'Clerq_1.0.0_amd64.deb',
+      'Clerq_1.0.0_amd64.deb.sig',
       'Clerq_1.0.0_x86_64.AppImage',
       'Clerq_1.0.0_x86_64.AppImage.sig',
     ]);

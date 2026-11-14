@@ -25,8 +25,14 @@ const CPU = { aarch64: 'aarch64', arm64: 'aarch64', x86_64: 'x86_64', x64: 'x86_
  * "linux-<arch>": the updater (tauri-plugin-updater 2.10, checked in its source) asks a
  * .deb or .rpm install for "-deb" or "-rpm" and then for the plain key, and the plain key
  * would hand them an AppImage that cannot be installed over a package, after downloading
- * it. Tauri signs no .deb or .rpm, so those installs have no entry at all and the
- * update check says so; they update by installing the new package.
+ * it. Tauri 2.10 does sign the .deb and the .rpm (each gets a .sig, which the release
+ * publishes and verify-signatures.js checks), and the updater could install them, so their
+ * having no "-deb" or "-rpm" entry is a choice, not a lack: the updater installs them by
+ * running dpkg -i or rpm -U as root, through pkexec, a zenity or kdialog password prompt or
+ * sudo, a path nobody here has run, and it would make a stolen updater key root on those
+ * machines and not only the user. Those installs have no entry, the update check says so,
+ * and they update by installing the new package. To offer them, add `.deb` ->
+ * linux-<cpu>-deb and `.rpm` -> linux-<cpu>-rpm below, and the test that pins this choice.
  */
 export function keysFor(file) {
   const arch = /_(aarch64|x86_64|x64|amd64|arm64)[_.-]/.exec(file)?.[1];

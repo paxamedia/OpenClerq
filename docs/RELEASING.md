@@ -52,21 +52,34 @@ pull requests or forks, which have no secrets. A red `updater-key` is a reason n
 
 ## What is signed, and what is not
 
-| File                                                       | Signature                                                                                    |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `Clerq_<v>_<cpu>.app.tar.gz` (macOS), `.msi`, `-setup.exe` | `<file>.sig`, by the key above: this is what the app's updater verifies                      |
-| `Clerq_<v>_x86_64.AppImage`, `_aarch64.AppImage` (Linux)   | `<file>.sig`, the same                                                                       |
-| `SHA256SUMS`                                               | `SHA256SUMS.minisig`, the same key. It lists the four server tarballs and `install.sh`       |
-| `openclerq-server-*.tar.gz`, `install.sh`                  | by `SHA256SUMS`: their checksums are in it                                                   |
-| `latest.json`                                              | not signed itself; each platform entry carries the signature of the bundle it points to      |
-| `.dmg`, `.deb`, `.rpm`                                     | **not signed.** Tauri signs no `.deb` or `.rpm`, and the `.dmg` is a download, not an update |
-| the macOS and Windows programs themselves                  | **not code-signed**: see below                                                               |
+| File                                                       | Signature                                                                               |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `Clerq_<v>_<cpu>.app.tar.gz` (macOS), `.msi`, `-setup.exe` | `<file>.sig`, by the key above: this is what the app's updater verifies                 |
+| `Clerq_<v>_x86_64.AppImage`, `_aarch64.AppImage` (Linux)   | `<file>.sig`, the same                                                                  |
+| `.deb`, `.rpm` (Linux)                                     | `<file>.sig`, made by Tauri 2.10 and published, but **not in `latest.json`**: see below |
+| `SHA256SUMS`                                               | `SHA256SUMS.minisig`, the same key. It lists the four server tarballs and `install.sh`  |
+| `openclerq-server-*.tar.gz`, `install.sh`                  | by `SHA256SUMS`: their checksums are in it                                              |
+| `latest.json`                                              | not signed itself; each platform entry carries the signature of the bundle it points to |
+| `.dmg`                                                     | **not signed**: it is a download, not an update                                         |
+| the macOS and Windows programs themselves                  | **not code-signed**: see below                                                          |
 
 Before `publish` makes a release, it checks every `.sig` against the public key and refuses to go
 on if an updater bundle has none or one does not verify
 (`node scripts/verify-signatures.js --require release/`): nothing is released, and the failure
 names the file. `publish-server` signs `SHA256SUMS`, then checks the signature with the same
 script and with `minisign` itself before it uploads anything.
+
+### The `.deb` and `.rpm` are signed and not offered as updates
+
+Tauri 2.10 writes a `.sig` for the `.deb` and for the `.rpm` as well, with the key above, and the
+release carries them (`publish` verifies them like the rest). The app's updater could install such
+a package, but `latest.json` does not offer it: for a `.deb` or `.rpm` install, "Check for updates"
+reports that no update is listed for it, and the package is updated by installing the new one.
+That is a choice. The updater installs a package by running `dpkg -i` or `rpm -U` **as root**,
+through `pkexec`, a `zenity` or `kdialog` password prompt or `sudo`; nobody has run that path, and
+with it a stolen updater key would be root on those machines and not only the user's own account
+(the AppImage replaces a file the user owns). To offer them, add the two keys in
+`scripts/generate-updater-manifest.js` and the test that pins the choice.
 
 ### What is not signed: macOS and Windows code signing
 
@@ -157,7 +170,7 @@ writes.
    released**: read which file it names, fix the key or the build, and re-run.
 5. **After the tag**, because none of this can be seen before it runs:
    - the release lists the desktop files (the `.dmg`, `.app.tar.gz`, `.msi`, setup `.exe`, two
-     `.AppImage`, two `.deb`, two `.rpm`, each updater bundle with its `.sig`), `latest.json`,
+     `.AppImage`, two `.deb`, two `.rpm`, each of those with its `.sig`), `latest.json`,
      the four server tarballs, `install.sh`, `SHA256SUMS` and `SHA256SUMS.minisig`;
    - `latest.json` names `darwin-aarch64`, `windows-x86_64` (and `-msi`, `-nsis`),
      `linux-x86_64-appimage` and `linux-aarch64-appimage`;
@@ -226,7 +239,8 @@ app never takes a key from anywhere but its own binary.
 ## What this does not do
 
 - It does not make the macOS or Windows installers trusted by the operating system (above).
-- It does not sign the `.deb`, `.rpm` or `.dmg`.
+- It does not sign the `.dmg`, and it does not offer the signed `.deb` and `.rpm` as in-app
+  updates (below).
 - It cannot revoke a key from an app that has it.
 - It does not check that the offline backup of the key exists.
 - `SHA256SUMS.minisig` and `.sig` files come from the same release as the files they cover. They

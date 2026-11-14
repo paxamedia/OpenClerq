@@ -101,10 +101,13 @@ tried: CI builds the packages on every push and looks inside them (`build.yml`, 
 they have not been run on a range of Linux desktops.
 
 **In-app updates work for the AppImage only.** The updater replaces the AppImage file with the new
-one, after checking its signature. A `.deb` or `.rpm` is installed by your package manager and Tauri
-signs neither, so there is no update for them in `latest.json`, and "Check for updates" reports an
-error that none of the platforms it looked for are listed: download the new package and install it
-over the old one. `latest.json` lists `linux-x86_64-appimage` and `linux-aarch64-appimage` and
+one, after checking its signature. A `.deb` or `.rpm` is installed by your package manager. Tauri signs
+both (the release has their `.sig`), but `latest.json` does not offer them, so "Check for updates"
+reports an error that none of the platforms it looked for are listed: download the new package and
+install it over the old one. That is a choice, not a limit: the updater would install them by
+running `dpkg -i` or `rpm -U` as root, through a polkit, `zenity`, `kdialog` or `sudo` prompt, a path
+nobody has run, and a stolen update key would then be root on those machines
+([RELEASING.md](RELEASING.md#the-deb-and-rpm-are-signed-and-not-offered-as-updates)). `latest.json` lists `linux-x86_64-appimage` and `linux-aarch64-appimage` and
 deliberately not the plain `linux-<cpu>` key: the updater would offer a `.deb` or `.rpm` install an
 AppImage it cannot install over a package.
 
