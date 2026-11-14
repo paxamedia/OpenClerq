@@ -1,5 +1,16 @@
 name: Release
 
+# What a tag builds, and how the jobs depend on each other:
+#
+#   version ──┬─ release (macOS, Windows installers) ── publish (the GitHub Release, latest.json)
+#             │                                              │
+#             ├─ server (4 tarballs, in parallel) ───────────┴─ publish-server (adds the tarballs,
+#             │                                                  SHA256SUMS and install.sh to it)
+#             └─ docker (one image per CPU) ── docker-manifest (ghcr.io/paxamedia/openclerq)
+#
+# The desktop release never waits on the server or image jobs, and a failure in them
+# changes nothing that `publish` already published. Re-run the failed jobs to retry.
+
 on:
   push:
     tags:
@@ -109,3 +120,256 @@ jobs:
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The server files, one tarball per platform: clerq-server, clerq and clerq-calc, the
+  # two systemd units, LICENSE, NOTICE and a README (scripts/package-server.js). Their
+  # artifacts are named server-<target>, not *-build, so `publish` above does not take
+  # them. darwin-x64 is cross-compiled on the Apple Silicon runner: Bun builds the x64
+  # binary from there, and the engine needs only the x86_64-apple-darwin target of the
+  # Rust toolchain. An Intel runner would be slower, scarcer and a label GitHub is
+  # retiring; the cost is that this one tarball is checked (it holds x86_64 binaries) but
+  # not run.
+  server:
+    name: Server files (${{ matrix.target }})
+    needs: [version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+            rust: x86_64-unknown-linux-gnu
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            rust: aarch64-unknown-linux-gnu
+          - target: darwin-arm64
+            runner: macos-latest
+            rust: aarch64-apple-darwin
+          - target: darwin-x64
+            runner: macos-latest
+            rust: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/calculation-core
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build clerq-calc
+        run: cargo build --release --target ${{ matrix.rust }} --manifest-path packages/calculation-core/Cargo.toml
+
+      - name: Package the server files
+        run: node scripts/package-server.js --target ${{ matrix.target }} --out-dir server-files
+
+      # The programs this runner can run are run, against the tarball itself.
+      - name: Smoke test the server binary
+        if: matrix.target != 'darwin-x64'
+        run: node apps/server/scripts/smoke.mjs apps/server/dist/bun-${{ matrix.target }}/clerq-server
+
+      - name: Test the installer against this tarball
+        if: matrix.target != 'darwin-x64'
+        run: apps/server/scripts/test-install.sh server-files/openclerq-server-*-${{ matrix.target }}.tar.gz
+
+      - name: Check the cross-compiled files are x86_64
+        if: matrix.target == 'darwin-x64'
+        run: |
+          for f in apps/server/dist/bun-darwin-x64/clerq-server apps/server/dist/bun-darwin-x64/clerq-calc apps/cli/dist/bun-darwin-x64/clerq; do
+            file "$f" | tee /dev/stderr | grep -q x86_64
+          done
+
+      - name: Upload server files
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-${{ matrix.target }}
+          path: server-files/*.tar.gz
+          if-no-files-found: error
+
+  # Attaches the server files to the release `publish` made, with SHA256SUMS over the
+  # tarballs and install.sh (the installer, which is itself listed, so it can be checked
+  # too). If this fails, the desktop release stays as it is; fix the cause and re-run.
+  # softprops/action-gh-release updates the release a tag already has and keeps its
+  # name and notes when they are not given; same-named files are replaced.
+  publish-server:
+    name: Add the server files to the release
+    needs: [publish, server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the server files
+        uses: actions/download-artifact@v8
+        with:
+          pattern: 'server-*'
+          path: server-files
+          merge-multiple: true
+
+      - name: Checksums and installer
+        run: |
+          cp apps/server/install.sh server-files/install.sh
+          cd server-files
+          test "$(find . -maxdepth 1 -name 'openclerq-server-*.tar.gz' | wc -l)" -eq 4
+          sha256sum openclerq-server-*.tar.gz install.sh > SHA256SUMS
+          cat SHA256SUMS
+          sha256sum --check SHA256SUMS
+          ls -la
+
+      - name: Add them to the GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            server-files/openclerq-server-*.tar.gz
+            server-files/SHA256SUMS
+            server-files/install.sh
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The container image, built on a native runner for each CPU (no emulation), tested
+  # with test-image.sh, and pushed by digest. docker-manifest then ties the two digests
+  # into one multi-architecture image under the tags. Images are named in lower case:
+  # ghcr.io/paxamedia/openclerq.
+  docker:
+    name: Image (${{ matrix.platform }})
+    needs: [version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/paxamedia/openclerq
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Version from the tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build for this platform
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.value }}
+            REVISION=${{ github.sha }}
+          load: true
+          tags: openclerq:test
+
+      - name: Test the image
+        run: apps/server/scripts/test-image.sh openclerq:test
+
+      # The same build again, so it is all cache; this time the layers go to the
+      # registry, by digest, with no tag yet.
+      - name: Push by digest
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.value }}
+            REVISION=${{ github.sha }}
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Keep the digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: docker-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-manifest:
+    name: Publish the image
+    needs: [docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/paxamedia/openclerq
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: 'docker-digest-*'
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # <version> always; <major> and latest only for a release that is not a
+      # pre-release, so 1.0.0-rc.1 moves neither.
+      - name: Create the multi-architecture image
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REVISION: ${{ github.sha }}
+        working-directory: /tmp/digests
+        run: |
+          version="${REF_NAME#v}"
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || { echo "Not a version: $version" >&2; exit 1; }
+          tags="-t $IMAGE:$version"
+          case "$version" in
+            *-*) ;;
+            *) tags="$tags -t $IMAGE:${version%%.*} -t $IMAGE:latest" ;;
+          esac
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 2
+          # shellcheck disable=SC2046,SC2086
+          docker buildx imagetools create $tags \
+            --annotation "index:org.opencontainers.image.source=https://github.com/paxamedia/OpenClerq" \
+            --annotation "index:org.opencontainers.image.version=$version" \
+            --annotation "index:org.opencontainers.image.revision=$REVISION" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            $(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools inspect "$IMAGE:$version"

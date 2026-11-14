@@ -70,14 +70,26 @@ jobs:
       - name: Unit and integration tests
         run: pnpm -r test
 
-  # The server as the Linux binary people will install: compiled with Bun, started
-  # with a temporary HOME, asked over HTTP, stopped with SIGTERM; and both systemd
-  # units read by systemd itself. The unit tests of apps/server run in `verify`
-  # (node) and `verify-macos`; this is the compiled program on the platform it is
-  # for. The same smoke script runs on a developer's Mac against a darwin build.
+  # The server as people will install it, on the two Linux CPUs the release ships. The
+  # release's own packaging script builds clerq-server, clerq and clerq-calc and packs the
+  # tarball; then the compiled server is started, asked over HTTP and stopped with SIGTERM
+  # (smoke.mjs), the installer is run against a release folder made of that tarball and
+  # served from this machine (test-install.sh: checksums, a tampered file, the installed
+  # programs working together, sudo and --system), and systemd reads both units. The unit
+  # tests of apps/server run in `verify` (node) and `verify-macos`; this is the compiled
+  # program on the platforms it is for. The same scripts run on a developer's Mac against
+  # a darwin build.
   server-linux:
-    name: Server binary and systemd units (Linux)
-    runs-on: ubuntu-latest
+    name: Server binary, installer and systemd units (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
 
@@ -100,16 +112,26 @@ jobs:
       - name: Build clerq-calc
         run: cargo build --release --manifest-path packages/calculation-core/Cargo.toml
 
-      # Builds the workspace packages the server imports, then compiles it with
-      # Bun into apps/server/dist/bun-linux-x64/ together with clerq-calc.
-      - name: Build the linux-x64 server binary
-        run: >-
-          node scripts/build-binary.js
-          --entry apps/server/src/main.ts --name clerq-server
-          --target bun-linux-x64 --require-calc
+      # Builds the workspace packages, compiles clerq-server (with clerq-calc beside it)
+      # and clerq with Bun into apps/server/dist/bun-<target>/ and apps/cli/dist/bun-<target>/,
+      # and writes server-files/openclerq-server-<version>-<target>.tar.gz.
+      - name: Package the server files
+        run: node scripts/package-server.js --target ${{ matrix.target }} --out-dir server-files
 
       - name: Smoke test
-        run: node apps/server/scripts/smoke.mjs apps/server/dist/bun-linux-x64/clerq-server
+        run: node apps/server/scripts/smoke.mjs apps/server/dist/bun-${{ matrix.target }}/clerq-server
+
+      - name: Install shellcheck
+        run: command -v shellcheck || sudo apt-get install -y shellcheck
+
+      # install.sh against a fake release folder (the tarball, SHA256SUMS, install.sh)
+      # served on 127.0.0.1, into a temporary folder. The runner's passwordless sudo
+      # lets it also run the root cases: refusing to run as root, and --system.
+      - name: Test the installer
+        run: apps/server/scripts/test-install.sh server-files/openclerq-server-*-${{ matrix.target }}.tar.gz
+        env:
+          CLERQ_TEST_SUDO: '1'
+          CLERQ_TEST_REQUIRE_SHELLCHECK: '1'
 
       # systemd checks the files for unknown directives, bad values, a missing
       # ExecStart binary and an unknown user. The binary and the account are put
@@ -118,13 +140,42 @@ jobs:
         run: |
           command -v systemd-analyze || sudo apt-get install -y systemd
           systemd-analyze --version | head -n 1
-          bin=apps/server/dist/bun-linux-x64
+          bin=apps/server/dist/bun-${{ matrix.target }}
           sudo install -m 0755 "$bin/clerq-server" "$bin/clerq-calc" /usr/local/bin/
           sudo useradd --system --user-group --no-create-home --home-dir /var/lib/openclerq --shell /usr/sbin/nologin openclerq
           systemd-analyze verify --man=no apps/server/systemd/openclerq.service
           mkdir -p "$HOME/.local/bin"
           install -m 0755 "$bin/clerq-server" "$HOME/.local/bin/clerq-server"
           systemd-analyze --user verify --man=no apps/server/systemd/openclerq-user.service
+
+  # The container image, built from the same Dockerfile the release publishes, on a
+  # native runner for each architecture (nothing emulated), not pushed. test-image.sh
+  # starts it the way SERVER.md says and checks it: the health check, the API, the
+  # token, the user, the tools inside, a restart, the data volume, docker stop.
+  docker:
+    name: Container image (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the image
+        run: >-
+          docker build -f apps/server/Dockerfile
+          --build-arg VERSION=ci --build-arg REVISION=${{ github.sha }}
+          -t openclerq:ci .
+
+      - run: docker image ls openclerq:ci
+
+      - name: Test the image
+        run: apps/server/scripts/test-image.sh openclerq:ci
 
   rust:
     name: Rust tests
