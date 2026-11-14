@@ -300,7 +300,7 @@ echo "gid=$(id -g)"
 echo "home=$HOME"
 echo "cwd=$(pwd)"
 echo "by_name=$(printenv CLERQ_REAL_BY_NAME || echo unset)"
-echo "path_forwarded=$(case "$PATH" in /host-only/*) echo yes;; *) echo no;; esac)"
+echo "host_only=$(printenv LOGNAME SHELL | tr '\n' ',')"
 w write_worktree "$PWD/clerq-new.txt"
 w write_rootfs /etc/clerq-probe
 w write_usr /usr/clerq-probe
@@ -524,7 +524,8 @@ describe.skipIf(!WANTED || process.platform === 'win32')(SUITE, () => {
                 HOSTHOME: os.homedir(),
                 CLERQ_REAL_BY_NAME: 'passed-by-name',
                 // Host-only: must not reach the container.
-                PATH: '/host-only/bin',
+                LOGNAME: 'host-only-name',
+                SHELL: '/host-only/shell',
               },
             }),
             'sh',
@@ -545,7 +546,7 @@ describe.skipIf(!WANTED || process.platform === 'win32')(SUITE, () => {
           expect(k.home).toBe('/tmp');
           expect(k.cwd).toBe(fx.wt);
           expect(k.by_name).toBe('passed-by-name');
-          expect(k.path_forwarded).toBe('no');
+          expect(k.host_only).toBe('');
 
           // What it can write: the worktree and its own git entry, /tmp, nothing else.
           expect(k.write_worktree).toBe('yes');
