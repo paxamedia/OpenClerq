@@ -963,3 +963,161 @@ describe('builtin driver: conversations and tools of the caller', () => {
     expect(results[1]).toMatchObject({ isError: true, denied: true });
   });
 });
+
+describe('builtin driver: a file scope', () => {
+  const SCOPE = ['src/**', 'README.md'];
+
+  beforeEach(() => {
+    fs.mkdirSync(path.join(repo, 'secrets'));
+    fs.writeFileSync(path.join(repo, 'secrets', 'key.txt'), 'hunter2\n');
+    fs.mkdirSync(path.join(repo, 'docs'));
+    fs.writeFileSync(path.join(repo, 'docs', 'a.md'), 'docs answer\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'more');
+  });
+
+  /** One tool call per entry, in order, with its result; the scope is the run's. */
+  async function calls(
+    scope: readonly string[] | undefined,
+    items: Array<[name: string, input: Record<string, unknown>]>,
+    input: Partial<DriverRunInput> = {}
+  ) {
+    const model = scriptedModel([
+      { content: items.map(([name, args], i) => use(`t${i}`, name, args)) },
+      { content: [text('Done.')] },
+    ]);
+    const { events, result } = await run(model.fetchImpl, {
+      ...(scope ? { fileScope: scope } : {}),
+      ...input,
+    });
+    return { results: toolResults(events), result };
+  }
+
+  it('lets the file tools through inside the scope and refuses outside it, naming the scope', async () => {
+    const { results, result } = await calls(SCOPE, [
+      ['read_file', { path: 'src/index.ts' }],
+      ['read_file', { path: 'README.md' }],
+      ['read_file', { path: 'secrets/key.txt' }],
+      ['read_file', { path: 'docs/a.md' }],
+      ['write_file', { path: 'src/new.ts', content: 'x' }],
+      ['write_file', { path: 'secrets/new.txt', content: 'x' }],
+      ['edit_file', { path: 'secrets/key.txt', old_text: 'hunter2', new_text: 'x' }],
+      ['edit_file', { path: 'src/index.ts', old_text: '41', new_text: '42' }],
+    ]);
+    expect(result.ok).toBe(true);
+    const [a, b, c, d, e, f, g, h] = results;
+    expect(a.isError).toBe(false);
+    expect(a.output).toContain('answer = 41');
+    expect(b.isError).toBe(false);
+    for (const refused of [c, d, f, g]) {
+      expect(refused.isError).toBe(true);
+      expect(refused.output).toContain('outside the paths the skill for this task declares');
+      expect(refused.output).toContain('filesystem_scope: src/**, README.md');
+    }
+    expect(c.output).not.toContain('hunter2');
+    expect(e.isError).toBe(false);
+    expect(h.isError).toBe(false);
+    expect(fs.existsSync(path.join(repo, 'secrets', 'new.txt'))).toBe(false);
+    expect(fs.readFileSync(path.join(repo, 'secrets', 'key.txt'), 'utf8')).toBe('hunter2\n');
+    expect(fs.readFileSync(path.join(repo, 'src', 'index.ts'), 'utf8')).toContain('42');
+  });
+
+  it('without a scope nothing changes', async () => {
+    const { results } = await calls(undefined, [['read_file', { path: 'secrets/key.txt' }]]);
+    expect(results[0].isError).toBe(false);
+    expect(results[0].output).toContain('hunter2');
+  });
+
+  it('judges a path by where it leads: a link inside the folder to a folder out of scope is refused', async () => {
+    if (isWindows) return;
+    fs.symlinkSync(path.join(repo, 'secrets'), path.join(repo, 'src', 'shortcut'));
+    const { results } = await calls(SCOPE, [
+      ['read_file', { path: 'src/shortcut/key.txt' }],
+      ['list_files', { path: 'src/shortcut' }],
+      ['write_file', { path: 'src/shortcut/planted.txt', content: 'x' }],
+    ]);
+    for (const r of results) {
+      expect(r.isError).toBe(true);
+      expect(r.output).not.toContain('hunter2');
+    }
+    expect(fs.existsSync(path.join(repo, 'secrets', 'planted.txt'))).toBe(false);
+  });
+
+  it('refuses ".." and absolute paths as it always did, scope or not', async () => {
+    const { results } = await calls(
+      ['**'],
+      [
+        ['read_file', { path: '../outside.txt' }],
+        ['read_file', { path: '/etc/hosts' }],
+      ]
+    );
+    expect(results.every((r) => r.isError)).toBe(true);
+  });
+
+  it('lists only what is in scope, and the folders on the way to it', async () => {
+    const { results } = await calls(SCOPE, [
+      ['list_files', { path: '.' }],
+      ['list_files', { path: 'src' }],
+      ['list_files', { path: 'secrets' }],
+      ['list_files', { path: 'docs', depth: 2 }],
+    ]);
+    const names = results[0].output.split('\n');
+    expect(names).toContain('README.md');
+    expect(names).toContain('src/');
+    expect(names).not.toContain('secrets/');
+    expect(names).not.toContain('docs/');
+    expect(results[1].output).toContain('src/index.ts');
+    expect(results[2].isError).toBe(true);
+    expect(results[3].isError).toBe(true);
+  });
+
+  it('searches only the files in scope, with paths relative to the folder', async () => {
+    const { results } = await calls(SCOPE, [
+      ['search_files', { pattern: 'answer' }],
+      ['search_files', { pattern: 'hunter2' }],
+      ['search_files', { pattern: 'hunter2', path: 'secrets' }],
+    ]);
+    expect(results[0].isError).toBe(false);
+    expect(results[0].output).toContain('src/index.ts:1:');
+    expect(results[0].output).not.toContain('docs/a.md');
+    expect(results[1].output).toBe('No matches in the paths this task may use.');
+    expect(results[2].isError).toBe(true);
+  });
+
+  it('needs git_diff to name a path in scope', async () => {
+    fs.writeFileSync(path.join(repo, 'secrets', 'key.txt'), 'changed\n');
+    fs.writeFileSync(path.join(repo, 'src', 'index.ts'), 'export const answer = 7;\n');
+    const { results } = await calls(SCOPE, [
+      ['git_diff', {}],
+      ['git_diff', { path: 'secrets' }],
+      ['git_diff', { path: 'src' }],
+    ]);
+    expect(results[0].isError).toBe(true);
+    expect(results[0].output).toContain('needs a path while a file scope is in force');
+    expect(results[1].isError).toBe(true);
+    expect(results[1].output).not.toContain('changed');
+    expect(results[2].isError).toBe(false);
+    expect(results[2].output).toContain('answer = 7');
+  });
+
+  it('does not look at commands: run_shell is not a file tool', async () => {
+    if (isWindows) return;
+    const { results } = await calls(SCOPE, [['run_shell', { command: 'cat secrets/key.txt' }]]);
+    expect(results[0].output).toContain('hunter2');
+  });
+
+  it('holds under the sandboxed profile too', async () => {
+    if (process.platform !== 'darwin' || !fs.existsSync('/usr/bin/sandbox-exec')) return;
+    const { results } = await calls(
+      SCOPE,
+      [
+        ['read_file', { path: 'src/index.ts' }],
+        ['read_file', { path: 'secrets/key.txt' }],
+      ],
+      { sandbox: { profile: 'seatbelt', network: 'none' } }
+    );
+    expect(results[0].isError).toBe(false);
+    expect(results[1].isError).toBe(true);
+    expect(results[1].output).not.toContain('hunter2');
+  });
+});

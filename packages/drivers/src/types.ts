@@ -275,6 +275,13 @@ export interface DriverRunInput {
    */
   repositoryTools?: boolean;
   /**
+   * In-process drivers: the paths of `cwd` the file tools may touch, as `@clerq/policy` scope
+   * globs (`src/**`, `docs/`). Without it, all of `cwd`. The file tools (read, list, search,
+   * write, edit) and `git_diff` refuse a path outside it, judged by where the path really leads;
+   * `run_shell` and `git_status` do not look at it.
+   */
+  fileScope?: readonly string[];
+  /**
    * In-process drivers: tools of the caller's own, offered beside the
    * driver's and decided by the same policy (`policy`), call by call.
    */

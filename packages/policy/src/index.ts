@@ -13,6 +13,8 @@
  *   - anything matching an approval rule stops for a human
  */
 
+export { folderScope, pathInScope, scopePath, scopeReaches, scopeToRegExp } from './scope.js';
+
 /** How much damage a tool can do if the model is wrong or steered. */
 export type ToolRisk = 'read' | 'write' | 'network' | 'execute' | 'external';
 

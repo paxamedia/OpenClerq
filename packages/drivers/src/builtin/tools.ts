@@ -15,7 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ToolDescriptor } from '@clerq/policy';
+import { folderScope, pathInScope, scopeReaches, type ToolDescriptor } from '@clerq/policy';
 import { exec, PathContainmentError, resolveWithinRoot } from '@clerq/sandbox';
 import { truncateOutput, type ToolDefinition } from '@clerq/providers';
 import type { SandboxOptions, SpawnedProcess } from '../types.js';
@@ -30,6 +30,12 @@ export interface ToolContext {
   sandbox: SandboxOptions;
   /** Plain environment for commands: PATH and nothing secret. */
   env: Record<string, string>;
+  /**
+   * The paths of the worktree the file tools may touch (`@clerq/policy` scope globs), or absent
+   * for all of it. Checked on the path a request resolves to, so a link inside the worktree
+   * cannot lead out of the scope. Commands (`run_shell`) are not path-checked.
+   */
+  fileScope?: readonly string[];
   /** A command a tool started, and a function to call when it has ended. */
   onProcess?: (process: SpawnedProcess) => () => void;
   /** Isolation warnings from the sandbox, collected for the run's result. */
@@ -187,6 +193,35 @@ interface FileOps {
 function cleanRel(rel: string | undefined): string {
   const p = (rel ?? '.').trim();
   return path.normalize(p || '.').replace(/\/+$/, '') || '.';
+}
+
+/**
+ * A refusal when the run has a file scope and `rel` is not in it, or null. The check is on the
+ * real path the request resolves to (`within`), so a link inside the worktree that leads to
+ * somewhere else in it is judged by where it leads. A folder passes when it is on the way to
+ * something in scope; what is listed or found in it is filtered file by file.
+ */
+function scopeRefusal(ctx: ToolContext, rel: string, what: 'file' | 'folder'): ToolOutcome | null {
+  const scope = ctx.fileScope;
+  if (!scope) return null;
+  const real = relative(ctx.cwd, within(ctx.cwd, rel));
+  const at = real === '.' ? '' : real;
+  if (what === 'folder' ? scopeReaches(scope, at) : pathInScope(scope, at)) return null;
+  return {
+    output:
+      `"${rel}" is outside the paths the skill for this task declares ` +
+      `(filesystem_scope: ${folderScope(scope).join(', ') || 'nothing inside this folder'}). ` +
+      'File tools refuse it; ask the user to widen the skill or attach a different folder.',
+    isError: true,
+  };
+}
+
+/** Whether the file scope lets a path shown to the model through. */
+function inScope(ctx: ToolContext, rel: string, dir: boolean): boolean {
+  const scope = ctx.fileScope;
+  if (!scope) return true;
+  const p = rel === '.' ? '' : rel;
+  return dir ? scopeReaches(scope, p) : pathInScope(scope, p);
 }
 
 /**
@@ -427,6 +462,8 @@ const readFile: BuiltinTool = {
     const rel = str(input, 'path', true);
     const ops = opsFor(ctx);
     const target = cleanRel(rel);
+    const refused = scopeRefusal(ctx, target, 'file');
+    if (refused) return refused;
     const stat = await ops.stat(target);
     if (stat.type === 'missing') return { output: `${rel} does not exist.`, isError: true };
     if (stat.type !== 'file') return { output: `${rel} is not a file.`, isError: true };
@@ -499,9 +536,11 @@ const listFiles: BuiltinTool = {
     const target = cleanRel(str(input, 'path'));
     const depth = int(input, 'depth', 1, 4) ?? 1;
     const ops = opsFor(ctx);
+    const refused = scopeRefusal(ctx, target, 'folder');
+    if (refused) return refused;
     const stat = await ops.stat(target);
     if (stat.type !== 'dir') return { output: `${target} is not a directory.`, isError: true };
-    const entries = await ops.list(target, depth);
+    const entries = (await ops.list(target, depth)).filter((e) => inScope(ctx, e.rel, e.dir));
     const cut = entries.length > MAX_LIST_ENTRIES;
     const out = entries.slice(0, MAX_LIST_ENTRIES).map((e) => (e.dir ? `${e.rel}/` : e.rel));
     if (out.length === 0) return { output: '(empty directory)', isError: false };
@@ -532,16 +571,39 @@ const searchFiles: BuiltinTool = {
   },
   async run(input, ctx) {
     const pattern = str(input, 'pattern', true);
-    const scope = str(input, 'path');
-    const rel = scope ? relative(ctx.cwd, within(ctx.cwd, scope)) : '.';
-    const args = ['grep', '-n', '-I', '--untracked', '-E', '--full-name'];
+    const within_ = str(input, 'path');
+    const rel = within_ ? relative(ctx.cwd, within(ctx.cwd, within_)) : '.';
+    const refused = scopeRefusal(ctx, rel, 'folder');
+    if (refused) return refused;
+    // With a scope, paths come back relative to the worktree (as the scope is), not to the repository.
+    const args = [
+      'grep',
+      '-n',
+      '-I',
+      '--untracked',
+      '-E',
+      ...(ctx.fileScope ? [] : ['--full-name']),
+    ];
     if (input.ignore_case === true) args.push('-i');
     args.push('-e', pattern, '--', rel);
     const r = await command(ctx, 'git', args, 60_000);
     if (r.code === 1 && !r.out) return { output: 'No matches.', isError: false };
     if (r.code !== 0) return { output: r.out || `git grep exited with ${r.code}.`, isError: true };
+    let found = r.out;
+    if (ctx.fileScope) {
+      // Only matches in files the scope covers; a line that cannot be read as one is dropped.
+      const scope = ctx.fileScope;
+      found = r.out
+        .split('\n')
+        .filter((line) => {
+          const m = /^(.*?):\d+:/.exec(line);
+          return m !== null && pathInScope(scope, m[1]);
+        })
+        .join('\n');
+      if (!found) return { output: 'No matches in the paths this task may use.', isError: false };
+    }
     return {
-      output: truncateOutput(r.out, {
+      output: truncateOutput(found, {
         maxChars: MAX_RESULT_CHARS,
         tailShare: 0,
         hint: 'Narrow the pattern or give a path to see the rest.',
@@ -573,6 +635,8 @@ const writeFile: BuiltinTool = {
     const content = str(input, 'content', true);
     const target = cleanRel(rel);
     const ops = opsFor(ctx);
+    const refused = scopeRefusal(ctx, target, 'file');
+    if (refused) return refused;
     const stat = await ops.stat(target);
     const existed = stat.type !== 'missing';
     if (existed && stat.type !== 'file') {
@@ -613,6 +677,8 @@ const editFile: BuiltinTool = {
       return { output: 'old_text is empty; use write_file to create a file.', isError: true };
     const target = cleanRel(rel);
     const ops = opsFor(ctx);
+    const refused = scopeRefusal(ctx, target, 'file');
+    if (refused) return refused;
     const stat = await ops.stat(target);
     if (stat.type === 'missing') return { output: `${rel} does not exist.`, isError: true };
     if (stat.type !== 'file') return { output: `${rel} is not a file.`, isError: true };
@@ -711,10 +777,22 @@ const gitDiff: BuiltinTool = {
     },
   },
   async run(input, ctx) {
-    const scope = str(input, 'path');
+    const only = str(input, 'path');
+    if (ctx.fileScope) {
+      // A diff shows file contents: with a scope it must name a path, and the path must be in it.
+      if (!only) {
+        return {
+          output:
+            'git_diff needs a path while a file scope is in force; name a file or folder inside the paths the skill declares.',
+          isError: true,
+        };
+      }
+      const refused = scopeRefusal(ctx, cleanRel(only), 'folder');
+      if (refused) return refused;
+    }
     const args = ['diff', 'HEAD', '--no-color', '--no-ext-diff'];
     if (input.stat === true) args.push('--stat');
-    if (scope) args.push('--', relative(ctx.cwd, within(ctx.cwd, scope)));
+    if (only) args.push('--', relative(ctx.cwd, within(ctx.cwd, only)));
     const r = await command(ctx, 'git', args, 60_000);
     if (r.code !== 0) return { output: r.out || `git diff exited with ${r.code}.`, isError: true };
     return {

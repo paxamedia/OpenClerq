@@ -420,6 +420,7 @@ async function* runLoop(
     env: input.env ?? { PATH: process.env.PATH ?? '' },
     onProcess: input.onToolProcess,
     warnings,
+    ...(input.fileScope ? { fileScope: input.fileScope } : {}),
     ...(input.onSubagent ? { spawn: spawnSubagent } : {}),
   };
 
