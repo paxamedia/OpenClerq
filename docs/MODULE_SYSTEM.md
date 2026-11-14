@@ -86,7 +86,7 @@ When you call `POST /task`:
 
 1. The gateway loads the skill list (frontmatter only) from your skills directory and each module’s `skills/` folder.
 2. It selects the skill whose `triggers` appear in the message. A skill without `triggers` matches on its slug or name.
-3. The selected skill’s instructions — the Markdown after the frontmatter — are appended to the system prompt in a `<skill_instructions>` block, capped at 16,000 characters, introduced as instructions from the skill with its trust state. With no match, the plain system prompt is used.
+3. The selected skill’s instructions — the Markdown after the frontmatter — are appended to the system prompt in a fenced `<skill_instructions>` block with the skill's name, capped at 16,000 characters, introduced with its trust state. With no match, the plain system prompt is used.
 
 Every skill has a trust state (`untrusted`, `trusted`, `modified`, `blocked`). A blocked skill is
 never selected. With enforcement on (the switch Plugins has, `plugins.enforce`; off by default) only a

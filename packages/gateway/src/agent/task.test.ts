@@ -41,8 +41,8 @@ describe('runTask', () => {
     });
     expect(result.explanation).toBe('answer');
     const [system, user] = callLLM.mock.calls[0] as [string, string];
-    expect(system).toContain(
-      '<skill_instructions>\nQuote the rate table before explaining a rate.\n</skill_instructions>'
+    expect(system).toMatch(
+      /<skill_instructions fence="([0-9a-f]{32})">\n\{"name":"VAT rules","slug":"vat"\}\n\nQuote the rate table before explaining a rate\.\n<\/skill_instructions fence="\1">/
     );
     expect(user).toBe('What is VAT?');
   });
