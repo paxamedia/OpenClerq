@@ -271,6 +271,11 @@ app never takes a key from anywhere but its own binary.
 - It does not make the macOS or Windows installers trusted by the operating system (above).
 - It does not sign the `.dmg`, and it does not offer the signed `.deb` and `.rpm` as in-app
   updates (below).
+- `install.sh` checks that `SHA256SUMS` was signed with the key, not that it is the latest one.
+  The signature names no version (its trusted comment is a timestamp Tauri writes, which the
+  installer does not read), so an older signed `SHA256SUMS`, with the older tarballs it lists,
+  served in place of the latest by someone who controls the download, would pass. Name the
+  version (`CLERQ_VERSION=1.0.0`) or compare what you got with the release page.
 - It cannot revoke a key from an app that has it.
 - It does not check that the offline backup of the key exists.
 - `SHA256SUMS.minisig` and `.sig` files come from the same release as the files they cover. They
