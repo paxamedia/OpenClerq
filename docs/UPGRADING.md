@@ -74,3 +74,17 @@ at `GET /modules`, with the reason, and the gateway and the other modules carry 
 newer version of the module. The copy made before an upgrade is of the whole database, module
 tables included, but it is made only when core migrations are pending; a module's migration alone
 does not make one, so copy `clerq.db` yourself before updating a module whose data you cannot lose.
+
+## Modules and plugins run from a copy
+
+A module (or plugin) is now run and served from a copy of exactly the files that were hashed, in
+`~/.clerq/plugin-cache/<id>/<hash>/` (see [PLUGINS.md](PLUGINS.md)). For a **legacy module**, the files
+are the manifest, the whole folder its entry is in (`dist/` for `dist/routes.js`), `dist/ui`, `skills` and
+`migrations`. Nothing else is copied. So a legacy module that **imports a package from its own
+`node_modules`** (`Cannot find module 'leftpadx'`), or reads a file beside its entry's folder by a relative
+path, no longer works, with enforcement off too. This is within what the module contract has always said
+(one self-contained ES module: [MODULE_SYSTEM.md](MODULE_SYSTEM.md) §5), but it used to work by accident.
+Bundle the dependencies into the entry's folder (for example with `esbuild --bundle --format=esm`). A
+module that only imports other files from its entry's folder is unaffected. A migration that ran before
+is not looked at again, but one that has not run yet may no longer read a table that is not the module's
+(`CREATE VIEW … AS SELECT … FROM settings`).

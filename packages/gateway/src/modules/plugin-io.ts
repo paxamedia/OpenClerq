@@ -34,8 +34,8 @@ export interface IoDeps {
 }
 
 /**
- * The file a command name stands for, found once, on the gateway's own PATH: that file is what is
- * run, whatever environment the command is given. A name with a slash is that path (absolute), or,
+ * The file a command name stands for, found once, on the gateway's own PATH (its absolute entries:
+ * a relative one is skipped): that file is what is run, whatever environment the command is given. A name with a slash is that path (absolute), or,
  * when enforcement is off, relative to the working directory.
  */
 export function resolveCommand(cmd: string, cwd: string | undefined, enforcing: boolean): string {
@@ -53,7 +53,9 @@ export function resolveCommand(cmd: string, cwd: string | undefined, enforcing: 
       ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';')]
       : [''];
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
+    // A relative entry (`.`, `bin`, an empty one) would stand for the plugin's own working
+    // directory once `spawn` resolves what is returned: it is not looked in.
+    if (!path.isAbsolute(dir)) continue;
     for (const ext of exts) {
       const candidate = path.join(dir, cmd + ext);
       try {

@@ -9,13 +9,15 @@ describe('reading the names in a statement', () => {
     expect(names('UPDATE "Settings" SET v = 1')).toContain('settings');
     expect(names('UPDATE [Settings] SET v = 1')).toContain('settings');
     expect(names('UPDATE `Settings` SET v = 1')).toContain('settings');
+    // A string is a name only where SQLite reads it as one.
     expect(names("UPDATE 'Settings' SET v = 1")).toContain('settings');
+    expect(names("INSERT INTO t (v) VALUES ('Settings')")).not.toContain('settings');
     expect(names('SELECT * FROM main.settings')).toEqual(['select', 'from', 'main', 'settings']);
   });
 
   it('reads an escaped quote inside a quoted name, and a name that is split by one', () => {
     expect(names('SELECT "a""b" FROM t')).toContain('a"b');
-    expect(names("SELECT 'it''s' FROM t")).toContain("it's");
+    expect(names("UPDATE 'it''s' SET v = 1")).toContain("it's");
     expect(names('SELECT [a b] FROM t')).toContain('a b');
   });
 
@@ -37,9 +39,9 @@ describe('reading the names in a statement', () => {
   it('keeps bare keywords apart from names, for the ones that are banned', () => {
     const scan = scanSql("PRAGMA table_info(runs); SELECT 'vacuum' FROM t");
     expect(scan.words.has('pragma')).toBe(true);
-    // A string that says vacuum is not the keyword.
+    // A string that says vacuum is not the keyword, nor a name.
     expect(scan.words.has('vacuum')).toBe(false);
-    expect(scan.names).toContain('vacuum');
+    expect(scan.names).not.toContain('vacuum');
   });
 
   it('says whether a statement changes anything', () => {

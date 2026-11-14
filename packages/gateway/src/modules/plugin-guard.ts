@@ -15,7 +15,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
-import { audit } from '@clerq/store';
+import { audit, moduleSqlViolation } from '@clerq/store';
 import { PluginPermissionError, tablePrefix, type PluginPermissions } from '@clerq/plugin-sdk';
 import { isAllowed, parseAllowlist, resolveWithinRoot, type EgressRule } from '@clerq/sandbox';
 import { getStore } from '../store.js';
@@ -117,10 +117,12 @@ export class PluginGuard {
 
   /**
    * A statement about to run through `ctx.store.exec` or `.prepare`. A plugin's SQL may name only
-   * its own tables (`mod_<id>__*`): any other table is a core table (or another module's), and
-   * `ATTACH`, `DETACH`, `PRAGMA` and `VACUUM` are not for a plugin. With enforcement on that is
-   * refused; with it off a statement that changes a core table is audited and goes ahead. It reads
-   * the text of the statement, nothing more.
+   * its own objects (`mod_<id>__*`): any other table, view, index or trigger is a core one (or another
+   * module's), `ATTACH`, `DETACH`, `PRAGMA` and `VACUUM` are not for a plugin, and neither is dropping,
+   * creating on, re-indexing or otherwise changing an object that is not its own, named or not (`DROP
+   * INDEX IF EXISTS x`, a bare `REINDEX`). With enforcement on that is refused; with it off a
+   * statement that changes what is not the plugin's is audited and goes ahead. It reads the text of
+   * the statement, nothing more.
    */
   sql(sql: string): void {
     const scan = scanSql(sql);
@@ -134,19 +136,34 @@ export class PluginGuard {
       return;
     }
     const core = this.coreTable(scan.names);
-    if (!core) return;
     // Off, only a write is worth a row; on, a read of the gateway's own tables is refused too.
-    if (!this.enforcing && !changesData(scan)) return;
-    this.outside(
-      'store',
-      core,
-      `The plugin "${this.deps.id}" may not use the table "${core}" in SQL: its SQL may name only its own tables (${tablePrefix(this.deps.id)}*).`
-    );
+    if (core && (this.enforcing || changesData(scan))) {
+      this.outside(
+        'store',
+        core,
+        `The plugin "${this.deps.id}" may not use the table "${core}" in SQL: its SQL may name only its own tables (${tablePrefix(this.deps.id)}*).`
+      );
+    }
+    // What it creates, drops, re-indexes, alters or writes must be its own, whatever the name is:
+    // `DROP INDEX IF EXISTS x` names nothing that exists, and is still not the plugin's to drop.
+    const violation = moduleSqlViolation(this.deps.id, sql, { reindex: true });
+    if (violation?.kind === 'object') {
+      this.outside(
+        'store',
+        violation.name,
+        violation.name === 'REINDEX'
+          ? `The plugin "${this.deps.id}" may not run REINDEX with no name: it rebuilds every index.`
+          : `The plugin "${this.deps.id}" may not create, change or drop "${violation.name}" through ctx.store: it is not one of its own objects (${tablePrefix(this.deps.id)}*).`
+      );
+    }
   }
 
   private coreSet: { version: number; names: Set<string> } | null = null;
 
-  /** The first name in `names` that is a table or view of the gateway or of another module. */
+  /**
+   * The first name in `names` that is an object of the gateway or of another module: a table, view,
+   * index or trigger that is not the plugin's own `mod_<id>__*`, or one of SQLite's `sqlite_*`.
+   */
   private coreTable(names: string[]): string | undefined {
     const db = getStore();
     const version = Number(db.prepare('PRAGMA schema_version').get()?.schema_version ?? -1);
@@ -156,7 +173,7 @@ export class PluginGuard {
         version,
         names: new Set(
           db
-            .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+            .prepare('SELECT name FROM sqlite_master')
             .all()
             .map((r) => String(r.name).toLowerCase())
             .filter((n) => !n.startsWith(own))

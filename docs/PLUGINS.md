@@ -299,21 +299,21 @@ planned. A bundled plugin with a file changed is treated like any other.
 The switch is **Settings → Plugins → Enforce plugin permissions**. It is off by default. With it
 **off**, declarations are shown, recorded and audited, and nothing is blocked. With it **on**:
 
-| Through the context                   | Checked against                                           | Refused when                                                                                                                                                                                                                                                                                                |
-| ------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ctx.secrets.get/set/delete`          | `permissions.secrets`                                     | the name is not declared. `list()` shows only declared names                                                                                                                                                                                                                                                |
-| `ctx.services.status/start/stop`      | `permissions.services`                                    | the label is not declared there. `list()` shows only declared labels                                                                                                                                                                                                                                        |
-| `ctx.exec(cmd, args, opts)`           | `permissions.exec`                                        | `cmd` is not a declared string, written exactly (`echo` is not `/bin/echo`), or `opts.env` sets `PATH`, `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `GIT_EXEC_PATH`, `GIT_CONFIG_*`, `BASH_ENV` or `ENV`. The file is looked up once on the gateway's `PATH`. **Arguments and what the command does are not checked** |
-| `ctx.store.exec`, `ctx.store.prepare` | its own tables, `mod_<id>__*` (nothing to declare)        | the statement names any other table or view (a core table, another module's), `sqlite_master`, or uses `ATTACH`, `DETACH`, `PRAGMA` or `VACUUM`. This is a check of the statement's text: see below                                                                                                         |
-| `ctx.fetch(url, init)`                | `permissions.net`                                         | the host (and port, when declared with one) of the URL, or of any redirect it follows, is not declared. `http` and `https` only. Only standard `RequestInit` fields are passed on: a runtime option such as `dispatcher` is dropped                                                                         |
-| `ctx.fs.readFile`, `ctx.fs.writeFile` | `permissions.fs.read`, `fs.write`                         | the path, after `..` and symbolic links are resolved, is not inside a declared folder. Reading is not writing                                                                                                                                                                                               |
-| a module UI's token                   | `permissions.api` (and a legacy module's `coreEndpoints`) | the endpoint is not declared. This holds whether or not enforcement is on                                                                                                                                                                                                                                   |
+| Through the context                   | Checked against                                           | Refused when                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.secrets.get/set/delete`          | `permissions.secrets`                                     | the name is not declared. `list()` shows only declared names                                                                                                                                                                                                                                                                                                      |
+| `ctx.services.status/start/stop`      | `permissions.services`                                    | the label is not declared there. `list()` shows only declared labels                                                                                                                                                                                                                                                                                              |
+| `ctx.exec(cmd, args, opts)`           | `permissions.exec`                                        | `cmd` is not a declared string, written exactly (`echo` is not `/bin/echo`), or `opts.env` sets `PATH`, `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `GIT_EXEC_PATH`, `GIT_CONFIG_*`, `BASH_ENV` or `ENV`. The file is looked up once on the gateway's `PATH`. **Arguments and what the command does are not checked**                                                       |
+| `ctx.store.exec`, `ctx.store.prepare` | its own tables, `mod_<id>__*` (nothing to declare)        | the statement names any other table, view, index or trigger (a core one, another module's), `sqlite_master`, creates, drops, re-indexes or changes an object that is not the plugin's own (`DROP INDEX IF EXISTS x`, `REINDEX`, `CREATE INDEX … ON <core>`), or uses `ATTACH`, `DETACH`, `PRAGMA` or `VACUUM`. This is a check of the statement's text: see below |
+| `ctx.fetch(url, init)`                | `permissions.net`                                         | the host (and port, when declared with one) of the URL, or of any redirect it follows, is not declared. `http` and `https` only. Only standard `RequestInit` fields are passed on: a runtime option such as `dispatcher` is dropped                                                                                                                               |
+| `ctx.fs.readFile`, `ctx.fs.writeFile` | `permissions.fs.read`, `fs.write`                         | the path, after `..` and symbolic links are resolved, is not inside a declared folder. Reading is not writing                                                                                                                                                                                                                                                     |
+| a module UI's token                   | `permissions.api` (and a legacy module's `coreEndpoints`) | the endpoint is not declared. This holds whether or not enforcement is on                                                                                                                                                                                                                                                                                         |
 
 A refusal throws `PluginPermissionError` (`code: 'plugin_permission_denied'`, with `permission` and
 `subject`) and writes an audit row. With enforcement **off** the same call goes ahead and writes an
 audit row of its own (`plugin.permission.undeclared`); for `ctx.store` that is a statement that
-changes a core table (a read of one is not audited when enforcement is off), or `ATTACH`, `DETACH`,
-`PRAGMA` and `VACUUM`. `ctx.exec`, `ctx.fetch` and `ctx.fs` work
+changes an object that is not the plugin's own (a read of a core table is not audited when
+enforcement is off), or `ATTACH`, `DETACH`, `PRAGMA` and `VACUUM`. `ctx.exec`, `ctx.fetch` and `ctx.fs` work
 the same way in both modes. A command gets a small environment (`PATH`, `HOME`, `LANG`, `TMPDIR`,
 `USER`, …) and not the gateway's own, so tokens and keys do not pass to it by accident.
 
@@ -323,17 +323,38 @@ the same way in both modes. A command gets a small environment (`PATH`, `HOME`, 
   an `import` of any module (a bare package name or an absolute path is not part of the approval). It can read `~/.clerq`,
   the vault key and the gateway token, and write the database file or the settings directly.
 - **`ctx.store` is a check of statement text, not a database permission system.** The plugin runs its SQL
-  through the gateway's own database handle, which can reach every table; the check reads the words of the
-  statement (bare, `"quoted"`, `[bracketed]`, `` `backticked` `` and `'string'` names, comments skipped) and
-  refuses one that names a table that is not the plugin's own. It is over-eager on purpose (a column or a string
-  that equals a core table's name, such as `memory` or `runs`, is refused too), it does not see inside a
-  function the plugin calls itself, and `ctx.store.transaction(fn)` runs whatever `fn` does. It keeps the
-  settings, the approvals and the audit log out of reach of a plugin that goes through the context; it does
-  not keep them out of reach of one that does not.
+  through the gateway's own database handle, which can reach every table, index and trigger; the check reads
+  the words of the statement and refuses one that names an object that is not the plugin's own. Every table,
+  view, index and trigger in the database that is not `mod_<id>__*` counts, as does anything called
+  `sqlite_*`. A name counts however it is written (bare, `"quoted"`, `[bracketed]`, `` `backticked` ``,
+  any case, with `main.` in front, a comment in between). A `'string'` counts **only where SQLite reads a
+  string as a name** (right after `FROM`, `JOIN`, `INTO`, `UPDATE`, `TABLE`, `EXISTS`, a `.`, in a `FROM`
+  list): so `UPDATE 'settings' SET …` is refused and `VALUES ('messages')` is not. A bare word that is
+  a column or an alias but equals a core table's name (`memory`, `runs`, `messages`) is refused: the check
+  is over-eager on purpose, and the plugin renames it. Separately, what a statement creates, drops,
+  re-indexes, alters or writes must be the plugin's own whatever the name is, as in a module's migrations
+  (so `DROP INDEX IF EXISTS x` and a bare `REINDEX` are refused). The check does not see inside a function the
+  plugin calls itself, and `ctx.store.transaction(fn)` runs whatever `fn` does. It keeps the settings, the
+  approvals, the schema and the audit log out of reach of a plugin that goes through the context; it does not
+  keep them out of reach of one that does not.
+- **A plugin's migrations are checked, by the same kind of reading, before they run.** A migration is raw SQL
+  run by the gateway. It may not create, change or write an object that is not the plugin's own (as before),
+  and, by where names stand in the text (after `FROM`, `JOIN`, `INTO`, `UPDATE`, `REFERENCES`, in a `FROM`
+  list, after `main.` or `temp.`), it may not **read** one either: a view over `settings`
+  (`CREATE VIEW mod_x__v AS SELECT … FROM settings`), a trigger that selects from a core table, or a copy of
+  `messages` into its own table is refused, and nothing of that migration, nor of the ones before it in the
+  same start, runs. A column called `memory` is not a reference. It is a text check: a form of SQL it does
+  not recognise as a reference can slip past it, and a migration that already ran is not looked at again.
 - `llm` and `memory`: the context offers no model call or memory helper in this release, so these
   are declared, shown, hashed into the approval, and enforced on nothing.
 - What an allowed command does with its arguments or in its working directory (see `exec` above), and
   what an allowed host does with a request.
+- **The list of variables a command may not be given cannot be complete.** `PATH`, `LD_*`, `DYLD_*`,
+  `NODE_OPTIONS`, `GIT_EXEC_PATH`, `GIT_CONFIG_*` and the rest of the list are refused, and others that change
+  what a program does are not: `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `EDITOR`, `VISUAL`, `PAGER`, and `HOME` (which
+  points `git` and many programs at another `.gitconfig` or rc file) are examples. A declared command that
+  reads its environment to run something is exposed to all of them. Only the gateway's own `PATH` is used to
+  find a command, and a relative entry in it (`.`, `bin`) is skipped.
 - DNS: a declared host that resolves to a private address is reached.
 - The plugin's own routes: a plugin that sends a request to the gateway's own address with
   `ctx.fetch` needs that address declared like any host, but a request it makes some other way is not checked.

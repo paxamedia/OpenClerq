@@ -215,6 +215,114 @@ describe('SQL through ctx.store', () => {
   });
 });
 
+describe('core indexes and triggers, and what a migration may read', () => {
+  const SQL = `
+  register(ctx) {
+    ctx.routes.post('/exec', (req, res) => {
+      try { ctx.store.exec(req.body.sql); res.json({ ok: true }); }
+      catch (e) { res.json({ ok: false, code: e.code, permission: e.permission, subject: e.subject, message: String(e.message) }); }
+    });
+  },`;
+  type Out = { ok: boolean; code?: string; permission?: string; subject?: string };
+  const exec = async (gw: Running, sql: string) =>
+    (await (
+      await gw.api('/api/modules/sql/exec', { method: 'POST', body: JSON.stringify({ sql }) })
+    ).json()) as Out;
+  const indexes = () =>
+    getStore()
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%' ORDER BY name"
+      )
+      .all()
+      .map((r) => String(r.name));
+  const notes = {
+    'migrations/0001_n.sql':
+      'CREATE TABLE mod_sql__notes (id INTEGER PRIMARY KEY, note TEXT, tenant_id TEXT);',
+  };
+
+  it.each([
+    'DROP INDEX idx_repos_name',
+    'DROP INDEX IF EXISTS idx_automations_name',
+    'DROP INDEX IF EXISTS idx_that_is_not_there',
+    'DROP TRIGGER IF EXISTS some_core_trigger',
+    'REINDEX',
+    'REINDEX idx_repos_name',
+    'CREATE INDEX mod_sql__i ON runs (id)',
+    "CREATE TEMP TRIGGER mod_sql__tr AFTER INSERT ON mod_sql__notes BEGIN UPDATE settings SET value = 'false'; END",
+  ])('refuses `%s` when enforcement is on, and the core index is still there', async (sql) => {
+    writePlugin(s.modules, { id: 'sql', hooks: SQL, files: notes });
+    await seedEnforce(s);
+    const gw = await start();
+    await approve(gw, 'sql');
+    const before = indexes();
+    expect(before).toEqual(expect.arrayContaining(['idx_repos_name', 'idx_automations_name']));
+    expect(await exec(gw, sql)).toMatchObject({
+      ok: false,
+      code: 'plugin_permission_denied',
+      permission: 'store',
+    });
+    expect(indexes()).toEqual(before);
+    expect(
+      auditRows('plugin.permission.denied').filter((r) => r.detail.permission === 'store').length
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it('with enforcement off audits a drop of a core index, and it goes ahead (as before)', async () => {
+    writePlugin(s.modules, { id: 'sql', hooks: SQL });
+    const gw = await start();
+    expect(await exec(gw, 'DROP INDEX IF EXISTS idx_that_is_not_there')).toMatchObject({
+      ok: true,
+    });
+    expect(auditRows('plugin.permission.undeclared').map((r) => r.detail.subject)).toContain(
+      'idx_that_is_not_there'
+    );
+  });
+
+  it('lets an ordinary word go through: a value that happens to be a core table’s name', async () => {
+    writePlugin(s.modules, { id: 'sql', hooks: SQL, files: notes });
+    await seedEnforce(s);
+    const gw = await start();
+    await approve(gw, 'sql');
+    expect(
+      await exec(gw, "INSERT INTO mod_sql__notes (note, tenant_id) VALUES ('messages', 'default')")
+    ).toMatchObject({ ok: true });
+    expect(await exec(gw, "UPDATE 'settings' SET value = 'x'")).toMatchObject({
+      ok: false,
+      subject: 'settings',
+    });
+  });
+
+  it('a migration whose view reads the settings table does not run, and the plugin fails with the reason', async () => {
+    writePlugin(s.modules, {
+      id: 'evilview',
+      files: {
+        'migrations/0001_init.sql':
+          'CREATE TABLE mod_evilview__t (id INTEGER PRIMARY KEY, v TEXT);\nCREATE VIEW mod_evilview__v AS SELECT key, value FROM settings;',
+      },
+    });
+    const gw = await start();
+    const p = (await listPlugins(gw)).evilview;
+    expect(p.state).toBe('failed');
+    expect(p.reason).toContain('Migration 1 (init) reads "settings"');
+    // Not even the table before it: nothing of the migration ran.
+    expect(
+      getStore().prepare("SELECT name FROM sqlite_master WHERE name LIKE 'mod_evilview__%'").all()
+    ).toEqual([]);
+  });
+
+  it('a migration that copies a core table into its own is refused too', async () => {
+    writePlugin(s.modules, {
+      id: 'copycat',
+      files: {
+        'migrations/0001_init.sql':
+          'CREATE TABLE mod_copycat__m (id INTEGER, content TEXT);\nINSERT INTO mod_copycat__m (content) SELECT content FROM messages;',
+      },
+    });
+    const gw = await start();
+    expect((await listPlugins(gw)).copycat).toMatchObject({ state: 'failed' });
+  });
+});
+
 describe('ctx.exec runs the command that was declared', () => {
   const EXEC = `
   register(ctx) {
@@ -330,6 +438,37 @@ describe('ctx.exec runs the command that was declared', () => {
     const out = await run(gw, { cmd: './ls', cwd: bin });
     expect(out.ok).toBe(false);
     expect(out.message).toContain('absolute path or a bare command name');
+  });
+
+  it('does not look in a relative entry of the gateway’s PATH, which would be the plugin’s own cwd', async () => {
+    const bin = install();
+    const dist = path.dirname(bin);
+    // The same relative name in two places: where the gateway is (a harmless ls), and where the
+    // plugin will say its working directory is (its own script). A relative entry that was looked in
+    // would be found in the first and run from the second.
+    const rel = '.t12a-relbin';
+    const here = path.join(process.cwd(), rel);
+    const theirs = path.join(dist, rel);
+    for (const [dir, text] of [
+      [here, '#!/bin/sh\necho HARMLESS\n'],
+      [theirs, '#!/bin/sh\necho NOT-LS from-the-plugin\n'],
+    ]) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'ls'), text);
+      fs.chmodSync(path.join(dir, 'ls'), 0o755);
+    }
+    const saved = process.env.PATH;
+    process.env.PATH = [rel, '.', '', saved].join(path.delimiter);
+    try {
+      const gw = await start();
+      const out = await run(gw, { cmd: 'ls', args: os.tmpdir(), cwd: dist });
+      expect(out.ok).toBe(true);
+      expect(out.out).not.toContain('NOT-LS');
+      expect(out.out).not.toContain('HARMLESS');
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(here, { recursive: true, force: true });
+    }
   });
 
   it('says plainly when a bare name is not on the gateway’s PATH', async () => {

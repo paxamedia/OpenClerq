@@ -214,6 +214,75 @@ describe('SQL through the context', () => {
     expect(() => g.sql('SELECT * FROM mod_late__t')).toThrow(PluginPermissionError);
   });
 
+  it('counts a core index or trigger as the gateway’s too, and refuses to drop or build on it', () => {
+    const g = guard();
+    // (a core index that really exists in the store these tests open)
+    const index = String(
+      db()
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%' LIMIT 1"
+        )
+        .get()?.name
+    );
+    expect(index).toMatch(/^idx_/);
+    for (const sql of [
+      `DROP INDEX ${index}`,
+      `DROP INDEX IF EXISTS ${index}`,
+      `DROP INDEX "${index}"`,
+      'DROP INDEX IF EXISTS some_index_that_is_not_there',
+      'DROP TRIGGER IF EXISTS some_trigger',
+      'DROP TRIGGER some_trigger',
+      `REINDEX ${index}`,
+      'REINDEX',
+      'reindex;',
+      'REINDEX runs',
+      'CREATE INDEX mod_g__i ON runs (id)',
+      'CREATE UNIQUE INDEX mod_g__u ON settings (key)',
+      "CREATE TRIGGER mod_g__tr AFTER INSERT ON runs BEGIN UPDATE mod_g__things SET name = 'x'; END",
+      `SELECT * FROM mod_g__things WHERE rowid IN (SELECT rowid FROM ${index})`,
+    ]) {
+      expect(() => g.sql(sql), sql).toThrow(PluginPermissionError);
+    }
+  });
+
+  it('lets a plugin build and drop its own indexes and triggers, and reindex them by name', () => {
+    db().exec('CREATE TABLE IF NOT EXISTS mod_g__things (id INTEGER, name TEXT, tenant_id TEXT)');
+    const g = guard();
+    for (const sql of [
+      'CREATE INDEX mod_g__i ON mod_g__things (name)',
+      'DROP INDEX IF EXISTS mod_g__i',
+      'REINDEX mod_g__i',
+      "CREATE TRIGGER mod_g__tr AFTER INSERT ON mod_g__things BEGIN UPDATE mod_g__things SET name = 'x' WHERE id = NEW.id; END",
+      'DROP TRIGGER mod_g__tr',
+    ]) {
+      expect(() => g.sql(sql), sql).not.toThrow();
+    }
+  });
+
+  it('does not take a word in a string for a table, but still reads one a name where SQLite does', () => {
+    db().exec('CREATE TABLE IF NOT EXISTS mod_g__things (id INTEGER, name TEXT, tenant_id TEXT)');
+    const g = guard();
+    for (const sql of [
+      "INSERT INTO mod_g__things (name) VALUES ('messages')",
+      "UPDATE mod_g__things SET name = 'settings' WHERE name = 'runs'",
+      "SELECT * FROM mod_g__things WHERE name IN ('memory', 'sessions')",
+    ]) {
+      expect(() => g.sql(sql), sql).not.toThrow();
+    }
+    for (const sql of [
+      "UPDATE 'settings' SET value = 'x'",
+      "SELECT * FROM mod_g__things, 'runs'",
+    ]) {
+      expect(() => g.sql(sql), sql).toThrow(PluginPermissionError);
+    }
+  });
+
+  it('with enforcement off, audits a drop of a core index and goes ahead', () => {
+    enforcing = false;
+    expect(() => guard().sql('DROP INDEX IF EXISTS some_index_that_is_not_there')).not.toThrow();
+    expect(rows().map((r) => r.action)).toEqual(['plugin.permission.undeclared']);
+  });
+
   it('refuses ATTACH, DETACH, PRAGMA and VACUUM', () => {
     for (const sql of ["ATTACH 'x' AS y", 'DETACH y', 'PRAGMA user_version', 'VACUUM']) {
       expect(() => guard().sql(sql), sql).toThrow(/may not run/);
