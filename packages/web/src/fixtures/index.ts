@@ -1531,12 +1531,27 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
         status: 'ok',
         service: 'clerq-gateway',
         version: '0.6.0',
+        api: { version: 1, supported: [1] },
         llm: {
           mode: 'api' as const,
           provider: 'anthropic',
           model: 'claude-sonnet-5-5',
           available: !opts.empty,
         },
+      }),
+    version: () =>
+      ok({
+        gateway: '0.6.0',
+        api: { version: 1, supported: [1] },
+        store: { schema: 21 },
+      }),
+    checkCompatibility: () =>
+      ok({
+        ok: true,
+        kind: 'compatible' as const,
+        gateway: '0.6.0',
+        api: { version: 1, supported: [1] },
+        reason: null,
       }),
     metrics: () =>
       ok({

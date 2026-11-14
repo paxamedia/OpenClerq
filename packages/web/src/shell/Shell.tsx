@@ -15,6 +15,7 @@ import { useBackTarget } from '../app/history';
 import type { ModuleUI, RailEntry } from '../app/modules';
 import { isUnder, Link } from '../app/router';
 import { COMPACT_QUERY, HeaderSlotContext, PHONE_QUERY, useMedia } from './layout';
+import { CompatibilityBanner } from './Compatibility';
 import { StatusBar, StatusSummary } from './StatusBar';
 import './shell.css';
 
@@ -339,6 +340,7 @@ export function Shell({
             {!phone && <kbd>K</kbd>}
           </button>
         </header>
+        <CompatibilityBanner />
         <main className="shell-page" id="page-content" tabIndex={-1}>
           <HeaderSlotContext.Provider value={slot}>{children}</HeaderSlotContext.Provider>
         </main>
