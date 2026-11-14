@@ -113,7 +113,7 @@ curl -s -X POST "$GW/v1/github/app/import" \
 ```
 
 OpenClerq signs a token with the key and asks GitHub `GET /app`: if GitHub says no, the answer is
-`422` with GitHub's own message and nothing is stored. `clientSecret` is optional. A key pasted with
+`422` with GitHub's own message and nothing is stored. (A refusal that is really this computer's clock being more than 30 seconds from GitHub's is said so, `clock_skew`, since GitHub refuses a token signed at the wrong time with the same 401: the same words appear in a run's failure.) `clientSecret` is optional. A key pasted with
 `\n` for its line breaks (as in an `.env` file) is accepted.
 
 **Rotating the key:** generate a new private key on the app's settings page, import it again with the

@@ -173,7 +173,8 @@ a key that cannot be read or that the vault refuses; `409` when an app is connec
 JWT and `GET /app`, then stores the app and the secrets: `201` (`{ connected: true, app, replacedKey: false }`),
 or `200` with `replacedKey: true` for a new key of the app already connected. `400 invalid_request`
 (a field is missing or malformed), `409 app_already_connected` (another app), `409 app_changed` (the connection changed while GitHub was being asked), `422` with `error`
-`invalid_private_key` (not an RSA PEM), `github_rejected` (GitHub's own `message`) or
+`invalid_private_key` (not an RSA PEM), `github_rejected` (GitHub's own `message`),
+`clock_skew` (a 401 because this computer's clock is more than 30 seconds from GitHub's: say so instead of blaming the key) or
 `client_id_mismatch`, `502 github_unreachable`, `503 vault_unavailable`.
 
 `GET /github/app` answers `{ "connected": false }`, or

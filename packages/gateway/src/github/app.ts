@@ -14,7 +14,14 @@
 
 import type { CredentialPurpose } from '../automations/credentials.js';
 import { logger } from '../logger.js';
-import { API_TIMEOUT_MS, GithubApiError, githubRequest, nextPage, type ApiOptions } from './api.js';
+import {
+  API_TIMEOUT_MS,
+  GithubApiError,
+  clockProblem,
+  githubRequest,
+  nextPage,
+  type ApiOptions,
+} from './api.js';
 import {
   APP_PRIVATE_KEY_SECRET,
   readAppConfig,
@@ -176,8 +183,11 @@ function readInstallation(body: unknown): Installation | null {
 }
 
 /** Why an API call failed, in words for a run's failure message. */
-function explain(e: GithubApiError, what: string): string {
+function explain(e: GithubApiError, what: string, now: number): string {
   if (e.status === 0) return `${what}: ${e.message}`;
+  // A 401 is the key's fault unless this computer's clock is the one that is wrong.
+  const clock = clockProblem(e, now);
+  if (clock) return `${what}: ${clock}`;
   if (e.status === 401) {
     return (
       `${what}: GitHub did not accept the app's key (${e.message}). ` +
@@ -211,6 +221,11 @@ export class GithubApp {
       options.timeoutMs ?? API_TIMEOUT_MS,
       options.revokeTimeoutMs ?? REVOKE_TIMEOUT_MS
     );
+  }
+
+  /** When GitHub's refusal is this computer's clock being wrong, the words for it. */
+  clockNote(e: GithubApiError): string | null {
+    return clockProblem(e, this.now());
   }
 
   /** The stored connection, or null. */
@@ -358,7 +373,7 @@ export class GithubApp {
     } catch (e) {
       if (e instanceof GithubApiError) {
         throw new AppUnavailable(
-          explain(e, `Could not ask GitHub whether the app is installed on ${project}`)
+          explain(e, `Could not ask GitHub whether the app is installed on ${project}`, this.now())
         );
       }
       throw e;
@@ -405,7 +420,9 @@ export class GithubApp {
       }
     } catch (e) {
       if (e instanceof GithubApiError) {
-        throw new AppUnavailable(explain(e, 'Could not list the installations of the app'));
+        throw new AppUnavailable(
+          explain(e, 'Could not list the installations of the app', this.now())
+        );
       }
       throw e;
     }
@@ -473,7 +490,11 @@ export class GithubApp {
             ? ' If the app was given new permissions, accept them on its installation page.'
             : '';
         throw new AppUnavailable(
-          explain(e, `Could not get a ${purpose.replace('_', ' ')} token for ${project}`) + tail
+          explain(
+            e,
+            `Could not get a ${purpose.replace('_', ' ')} token for ${project}`,
+            this.now()
+          ) + tail
         );
       }
       throw e;

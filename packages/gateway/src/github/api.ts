@@ -14,7 +14,9 @@ export class GithubApiError extends Error {
   constructor(
     /** HTTP status, or 0 when GitHub did not answer (network, timeout, a redirect). */
     readonly status: number,
-    message: string
+    message: string,
+    /** GitHub's own clock when it answered (its `Date` header), in milliseconds since the epoch. */
+    readonly serverTime?: number
   ) {
     super(message);
     this.name = 'GithubApiError';
@@ -105,7 +107,12 @@ export async function githubRequest(
   }
   const ok = (res.status >= 200 && res.status < 300) || request.accept?.includes(res.status);
   if (!ok) {
-    throw new GithubApiError(res.status, messageOf(body, `GitHub answered ${res.status}.`));
+    const date = Date.parse(res.headers.get('date') ?? '');
+    throw new GithubApiError(
+      res.status,
+      messageOf(body, `GitHub answered ${res.status}.`),
+      Number.isFinite(date) ? date : undefined
+    );
   }
   return { status: res.status, body, headers: res.headers };
 }
@@ -125,4 +132,30 @@ export function nextPage(link: string | null): string | null {
     }
   }
   return null;
+}
+
+/** More than this far from GitHub's clock, an app's JWT is refused (it allows a minute: 30 s leaves room). */
+export const CLOCK_SKEW_LIMIT_MS = 30_000;
+
+/**
+ * When a refusal is because this computer's clock is wrong, in words: GitHub
+ * answers 401 to a JWT dated in its future or past, and that says nothing
+ * about the key. `localNow` is the clock the JWT was made with. Null when
+ * the clocks agree to within 30 seconds, or GitHub did not say what time it is.
+ */
+export function clockProblem(e: GithubApiError, localNow: number): string | null {
+  if (e.status !== 401 || e.serverTime === undefined) return null;
+  const skew = localNow - e.serverTime;
+  if (Math.abs(skew) <= CLOCK_SKEW_LIMIT_MS) return null;
+  const seconds = Math.round(Math.abs(skew) / 1000);
+  const amount =
+    seconds < 120
+      ? `${seconds} seconds`
+      : seconds < 7200
+        ? `${Math.round(seconds / 60)} minutes`
+        : `${Math.round(seconds / 3600)} hours`;
+  return (
+    `This computer's clock is about ${amount} ${skew > 0 ? 'ahead of' : 'behind'} GitHub's, ` +
+    "and GitHub refuses an app's token signed at the wrong time. Correct the clock (turn on automatic time) and try again; the key is probably fine."
+  );
 }

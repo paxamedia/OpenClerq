@@ -376,6 +376,9 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
         if (e.status === 0 || e.status >= 500) {
           return res.status(502).json({ error: 'github_unreachable', message: e.message });
         }
+        // A 401 because of this computer's clock says nothing about the key.
+        const clock = github.clockNote(e);
+        if (clock) return res.status(422).json({ error: 'clock_skew', message: clock });
         // GitHub's own words: a key that does not match the app, an app that does not exist.
         return res.status(422).json({ error: 'github_rejected', message: e.message });
       }

@@ -292,7 +292,12 @@ export class FakeGithub {
     this.seen.push(entry);
     const reply = (status: number, payload?: unknown, headers: Record<string, string> = {}) => {
       entry.status = status;
-      res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
+      // GitHub's clock, which a client can compare with its own.
+      res.writeHead(status, {
+        'Content-Type': 'application/json',
+        Date: new Date(this.clock()).toUTCString(),
+        ...headers,
+      });
       res.end(payload === undefined ? undefined : JSON.stringify(payload));
     };
 

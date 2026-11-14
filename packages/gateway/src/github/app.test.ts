@@ -5,7 +5,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { API_TIMEOUT_MS } from './api.js';
+import { API_TIMEOUT_MS, GithubApiError, clockProblem } from './api.js';
 import {
   AppUnavailable,
   GithubApp,
@@ -140,6 +140,41 @@ describe('which repositories the app is installed on', () => {
     // A failure is not remembered: the next question goes to GitHub again.
     fake.install({ repos: ['acme/app'] });
     expect(await app.installationFor('acme/app')).toMatchObject({ installed: true });
+  });
+
+  it('blames the clock, not the key, when this computer is far from GitHub’s time', async () => {
+    fake.install({ repos: ['acme/app'] });
+    // Five minutes ahead: the JWT is dated in GitHub's future and refused with a 401.
+    const ahead = make({ now: () => clock + 5 * 60_000 });
+    const e = await ahead.installationFor('acme/app').catch((err: Error) => err);
+    expect(e).toBeInstanceOf(AppUnavailable);
+    expect((e as Error).message).toContain(
+      "This computer's clock is about 5 minutes ahead of GitHub's"
+    );
+    expect((e as Error).message).toContain('the key is probably fine');
+    expect((e as Error).message).not.toContain('generate a new private key');
+
+    // Twenty minutes behind: dated in the past, expired. Said the other way round.
+    const behind = make({ now: () => clock - 20 * 60_000 });
+    await expect(behind.installationFor('acme/app')).rejects.toThrow(
+      /about 20 minutes behind GitHub's/
+    );
+    // Minting is explained the same way.
+    const found = await app.installationFor('acme/app');
+    if (!found.installed) throw new Error('installed');
+    await expect(ahead.mint('acme/app', found.installation, 'push', 'run_a')).rejects.toThrow(
+      /clock is about 5 minutes ahead/
+    );
+  });
+
+  it('still blames the key for a 401 when the clocks agree', async () => {
+    // Twenty seconds apart is inside what GitHub allows, and inside what we call agreement.
+    const near = make({ now: () => clock + 20_000 });
+    fake.failNext.set('/repos/acme/app/installation', { status: 401, message: 'Bad key' });
+    await expect(near.installationFor('acme/app')).rejects.toThrow(/generate a new private key/);
+    // And a 401 that does not say what time it is cannot be blamed on the clock.
+    expect(clockProblem(new GithubApiError(401, 'x'), clock)).toBeNull();
+    expect(clockProblem(new GithubApiError(403, 'x', clock - 3_600_000), clock)).toBeNull();
   });
 
   it('turns a timeout into an error instead of waiting for ever', async () => {

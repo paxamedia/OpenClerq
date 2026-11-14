@@ -580,6 +580,17 @@ describe('importing an app that exists', () => {
     expect(vault.entries.size).toBe(0);
   });
 
+  it('answers 422 clock_skew, not "bad key", when this computer’s clock is the problem', async () => {
+    // GitHub's clock is five minutes behind ours: our JWT is dated in its future.
+    fake.clock = () => clock - 5 * 60_000;
+    const res = await call('POST', '/github/app/import', { body: body() });
+    expect(res.status).toBe(422);
+    expect(res.json().error).toBe('clock_skew');
+    expect(res.json().message).toContain("about 5 minutes ahead of GitHub's");
+    expect(readAppConfig()).toBeNull();
+    expect(vault.entries.size).toBe(0);
+  });
+
   it('answers 422 for an app id GitHub does not accept the key for', async () => {
     const res = await call('POST', '/github/app/import', { body: body({ appId: 999 }) });
     expect(res.status).toBe(422);
