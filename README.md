@@ -10,6 +10,8 @@
 
 > _Open-source local MCS for agentic automation. Small desktop worker that runs on your machine, with knowledge, tools, and context kept locally._
 
+**Status: 1.0.0 (2026-11-14).** The first stable release. The gateway's API is versioned (`/v1`) and only grows through 1.x ([API](docs/API.md)); the database is backed up before an upgrade and an older program refuses a newer one ([UPGRADING](docs/UPGRADING.md)). Agents run as you unless you choose isolation per automation, and plugin and skill checks are a switch you turn on: [THREAT_MODEL](docs/THREAT_MODEL.md) says what 1.0 defends against and what it does not, and the [CHANGELOG](CHANGELOG.md) lists what was not verified.
+
 **Clerq** is a small, generic desktop automation platform: programmable by developers on their local machine (as is, use at your own risk, no responsibility), and also offered as a hosted service with accounts, subscriptions, and modules that bundle built-in skills.
 
 📌 **Canonical description:** [About Clerq](docs/ABOUT_CLERQ.md) — attribution, two usage models (OSS vs hosted), and skills-by-module. See also [NOTICE](NOTICE).
@@ -45,7 +47,15 @@
 
 ## Installing
 
-You can run **OpenClerq** from source on **macOS** or **Windows**. For prebuilt installers of the commercial **Clerq** product (scalable MCS for teams and administrations), see [openclerq.com](https://openclerq.com).
+From **1.0.0** there are three ways to run **OpenClerq**, all on the [releases page](https://github.com/paxamedia/OpenClerq/releases) (and `ghcr.io` for the image) once the `v1.0.0` tag is built:
+
+| You want                                                 | Get                                                                                                                                                            | More                                                                     |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **The desktop app**                                      | macOS (Apple Silicon): `.dmg`. Windows: `.msi` or setup `.exe`. Linux (x64 and arm64): `.deb`, `.rpm` or AppImage                                              | [Download installers](#download-installers-download-and-run)             |
+| **A server** that runs automations with nobody logged in | Linux or macOS: `curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh \| sh`, or `docker run … ghcr.io/paxamedia/openclerq:1` | [SERVER](docs/SERVER.md), [below](#download-installers-download-and-run) |
+| **The command line**                                     | `clerq`, installed with the server files (and in the image): sign in to a gateway, add repositories, apply and run automations, answer approvals               | [CLI](docs/CLI.md)                                                       |
+
+The installers are not code-signed for macOS or Windows, so Gatekeeper and SmartScreen warn on first run; updates and the server's `SHA256SUMS` are signed with the project's key ([RELEASING](docs/RELEASING.md)). You can also run **OpenClerq** from source on **macOS** or **Windows** (below). For prebuilt installers of the commercial **Clerq** product (scalable MCS for teams and administrations), see [openclerq.com](https://openclerq.com).
 
 ### Download installers (download and run)
 
@@ -76,7 +86,7 @@ The installer starts nothing, edits none of your files and refuses to run as roo
 
 **From a terminal:** `clerq` signs in to a gateway (this computer's or a server's), adds repositories, applies an automation from a YAML file, runs it and follows it, and answers its approvals: `clerq login`, `repo add`, `automation apply -f`, `run --follow`, `logs`, `approve`. The server installer and the container image above include it; see [CLI](docs/CLI.md). **GitHub:** connect a GitHub App of your own and runs push and open pull requests with tokens that last at most an hour and cover one repository, instead of a personal token, and sign in to GitHub as yourself with a code you type there (`clerq github connect`, `import`, `login`, `repos`, or Settings, GitHub); see [GitHub](docs/GITHUB.md).
 
-**Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS, Windows and Linux installers, the server tarballs (with `SHA256SUMS`, its signature and `install.sh`) and the container image, and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases) and `ghcr.io`. Updater bundles and `SHA256SUMS` are signed with the project's key, which is not the same as the macOS and Windows code signing the project does not have yet (the OS warns on first run); how to check a download, and how the key is kept, rotated and recovered: [Releasing](docs/RELEASING.md). Signed macOS builds and in-app updates: [Distribution](docs/DISTRIBUTION.md).
+**Releases:** Tagging `v*` (e.g. `v1.0.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS, Windows and Linux installers, the server tarballs (with `SHA256SUMS`, its signature and `install.sh`) and the container image, and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases) and `ghcr.io`. Updater bundles and `SHA256SUMS` are signed with the project's key, which is not the same as the macOS and Windows code signing the project does not have yet (the OS warns on first run); how to check a download, and how the key is kept, rotated and recovered: [Releasing](docs/RELEASING.md). Signed macOS builds and in-app updates: [Distribution](docs/DISTRIBUTION.md).
 
 ### macOS
 
@@ -153,7 +163,7 @@ pnpm build:core
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│           Tauri Desktop (Windows + Mac)                 │
+│           Tauri Desktop (Mac, Win, Linux)               │
 │  ┌─────────────────────────────────────────────────┐   │
 │  │  Home | Inbox | Automations | Runs | Records     │   │
 │  │  Chat | module pages | Developer | Settings     │   │
@@ -181,7 +191,7 @@ _Desktop UI:_ a rail of pages, a ⌘K palette that searches every module, and a 
 
 ## Quick Start
 
-After [Installing](#installing) (macOS or Windows), from the repo root:
+After [Installing from source](#macos) (macOS or Windows), from the repo root:
 
 1. **Copy env:** `cp .env.example .env` (macOS/Linux) or `copy .env.example .env` (Windows). Set your LLM: a cloud provider (`CLERQ_LLM_PROVIDER` = `anthropic`, `openai`, `deepseek`, `moonshot`, `zai` or `minimax`, plus its key), or **local** via `CLERQ_LLM_PROVIDER=ollama`.
 2. **Build:** `pnpm build:gateway` and (for rate calc) `pnpm build:core`.
@@ -223,7 +233,7 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 ```
 clerq/
 ├── apps/
-│   ├── desktop/          # Tauri v2 + React (Windows, Mac)
+│   ├── desktop/          # Tauri v2 + React (Mac, Windows, Linux)
 │   ├── server/           # clerq-server: the gateway as a headless daemon (Linux, Mac)
 │   └── cli/              # clerq: the command line (login, repo add, automation apply, run, logs, approve)
 ├── packages/

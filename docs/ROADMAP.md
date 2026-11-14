@@ -184,7 +184,7 @@ consumer.
 - [x] **Chat console — raw mode.** Per-provider conversations, streaming, full request/response inspection
 - [x] **Chat console — comparison mode.** One message fanned out to N models, side by side with latency, tokens and cost; any column can be promoted into the transcript
 
-### 0.6a — First automation
+### 0.6a — First automation — shipped in 1.0
 
 One automation end to end: a scheduled agent that opens a gated draft PR. It is the first
 consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
@@ -199,10 +199,10 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [x] Desktop Automations module over the module slot contract: spec editor with a check, runs with steps and diff, approvals inbox
 - [x] Interface rebuilt in `packages/web` with routing, a Providers screen and Settings in the main window; the 0.5 UI removed
 
-### 0.6b — Agents and automations
+### 0.6b — Agents and automations — shipped in 1.0
 
 - [x] `codex` and `cursor-agent` drivers
-- [ ] Seatbelt and container profiles for automation runs, with egress limited to the spec's hosts; remote repositories
+- [x] Seatbelt and container profiles for automation runs, with egress limited to the spec's hosts; remote repositories — seatbelt on macOS; the container profile is verified in CI on Linux against a real Docker engine (amd64 and arm64), Podman is not run ([SECURITY.md](SECURITY.md#21-automation-sandbox-profiles))
 - [x] Kill agent processes a crashed gateway left behind
 - [x] Tool calling in `packages/providers` — the `builtin` driver needs it
 - [x] `builtin` driver — real tool-calling loop, every call through `packages/policy`
@@ -219,20 +219,24 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [x] **Conversational automation authoring.** Draft → preview → dry run → save disabled, with `approvals.push` forced to manual on first run
 - [x] Console registered through the existing module slot contract rather than extending `App.tsx`
 
-### 1.0 — Platform
+### 1.0 — Platform — shipped
+
+Released as 1.0.0 on 2026-11-14, with everything from 0.6a and 0.6b (there was no separate 0.6
+release). What 1.0 verified and what it did not is in the [changelog](../CHANGELOG.md) and the
+[threat model](THREAT_MODEL.md#what-was-not-verified).
 
 - [x] GitHub sign-in via **GitHub App** (not OAuth App) — short-lived installation tokens, per-repo scope, revocable; device flow for CLI and headless
 - [x] `apps/server` — headless daemon, systemd unit, Docker image, reverse-proxy guidance
 - [x] `apps/cli` — `clerq login | repo add | automation apply | run | logs | approve`
-- [ ] Linux packages in the release matrix (`.deb`, `.rpm`, AppImage)
+- [x] Linux packages in the release matrix (`.deb`, `.rpm`, AppImage), x64 and arm64 — built on every push to `main`, including running the gateway from the unpacked `.deb` and AppImage; the release builds the same legs. Nobody has launched the app window on Linux ([DISTRIBUTION.md](DISTRIBUTION.md#linux))
 - [x] `curl | sh` installer and a one-line `docker run`
 - [x] Restrictive Tauri CSP replacing `null`: scripts and styles from the app's own files only, no `unsafe-*`, connections and frames to `127.0.0.1` only, `data:` for fonts alone; a test holds the policy to that and `pnpm csp:check` runs the built app under it in headless Chrome against a real gateway (checked in Chrome's engine, not in the app's own webview; [SECURITY.md](SECURITY.md))
-- [ ] Real updater signing keys, signed artifacts, documented rotation and recovery
+- [x] Real updater signing keys, signed artifacts, documented rotation and recovery ([RELEASING.md](RELEASING.md)) — the `updater-key` check on `main` passes (the project's secret is the key the app trusts); the signature gate runs at the tag, where it refuses to publish an update whose signature does not verify. The macOS and Windows installers are not code-signed
 - [x] `packages/plugin-sdk` — declared permissions, lifecycle, treated as code not prompt text ([PLUGINS.md](PLUGINS.md)): manifest v1, `definePlugin` with `upgrade`/`register`/`start`/`stop`, a checksum of the plugin's code, approval by hash, and opt-in enforcement of what a plugin does through its context. Enforcement is not a sandbox: plugins run in the gateway process
 - [x] Chat console migrated onto `plugin-sdk` as the reference first-party plugin — proving the contract by using it ([PLUGINS.md](PLUGINS.md#the-chat-console-the-reference-plugin)): its page is the package `@clerq/plugin-chat`, with a version 1 manifest that declares its endpoints, bundled and approved by its checksum, and with plugin checks on it calls the gateway through a client limited to those endpoints. Its server routes stay core gateway code
 - [x] Skill manifests with `tools_required`, `network_domains`, `filesystem_scope`, checksum, trust states ([SKILLS.md](SKILLS.md)): declared in `SKILL.md`, checksummed over the folder (`clerq skill checksum`), `untrusted | trusted | modified | blocked` decided by you for the exact files; with enforcement on (the plugins switch) only trusted skills are used and a trusted skill narrows a chat's tools and limits its file tools and Sandboxed commands. Not a sandbox; skills are not signed
 - [x] Versioned API protocol + migration system
-- [ ] Published threat model and documented plugin/skill trust boundary
+- [x] Published threat model and documented plugin/skill trust boundary ([THREAT_MODEL.md](THREAT_MODEL.md))
 
 ### Post-1.0 — Differentiators
 
@@ -487,7 +491,8 @@ Restraint is a feature. A smaller core with stronger boundaries is the position.
 ## Related documents
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — current system as built
-- [SECURITY.md](SECURITY.md) — threat model, binding rules, release checklist
+- [THREAT_MODEL.md](THREAT_MODEL.md) — assets, actors, trust boundaries, what 1.0 does not defend against
+- [SECURITY.md](SECURITY.md) — what is protected today, binding rules, release checklist
 - [TOOLS.md](TOOLS.md) — tool reference and capability configuration
 - [MODULE_SYSTEM.md](MODULE_SYSTEM.md) — skills and modules
 - [DEVELOPER_SETUP.md](DEVELOPER_SETUP.md) — running locally
