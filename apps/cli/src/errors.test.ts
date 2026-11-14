@@ -45,6 +45,12 @@ describe('describeFailure', () => {
     });
   });
 
+  it('turns a refused redirect into exit 3 with the client’s words', () => {
+    const message = 'http://x answered with a redirect, and a redirect is not followed.';
+    const f = describeFailure(refused(0, { error: 'redirect_refused', message }, message), url);
+    expect(f).toMatchObject({ exitCode: EXIT.gateway, message });
+  });
+
   it('says a failure of the gateway itself, with its status', () => {
     expect(describeFailure(refused(500, { error: 'x', message: 'boom' }), url).message).toBe(
       'The gateway had a problem (500): boom'

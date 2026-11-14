@@ -131,8 +131,42 @@ async function readRefusal(
   }
 }
 
+/**
+ * Why a redirect is refused. A redirect would carry the request, and with a 307
+ * or 308 its body, to wherever it points, and a plain-http hop would send them
+ * in the clear: whoever chose this address chose it, not what answered there.
+ */
+function redirectRefusal(): GatewayError {
+  const message =
+    `${baseUrl()} answered with a redirect, and a redirect is not followed: it would send your ` +
+    'requests to wherever it points. Use the address it should be reached at (an https:// address, ' +
+    'when a proxy redirects http to https).';
+  return new GatewayError(message, 0, { error: 'redirect_refused', message });
+}
+
+/** What `fetch` throws for `redirect: 'error'`: Node says "unexpected redirect", Bun "UnexpectedRedirect". */
+function isRedirectFailure(e: unknown): boolean {
+  const cause = (e as { cause?: unknown } | null)?.cause;
+  const text = [e, cause].map((x) => (x instanceof Error ? x.message : '')).join(' ');
+  return /unexpected ?redirect/i.test(text);
+}
+
+/**
+ * Every request to the gateway goes through here, and never follows a redirect:
+ * the gateway does not redirect, so one is something else answering at the
+ * address, and following it would send the request (a POST's body included) on.
+ */
+async function gatewayFetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, redirect: 'error' });
+  } catch (e) {
+    if (isRedirectFailure(e)) throw redirectRefusal();
+    throw e;
+  }
+}
+
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(apiUrl(path), {
+  const res = await gatewayFetch(apiUrl(path), {
     ...options,
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options?.headers },
   });
@@ -148,7 +182,7 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 
 /** A DELETE that answers `{ ok: true }`, with the token the gateway needs. */
 async function deleteOk(path: string): Promise<{ ok: boolean }> {
-  const res = await fetch(apiUrl(path), { method: 'DELETE', headers: authHeaders() });
+  const res = await gatewayFetch(apiUrl(path), { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) {
     const { json } = await readRefusal(res);
     throw (
@@ -956,10 +990,14 @@ async function probeOlderGateway(): Promise<CompatibilityResult> {
   try {
     // Without the version header or a token: a plain GET needs no CORS preflight,
     // which a gateway from before 1.0 would refuse for the header.
-    const res = await fetch(`${where}/health`);
+    const res = await gatewayFetch(`${where}/health`);
     answered = true;
     if (res.ok) health = (await res.json()) as typeof health;
-  } catch {
+  } catch (e) {
+    // An address that redirects is something answering, not nothing: say so.
+    if (e instanceof GatewayError && e.body?.error === 'redirect_refused') {
+      return incompatible('unexpected', e.message);
+    }
     /* nothing there, or not JSON */
   }
   if (!answered) {
@@ -983,10 +1021,13 @@ async function probeOlderGateway(): Promise<CompatibilityResult> {
 async function checkCompatibility(): Promise<CompatibilityResult> {
   let res: Response;
   try {
-    res = await fetch(apiUrl('/version'), {
+    res = await gatewayFetch(apiUrl('/version'), {
       headers: { [API_VERSION_HEADER]: String(API_VERSION) },
     });
-  } catch {
+  } catch (e) {
+    if (e instanceof GatewayError && e.body?.error === 'redirect_refused') {
+      return incompatible('unexpected', e.message);
+    }
     // A gateway from before 1.0 refuses the version header in a browser's
     // preflight, which looks the same as nothing listening. Ask it plainly.
     return probeOlderGateway();
@@ -1117,7 +1158,7 @@ export const gateway = {
         const query = opts.names?.length
           ? `?names=${encodeURIComponent(opts.names.join(','))}`
           : '';
-        const res = await fetch(apiUrl(`/events/stream${query}`), {
+        const res = await gatewayFetch(apiUrl(`/events/stream${query}`), {
           headers: { ...authHeaders(), ...(lastId ? { 'Last-Event-ID': lastId } : {}) },
           signal,
         });
@@ -1149,7 +1190,12 @@ export const gateway = {
         if (signal?.aborted) break;
         // A refused token, or a version the gateway does not serve, will not get
         // better by retrying.
-        if (e instanceof GatewayError && (e.status === 401 || versionRefusal(e.status, e.body))) {
+        if (
+          e instanceof GatewayError &&
+          (e.status === 401 ||
+            e.body?.error === 'redirect_refused' ||
+            versionRefusal(e.status, e.body))
+        ) {
           throw e;
         }
       }
@@ -1262,7 +1308,7 @@ export const gateway = {
     /** Managed: tool activity, approvals to answer, drafts, as they happen (streaming only). */
     onEvent?: (event: ChatStreamEvent) => void
   ): Promise<{ runId: string; message: ChatMessage }> {
-    const res = await fetch(apiUrl(`/sessions/${encodeURIComponent(id)}/send`), {
+    const res = await gatewayFetch(apiUrl(`/sessions/${encodeURIComponent(id)}/send`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ ...input, stream: Boolean(onDelta) }),

@@ -64,6 +64,21 @@ describe('limitWaitForAnswer', () => {
     await expect(reader.read()).rejects.toBeDefined();
   });
 
+  it('does not follow a redirect unless a caller asks to', async () => {
+    let hits = 0;
+    const target = await listen((_req, res) => {
+      hits++;
+      res.end('moved here');
+    });
+    const url = await listen((_req, res) => res.writeHead(307, { location: target }).end());
+    await expect(limited(2000)(url, { method: 'POST', body: 'secret body' })).rejects.toBeDefined();
+    expect(hits).toBe(0);
+    // A caller that really wants to follow can say so.
+    const followed = await limited(2000)(url, { redirect: 'follow' });
+    expect(await followed.text()).toBe('moved here');
+    expect(hits).toBe(1);
+  });
+
   it('honours a signal that was already aborted', async () => {
     const url = await listen((_req, res) => res.end('late'));
     const stop = new AbortController();

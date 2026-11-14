@@ -59,7 +59,12 @@ export function describeFailure(e: unknown, url: string): CliError {
   if (e instanceof CliError) return e;
   if (e instanceof GatewayError) {
     const code = typeof e.body?.error === 'string' ? e.body.error : '';
-    if (code === 'unsupported_api_version' || code === 'api_version_mismatch') {
+    // A gateway that redirects, or something else answering at the address: not one to use.
+    if (
+      code === 'unsupported_api_version' ||
+      code === 'api_version_mismatch' ||
+      code === 'redirect_refused'
+    ) {
       return new CliError(e.message, EXIT.gateway);
     }
     if (e.status === 401) {

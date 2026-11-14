@@ -721,7 +721,8 @@ describe('checkCompatibility', () => {
     // The probe is a plain GET: no custom header to trip a browser's preflight.
     const probe = calls.find(([url]) => url.endsWith('/health'));
     expect(probe?.[0]).toBe('http://127.0.0.1:18790/health');
-    expect(probe?.[1]).toBeUndefined();
+    // No header and no token: a plain GET, so no CORS preflight. A redirect is never followed.
+    expect(probe?.[1]).toEqual({ redirect: 'error' });
   });
 
   it('says the same when an older gateway answers 401 because it has no public /version', async () => {
@@ -796,5 +797,64 @@ describe('checkCompatibility', () => {
     stubFetch(() => ok({ version: 1, supported: [1] }));
     expect((await gateway.version()).store.schema).toBe(21);
     expect(new URL(calls[0][0]).pathname).toBe('/v1/version');
+  });
+});
+
+describe('redirects', () => {
+  /** What Node's fetch throws for `redirect: 'error'`, and what Bun's does. */
+  const nodeStyle = () =>
+    new TypeError('fetch failed', { cause: new Error('unexpected redirect') });
+  const bunStyle = () => new Error('UnexpectedRedirect fetching "http://127.0.0.1:18790/v1/runs"');
+
+  it('are never followed, whatever the request', async () => {
+    stubFetch(() => Response.json({ ok: true, sessions: [], runs: [], items: [] }));
+    await gateway.sessions();
+    await gateway.deleteSecret('X');
+    await gateway.checkCompatibility();
+    await gateway.sendMessage('s1', { content: 'hi' }).catch(() => undefined);
+    const stop = new AbortController();
+    stop.abort();
+    await gateway.streamEvents(() => undefined, { signal: stop.signal });
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+    for (const [url, init] of calls) expect(init?.redirect, url).toBe('error');
+  });
+
+  it('become a plain refusal, from Node’s error or Bun’s, with nothing sent on', async () => {
+    for (const thrown of [nodeStyle, bunStyle]) {
+      vi.stubGlobal('fetch', async () => {
+        throw thrown();
+      });
+      const err = (await gateway.runs().catch((e: unknown) => e)) as GatewayError;
+      expect(err).toBeInstanceOf(GatewayError);
+      expect(err.body).toMatchObject({ error: 'redirect_refused' });
+      expect(err.message).toContain('http://127.0.0.1:18790 answered with a redirect');
+      expect(err.message).toContain('is not followed');
+    }
+  });
+
+  it('say so when the version check meets one, instead of "nothing answered"', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw nodeStyle();
+    });
+    const r = await gateway.checkCompatibility();
+    expect(r).toMatchObject({ ok: false, kind: 'unexpected' });
+    expect(r.reason).toContain('answered with a redirect');
+  });
+
+  it('end a followed stream at once instead of being retried', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw nodeStyle();
+    });
+    await expect(gateway.streamEvents(() => undefined, { retryMs: 1 })).rejects.toMatchObject({
+      body: { error: 'redirect_refused' },
+    });
+  });
+
+  it('leave other failures as they were', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED') });
+    });
+    await expect(gateway.runs()).rejects.toThrow('fetch failed');
+    expect((await gateway.checkCompatibility()).kind).toBe('unreachable');
   });
 });

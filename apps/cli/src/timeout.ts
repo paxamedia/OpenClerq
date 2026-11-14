@@ -17,7 +17,9 @@ export function limitWaitForAnswer(ms: number, target: { fetch: typeof fetch } =
       () => request.abort(new DOMException('The gateway did not answer in time.', 'TimeoutError')),
       ms
     );
-    return original(input, { ...init, signal: request.signal }).finally(() =>
+    // `redirect: 'error'` unless a caller says otherwise: the client already asks for it, and
+    // this keeps a request added later from following a redirect with the token's request.
+    return original(input, { redirect: 'error', ...init, signal: request.signal }).finally(() =>
       clearTimeout(timeout)
     );
   };
