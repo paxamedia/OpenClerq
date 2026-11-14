@@ -8,7 +8,8 @@ everything in [API.md](API.md) and [ARCHITECTURE.md](ARCHITECTURE.md#4-gateway) 
 and `GET /version` included.
 
 It has no screens of its own. You talk to it over HTTP with the gateway token (`curl`,
-`@clerq/gateway-client`), and the `clerq` command-line client planned for 1.0 will do the same.
+`@clerq/gateway-client`), or with the `clerq` command line ([CLI.md](CLI.md)), which signs in with the
+gateway token, adds repositories, applies and runs automations and answers approvals.
 
 This page covers installing it under systemd, configuring it, where its data lives, upgrading,
 what to be careful about, and how to put a reverse proxy in front of it.

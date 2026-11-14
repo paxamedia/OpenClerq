@@ -223,7 +223,7 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 
 - [ ] GitHub sign-in via **GitHub App** (not OAuth App) — short-lived installation tokens, per-repo scope, revocable; device flow for CLI and headless
 - [ ] `apps/server` — headless daemon, systemd unit, Docker image, reverse-proxy guidance
-- [ ] `apps/cli` — `clerq login | repo add | automation apply | run | logs | approve`
+- [x] `apps/cli` — `clerq login | repo add | automation apply | run | logs | approve`
 - [ ] Linux packages in the release matrix (`.deb`, `.rpm`, AppImage)
 - [ ] `curl | sh` installer and a one-line `docker run`
 - [ ] Restrictive Tauri CSP replacing `null`

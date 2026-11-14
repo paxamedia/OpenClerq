@@ -10,16 +10,17 @@ For where this architecture is going, see [ROADMAP.md](ROADMAP.md).
 
 ## 1. Components
 
-| Component        | Tech                | Role                                                      |
-| ---------------- | ------------------- | --------------------------------------------------------- |
-| Desktop app      | Tauri v2 + React    | Native UI on macOS and Windows                            |
-| Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration   |
-| Server           | `apps/server`       | The gateway as a headless daemon ([SERVER.md](SERVER.md)) |
-| Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration             |
-| Agent drivers    | `packages/drivers`  | Run a coding agent: a vendor CLI, or the builtin loop     |
-| Interface        | `packages/web`      | Shell, screens, charts and components, for any host app   |
-| Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                              |
-| Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets                 |
+| Component        | Tech                | Role                                                        |
+| ---------------- | ------------------- | ----------------------------------------------------------- |
+| Desktop app      | Tauri v2 + React    | Native UI on macOS and Windows                              |
+| Gateway          | Node.js + Express   | HTTP API, request routing, skill and tool orchestration     |
+| Server           | `apps/server`       | The gateway as a headless daemon ([SERVER.md](SERVER.md))   |
+| Command line     | `apps/cli`          | `clerq`: drive a gateway from a terminal ([CLI.md](CLI.md)) |
+| Skills / modules | `SKILL.md` files    | Describe behaviours, tools, and configuration               |
+| Agent drivers    | `packages/drivers`  | Run a coding agent: a vendor CLI, or the builtin loop       |
+| Interface        | `packages/web`      | Shell, screens, charts and components, for any host app     |
+| Calculation core | Rust (`clerq-calc`) | Deterministic numeric engine                                |
+| Local state      | `~/.clerq`          | SQLite store, settings, encrypted secrets                   |
 
 ```text
 Desktop (Tauri + React)
@@ -664,6 +665,15 @@ every repository (counts and last run in one windowed query; `runs` has no `repo
 automations once. A folder that has gone is listed with `exists: false`. The routes are behind the
 same token check as every other, and a scoped token reaches them only if its scopes name them.
 
+`POST /repos` adds a row by hand (the command line's `clerq repo add`): the target is read by the
+spec's own parser (`parseRepoTarget`), a local one must be the top folder of a git work tree, and the
+row is made by the same functions `ensureRepoRow` uses (`ensureLocalRepoRow`, `ensureRemoteRepo`), so
+the keys match and adding it twice returns the row (a row an automation made keeps its secret
+name). With `check` a remote is reached by one hardened `git ls-remote` with the credential the
+forge hook gives for purpose `fetch`, and nothing is stored for one that cannot be reached; the token
+is in that command's environment only and is scrubbed from what git says. See
+[API.md](API.md#adding-a-repository).
+
 ---
 
 ## 4. Gateway
@@ -689,7 +699,7 @@ version 1 changes are additive only. See [API.md](API.md). Endpoints:
 | Kill switch | `GET \| POST /kill`, `POST /resume`                                                                                                                                                                                     |
 | Config      | `GET \| POST /capabilities`, `GET \| POST /reasoning`, `GET \| POST /system-prompt`, `GET \| PUT /routing`                                                                                                              |
 | Secrets     | `GET /secrets`, `POST /secrets`, `DELETE /secrets/:name`                                                                                                                                                                |
-| Repos       | `GET /repos`, `GET /repos/:id`                                                                                                                                                                                          |
+| Repos       | `GET /repos`, `GET /repos/:id`, `POST /repos`                                                                                                                                                                           |
 | Automations | `GET \| POST /automations`, `POST /automations/preview`, `GET \| PUT \| DELETE /automations/:id`, `POST /automations/:id/run\|enable\|disable`, `GET /drivers`, `GET /runs/:id/artifacts/:id`                           |
 | Triggers    | `GET \| POST /triggers`, `POST /webhook/:id`                                                                                                                                                                            |
 | Records     | `GET \| POST /records`, `POST /records/resolve`, `GET \| PATCH \| DELETE /records/:id`, `POST /records/:id/merge`, `GET /records/:id/activities`, `POST \| DELETE /records/links`, `GET /links`, `POST /activities`     |

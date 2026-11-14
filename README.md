@@ -61,6 +61,8 @@ To **build installers** from this repo: `pnpm build:installers` (requires [Bun](
 
 **On a server:** `clerq-server` runs the same gateway headless, for a Linux machine that keeps running automations with nobody logged in. Build it with `node scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server`; systemd units, settings and reverse-proxy examples are in [SERVER](docs/SERVER.md). A container image and an installer script are not published yet.
 
+**From a terminal:** `clerq` signs in to a gateway (this computer's or a server's), adds repositories, applies an automation from a YAML file, runs it and follows it, and answers its approvals: `clerq login`, `repo add`, `automation apply -f`, `run --follow`, `logs`, `approve`. Build it with `node scripts/build-binary.js --entry apps/cli/src/main.ts --name clerq --no-calc`; see [CLI](docs/CLI.md). There is no installer for it yet.
+
 **Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS and Windows installers and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases). For signed macOS builds and in-app updates, see [Distribution](docs/DISTRIBUTION.md).
 
 ### macOS
@@ -198,6 +200,7 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 | POST     | /task            | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`.            |
 | POST     | /automations     | Save an automation from its YAML spec (body: `spec`). It starts disabled. `POST /automations/:id/run` runs it now. |
 | GET      | /repos           | Repositories automations target, with what runs against them. `/repos/:id` adds the latest runs.                   |
+| POST     | /repos           | Add a repository by hand. Body: `target` (`local:<path>`, `github:owner/name`, …), optional `check: true`.         |
 
 ## Project Structure
 
@@ -205,7 +208,8 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 clerq/
 ├── apps/
 │   ├── desktop/          # Tauri v2 + React (Windows, Mac)
-│   └── server/           # clerq-server: the gateway as a headless daemon (Linux, Mac)
+│   ├── server/           # clerq-server: the gateway as a headless daemon (Linux, Mac)
+│   └── cli/              # clerq: the command line (login, repo add, automation apply, run, logs, approve)
 ├── packages/
 │   ├── gateway/          # OpenClerq agent runtime
 │   └── calculation-core/ # Rust — advanced arithmetic engine (deterministic, auditable)
@@ -224,21 +228,22 @@ clerq/
 
 ## Documentation
 
-| Doc                                                  | Purpose                                                       |
-| ---------------------------------------------------- | ------------------------------------------------------------- |
-| [**ROADMAP**](docs/ROADMAP.md)                       | Where this is going: target architecture, release trains      |
-| [**ABOUT_CLERQ**](docs/ABOUT_CLERQ.md)               | What OpenClerq is; attribution; OSS vs hosted scope           |
-| [**DEVELOPER_SETUP**](docs/DEVELOPER_SETUP.md)       | Install, run, and verify OpenClerq locally (macOS + Windows)  |
-| [ARCHITECTURE](docs/ARCHITECTURE.md)                 | Components and local data flow                                |
-| [API](docs/API.md)                                   | Versioned gateway API: `/v1`, the header, the 1.x promise     |
-| [UPGRADING](docs/UPGRADING.md)                       | Upgrades, backups, downgrades, spec and API versions          |
-| [ARITHMETIC_API](docs/ARITHMETIC_API.md)             | Calculation engine: operators, functions, examples            |
-| [MODULE_SYSTEM](docs/MODULE_SYSTEM.md)               | How skills and modules are structured (schemas, dependencies) |
-| [TOOLS](docs/TOOLS.md)                               | Built‑in tools (filesystem, HTTP) and how to extend them      |
-| [SERVER](docs/SERVER.md)                             | The headless server: systemd, settings, data, reverse proxy   |
-| [SECURITY](docs/SECURITY.md)                         | Threat model, binding rules, release checklist                |
-| [DISTRIBUTION](docs/DISTRIBUTION.md)                 | Code signing, notarization, and the updater                   |
-| [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution    |
+| Doc                                                  | Purpose                                                        |
+| ---------------------------------------------------- | -------------------------------------------------------------- |
+| [**ROADMAP**](docs/ROADMAP.md)                       | Where this is going: target architecture, release trains       |
+| [**ABOUT_CLERQ**](docs/ABOUT_CLERQ.md)               | What OpenClerq is; attribution; OSS vs hosted scope            |
+| [**DEVELOPER_SETUP**](docs/DEVELOPER_SETUP.md)       | Install, run, and verify OpenClerq locally (macOS + Windows)   |
+| [ARCHITECTURE](docs/ARCHITECTURE.md)                 | Components and local data flow                                 |
+| [API](docs/API.md)                                   | Versioned gateway API: `/v1`, the header, the 1.x promise      |
+| [UPGRADING](docs/UPGRADING.md)                       | Upgrades, backups, downgrades, spec and API versions           |
+| [ARITHMETIC_API](docs/ARITHMETIC_API.md)             | Calculation engine: operators, functions, examples             |
+| [MODULE_SYSTEM](docs/MODULE_SYSTEM.md)               | How skills and modules are structured (schemas, dependencies)  |
+| [TOOLS](docs/TOOLS.md)                               | Built‑in tools (filesystem, HTTP) and how to extend them       |
+| [SERVER](docs/SERVER.md)                             | The headless server: systemd, settings, data, reverse proxy    |
+| [CLI](docs/CLI.md)                                   | The `clerq` command line: sign in, apply, run, follow, approve |
+| [SECURITY](docs/SECURITY.md)                         | Threat model, binding rules, release checklist                 |
+| [DISTRIBUTION](docs/DISTRIBUTION.md)                 | Code signing, notarization, and the updater                    |
+| [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution     |
 
 ## License
 

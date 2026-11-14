@@ -3,7 +3,8 @@
 The gateway's HTTP API is what the desktop app, a paired phone, the CLI and plugins all talk to.
 This page is the contract between them: what is versioned, how a client says which version it
 speaks, and what stays the same within a version. For the list of routes see
-[ARCHITECTURE.md](ARCHITECTURE.md#4-gateway).
+[ARCHITECTURE.md](ARCHITECTURE.md#4-gateway); the command-line client is described in
+[CLI.md](CLI.md).
 
 ## The version
 
@@ -82,6 +83,53 @@ for a person, such as "This gateway speaks API 2; this app needs API 1. Update t
 gateway." The same words come out of a refused request as a `GatewayError`. The desktop app asks
 once when it starts and shows the reason in a bar under the top bar; it says nothing while the
 gateway is merely not up yet.
+
+## Adding a repository
+
+`POST /repos` adds a repository by hand (the `clerq repo add` command calls it). A row is otherwise
+made the first time an automation naming the repository is queued; this makes the same row, through
+the same code, so the two find each other. Added in API version 1 (a new route is an addition).
+
+```json
+{ "target": "github:acme/app", "check": true }
+```
+
+- `target` is written as an automation's `targets.repos` is, and read by the same parser, so the
+  errors say the same words: `local:<path>`, `github:owner/name`, `gitlab:group/name`, or an https URL
+  on github.com or gitlab.com. A `#branch` is accepted and ignored (the branch belongs to the spec).
+  A local path must be absolute (or start with `~`, which is the gateway's account's home), exist, and be
+  the top folder of a git work tree.
+- `check` (optional, only for a remote) runs `git ls-remote` for the repository with the credential the
+  gateway would clone with, asked of the same hook as a run's (purpose `fetch`: by default the vault
+  secret `GITHUB_TOKEN` or `GITLAB_TOKEN`, or the one the row already names), as a hardened git command
+  with the token only in its environment. Nothing is cloned.
+
+The answer is the repository as `GET /repos` lists it, plus `created` (false when the row already
+existed, which is returned untouched, its credential name included) and, with `check`, `check`:
+
+```json
+{
+  "id": "repo_…",
+  "kind": "github",
+  "name": "acme/app",
+  "created": true,
+  "check": {
+    "reachable": true,
+    "message": "Reached github.com/acme/app with GITHUB_TOKEN.",
+    "defaultBranch": "main",
+    "credential": { "secret": "GITHUB_TOKEN", "present": true, "source": "vault:GITHUB_TOKEN" }
+  }
+}
+```
+
+`201` for a new row, `200` for one that was listed. `400` with `error`: `invalid_target` (not a
+repository this release can work on, or a relative path), `repo_path_missing`, `not_a_repository` (not
+a folder, not a git work tree, or inside one: the answer names its top folder), `invalid_check`.
+`422 repo_unreachable` when `check` could not reach a remote that was not yet listed: **nothing is
+added**, and the body carries `check`. For one already listed, the answer is `200` with
+`check.reachable: false`. No answer or log line carries the token: git's own message is scrubbed of
+it, and `check.credential` says only the secret's name, whether the hook found one and where it came
+from. Like every route it needs the token; a scoped token reaches it only if its scopes name it.
 
 ## The 1.x promise
 

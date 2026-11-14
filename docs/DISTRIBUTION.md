@@ -76,6 +76,14 @@ CI builds the `linux-x64` binary on every push and runs the smoke script and
 and release archives, checksums and a container image are not published yet. Running it is covered
 in [SERVER.md](SERVER.md).
 
+The `clerq` command line is compiled the same way, with no `clerq-calc`, into `apps/cli/dist/<target>/`:
+
+```bash
+node scripts/build-binary.js --entry apps/cli/src/main.ts --name clerq --no-calc --target bun-linux-x64
+```
+
+It is not built in CI, signed or published yet; see [CLI.md](CLI.md).
+
 ---
 
 ## CI environment
