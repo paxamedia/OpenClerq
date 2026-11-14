@@ -140,6 +140,116 @@ describe('a plugin’s UI token', () => {
   });
 });
 
+describe('a token the gateway refuses', () => {
+  it('is replaced at once, and the page is told while there is none that works', async () => {
+    const { mint } = minter(15 * 60_000);
+    const changed = vi.fn();
+    const t = new ScopedToken(mint, changed);
+    t.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.token).toBe('tok-1');
+    await t.refresh('tok-1');
+    expect(t.token).toBe('tok-2');
+    expect(t.ready).toBe(true);
+    expect(t.error).toBeNull();
+    expect(mint).toHaveBeenCalledTimes(2);
+    t.stop();
+  });
+
+  it('is not asked for again when it was already replaced, and one renewal serves every request that was refused', async () => {
+    const { mint } = minter(15 * 60_000);
+    const t = new ScopedToken(mint);
+    t.start();
+    await vi.advanceTimersByTimeAsync(0);
+    // Five requests carrying tok-1 are refused at about the same time.
+    await Promise.all([1, 2, 3, 4, 5].map(() => t.refresh('tok-1')));
+    expect(mint).toHaveBeenCalledTimes(2);
+    // A request that had started with the old token and is refused later finds a new one in hand.
+    await t.refresh('tok-1');
+    expect(mint).toHaveBeenCalledTimes(2);
+    expect(t.token).toBe('tok-2');
+    t.stop();
+  });
+
+  it('is not sent again when there is no new one to be had, and says why, until there is', async () => {
+    let fail = false;
+    let n = 0;
+    const mint = vi.fn(async (): Promise<MintedToken> => {
+      if (fail) throw new Error('No such loaded module.');
+      return { token: `tok-${++n}`, expiresAt: new Date(Date.now() + 15 * 60_000).toISOString() };
+    });
+    const t = new ScopedToken(mint);
+    t.start();
+    await vi.advanceTimersByTimeAsync(0);
+    fail = true;
+    await t.refresh('tok-1');
+    // The token it holds has not ended, but the gateway said no to it.
+    expect(t.token).toBe('tok-1');
+    expect(t.ready).toBe(false);
+    expect(String(t.error)).toContain('No such loaded module.');
+    fail = false;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(t.token).toBe('tok-2');
+    expect(t.ready).toBe(true);
+    expect(t.error).toBeNull();
+    t.stop();
+  });
+});
+
+describe('a token that ended while every renewal failed', () => {
+  it('is no longer one to send: not ready, with the reason, and the page is told when it ended', async () => {
+    let first = true;
+    const mint = vi.fn(async (): Promise<MintedToken> => {
+      if (!first) throw new Error('Gateway 502');
+      first = false;
+      return { token: 'tok-1', expiresAt: new Date(Date.now() + 60_000).toISOString() };
+    });
+    const changed = vi.fn();
+    const t = new ScopedToken(mint, changed, 60_000);
+    t.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.ready).toBe(true);
+    const told = changed.mock.calls.length;
+    // The renewals (at 70% and then every ten seconds) fail; the token in hand works until it ends.
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(t.ready).toBe(true);
+    expect(t.error).toBeNull();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(t.ready).toBe(false);
+    expect(String(t.error)).toContain('Gateway 502');
+    // It was told, so the page can say so, without waiting for a retry to fail again.
+    expect(changed.mock.calls.length).toBeGreaterThan(told);
+    t.stop();
+  });
+
+  it('is shown as a notice that no token could be had, and as the page again once one arrives', () => {
+    const app = createFixtureClient();
+    const plugin = { id: 'chat', name: 'Chat', api: ['GET /sessions'] };
+    const listing = {
+      data: {
+        enforce: true,
+        plugins: [{ id: 'chat', state: 'enabled', reason: null } as PluginInfo],
+      },
+    };
+    const gone = decideAccess({
+      plugin,
+      app,
+      listing,
+      source: { client: app, token: { ready: false, error: new Error('Gateway 502') } },
+    });
+    expect(gone).toMatchObject({ status: 'unavailable' });
+    expect((gone as { reason: string }).reason).toContain('a token');
+    expect(
+      decideAccess({
+        plugin,
+        app,
+        listing,
+        source: { client: app, token: { ready: true, error: null } },
+      })
+    ).toMatchObject({ status: 'ready', scoped: true });
+  });
+});
+
 describe('why a plugin is not running', () => {
   const info = (over: Partial<PluginInfo>): PluginInfo =>
     ({ state: 'enabled', reason: null, ...over }) as PluginInfo;

@@ -49,12 +49,21 @@ export interface MintedToken {
  * A module UI token that is renewed before it expires, for as long as it is wanted.
  * `token` is read at every request (the client is given the getter), so a renewal needs
  * no new client. A request already in flight, a stream included, keeps the token it began with.
+ *
+ * A token the gateway refuses (it was revoked, or the plugin was switched off and on) is
+ * replaced at once: `refresh(rejected)`, which the client calls on a 401. While there is no
+ * token that works, `ready` is false and `error` says why, so the page says it cannot get one
+ * instead of failing request after request.
  */
 export class ScopedToken {
   private held: MintedToken | null = null;
+  /** A token the gateway refused: not to be sent again, though it has not ended. */
+  private rejected: string | null = null;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private endTimer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
   private problem: unknown = null;
+  private pending: Promise<void> | null = null;
 
   constructor(
     private readonly mint: () => Promise<MintedToken>,
@@ -67,13 +76,15 @@ export class ScopedToken {
     return this.held?.token ?? null;
   }
 
+  /** There is a token that has not ended and that the gateway has not refused. */
   get ready(): boolean {
-    return this.held !== null;
+    const t = this.held;
+    return t !== null && t.token !== this.rejected && Date.parse(t.expiresAt) > Date.now();
   }
 
-  /** Why the last attempt failed, while there is no token to send. */
+  /** Why there is no token that works, once an attempt has failed. */
   get error(): unknown {
-    return this.held ? null : this.problem;
+    return this.ready ? null : this.problem;
   }
 
   start(): void {
@@ -83,16 +94,34 @@ export class ScopedToken {
   stop(): void {
     this.stopped = true;
     clearTimeout(this.timer);
+    clearTimeout(this.endTimer);
   }
 
-  /** Ask for a new token now, as after the gateway refused the one in hand. */
-  refresh(): Promise<void> {
-    clearTimeout(this.timer);
+  /**
+   * Get a new token now, as after the gateway refused the one in hand (`rejected`). A token that
+   * was already replaced since, or a renewal already under way, is not asked for again.
+   */
+  refresh(rejected?: string): Promise<void> {
+    if (rejected !== undefined) {
+      if (this.held && this.held.token !== rejected) return Promise.resolve();
+      this.rejected = rejected;
+      this.changed();
+    }
     return this.renew();
   }
 
-  private async renew(): Promise<void> {
-    if (this.stopped) return;
+  private renew(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    if (this.pending) return this.pending;
+    clearTimeout(this.timer);
+    const attempt = this.attempt().finally(() => {
+      if (this.pending === attempt) this.pending = null;
+    });
+    this.pending = attempt;
+    return attempt;
+  }
+
+  private async attempt(): Promise<void> {
     try {
       const minted = await this.mint();
       if (this.stopped) return;
@@ -104,6 +133,9 @@ export class ScopedToken {
         Math.min(this.ttlMs, life > 0 ? life : this.ttlMs) * RENEW_AT
       );
       this.timer = setTimeout(() => void this.renew(), wait);
+      // The page is told when this token ends, in case no renewal came.
+      clearTimeout(this.endTimer);
+      this.endTimer = setTimeout(() => this.changed(), Math.max(0, life) + 1);
     } catch (e) {
       if (this.stopped) return;
       this.problem = e;
@@ -222,7 +254,12 @@ export function usePluginAccess(plugins: PluginUI[]): (plugin: PluginUI) => Plug
       );
       made.set(id, {
         token,
-        client: factory({ baseUrl: client.getUrl(), token: () => token.token }),
+        client: factory({
+          baseUrl: client.getUrl(),
+          token: () => token.token,
+          // A token the gateway refuses is replaced and the request sent again, once.
+          onUnauthorized: (rejected) => token.refresh(rejected),
+        }),
       });
     }
     sources.current = made;
