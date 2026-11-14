@@ -20,7 +20,7 @@ import {
 import { parseAllowlist } from '@clerq/sandbox';
 import { parseRemote, type Forge } from '@clerq/workspaces';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
-import { isReservedSecret } from '../github/config.js';
+import { isReservedSecret } from '../github/names.js';
 import type { PublishAuth } from './credentials.js';
 import { AssertionSyntaxError, parseAssertion, type DiffAssertion } from './diff-assert.js';
 

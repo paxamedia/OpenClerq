@@ -286,6 +286,21 @@ describe('what an installation token is for', () => {
     expect(JSON.stringify(warn.mock.calls)).toContain('acme/app');
   });
 
+  it('does not wait for ever for a revoke that GitHub does not answer', async () => {
+    fake.install({ repos: ['acme/app'] });
+    const quick = make({ timeoutMs: 150 });
+    const found = await quick.installationFor('acme/app');
+    if (!found.installed) throw new Error('installed');
+    const t = await quick.mint('acme/app', found.installation, 'push', 'run_a');
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    fake.hang = '/installation/token';
+    const began = Date.now();
+    await t.release();
+    expect(Date.now() - began).toBeLessThan(3_000);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(t.token);
+  });
+
   it('refuses, and ends, a token wider than asked for', async () => {
     fake.install({ repos: ['acme/app'] });
     const found = await app.installationFor('acme/app');

@@ -41,19 +41,12 @@ export function githubWebBase(): string {
   return base('CLERQ_GITHUB_WEB', DEFAULT_WEB);
 }
 
-/** The vault names the app's secrets are kept under. */
-export const APP_PRIVATE_KEY_SECRET = 'GITHUB_APP_PRIVATE_KEY';
-export const APP_CLIENT_SECRET_SECRET = 'GITHUB_APP_CLIENT_SECRET';
-
-/** Names a spec or a `POST /secrets` may not use: the app's own. */
-export const RESERVED_SECRETS: readonly string[] = [
-  APP_PRIVATE_KEY_SECRET,
+export {
   APP_CLIENT_SECRET_SECRET,
-];
-
-export function isReservedSecret(name: string): boolean {
-  return RESERVED_SECRETS.includes(name);
-}
+  APP_PRIVATE_KEY_SECRET,
+  RESERVED_SECRETS,
+  isReservedSecret,
+} from './names.js';
 
 /** What is known about the connected app. Nothing in it is secret. */
 export interface GithubAppConfig {

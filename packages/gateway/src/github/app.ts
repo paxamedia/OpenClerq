@@ -14,7 +14,7 @@
 
 import type { CredentialPurpose } from '../automations/credentials.js';
 import { logger } from '../logger.js';
-import { GithubApiError, githubRequest, nextPage, type ApiOptions } from './api.js';
+import { API_TIMEOUT_MS, GithubApiError, githubRequest, nextPage, type ApiOptions } from './api.js';
 import {
   APP_PRIVATE_KEY_SECRET,
   readAppConfig,
@@ -38,6 +38,8 @@ export const INSTALLED_TTL_MS = 5 * 60_000;
 export const MISSING_TTL_MS = 30_000;
 /** How long the list of installations is believed. */
 export const LIST_TTL_MS = 60_000;
+/** A revoke is not worth a run's end waiting for: the token expires by itself. */
+export const REVOKE_TIMEOUT_MS = 8_000;
 const MAX_LOOKUPS = 500;
 const MAX_PAGES = 3;
 

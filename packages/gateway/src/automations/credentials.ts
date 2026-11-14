@@ -20,7 +20,7 @@
 
 import type { Forge } from '@clerq/workspaces';
 import { logger } from '../logger.js';
-import { isReservedSecret } from '../github/config.js';
+import { isReservedSecret } from '../github/names.js';
 
 export type CredentialPurpose = 'fetch' | 'push' | 'pull_request';
 
