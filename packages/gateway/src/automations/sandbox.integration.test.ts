@@ -1119,9 +1119,21 @@ describe.skipIf(!REAL_RUNTIME || process.platform === 'win32')(
 
     afterAll(async () => {
       delete process.env.CLERQ_CONTAINER_RUNTIME;
+      // What these tests made and a failure left behind, and only that. On a machine that is kept
+      // (a developer's own) other runs of OpenClerq, and anything else labelled clerq.run, are not
+      // ours to remove: ours are the runs of this file's own store, and the stranger we invented.
+      const ours = new Set(
+        (getStore().prepare('SELECT id FROM runs').all() as Array<{ id: string }>).map((r) => r.id)
+      );
+      const isOurs = (value: string) =>
+        ours.has(value) || value.startsWith(`run_not-in-this-store-${process.pid}`);
       const left = await listLabelled(runtime, 'clerq.run');
-      for (const c of left.containers) await removeContainer(runtime, c.name);
-      for (const n of left.networks) await removeContainer(runtime, n.name.replace(/-net$/, ''));
+      for (const c of left.containers.filter((x) => isOurs(x.value))) {
+        await removeContainer(runtime, c.name);
+      }
+      for (const n of left.networks.filter((x) => isOurs(x.value))) {
+        await removeContainer(runtime, n.name.replace(/-net$/, ''));
+      }
     }, 120_000);
 
     realIt(
