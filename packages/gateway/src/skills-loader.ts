@@ -11,6 +11,7 @@ import {
   parseChecksum,
   rawChecksumIn,
   readSkillNeeds,
+  withoutChecksumLine,
   type SkillNeeds,
   type ToolCheck,
 } from '@clerq/plugin-sdk/skill';
@@ -167,10 +168,13 @@ export function parseSkillMd(
   dirName: string,
   checkTool: ToolCheck = checkSkillTool
 ): ParsedSkill | null {
+  // What is read is the text that is hashed: the file without its `checksum:` lines. Where those
+  // lines stand (between a key and its `- item` lines, say) cannot change what a skill declares,
+  // so moving them, as `clerq skill checksum --write` does, cannot change a trusted skill.
   const match = md.match(FRONTMATTER_REGEX);
   if (!match) return null;
-  const fm = parseFrontmatter(md);
-  if (!fm) return null;
+  // (A frontmatter of nothing but `checksum:` lines is empty once they are out: still a skill.)
+  const fm = parseFrontmatter(withoutChecksumLine(md)) ?? {};
   // The author's checksum is the one on a line of its own in the first column: the line that is
   // left out of what is hashed. An indented `checksum:` (it would be part of the hash) is not it.
   const declared = rawChecksumIn(md);
@@ -193,7 +197,14 @@ export function parseSkillMd(
     ...(checksum ? { checksum } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
-  return { meta, body: md.slice(match[0]?.length ?? 0).trim(), frontmatter: fm };
+  // A writer keeps the author's checksum line, and not an indented one read as a key.
+  const { checksum: _indented, ...rest } = fm;
+  void _indented;
+  return {
+    meta,
+    body: md.slice(match[0].length).trim(),
+    frontmatter: declared !== undefined ? { ...rest, checksum: declared } : rest,
+  };
 }
 
 /** The skills in one folder, folder by folder: each skill's folder name and what its SKILL.md says. */

@@ -25,6 +25,7 @@ import {
   type SkillRead,
 } from '@clerq/plugin-sdk/node';
 import {
+  canonicalNeeds,
   diffSkillNeeds,
   NO_NEEDS,
   type NeedChange,
@@ -136,6 +137,13 @@ export interface CatalogDeps {
 
 const MAX_SKIPPED_SHOWN = 5;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Whether what a skill declares now is not what was recorded when it was trusted. */
+function declaresDiffer(was: SkillNeeds | null, now: SkillNeeds): boolean {
+  return (
+    was !== null && JSON.stringify(canonicalNeeds(was)) !== JSON.stringify(canonicalNeeds(now))
+  );
+}
 
 const sentence = (s: string) => (/[.!?]$/.test(s) ? s : `${s}.`);
 
@@ -267,7 +275,9 @@ export class SkillCatalog {
       trustedBy,
       trustedAt,
       changes:
-        record && checksum !== null && record.checksum !== checksum
+        record &&
+        checksum !== null &&
+        (record.checksum !== checksum || declaresDiffer(record.needs, base.needs))
           ? {
               files: compareFiles(record.files, base.files),
               needs: record.needs ? diffSkillNeeds(record.needs, base.needs) : [],
@@ -303,14 +313,23 @@ export class SkillCatalog {
       );
     }
     if (record?.status === 'trusted') {
-      return record.checksum === checksum
-        ? done(
-            'trusted',
-            `You trusted this version on ${record.decidedAt.slice(0, 10)}.`,
-            'user',
-            record.decidedAt
-          )
-        : done('modified', 'Its files have changed since you trusted it.');
+      if (record.checksum !== checksum) {
+        return done('modified', 'Its files have changed since you trusted it.');
+      }
+      // The checksum is of the files; what they declare is read from them. If the two do not
+      // agree with what was recorded, the skill is not what was trusted, whatever the cause.
+      if (declaresDiffer(record.needs, base.needs)) {
+        return done(
+          'modified',
+          'What it declares is not what you trusted, though its files have the same checksum.'
+        );
+      }
+      return done(
+        'trusted',
+        `You trusted this version on ${record.decidedAt.slice(0, 10)}.`,
+        'user',
+        record.decidedAt
+      );
     }
     const shipped = this.deps.bundled?.[slug];
     if (shipped !== undefined) {

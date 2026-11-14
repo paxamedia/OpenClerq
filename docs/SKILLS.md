@@ -84,7 +84,11 @@ The value is SHA-256 over `clerq-skill-checksum-v1\n` and then, for every file i
 sorted by path (`/` between names, compared as text), `<path>\0<sha256 of the file>\n`. In
 `SKILL.md`, **the `checksum:` line is left out**: every top-level line of the frontmatter that starts
 with `checksum:` is dropped, whole, before that file is hashed, so a checksum can be written into
-the file it covers. Writing the line changes nothing else, and does not change what a trust is of.
+the file it covers. **What a skill declares is read from that same text, without the line**, so
+where the line stands (between a key and its `- item` lines, say) cannot change a declaration;
+moving or rewriting it, as `--write` does, changes neither the checksum nor what is declared. As a
+second check, a trusted skill whose declarations are not the ones recorded when it was trusted is
+`modified`, whatever its checksum says.
 
 - Files are hashed as bytes: a change of line endings is a change. A skill kept in git should say
   `* text eol=lf` in its `.gitattributes` (this repository does for `skills/`).

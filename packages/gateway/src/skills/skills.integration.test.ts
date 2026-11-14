@@ -434,6 +434,34 @@ describe('skill trust through the API', () => {
     });
   });
 
+  describe('a checksum line cannot move a declaration', () => {
+    const LINE = `checksum: sha256:${'ab'.repeat(32)}`;
+    const probe = (lines: string[]) =>
+      fs.writeFileSync(body('probe'), ['---', ...lines, '---', '', 'Probe.', ''].join('\n'));
+    const KEYS = [
+      "name: 'probe'",
+      "slug: 'probe'",
+      'tools_required: [fs.read]',
+      'filesystem_scope: [docs/]',
+    ];
+
+    it('the declarations are the same wherever the line stands, and the skill stays trusted', async () => {
+      fs.mkdirSync(path.dirname(body('probe')), { recursive: true });
+      probe([...KEYS, 'network_domains:', LINE, '  - evil.example.com']);
+      const first = await info('probe');
+      expect(first.declared).toEqual({
+        tools: ['fs.read'],
+        domains: ['evil.example.com'],
+        paths: ['docs/'],
+      });
+      expect((await trust('probe')).status).toBe(200);
+      probe([...KEYS, 'network_domains:', '  - evil.example.com', LINE]);
+      const after = await info('probe');
+      expect(after).toMatchObject({ trust: 'trusted', computedChecksum: first.computedChecksum });
+      expect(after.declared).toEqual(first.declared);
+    });
+  });
+
   describe('who may decide', () => {
     it('is the gateway token only: a module, a phone and another tenant get 403, and nothing changes', async () => {
       const phone = issueToken({

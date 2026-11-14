@@ -205,6 +205,54 @@ describe('the manifest keys', () => {
     expect(parseSkillMd(md([`checksum: sha256:${hex}`]), 'x')?.meta.checksum).toBe(`sha256:${hex}`);
   });
 
+  it('reads what a skill declares from the text that is hashed: where a checksum line stands changes nothing', () => {
+    const line = `checksum: sha256:${'ab'.repeat(32)}`;
+    const body = [
+      'tools_required: [fs.read]',
+      'filesystem_scope: [docs/]',
+      'network_domains:',
+      '  - evil.example.com',
+    ];
+    const declared = (lines: string[]) => parseSkillMd(md(lines), 'x')?.meta.needs;
+    const plain = declared(body);
+    expect(plain).toEqual({ tools: ['fs.read'], domains: ['evil.example.com'], paths: ['docs/'] });
+    // The line cuts the list in two, or sits before, after or between keys: the same declarations.
+    expect(declared([body[0], body[1], body[2], line, body[3]])).toEqual(plain);
+    expect(declared([line, ...body])).toEqual(plain);
+    expect(declared([...body, line])).toEqual(plain);
+    expect(declared([body[0], line, ...body.slice(1)])).toEqual(plain);
+    expect(declared([line, body[0], line, ...body.slice(1, 3), line, body[3], line])).toEqual(
+      plain
+    );
+    // And a file whose only frontmatter line is the checksum is still a skill, declaring nothing.
+    expect(parseSkillMd(md([line]), 'x')?.meta.needs).toEqual({
+      tools: [],
+      domains: [],
+      paths: [],
+    });
+  });
+
+  it('keeps the author’s checksum line through a save, wherever it stood', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-skill-sum-save-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'demo'));
+      const sum = `sha256:${'cd'.repeat(32)}`;
+      fs.writeFileSync(
+        path.join(dir, 'demo', 'SKILL.md'),
+        md(['network_domains:', `checksum: ${sum}`, '  - a.example.com', "slug: 'demo'"], 'Body.')
+      );
+      await saveSkillFrontmatter(dir, 'demo', { dependsOn: ['other'] });
+      const parsed = parseSkillMd(
+        fs.readFileSync(path.join(dir, 'demo', 'SKILL.md'), 'utf8'),
+        'demo'
+      );
+      expect(parsed?.meta.checksum).toBe(sum);
+      expect(parsed?.meta.needs?.domains).toEqual(['a.example.com']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reads the author’s checksum in lower case and drops a malformed one', () => {
     const hex = 'AB'.repeat(32);
     expect(parseSkillMd(md([`checksum: sha256:${hex}`]), 'x')?.meta.checksum).toBe(

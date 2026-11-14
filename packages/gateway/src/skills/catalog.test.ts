@@ -9,7 +9,7 @@ import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, it } from
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { skillChecksum } from '@clerq/plugin-sdk/node';
+import { skillChecksum, writeSkillChecksum } from '@clerq/plugin-sdk/node';
 import { closeStore, getStore, initStore } from '../store.js';
 import { SkillCatalog, SkillError, type CatalogDeps } from './catalog.js';
 
@@ -332,6 +332,100 @@ describe('the checksum its author wrote', () => {
     expect(v?.declaredChecksum).toBeNull();
     expect(v?.state).toBe('untrusted');
     expect(v?.warnings.join(' ')).toContain('checksum should look like');
+  });
+});
+
+describe('what a trusted skill declares cannot change while its checksum stays', () => {
+  const LINE = `checksum: sha256:${'ab'.repeat(32)}`;
+  /** The same text, the `checksum:` line in another place: the checksum does not change. */
+  const rewrite = (dir: string, lines: string[]) =>
+    fs.writeFileSync(
+      path.join(dir, 'SKILL.md'),
+      ['---', ...lines, '---', '', 'Body.', ''].join('\n')
+    );
+  const KEYS = [
+    "name: 'probe'",
+    "slug: 'probe'",
+    "triggers: ['probe']",
+    'tools_required: [fs.read]',
+    'filesystem_scope: [docs/]',
+  ];
+
+  it('moving the checksum line is not a change: same checksum, same declarations, still trusted', async () => {
+    const dir = path.join(skills, 'probe');
+    fs.mkdirSync(dir, { recursive: true });
+    // The line stands between a key and its list.
+    rewrite(dir, [...KEYS, 'network_domains:', LINE, '  - evil.example.com']);
+    const c = catalog();
+    const first = (await c.find('probe')) as NonNullable<Awaited<ReturnType<SkillCatalog['find']>>>;
+    // What is shown to the user to trust includes the host the list names.
+    expect(first.needs).toEqual({
+      tools: ['fs.read'],
+      domains: ['evil.example.com'],
+      paths: ['docs/'],
+    });
+    await c.trust('probe', first.checksum as string, 'operator');
+    for (const lines of [
+      [...KEYS, 'network_domains:', '  - evil.example.com', LINE],
+      [LINE, ...KEYS, 'network_domains:', '  - evil.example.com'],
+      [...KEYS, LINE, 'network_domains:', '  - evil.example.com'],
+    ]) {
+      rewrite(dir, lines);
+      const now = (await c.find('probe')) as NonNullable<Awaited<ReturnType<SkillCatalog['find']>>>;
+      expect(now.checksum).toBe(first.checksum);
+      expect(now.needs).toEqual(first.needs);
+      expect(now.state).toBe('trusted');
+    }
+    expect(await skillChecksum(dir)).toBe(first.checksum);
+  });
+
+  it('what `clerq skill checksum --write` does moves the line and changes no declaration', async () => {
+    const dir = path.join(skills, 'probe');
+    fs.mkdirSync(dir, { recursive: true });
+    rewrite(dir, [...KEYS, 'network_domains:', LINE, '  - evil.example.com']);
+    const c = catalog();
+    const before = (await c.find('probe')) as NonNullable<
+      Awaited<ReturnType<SkillCatalog['find']>>
+    >;
+    await c.trust('probe', before.checksum as string, 'operator');
+    await writeSkillChecksum(dir);
+    const after = (await c.find('probe')) as NonNullable<Awaited<ReturnType<SkillCatalog['find']>>>;
+    expect(after.needs).toEqual(before.needs);
+    expect(after).toMatchObject({ state: 'trusted', checksum: before.checksum });
+  });
+
+  it('a trusted skill that now declares what was not recorded is modified, with the same checksum', async () => {
+    skill('alpha', { front: ['tools_required: [fs.read]'] });
+    const c = catalog();
+    await c.trust('alpha', (await c.find('alpha'))?.checksum as string, 'operator');
+    // As if OpenClerq read the same files differently than when it was trusted.
+    getStore()
+      .prepare('UPDATE skill_trust SET needs = ? WHERE slug = ?')
+      .run(JSON.stringify({ tools: [], domains: [], paths: [] }), 'alpha');
+    const v = (await c.find('alpha')) as NonNullable<Awaited<ReturnType<SkillCatalog['find']>>>;
+    expect(v.state).toBe('modified');
+    expect(v.reason).toBe(
+      'What it declares is not what you trusted, though its files have the same checksum.'
+    );
+    expect(v.changes).toMatchObject({
+      files: { added: [], removed: [], changed: [] },
+      needs: [expect.objectContaining({ change: 'added', item: 'fs.read' })],
+    });
+    enforce = true;
+    expect((await catalog().pick('alpha')).use).toBeNull();
+  });
+
+  it('the same declarations in another order are the same', async () => {
+    skill('alpha', { front: ['tools_required: [fs.read, fs.list]'] });
+    const c = catalog();
+    await c.trust('alpha', (await c.find('alpha'))?.checksum as string, 'operator');
+    getStore()
+      .prepare('UPDATE skill_trust SET needs = ? WHERE slug = ?')
+      .run(
+        JSON.stringify({ tools: ['fs.list', 'fs.read', 'fs.read'], domains: [], paths: [] }),
+        'alpha'
+      );
+    expect((await c.find('alpha'))?.state).toBe('trusted');
   });
 });
 
