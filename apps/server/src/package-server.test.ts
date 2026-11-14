@@ -22,7 +22,12 @@ interface Entry {
 interface Script {
   SERVER_TARGETS: string[];
   normaliseTarget(t: string): { short: string; bun: string; os: string; arch: string };
-  parseOptions(argv: string[]): { target: { short: string }; skipBuild: boolean; json: boolean };
+  parseOptions(argv: string[]): {
+    target: { short: string };
+    skipBuild: boolean;
+    json: boolean;
+    help: boolean;
+  };
   makeTar(entries: Entry[], mtime: number): Buffer;
   gzipReproducibly(data: Buffer): Buffer;
   sourceEpoch(env: Record<string, string | undefined>): number;
@@ -38,6 +43,9 @@ const file = path.resolve(
   'package-server.js'
 );
 const script = (await import(/* @vite-ignore */ pathToFileURL(file).href)) as Script;
+const build = (await import(
+  /* @vite-ignore */ pathToFileURL(path.join(path.dirname(file), 'build-binary.js')).href
+)) as { parseTarget(t: string): { rustTarget: string } | null };
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'clerq-pack-test-'));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -61,10 +69,43 @@ describe('normaliseTarget', () => {
       os: 'linux',
       arch: 'arm64',
     });
-    expect(script.normaliseTarget('bun-darwin-x64').short).toBe('darwin-x64');
-    for (const bad of ['windows-x64', 'linux-x64-musl', 'bun-linux-x64-baseline', 'linux', '']) {
+    expect(script.normaliseTarget('bun-darwin-arm64').short).toBe('darwin-arm64');
+    for (const bad of [
+      'windows-x64',
+      'linux-x64-musl',
+      'bun-linux-x64-modern',
+      'linux-x64-baseline-musl',
+      'linux',
+      '',
+    ]) {
       expect(() => script.normaliseTarget(bad)).toThrow(/not a server target/);
     }
+  });
+
+  it('compiles the x64 targets as Bun baseline builds (no AVX2) and names them as before', () => {
+    for (const [input, short, bun] of [
+      ['linux-x64', 'linux-x64', 'bun-linux-x64-baseline'],
+      ['bun-linux-x64', 'linux-x64', 'bun-linux-x64-baseline'],
+      ['bun-linux-x64-baseline', 'linux-x64', 'bun-linux-x64-baseline'],
+      ['darwin-x64', 'darwin-x64', 'bun-darwin-x64-baseline'],
+      ['bun-darwin-x64-baseline', 'darwin-x64', 'bun-darwin-x64-baseline'],
+    ] as const) {
+      expect(script.normaliseTarget(input)).toMatchObject({ short, bun });
+    }
+    // arm64 has one build; it is not given a suffix.
+    expect(script.normaliseTarget('linux-arm64').bun).toBe('bun-linux-arm64');
+    expect(script.normaliseTarget('darwin-arm64').bun).toBe('bun-darwin-arm64');
+  });
+
+  it('only names targets that build-binary.js knows, with the clerq-calc triple for each', () => {
+    for (const short of script.SERVER_TARGETS) {
+      const bun = script.normaliseTarget(short).bun;
+      expect(build.parseTarget(bun), bun).not.toBeNull();
+    }
+    expect(build.parseTarget('bun-linux-x64-baseline')?.rustTarget).toBe(
+      'x86_64-unknown-linux-gnu'
+    );
+    expect(build.parseTarget('bun-darwin-x64-baseline')?.rustTarget).toBe('x86_64-apple-darwin');
   });
 
   it('defaults to this machine and knows its options', () => {
@@ -72,6 +113,18 @@ describe('normaliseTarget', () => {
     expect(o).toMatchObject({ skipBuild: true, json: true, target: { short: 'darwin-arm64' } });
     expect(() => script.parseOptions(['--bogus'])).toThrow(/Unknown argument/);
     expect(() => script.parseOptions(['--out-dir'])).toThrow(/needs a value/);
+  });
+
+  it('prints its usage and exits 0 for --help and -h, and exits 1 for a bad argument', () => {
+    for (const flag of ['--help', '-h']) {
+      const r = spawnSync(process.execPath, [file, flag], { encoding: 'utf8' });
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain('Usage: node scripts/package-server.js');
+      expect(r.stdout).toContain('baseline');
+    }
+    const bad = spawnSync(process.execPath, [file, '--bogus'], { encoding: 'utf8' });
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toContain('Unknown argument');
   });
 });
 

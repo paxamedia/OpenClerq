@@ -9,18 +9,24 @@
  * Options
  *   --target <t>     linux-x64, linux-arm64, darwin-arm64 or darwin-x64 (a Bun
  *                    name such as bun-linux-x64 is accepted too). Default: the
- *                    machine this runs on.
+ *                    machine this runs on. The x64 ones are compiled for Bun's
+ *                    "baseline" target (bun-linux-x64-baseline, bun-darwin-x64-baseline),
+ *                    which needs no AVX2: Bun's default x64 build is the "modern" one,
+ *                    which dies with SIGILL on a CPU without AVX2 (a kvm64 virtual
+ *                    machine, an older Xeon, a Mac from before 2013's Haswell). The
+ *                    tarball is still named linux-x64 / darwin-x64.
  *   --out-dir <dir>  Where the tarball goes. Default: dist/server.
  *   --skip-build     Do not build the workspace packages first (a caller that has).
  *   --json           Print one JSON object on stdout; progress is on stderr
  *                    either way.
+ *   --help, -h       Print this usage and exit 0.
  *
  * It compiles clerq-server (with clerq-calc beside it) and clerq through
  * scripts/build-binary.js, which needs a clerq-calc built for the target
  * (`cargo build --release [--target <triple>] --manifest-path
  * packages/calculation-core/Cargo.toml`) and fails without one. The binaries
  * stay where build-binary.js puts them (apps/server/dist/<bun target>/ and
- * apps/cli/dist/<bun target>/).
+ * apps/cli/dist/<bun target>/, for example .../bun-linux-x64-baseline/).
  *
  * The tarball has one top folder, openclerq-server-<version>-<os>-<arch>/, and
  * in it the three binaries, LICENSE, NOTICE, the two systemd units under
@@ -52,20 +58,41 @@ export const SERVER_TARGETS = ['linux-x64', 'linux-arm64', 'darwin-arm64', 'darw
 
 const log = (...m) => console.error('[package-server]', ...m);
 
-/** `linux-x64` or `bun-linux-x64` -> { short, bun, os, arch }; throws on any other target. */
+/**
+ * `linux-x64`, `bun-linux-x64` or `bun-linux-x64-baseline` -> { short, bun, os, arch };
+ * throws on any other target. `short` names the tarball; `bun` is what is compiled: the
+ * baseline build for x64 (no AVX2 needed), the one build there is for arm64.
+ */
 export function normaliseTarget(target) {
-  const short = target.replace(/^bun-/, '');
+  const short = target.replace(/^bun-/, '').replace(/-baseline$/, '');
   if (!SERVER_TARGETS.includes(short)) {
     throw new Error(
       `"${target}" is not a server target. Use one of: ${SERVER_TARGETS.join(', ')}.`
     );
   }
   const [os, arch] = short.split('-');
-  return { short, bun: `bun-${short}`, os, arch };
+  return { short, bun: `bun-${short}${arch === 'x64' ? '-baseline' : ''}`, os, arch };
 }
 
+export const USAGE = `Usage: node scripts/package-server.js [--target <target>] [--out-dir <dir>] [--skip-build] [--json]
+
+Builds clerq-server, clerq and clerq-calc for one target and packs them, with LICENSE,
+NOTICE, the two systemd units and a README, into
+openclerq-server-<version>-<os>-<arch>.tar.gz. Prints the tarball's path and SHA-256.
+
+  --target <t>     ${SERVER_TARGETS.join(', ')}. Default: this machine.
+                   The x64 targets are compiled as Bun's baseline build (no AVX2 needed).
+  --out-dir <dir>  Where the tarball goes. Default: dist/server.
+  --skip-build     Do not build the workspace packages first.
+  --json           Print one JSON object on stdout.
+  --help, -h       This text.
+
+Needs a clerq-calc built for the target:
+  cargo build --release [--target <triple>] --manifest-path packages/calculation-core/Cargo.toml
+`;
+
 export function parseOptions(argv) {
-  const o = { skipBuild: false, json: false };
+  const o = { skipBuild: false, json: false, help: false };
   const args = [...argv];
   const take = (flag) => {
     const v = args.shift();
@@ -78,8 +105,10 @@ export function parseOptions(argv) {
     else if (a === '--out-dir') o.outDir = take(a);
     else if (a === '--skip-build') o.skipBuild = true;
     else if (a === '--json') o.json = true;
+    else if (a === '--help' || a === '-h') o.help = true;
     else throw new Error(`Unknown argument "${a}".`);
   }
+  if (o.help) return o;
   o.target = normaliseTarget(o.target ?? hostTarget().replace(/^bun-/, ''));
   return o;
 }
@@ -295,17 +324,31 @@ export function packageServer(options) {
   fs.writeFileSync(file, gz);
   const sha256 = crypto.createHash('sha256').update(gz).digest('hex');
   log(`wrote ${file} (${(gz.length / 1e6).toFixed(1)} MB)`);
-  return { target: t.short, version, file, sha256, size: gz.length, mtime: epoch };
+  return {
+    target: t.short,
+    bunTarget: t.bun,
+    version,
+    file,
+    sha256,
+    size: gz.length,
+    mtime: epoch,
+  };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const options = parseOptions(process.argv.slice(2));
+    if (options.help) {
+      process.stdout.write(USAGE);
+      process.exit(0);
+    }
     const result = packageServer(options);
     if (options.json) process.stdout.write(`${JSON.stringify(result)}\n`);
     else process.stdout.write(`${result.file}\nsha256 ${result.sha256}\n`);
   } catch (e) {
-    console.error(`[package-server] ${e instanceof Error ? e.message : e}`);
+    console.error(
+      `[package-server] ${e instanceof Error ? e.message : e} (--help shows the usage)`
+    );
     process.exit(1);
   }
 }

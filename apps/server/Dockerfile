@@ -30,12 +30,13 @@ WORKDIR /src
 COPY . .
 RUN pnpm install --frozen-lockfile
 COPY --from=calc /src/packages/calculation-core/target/release/clerq-calc /calc/clerq-calc
+# amd64 gets Bun's baseline build: its default x64 build needs AVX2 and dies with SIGILL on
+# a CPU without it (a kvm64 virtual machine, an older Xeon). Bun fetches that runtime here.
 RUN case "$TARGETARCH" in \
-      amd64) bun_arch=x64 ;; \
-      arm64) bun_arch=arm64 ;; \
+      amd64) target=bun-linux-x64-baseline ;; \
+      arm64) target=bun-linux-arm64 ;; \
       *) echo "Unsupported architecture '$TARGETARCH'. Build with BuildKit (docker build or docker buildx build) for linux/amd64 or linux/arm64." >&2; exit 1 ;; \
     esac \
- && target="bun-linux-$bun_arch" \
  && pnpm --filter '@clerq/server...' --filter '@clerq/cli...' build \
  && node scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server \
       --target "$target" --calc /calc/clerq-calc --skip-build \
