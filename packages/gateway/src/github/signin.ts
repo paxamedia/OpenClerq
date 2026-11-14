@@ -390,6 +390,14 @@ export class GithubSignIn {
   async start(): Promise<FlowStart> {
     const app = this.mustHaveApp();
     if (this.closed) throw new SignInError(503, 'closing', 'The gateway is stopping.');
+    // The tokens have to go somewhere: better to say so now than after the person has approved.
+    if (!this.vault.available()) {
+      throw new SignInError(
+        503,
+        'vault_unavailable',
+        'The vault has no master key on this computer, so a sign-in could not be kept. Nothing was started.'
+      );
+    }
     let answer;
     try {
       answer = await this.webPost('/login/device/code', { client_id: app.clientId });

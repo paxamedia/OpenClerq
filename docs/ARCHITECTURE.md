@@ -705,8 +705,20 @@ Each user brings their own GitHub App ([GITHUB.md](GITHUB.md) says why and how).
   ten minutes, bound to the callback's host, the organisation (when one was asked for) and the permissions asked for; checked again at store time so two callbacks cannot both connect), import,
   status and disconnect. The key and secret are written to the vault and the settings row together, or
   put back.
-- `fake-github.ts`: the fake GitHub API the tests run against (it checks the JWT, the token's
-  permissions and repository, revocation and a manifest code's single use).
+- `signin.ts` (`GithubSignIn`): the person's sign-in through the app's device flow (`POST
+<web>/login/device/code`, then a background poll of `<web>/login/oauth/access_token` that honours
+  `interval` and `slow_down`, ends on denied, expired, disabled or a cancel, and holds at most five
+  flows). The user token, refresh token and their expiry times are one vault entry
+  (`GITHUB_USER_TOKENS`); renewal (`grant_type=refresh_token` with the client secret) is serialised
+  through one in-flight promise, so GitHub's single-use refresh token is spent once; sign-out forgets
+  the tokens first and then revokes the grant. It lists the person's repositories through
+  `/user/installations`. The token is for identity and that list only: a run never uses it. Every
+  text from GitHub passes through `scrub()` (the tokens and device codes it has seen, and anything
+  shaped like one) before it is answered or logged.
+- `fake-github.ts`: the fake GitHub the tests run against: the API (it checks the JWT, the token's
+  permissions and repository, revocation and a manifest code's single use) and GitHub's website (the
+  manifest form's redirect, the device flow with a scriptable person, user tokens that expire and
+  refresh once, a revocable grant). The API and the website are one server there.
 
 A run (`execute()` in `runner.ts`) holds what it is given in `HeldCredentials`: each credential's
 token (and its Basic form) joins the run's redaction set, the error that ends the run is scrubbed of

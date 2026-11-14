@@ -26,6 +26,7 @@ import { Loaded, Page, PageHeader, PHONE_QUERY, Section, useMedia } from '../../
 import { ModuleFrame } from '../../shell/ModuleFrame';
 import { useExtensions } from '../../app/extensions';
 import { DevicesSection, RemoteSection } from './devices';
+import { GithubSection } from './github';
 import { MemorySection } from './memory';
 import { FallbackSection } from './routing';
 import { AdvancedSection, SecretsSection, SkillsSection, TriggersSection } from './sections';
@@ -35,6 +36,11 @@ export const SETTINGS_SECTIONS = [
   { id: 'general', label: 'General', keywords: 'theme start page stop' },
   { id: 'models', label: 'Models & keys', keywords: 'providers api key anthropic openai test' },
   { id: 'secrets', label: 'Secrets', keywords: 'vault tokens keychain' },
+  {
+    id: 'github',
+    label: 'GitHub',
+    keywords: 'app sign in device flow install repositories pull request token',
+  },
   { id: 'skills', label: 'Skills', keywords: 'schema' },
   { id: 'memory', label: 'Memory', keywords: 'entries' },
   { id: 'triggers', label: 'Triggers', keywords: 'cron webhook file watcher schedule task' },
@@ -375,6 +381,8 @@ export function Settings({ section, config, saveConfig, modules }: SettingsProps
     <ModelsSection />
   ) : current.id === 'secrets' ? (
     <SecretsSection />
+  ) : current.id === 'github' ? (
+    <GithubSection />
   ) : current.id === 'skills' ? (
     <SkillsSection />
   ) : current.id === 'memory' ? (

@@ -1,12 +1,14 @@
 /**
- * Repos: the repositories automations work on, read-only. A repository is
- * listed once an automation that names it in `targets.repos` has been queued;
- * there is nothing to add here. The page says where each is on this computer,
+ * Repos: the repositories automations work on. A repository is listed once an
+ * automation that names it in `targets.repos` has been queued, or once it is
+ * added by hand (`clerq repo add`, or "Add from GitHub" here when somebody is
+ * signed in to GitHub). The page says where each is on this computer,
  * what it is reached with (the user's GitHub App where it is installed, else
  * the vault secret's name, never the value), what targets it and what is
  * running against it.
  */
 
+import { useState } from 'react';
 import { FolderGit2, Plus } from 'lucide-react';
 import type { RepoDetail, RepoSummary, RunSummary } from '@clerq/gateway-client';
 import { Button } from '../../ui/Button';
@@ -21,6 +23,7 @@ import { costWithChildren, runSpan } from '../../app/stats';
 import { ErrorState, Loaded, Page, PageHeader, PageSkeleton, Section } from '../../shell/layout';
 import { useNow, When } from '../common';
 import { runName } from '../runs/Runs';
+import { AddFromGithub } from './AddFromGithub';
 import './repos.css';
 
 export const reposPath = (id?: string) => (id ? `/repos/${encodeURIComponent(id)}` : '/repos');
@@ -177,6 +180,9 @@ export function RepoList() {
     on: ['runs', 'automations'],
   });
   const now = useNow(30_000);
+  // Offered only when somebody is signed in to GitHub; a gateway that cannot say shows nothing.
+  const github = useResource('github-user', () => client.githubUser());
+  const [picking, setPicking] = useState(false);
 
   const columns: Column<RepoSummary>[] = [
     {
@@ -266,7 +272,21 @@ export function RepoList() {
 
   return (
     <Page>
-      <PageHeader crumbs={[{ label: 'Repos' }]} />
+      <PageHeader
+        crumbs={[{ label: 'Repos' }]}
+        actions={
+          github.data?.signedIn ? (
+            <Button icon={Plus} onClick={() => setPicking(true)}>
+              Add from GitHub
+            </Button>
+          ) : undefined
+        }
+      />
+      <AddFromGithub
+        open={picking}
+        onClose={() => setPicking(false)}
+        onAdded={() => void repos.reload()}
+      />
       <Loaded resource={repos} what="repositories" skeleton="rows">
         {(list) => (
           <Table

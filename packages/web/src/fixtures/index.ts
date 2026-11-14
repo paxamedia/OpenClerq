@@ -1624,6 +1624,7 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
       return ok({ fallback: routingFallback });
     },
     repos: () => ok({ repos: repoRows }),
+    ...githubFixtures(opts),
     repo: (id: string) => {
       const r = repoDetail(id);
       return r
@@ -2235,3 +2236,136 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
 
 /** Midday on a fixed Wednesday, for screenshots that do not change from run to run. */
 export const FIXTURE_NOW = Date.UTC(2026, 10, 11, 11, 0, 0);
+
+/**
+ * The GitHub App and sign-in, as the gateway would answer them: an app
+ * connected and installed on one account, a person signed in, three
+ * repositories of which one is added. With `empty`, no app is connected.
+ */
+function githubFixtures(opts: FixtureOptions) {
+  const now = opts.now ?? Date.now();
+  const WEB = 'https://github.com';
+  let connected = !opts.empty;
+  let signedIn = !opts.empty;
+  let polls = 0;
+  const app = {
+    appId: 424242,
+    slug: 'openclerq-acme',
+    name: 'OpenClerq-acme',
+    clientId: 'Iv23liFIXTURE0001',
+    owner: { login: 'acme', type: 'Organization' },
+    htmlUrl: `${WEB}/apps/openclerq-acme`,
+    installUrl: `${WEB}/apps/openclerq-acme/installations/new`,
+    settingsUrl: `${WEB}/organizations/acme/settings/apps/openclerq-acme`,
+    source: 'manifest' as const,
+    createdAt: new Date(now - 3 * D).toISOString(),
+  };
+  const user = {
+    login: 'octocat',
+    id: 583231,
+    name: 'The Octocat',
+    avatarUrl: 'https://avatars.githubusercontent.com/u/583231?v=4',
+    htmlUrl: `${WEB}/octocat`,
+  };
+  const added = new Set<string>(['acme/shop']);
+  const reply = <T>(v: T) => Promise.resolve(JSON.parse(JSON.stringify(v)) as T);
+  return {
+    githubApp: () =>
+      reply(
+        connected
+          ? {
+              connected: true,
+              app,
+              secrets: { privateKey: true, clientSecret: true },
+              installations: [
+                {
+                  id: 1001,
+                  account: 'acme',
+                  accountType: 'Organization',
+                  repositorySelection: 'selected' as const,
+                  suspended: false,
+                  permissions: { contents: 'write', pull_requests: 'write', metadata: 'read' },
+                  htmlUrl: `${WEB}/organizations/acme/settings/installations/1001`,
+                },
+              ],
+            }
+          : { connected: false }
+      ),
+    githubManifest: () =>
+      reply({
+        // Not GitHub: a preview must never post anything to the real site.
+        url: 'https://github.invalid/settings/apps/new?state=fixture',
+        manifest: { name: 'OpenClerq-fixture' },
+        state: 'fixture',
+        expiresAt: new Date(now + 10 * 60_000).toISOString(),
+        redirectUrl: 'http://127.0.0.1:18790/v1/github/app/callback',
+      }),
+    importGithubApp: () => {
+      connected = true;
+      return reply({ connected: true, app, replacedKey: false });
+    },
+    disconnectGithubApp: () => {
+      connected = false;
+      signedIn = false;
+      return reply({
+        disconnected: true,
+        slug: app.slug,
+        appDeletedOnGitHub: false,
+        settingsUrl: app.settingsUrl,
+        message: `OpenClerq forgot the app ${app.slug} and deleted its key from the vault. The app itself still exists on GitHub.`,
+      });
+    },
+    startGithubLogin: () => {
+      polls = 0;
+      return reply({
+        flowId: 'flow_fixture',
+        userCode: 'WDJB-MJHT',
+        verificationUri: `${WEB}/login/device`,
+        expiresAt: new Date(now + 15 * 60_000).toISOString(),
+        interval: 5,
+      });
+    },
+    githubLogin: () => {
+      polls += 1;
+      if (polls < 3) return reply({ status: 'pending', interval: 5 });
+      signedIn = true;
+      return reply({ status: 'approved', user });
+    },
+    cancelGithubLogin: () => reply({ cancelled: true }),
+    githubUser: () =>
+      reply(
+        signedIn
+          ? {
+              signedIn: true,
+              user,
+              expiresAt: new Date(now + 6 * H).toISOString(),
+              refreshable: true,
+            }
+          : { signedIn: false, refreshable: false }
+      ),
+    githubSignOut: () => {
+      signedIn = false;
+      return reply({
+        signedOut: true,
+        revoked: true,
+        message: "Signed out, and GitHub revoked the app's access to your account.",
+        authorizationsUrl: `${WEB}/settings/apps/authorizations`,
+      });
+    },
+    githubRepositories: () =>
+      reply({
+        repositories: ['acme/shop', 'acme/docs', 'acme/internal-tools'].map((fullName, i) => ({
+          fullName,
+          owner: 'acme',
+          name: fullName.split('/')[1],
+          private: i !== 1,
+          htmlUrl: `${WEB}/${fullName}`,
+          installationId: 1001,
+          account: 'acme',
+          added: added.has(fullName),
+        })),
+        truncated: false,
+        limit: 1000,
+      }),
+  };
+}

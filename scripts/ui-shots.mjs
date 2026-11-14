@@ -51,12 +51,14 @@ const PAGES = [
   ['settings-advanced', '/settings/advanced'],
   ['settings-devices', '/settings/devices'],
   ['settings-remote', '/settings/remote'],
+  ['settings-github', '/settings/github'],
   ['developer', '/developer/tools'],
   ['developer-log', '/developer/log'],
   ['gallery', '/dev/gallery'],
   ['empty-home', '/', 'empty'],
   ['empty-automations', '/m/automations', 'empty'],
   ['empty-repos', '/repos', 'empty'],
+  ['empty-settings-github', '/settings/github', 'empty'],
   ['offline-runs', '/runs', 'offline'],
 ];
 const THEMES = ['light', 'dark'];

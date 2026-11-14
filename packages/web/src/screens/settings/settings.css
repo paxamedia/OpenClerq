@@ -298,3 +298,95 @@
   color: var(--ink-3);
   font: var(--type-secondary);
 }
+
+/* GitHub */
+.github-states {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.github-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--line-width) solid var(--line);
+  background: var(--surface);
+}
+
+.github-card--warn {
+  border-color: var(--warn);
+}
+
+.github-error {
+  margin: 0;
+  color: var(--err);
+}
+
+.github-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  color: var(--warn);
+  list-style: none;
+}
+
+.github-app-name {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.github-key {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.github-file {
+  max-width: 100%;
+  font: var(--type-body);
+}
+
+.github-installations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.github-login {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.github-steps {
+  margin: 0;
+  padding-left: var(--space-6);
+  color: var(--ink-2);
+}
+
+.github-code-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.github-code {
+  padding: var(--space-2) var(--space-4);
+  border: var(--line-width) solid var(--line-strong);
+  background: var(--surface-2);
+  font: var(--type-code);
+  font-size: 1.5rem;
+  letter-spacing: 0.12em;
+}
+
+.github-status {
+  margin: 0;
+  color: var(--ink-2);
+}

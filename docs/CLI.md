@@ -16,6 +16,9 @@ clerq run <automation> [--follow]     start an automation now
 clerq logs <run> [--follow]           a run's steps, tool calls and status
 clerq approvals                       what is waiting for an answer
 clerq approve <id> | deny <id>        answer one
+clerq github connect | import         create or import your own GitHub App
+clerq github login | logout           sign in to GitHub as yourself (a code you type on GitHub)
+clerq github status | repos | disconnect
 ```
 
 `clerq help` lists them, `clerq help <command>` (or `clerq <command> --help`) explains one, and
@@ -277,6 +280,63 @@ clerq deny 7 --reason "Not on a Friday"
 A decision is recorded as made by `cli`, with the reason. Deciding one that is already decided, or whose
 run has ended, says so and exits 1.
 
+### `clerq github connect | import | status | disconnect | login | logout | repos`
+
+Your own GitHub App, and your own sign-in to GitHub, for a gateway on this computer or on a server
+([GITHUB.md](GITHUB.md) explains the app, what a run does with it, and what is not verified against
+github.com). All of them need the gateway's own token, take `--json`, and never print or take a key,
+secret or token on the command line.
+
+```sh
+clerq github connect [--org <login>] [--name <name>] [--no-browser]
+clerq github import --app-id <n> --client-id <id> --private-key-file <file> [--client-secret-file <file>]
+clerq github status [--refresh]
+clerq github disconnect [--yes]
+clerq github login [--no-browser]
+clerq github logout
+clerq github repos [--add <owner/name>]
+```
+
+- **`connect`** creates the app on GitHub from a manifest. It writes a page that posts the manifest
+  (one form field, `manifest`) to a private temporary folder, opens it with `open` or `xdg-open` (with
+  `--no-browser`, it prints the page's path instead), polls the gateway every 2 seconds for up to 10
+  minutes until the app is connected, deletes the page, and prints the install link and where to switch
+  on Enable Device Flow. GitHub sends the browser back to the gateway's address, so **that address must
+  work in the browser you use**; for a gateway on another computer the profile address must be
+  `https://` (the command refuses plain http, with the reason). `--org` creates the app under an
+  organisation, `--name` names it.
+- **`import`** uses an app you made: its App ID and Client ID, the private key from a file and,
+  optionally, the client secret from a file (it lets a sign-in be renewed and revoked). It **refuses a
+  key or secret file that other users of the computer can read** (`chmod 600`) before sending anything,
+  and with the same App ID again replaces the key.
+- **`status`** shows the app, whether its key and secret are stored, where it is installed (`--refresh`
+  asks GitHub again; a key GitHub refuses says to generate a new one and import it) and who is signed in.
+- **`disconnect`** asks first (`y`) unless `--yes`; without a terminal it will not guess and says to
+  pass `--yes`. It signs you out too, and says the app still exists on GitHub, with its settings page.
+- **`login`** prints a code and an address on GitHub, opens the browser at it (not with
+  `--no-browser`) and waits for you to approve. Exit **0** when approved, **1** when you refuse, the
+  code runs out or the sign-in fails, **3** when the gateway cannot be used, **130** for Ctrl-C (the
+  sign-in is cancelled). If device flow is off for the app it says which setting to turn on, and links
+  the app's settings page.
+- **`logout`** signs out, and revokes the sign-in on GitHub when the app's client secret is stored;
+  otherwise it says where to revoke it.
+- **`repos`** lists the repositories you reach through the app, marking the ones OpenClerq already has
+  (`--add acme/app` adds one, as `repo add github:acme/app` does).
+
+```
+$ clerq github login
+Open https://github.com/login/device and enter the code:
+
+    WDJB-MJHT
+
+Opened your browser.
+Waiting for you to approve it (the code works for 15 min, Ctrl-C to stop)…
+Signed in to GitHub as @octocat (The Octocat).
+```
+
+On a server with no browser, run `clerq github login --no-browser` there and type the code in a
+browser anywhere. Under `--json` the code and address go to stderr and stdout holds the one result.
+
 ## Output
 
 - **Plain words.** Colour only when the stream is a terminal, `NO_COLOR` is unset (or empty) and
@@ -284,7 +344,8 @@ run has ended, says so and exits 1.
 - **`--json`** writes data to **stdout** and every message (notes, warnings, errors) to **stderr**.
   Commands that give one answer print one JSON object on one line: `status` (the url, `profile`,
   `source`, `cli`, `gateway`, `compatibility`, `token.state`, never the token), `repo add` (the
-  repository with `created` and `check`), `repo list`, `automation apply`
+  repository with `created` and `check`), `repo list`, `github connect|import|status|login|logout|disconnect|repos` (the gateway's answer),
+  `automation apply`
   (`{ ok, dryRun, action: created|updated|unchanged, name, id, enabled, switchedOn, errors: [{ line,
 column, message }], warnings }`), `automation list|show`, `approvals`, `approve`/`deny`, `logs` without
   `--follow` (`{ type: "run", run }`, the whole run with its steps and tool calls). With `--follow`
@@ -337,10 +398,12 @@ approval".
 
 ## What it does not do
 
-- There is no GitHub sign-in (`clerq login` takes a gateway token) and no `clerq github` command yet:
-  the gateway can connect your own GitHub App through its routes ([GITHUB.md](GITHUB.md)), and
-  `repo add --check` then reaches a GitHub repository with a short-lived token of the app where it
-  is installed (the answer says `github-app:<slug>/installation/<id>`), else with the vault secret.
+- `clerq login` takes a gateway token, not a GitHub account; `clerq github login` is a separate
+  sign-in to GitHub, kept by the gateway (in its vault, never in `cli.json`). It is for who you are
+  and the repositories you reach: runs, and `repo add --check`, reach a GitHub repository with a
+  short-lived token of the app where it is installed (the answer says
+  `github-app:<slug>/installation/<id>`), else with the vault secret. Nothing in the CLI has been run
+  against github.com ([GITHUB.md](GITHUB.md#not-verified-against-githubcom)).
   There is no Windows build either: the release holds `clerq` for Linux and macOS only.
 - It cannot remove a repository or delete an automation (`disable` switches one off), and there is no
   command that lists runs: `automation show` and `repo show` give a last run's id, and `logs <name>` the

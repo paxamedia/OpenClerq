@@ -5,14 +5,19 @@ with a **GitHub App that you own**, when you connect one. Each run gets short-li
 one repository it works on; nothing long-lived goes near the agent. Without an app it uses the
 vault secret the spec names (`publish.token_secret`, a personal access token), as before.
 
-What is here today is the gateway side: the routes below, the run behaviour and the Repos page. A
-`clerq github …` command and a Settings page that drive these routes are the next step, so for now
-you connect the app with the routes (`curl`, shown below). Everything here is about github.com: a
-self-hosted GitHub Enterprise server is not supported, as for remote repositories in general.
+You connect the app, and sign in to GitHub as yourself, from three places that drive the same
+routes: **`clerq github …`** ([CLI.md](CLI.md#clerq-github-connect--import--status--disconnect--login--logout--repos)),
+**Settings → GitHub** in the desktop app, and the routes themselves (`curl`, shown below). Everything
+here is about github.com: a self-hosted GitHub Enterprise server is not supported, as for remote
+repositories in general.
 
 - [Why a GitHub App, and why your own](#why-a-github-app-and-why-your-own)
 - [Connect an app](#connect-an-app)
 - [Install it on repositories](#install-it-on-repositories)
+- [Sign in as yourself: the device flow](#sign-in-as-yourself-the-device-flow)
+- [What the sign-in token is for, and what it is not for](#what-the-sign-in-token-is-for-and-what-it-is-not-for)
+- [Renewing the sign-in, and signing out](#renewing-the-sign-in-and-signing-out)
+- [From a terminal, or a server with no browser](#from-a-terminal-or-a-server-with-no-browser)
 - [What it asks for](#what-it-asks-for)
 - [Tokens](#tokens)
 - [Which credential a run uses: `publish.auth`](#which-credential-a-run-uses-publishauth)
@@ -39,7 +44,8 @@ their own vault. Making one is one confirmation on GitHub's page.
 
 ## Connect an app
 
-Two ways. Both end with the app's id, slug and client ID stored in settings and its **private key**
+Two ways, each from the command line, from Settings → GitHub, or with the routes. Both end with the
+app's id, slug and client ID stored in settings and its **private key**
 (and client secret, if there is one) in the vault, under the fixed names `GITHUB_APP_PRIVATE_KEY` and
 `GITHUB_APP_CLIENT_SECRET`. OpenClerq returns neither from any route and writes neither to a log or an
 error answer: a request body that is not valid JSON is refused with a plain `400 invalid_json` that repeats
@@ -51,6 +57,10 @@ module's token, and exists under `/v1` as well as bare.
 TOKEN=$(cat ~/.clerq/gateway-token)
 GW=http://127.0.0.1:18790
 ```
+
+**The short way:** `clerq github connect` (create) or `clerq github import --app-id … --client-id …
+--private-key-file …` (use an app you made), or **Settings → GitHub → Create on GitHub** / **Import**.
+The rest of this section is what they do, step by step.
 
 ### Create the app from a manifest
 
@@ -71,9 +81,11 @@ GitHub can create an app from a description of it (a manifest) and hand the key 
    The answer is `{ url, manifest, state, expiresAt, redirectUrl }`. The state is good for ten minutes
    and for one use.
 
-2. Your browser posts the manifest to `url` (a form with one field, `manifest`). There is no button
-   for this yet, so a page like this does it (put the answer's `url` in `action` and the `manifest`
-   object, as JSON, in `value`):
+2. Your browser posts the manifest to `url` (a form with one field, `manifest`). `clerq github
+connect` writes that page to a private temporary folder, opens it with your system's opener and
+   deletes it when it is done; Settings does it in a new window (in the desktop app, in your default
+   browser, which is the one GitHub should ask). By hand, a page like this does it (put the answer's
+   `url` in `action` and the `manifest` object, as JSON, in `value`):
 
    ```html
    <form method="post" action="https://github.com/settings/apps/new?state=…">
@@ -86,6 +98,9 @@ GitHub can create an app from a description of it (a manifest) and hand the key 
    `GET /v1/github/app/callback`. That is the one route that takes no token (a browser lands on it):
    it checks the state, trades GitHub's one-time code for the key, stores everything and shows a page
    that says "Connected. Now install the app on the repositories it may use:" with the link.
+
+After the app is created, switch on **Enable Device Flow** by hand if you want to sign in (next
+section): GitHub's manifest has no field for it, as far as the documentation shows.
 
 The callback refuses, and stores nothing, if the state is unknown, was used, is older than ten
 minutes, or arrives at another address than the one the manifest named (so behind a proxy, pass the
@@ -101,8 +116,13 @@ delete it.
 
 If you made the app yourself on GitHub (Settings → Developer settings → GitHub Apps → New GitHub
 App): turn **Webhook** off, grant the [permissions below](#what-it-asks-for), keep it private ("Only
-on this account"), then **Generate a private key** (a `.pem` file downloads) and note the **App ID**
-and the **Client ID** at the top of the page.
+on this account"), tick **Enable Device Flow** if you want to sign in, then **Generate a private
+key** (a `.pem` file downloads) and note the **App ID** and the **Client ID** at the top of the page.
+Add a **client secret** too if you want the sign-in renewed and revoked (see below).
+
+`clerq github import` reads the key from a file (never from the command line) and refuses a file
+that other users of the computer can read (`chmod 600` it); Settings has a file picker or a paste
+field that is emptied once the form is sent. By hand:
 
 ```sh
 curl -s -X POST "$GW/v1/github/app/import" \
@@ -143,10 +163,106 @@ The Repos page (and `GET /v1/repos`) says, for each GitHub repository, whether a
 **reached with the GitHub App** (installed there) or with a vault secret, and for each automation
 that targets it, by its own `publish.auth`. Finding out never makes a token.
 
+## Sign in as yourself: the device flow
+
+Signing in tells OpenClerq who you are on GitHub, and lets it list the repositories **you** reach
+through the app's installations, so you can add one from a list. It uses the app's **device flow**:
+OpenClerq asks GitHub for a short code, you type it on github.com and approve, and OpenClerq is given
+a token for you. No password is typed anywhere in OpenClerq, and the flow needs no callback address,
+so it works the same on this computer and on a server.
+
+**Switch it on first, by hand.** On the app's settings page on GitHub, under **Identifying and
+authorizing users**, tick **Enable Device Flow** and save. (OpenClerq cannot do this for you, and
+says so, with the link, whenever GitHub answers that it is off: `device_flow_disabled`.)
+
+1. `clerq github login`, or **Settings → GitHub → Sign in with GitHub**, or `POST /v1/github/login`.
+   It answers a **code** to type (`userCode`), the address to type it at (`verificationUri`, on
+   github.com), when the code stops working (`expiresAt`, 15 minutes) and the interval GitHub asked
+   for.
+2. You open that address, type the code and approve. The command, the dialog or your own client
+   watches `GET /v1/github/login/<flowId>`.
+3. The gateway polls GitHub in the background at GitHub's interval (never faster than once a second),
+   five seconds slower after every `slow_down`. The status is `pending`, then one of `approved`
+   (with `user`), `denied` (you refused on GitHub), `expired` (the code ran out), `disabled` (device
+   flow is off: `settingsUrl` and the words say which setting) or `error`. `DELETE
+/v1/github/login/<flowId>` cancels, and a cancelled flow keeps nothing even if you approve it later.
+
+`GET /v1/github/user` says who is signed in (`signedIn`, `user: { login, id, name, avatarUrl, htmlUrl }`,
+`expiresAt`, `refreshable`, `message` when it ran out). `GET /v1/github/user/repositories` lists what
+the person reaches: each repository says which installation and account reach it and whether OpenClerq
+**already has a row for it** (`added`, with `repoId`); the list stops at 1,000 repositories and says so
+(`truncated`). Adding one is `POST /v1/repos` (`clerq github repos --add owner/name`, or **Repos → Add
+from GitHub**).
+
+One person is signed in per gateway: the gateway has one operator. Signing in again replaces the
+earlier sign-in, and several sign-in windows can be open at once (the last to be approved is the one
+kept).
+
+Addresses from GitHub are checked before they are passed on: the sign-in address must be `https` on
+GitHub's website (otherwise nothing is started), the profile link the same, an avatar `https`.
+
+## What the sign-in token is for, and what it is not for
+
+- **It is for** two things: saying **who is signed in** ("signed in as @login") and **listing the
+  repositories** you can reach through the app.
+- **It is not used to clone, fetch, push or open a pull request.** A run does those with the app's
+  **installation tokens** ([Tokens](#tokens)): one repository, one purpose, ended with the run, never
+  your personal authority. Signing in does not make a run act as you, and a run never sees your token.
+- Nothing a spec, an agent or `/secrets` can name reaches it: it is stored under the reserved name
+  `GITHUB_USER_TOKENS`, which `publish.token_secret`, `agent.api_key_secret`, `POST /secrets`,
+  `DELETE /secrets/<name>` and the forge credential lookup all refuse.
+- It is in no route's answer and no log line, and is cut out of anything GitHub says before that is
+  passed on (an error that echoes it, the device code, the refresh token).
+
+## Renewing the sign-in, and signing out
+
+GitHub Apps' user tokens last **eight hours** (the app's "Expire user authorization tokens" setting,
+on by default) and come with a refresh token that lasts about six months.
+
+- **With the app's client secret stored** (give it when you import the app, or generate one on the
+  app's settings page and import again), an expired token is renewed on the next use, and the new pair
+  replaces the old in the vault in one write. GitHub accepts a refresh token once, so renewals are
+  serialised: any number of callers at once cause exactly one request to GitHub.
+- **Without a client secret** the sign-in simply ends at expiry. `GET /v1/github/user` then says
+  `signedIn: false` and why ("this app has no client secret stored, so it cannot be renewed. Sign in
+  again"), and the dead token is deleted. If the app does not expire user tokens, nothing ever ends.
+- A sign-in that GitHub no longer accepts (you revoked it on GitHub, the refresh token ran out) is
+  dropped and reported the same way. If GitHub cannot be reached for a renewal, or the secret is wrong,
+  the sign-in is **kept** and tried again on the next use.
+- **Signing out** (`clerq github logout`, **Sign out**, `DELETE /v1/github/user`) forgets the tokens at
+  once, and then, **if the client secret is stored**, asks GitHub to revoke the authorization
+  (`DELETE /applications/{client_id}/grant`, with the client id and secret as basic credentials and the
+  token in the body), so the app also vanishes from your authorized apps. Without the secret it says
+  so, and where to revoke it yourself: `<github>/settings/apps/authorizations`. A token that had
+  already expired cannot be revoked by itself; the answer says that and links the same page.
+- **Disconnecting the app** (`DELETE /v1/github/app`) signs you out first, while the secret is still
+  there to revoke with.
+
+## From a terminal, or a server with no browser
+
+**Signing in needs no browser on the server.** `clerq github login` prints the address and the code;
+type them in a browser on any computer, your laptop or phone. Add `--no-browser` so the command does
+not try to open one.
+
+**Creating the app needs the gateway's callback to be reachable from the browser.** GitHub sends the
+browser back to `<baseUrl>/v1/github/app/callback` with a one-time code; that address is where the
+**browser** reaches the gateway, whatever the CLI uses. So:
+
+- On this computer it is `http://127.0.0.1:<port>` and it just works.
+- For a gateway on a server, run `clerq login https://your-gateway` and then `clerq github connect`:
+  the CLI uses that profile address, and **it must be `https://`** (the one-time code can be traded for
+  the app's private key, so it never crosses plain http). The reverse proxy must pass the `Host` header
+  ([SERVER.md](SERVER.md)). `connect` opens the page on the computer where you run it; with
+  `--no-browser` it prints the page's path, which you open in a browser on a computer that can reach
+  the gateway's https address (copy the file there if the CLI runs on the server).
+- If that is not possible (the gateway is only reachable from the server), create the app on GitHub
+  by hand and use `clerq github import` instead: it sends nothing to a browser and needs no callback.
+
 ## What it asks for
 
 The manifest asks for the least a run needs, and nothing else: no webhook, not public, no user
-authorization at install.
+authorization at install. (Signing in as yourself is a separate step, through the device flow, and
+asks for nothing beyond identity and the list of your installations.)
 
 | Permission      | Level | Why                                                       |
 | --------------- | ----- | --------------------------------------------------------- |
@@ -245,7 +361,8 @@ From the smallest to the largest:
    this is how an old key is retired after a new one has been imported (rotation, above); to cut
    OpenClerq off entirely use step 2, 4 or 5. Once the key OpenClerq holds is deleted, it can no
    longer make tokens (`GET /v1/github/app` still lists the app; runs say the key was refused).
-4. **`DELETE /v1/github/app`** makes OpenClerq forget the app and delete its key from the vault.
+4. **`DELETE /v1/github/app`** makes OpenClerq forget the app and delete its key from the vault (and
+   sign you out, revoking the sign-in on GitHub when the client secret is stored).
 5. **Delete the app on GitHub** (its settings page, the link in the answer of step 4). Only this removes
    the app itself and every installation of it.
 
@@ -261,29 +378,44 @@ check the installations' activity on GitHub.
 
 ## What is stored where
 
-| What                                                               | Where                                                                 |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| App id, slug, name, client ID, owner, URLs, when                   | the `settings` table of `clerq.db`, key `github.app`: not secret      |
-| The private key, the client secret                                 | the vault: `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_SECRET`       |
-| Installation tokens, installation lookups, waiting manifest states | memory of the running gateway only (lost on a restart)                |
-| Which credential a run used                                        | the run's steps: `github-app:<slug>/installation/<id>`, never a token |
-| That an app was connected, imported, re-keyed or forgotten         | the audit log (`github.app.*`: app id and slug)                       |
+| What                                                                 | Where                                                                 |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| App id, slug, name, client ID, owner, URLs, when                     | the `settings` table of `clerq.db`, key `github.app`: not secret      |
+| The private key, the client secret                                   | the vault: `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_SECRET`       |
+| Your GitHub sign-in: user token, refresh token, their expiry times   | the vault, one entry: `GITHUB_USER_TOKENS`                            |
+| Waiting sign-in flows (the device code), who is signed in (a minute) | memory of the running gateway only (lost on a restart)                |
+| Installation tokens, installation lookups, waiting manifest states   | memory of the running gateway only (lost on a restart)                |
+| Which credential a run used                                          | the run's steps: `github-app:<slug>/installation/<id>`, never a token |
+| That an app was connected, imported, re-keyed or forgotten           | the audit log (`github.app.*`: app id and slug)                       |
+| That you signed out                                                  | the audit log (`github.user.signed_out`: whether GitHub revoked it)   |
 
-The webhook secret GitHub returns with a manifest is not stored: the app has no webhook.
+The webhook secret GitHub returns with a manifest is not stored: the app has no webhook. The
+sign-in is one vault entry rather than one per token because GitHub spends the old refresh token when
+it hands out a new pair: storing the pieces separately could lose the sign-in if the second write
+failed.
 
 ## Routes
 
 All under `/v1`, for the gateway token only (a scoped token gets `403`). Added to API version 1.
 
-| Route                       | Does                                                                                                                          |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `POST /github/app/manifest` | `{ baseUrl, owner?, name? }` → `{ url, manifest, state, expiresAt, redirectUrl }`                                             |
-| `GET /github/app/callback`  | GitHub's redirect; no token; `?code=&state=`; an HTML page                                                                    |
-| `POST /github/app/import`   | `{ appId, clientId, privateKey, clientSecret? }` → `201`, or `200` for a new key of the same app; `422` with GitHub's message |
-| `GET /github/app`           | `{ connected, app, secrets, installations }`; `?refresh=1`                                                                    |
-| `DELETE /github/app`        | forgets the app and its key; `404` when none                                                                                  |
+| Route                           | Does                                                                                                                          |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `POST /github/app/manifest`     | `{ baseUrl, owner?, name? }` → `{ url, manifest, state, expiresAt, redirectUrl }`                                             |
+| `GET /github/app/callback`      | GitHub's redirect; no token; `?code=&state=`; an HTML page                                                                    |
+| `POST /github/app/import`       | `{ appId, clientId, privateKey, clientSecret? }` → `201`, or `200` for a new key of the same app; `422` with GitHub's message |
+| `GET /github/app`               | `{ connected, app, secrets, installations }`; `?refresh=1`                                                                    |
+| `DELETE /github/app`            | forgets the app and its key, and signs out; `404` when none                                                                   |
+| `POST /github/login`            | starts the device flow → `{ flowId, userCode, verificationUri, expiresAt, interval }`; `409` with no app or device flow off   |
+| `GET /github/login/{flowId}`    | `{ status: pending \| approved \| denied \| expired \| disabled \| error, message?, settingsUrl?, user? }`                    |
+| `DELETE /github/login/{flowId}` | cancels the flow                                                                                                              |
+| `GET /github/user`              | `{ signedIn, user?, expiresAt?, refreshable, message? }`                                                                      |
+| `DELETE /github/user`           | signs out → `{ signedOut, revoked, message, authorizationsUrl }`; `404` when nobody is signed in                              |
+| `GET /github/user/repositories` | `{ repositories: [{ fullName, installationId, account, private, added, repoId? }], truncated, limit }`; `409` when signed out |
 
-Details and error codes are in [API.md](API.md#the-github-app).
+Details and error codes are in [API.md](API.md#the-github-app). Every route has a method on the client
+(`@clerq/gateway-client`: `githubApp`, `githubManifest`, `importGithubApp`, `disconnectGithubApp`,
+`startGithubLogin`, `githubLogin`, `cancelGithubLogin`, `githubUser`, `githubSignOut`,
+`githubRepositories`); the callback is a browser's, so it has none.
 
 ## Not verified against github.com
 
@@ -307,6 +439,30 @@ once against the real service before relying on them:
   `workflows` permission.
 - **A repository that was renamed** answers `301` to `GET /repos/{owner}/{repo}/installation`;
   OpenClerq does not follow it and reports that the app could not be asked.
-- **Device flow** (for signing in as a user, the next step) is switched on in the app's settings
-  ("Enable Device Flow"); as far as the manifest documentation shows it is not a manifest field, so
-  an app made from a manifest will need that one click.
+- **Device flow.** That an app made from a manifest needs "Enable Device Flow" switched on by hand
+  (as far as the manifest documentation shows it is not a manifest field), and that GitHub then
+  answers `POST /login/device/code` with `device_code`, `user_code`, `verification_uri` (on
+  github.com), `expires_in` and `interval`; that errors come in a 200's body or a 4xx
+  (`device_flow_disabled`, `incorrect_client_credentials`; OpenClerq reads the body whatever the
+  status); the poll's `authorization_pending`, `slow_down` (with a new `interval`), `access_denied`
+  and `expired_token`; that `Accept: application/json` with a JSON body is accepted by both
+  `/login/` endpoints; and what a wrong client ID answers to the code request.
+- **User tokens.** That the device flow's answer carries `expires_in`, `refresh_token` and
+  `refresh_token_expires_in` (about 8 hours and 6 months) when the app expires user tokens, and none
+  when it does not; that `grant_type=refresh_token` with the client id and secret returns a new pair
+  and spends the old refresh token; the error names `bad_refresh_token` and
+  `incorrect_client_credentials`.
+- **The user's reads.** `GET /user` with `Authorization: Bearer <user token>`; `GET
+/user/installations` (`{ installations: [...] }`) and `GET /user/installations/{id}/repositories`
+  (`{ repositories: [...] }`) with that token, `per_page=100` and `Link` paging; that a suspended
+  installation refuses its repositories; that `avatar_url` and `html_url` are the https addresses
+  OpenClerq expects.
+- **Revoking the sign-in.** That `DELETE /applications/{client_id}/grant` with basic credentials
+  `client_id:client_secret` and a body of `{ "access_token": … }` works for a GitHub App's client id
+  (the documentation is written for OAuth apps, and also describes `DELETE
+/applications/{client_id}/token`, which revokes one token without the grant), that it answers `204`,
+  what it answers for an expired token (OpenClerq reads `404` and `422` as "could not revoke by that
+  token"), and that the page a person revokes from is `<github>/settings/apps/authorizations`.
+- **A browser posting the manifest form** to `/settings/apps/new` and following the redirect to the
+  gateway: the page `clerq github connect` and Settings write, as opposed to the fake's imitation of
+  it.

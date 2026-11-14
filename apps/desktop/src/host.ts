@@ -36,6 +36,8 @@ export const desktopHost: Host = {
   kind: 'desktop',
   version,
   openUrl: (url) => void open(url),
+  // GitHub has to ask the person to confirm a new app in their own browser, not in this window.
+  openForm: (url, fields) => invoke('open_form', { url, fields }),
   readConfig,
   writeConfig: (config) => invoke('write_config', { json: JSON.stringify(config, null, 2) }),
   setGatewayUrl: (url) => setGatewayBaseUrl(url),

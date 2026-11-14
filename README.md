@@ -71,7 +71,7 @@ docker run -d --name openclerq -p 127.0.0.1:18790:18790 -v openclerq-data:/data 
 
 The installer starts nothing, edits none of your files and refuses to run as root unless you pass `--system`; [SERVER](docs/SERVER.md) shows how to check a download by hand, run it under systemd, read the token, use a reverse proxy and what the image holds. To build it yourself: `node scripts/package-server.js`.
 
-**From a terminal:** `clerq` signs in to a gateway (this computer's or a server's), adds repositories, applies an automation from a YAML file, runs it and follows it, and answers its approvals: `clerq login`, `repo add`, `automation apply -f`, `run --follow`, `logs`, `approve`. The server installer and the container image above include it; see [CLI](docs/CLI.md). **GitHub:** connect a GitHub App of your own and runs push and open pull requests with tokens that last at most an hour and cover one repository, instead of a personal token; see [GitHub](docs/GITHUB.md).
+**From a terminal:** `clerq` signs in to a gateway (this computer's or a server's), adds repositories, applies an automation from a YAML file, runs it and follows it, and answers its approvals: `clerq login`, `repo add`, `automation apply -f`, `run --follow`, `logs`, `approve`. The server installer and the container image above include it; see [CLI](docs/CLI.md). **GitHub:** connect a GitHub App of your own and runs push and open pull requests with tokens that last at most an hour and cover one repository, instead of a personal token, and sign in to GitHub as yourself with a code you type there (`clerq github connect`, `import`, `login`, `repos`, or Settings, GitHub); see [GitHub](docs/GITHUB.md).
 
 **Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS and Windows installers, the server tarballs (with `SHA256SUMS` and `install.sh`) and the container image, and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases) and `ghcr.io`. For signed macOS builds and in-app updates, see [Distribution](docs/DISTRIBUTION.md).
 
@@ -193,24 +193,25 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 
 ### API (gateway on :18790)
 
-| Method   | Path             | Description                                                                                                        |
-| -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ |
-| GET      | /health          | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider`                                          |
-| GET      | /version         | The gateway's release, the API versions it serves and the database schema; no token. See [API](docs/API.md)        |
-| GET      | /skills          | List skills (from disk or fallback)                                                                                |
-| GET      | /skills/:slug    | Get skill detail (meta, body). PUT to update schemas/dependencies.                                                 |
-| GET      | /metrics         | Observability: uptime, LLM calls, latency, token usage                                                             |
-| POST     | /context/preview | Preview the LLM request (no API call). Body: `question`, optional `context`, `skillSlug`, `sessionId`              |
-| GET      | /memory          | List memory records (typed: fact, preference, decision, procedure, note). POST to set; `/memory/search?q=` to find |
-| GET      | /capabilities    | Filesystem/network restrictions. POST to save.                                                                     |
-| GET/POST | /reasoning       | Temperature, max tokens. POST to save.                                                                             |
-| GET/POST | /system-prompt   | System prompt editor. POST to save.                                                                                |
-| POST     | /calculate/eval  | Arithmetic engine (body: expression or spec+inputs). Deterministic, auditable.                                     |
-| POST     | /explain         | AI explanation (body: question, optional context). Uses configured LLM.                                            |
-| POST     | /task            | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`.            |
-| POST     | /automations     | Save an automation from its YAML spec (body: `spec`). It starts disabled. `POST /automations/:id/run` runs it now. |
-| GET      | /repos           | Repositories automations target, with what runs against them. `/repos/:id` adds the latest runs.                   |
-| POST     | /repos           | Add a repository by hand. Body: `target` (`local:<path>`, `github:owner/name`, …), optional `check: true`.         |
+| Method          | Path                                     | Description                                                                                                        |
+| --------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| GET             | /health                                  | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider`                                          |
+| GET             | /version                                 | The gateway's release, the API versions it serves and the database schema; no token. See [API](docs/API.md)        |
+| GET             | /skills                                  | List skills (from disk or fallback)                                                                                |
+| GET             | /skills/:slug                            | Get skill detail (meta, body). PUT to update schemas/dependencies.                                                 |
+| GET             | /metrics                                 | Observability: uptime, LLM calls, latency, token usage                                                             |
+| POST            | /context/preview                         | Preview the LLM request (no API call). Body: `question`, optional `context`, `skillSlug`, `sessionId`              |
+| GET             | /memory                                  | List memory records (typed: fact, preference, decision, procedure, note). POST to set; `/memory/search?q=` to find |
+| GET             | /capabilities                            | Filesystem/network restrictions. POST to save.                                                                     |
+| GET/POST        | /reasoning                               | Temperature, max tokens. POST to save.                                                                             |
+| GET/POST        | /system-prompt                           | System prompt editor. POST to save.                                                                                |
+| POST            | /calculate/eval                          | Arithmetic engine (body: expression or spec+inputs). Deterministic, auditable.                                     |
+| POST            | /explain                                 | AI explanation (body: question, optional context). Uses configured LLM.                                            |
+| POST            | /task                                    | Parse intent, run calculation if applicable, then AI explain. Body: `message`, optional `dryRun: true`.            |
+| POST            | /automations                             | Save an automation from its YAML spec (body: `spec`). It starts disabled. `POST /automations/:id/run` runs it now. |
+| GET             | /repos                                   | Repositories automations target, with what runs against them. `/repos/:id` adds the latest runs.                   |
+| POST            | /repos                                   | Add a repository by hand. Body: `target` (`local:<path>`, `github:owner/name`, …), optional `check: true`.         |
+| GET/POST/DELETE | /github/app, /github/login, /github/user | Your GitHub App, and your sign-in to GitHub (device flow). Gateway token only; see [GITHUB](docs/GITHUB.md).       |
 
 ## Project Structure
 

@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -124,6 +125,156 @@ fn write_config(json: String) -> Result<(), String> {
     let dir = clerq_dir()?;
     ensure_private_dir(&dir)?;
     write_private(&dir.join("config.json"), &json)
+}
+
+/// The only address a form page may post to: GitHub's own website. The page posts a GitHub
+/// App's manifest, which GitHub has to ask the person to confirm in their own browser.
+const FORM_TARGET: &str = "https://github.com/";
+
+/// How long a form page is kept: the browser has read it within seconds.
+const FORM_KEPT: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The page that posts `fields` to `url` by itself, or why it will not be made. `url` must be on
+/// GitHub's website (https, no user name), and the fields few, named plainly and not long.
+fn form_page(url: &str, fields: &BTreeMap<String, String>) -> Result<String, String> {
+    let rest = url
+        .strip_prefix(FORM_TARGET)
+        .ok_or("Only forms for https://github.com can be opened.")?;
+    if rest
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '<')
+    {
+        return Err("That address is not one this form may post to.".to_string());
+    }
+    if fields.is_empty() || fields.len() > 4 {
+        return Err("A form has one to four fields.".to_string());
+    }
+    let mut inputs = String::new();
+    for (name, value) in fields {
+        let plain = !name.is_empty()
+            && name.len() <= 32
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !plain {
+            return Err(format!("\"{}\" is not a field name.", name));
+        }
+        if value.len() > 64 * 1024 {
+            return Err(format!(
+                "The field \"{}\" is far longer than it should be.",
+                name
+            ));
+        }
+        inputs.push_str(&format!(
+            "<input type=\"hidden\" name=\"{}\" value=\"{}\">\n",
+            html_escape(name),
+            html_escape(value)
+        ));
+    }
+    Ok(format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Continue to GitHub</title>\n\
+<style>body{{font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem}}</style>\n\
+</head><body>\n<h1>Continue to GitHub</h1>\n\
+<p>Sending the app's description to GitHub, which asks you to confirm it. If nothing happens, press the button.</p>\n\
+<form id=\"f\" method=\"post\" action=\"{}\">\n{}<button type=\"submit\">Continue to GitHub</button>\n</form>\n\
+<script>document.getElementById('f').submit();</script>\n</body></html>\n",
+        html_escape(url),
+        inputs
+    ))
+}
+
+/// The system's own command for opening `path` in the default application (a browser, for a page).
+fn opener(path: &Path) -> std::process::Command {
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("open");
+        command.arg(path);
+        command
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = std::process::Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler").arg(path);
+        command
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(path);
+        command
+    }
+}
+
+/// Creates a file that must not exist yet (so a planted link is never followed), readable only
+/// by this account.
+fn write_new_private(path: &Path, content: &str) -> Result<(), String> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("Could not write {}: {}", path.display(), e))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Could not write {}: {}", path.display(), e))
+}
+
+/// Posts a form to GitHub in the person's default browser. The app's own window is not the browser
+/// GitHub should ask to confirm an app, so a page that submits the form by itself is written to
+/// `~/.clerq/forms` (this account only), opened with the system's opener and deleted after two
+/// minutes; any left behind by an earlier run are deleted too.
+#[tauri::command]
+fn open_form(url: String, fields: BTreeMap<String, String>) -> Result<(), String> {
+    let page = form_page(&url, &fields)?;
+    let dir = clerq_dir()?.join("forms");
+    ensure_private_dir(&dir)?;
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > FORM_KEPT * 5);
+            if old {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let file = dir.join(format!("form-{}-{}.html", nanos, std::process::id()));
+    write_new_private(&file, &page)?;
+    let mut child = match opener(&file).spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = fs::remove_file(&file);
+            return Err(format!("Could not open a browser: {}", e));
+        }
+    };
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        std::thread::sleep(FORM_KEPT);
+        let _ = fs::remove_file(&file);
+    });
+    Ok(())
 }
 
 /// Reads module manifest from a directory. Path can be absolute or relative to current dir.
@@ -282,7 +433,8 @@ fn main() {
             read_config,
             write_config,
             read_module_manifest,
-            gateway_token
+            gateway_token,
+            open_form
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clerq desktop application");
@@ -290,7 +442,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{gateway_line, log_writer, upsert_env_line};
+    use super::{form_page, gateway_line, log_writer, upsert_env_line};
+    use std::collections::BTreeMap;
     use std::io::Write;
     use std::sync::mpsc::TrySendError;
     use std::sync::{Arc, Condvar, Mutex};
@@ -440,5 +593,57 @@ mod tests {
     fn does_not_mistake_a_longer_key_for_this_one() {
         let after = upsert_env_line("ANTHROPIC_API_KEY_BACKUP=b\n", "ANTHROPIC_API_KEY", "k");
         assert_eq!(after, "ANTHROPIC_API_KEY_BACKUP=b\nANTHROPIC_API_KEY=k\n");
+    }
+
+    fn manifest_fields(value: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([("manifest".to_string(), value.to_string())])
+    }
+
+    #[test]
+    fn the_form_page_posts_one_escaped_field_to_github() {
+        let page = form_page(
+            "https://github.com/settings/apps/new?state=abc",
+            &manifest_fields("{\"name\":\"A \\\"<b>\\\" & co\"}"),
+        )
+        .unwrap();
+        assert!(page
+            .contains("method=\"post\" action=\"https://github.com/settings/apps/new?state=abc\""));
+        assert!(page.contains("name=\"manifest\""));
+        assert!(page.contains("&lt;b&gt;"));
+        assert!(page.contains("&amp; co"));
+        assert!(!page.contains("<b>"));
+        assert!(page.contains("document.getElementById('f').submit()"));
+        assert_eq!(page.matches("<input").count(), 1);
+    }
+
+    #[test]
+    fn the_form_page_will_not_post_anywhere_but_github() {
+        let fields = manifest_fields("{}");
+        for url in [
+            "http://github.com/settings/apps/new",
+            "https://github.com.evil.example/settings/apps/new",
+            "https://evil.example/https://github.com/",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https://github.com/x\" onload=\"y",
+            "https://github.com/x y",
+            "",
+        ] {
+            assert!(form_page(url, &fields).is_err(), "{} was accepted", url);
+        }
+    }
+
+    #[test]
+    fn the_form_page_keeps_its_fields_few_plain_and_short() {
+        let url = "https://github.com/settings/apps/new";
+        assert!(form_page(url, &BTreeMap::new()).is_err());
+        let many: BTreeMap<String, String> = (0..5)
+            .map(|i| (format!("f{}", i), "x".to_string()))
+            .collect();
+        assert!(form_page(url, &many).is_err());
+        let odd = BTreeMap::from([("a\"b".to_string(), "x".to_string())]);
+        assert!(form_page(url, &odd).is_err());
+        assert!(form_page(url, &manifest_fields(&"x".repeat(64 * 1024 + 1))).is_err());
+        assert!(form_page(url, &manifest_fields(&"x".repeat(64 * 1024))).is_ok());
     }
 }

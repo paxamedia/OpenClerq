@@ -32,9 +32,14 @@ const saved = { api: process.env.CLERQ_GITHUB_API, web: process.env.CLERQ_GITHUB
 /** A vault in memory. */
 function memoryVault() {
   const entries = new Map<string, string>();
-  const vault: Vault & { entries: Map<string, string>; failOn: string | undefined } = {
+  const vault: Vault & {
+    entries: Map<string, string>;
+    failOn: string | undefined;
+    down: boolean;
+  } = {
     entries,
     failOn: undefined,
+    down: false,
     get: (name) => entries.get(name),
     set(name, value) {
       if (vault.failOn === name) return { ok: false, error: 'The vault refused that.' };
@@ -45,7 +50,7 @@ function memoryVault() {
       entries.delete(name);
       return { ok: true };
     },
-    available: () => true,
+    available: () => !vault.down,
   };
   return vault;
 }
@@ -327,6 +332,13 @@ describe('the device flow', () => {
       expect(e).toMatchObject({ status: 502, code: 'invalid_verification_uri' });
     }
     expect(waiting).toHaveLength(0);
+  });
+
+  it('does not start when the vault could not keep the tokens', async () => {
+    vault.down = true;
+    const e = (await signin.start().catch((x: unknown) => x)) as SignInError;
+    expect(e).toMatchObject({ status: 503, code: 'vault_unavailable' });
+    expect(fake.seen).toHaveLength(0);
   });
 
   it('says there is no app, rather than guessing', async () => {

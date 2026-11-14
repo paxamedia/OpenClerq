@@ -52,3 +52,51 @@
     max-width: 150px;
   }
 }
+
+/* Add from GitHub */
+.repos-pick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.repos-pick-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--warn);
+}
+
+.repos-pick-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 360px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border: var(--line-width) solid var(--line);
+  background: var(--surface);
+  list-style: none;
+}
+
+.repos-pick-list > li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--line-width) solid var(--line);
+}
+
+.repos-pick-list > li:last-child {
+  border-bottom: 0;
+}
+
+.repos-pick-name {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

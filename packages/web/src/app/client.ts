@@ -42,6 +42,13 @@ export interface Host {
   /** The app's own version, shown in the status bar. */
   version: string;
   openUrl(url: string): void;
+  /**
+   * Post a form to an https address in the person's default browser. The desktop's own
+   * window cannot: GitHub's app manifest has to be posted from the browser GitHub
+   * will ask to confirm it, and the window is not that. Without it, a screen posts the
+   * form into a window it opens itself.
+   */
+  openForm?(url: string, fields: Record<string, string>): Promise<void>;
   readConfig?(): Promise<AppConfig>;
   writeConfig?(config: AppConfig): Promise<void>;
   /** Point the client at another gateway address. */

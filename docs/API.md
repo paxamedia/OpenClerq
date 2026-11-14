@@ -232,7 +232,86 @@ installation's, a pull request's) is passed on only if it is `https://` on GitHu
 carries a warning, in `app.warnings` for the app or `warnings` for an installation. `installations` is from GitHub (null, with
 `installationsError`, when GitHub could not be asked), cached for a minute; `?refresh=1` asks again.
 `DELETE /github/app` answers `{ disconnected: true, slug, appDeletedOnGitHub: false, settingsUrl, message }`
-(`404 app_not_connected` when none): the app on GitHub is not touched.
+(`404 app_not_connected` when none): the app on GitHub is not touched. If somebody was signed in, they
+are signed out first (while the client secret is still there to revoke with) and the answer carries
+`user`, the sign-out's answer below, with its words added to `message`.
+
+### Signing in as yourself
+
+The app's device flow, for who is signed in and the repositories they reach (not for pushing: see
+[GITHUB.md](GITHUB.md#what-the-sign-in-token-is-for-and-what-it-is-not-for)). Same rules as above:
+the gateway token only, and no token, code or secret in any answer, log line or error text.
+
+`POST /github/login` (no body) asks GitHub for a code and starts polling it in the background:
+
+```json
+{
+  "flowId": "<32 hex>",
+  "userCode": "WDJB-MJHT",
+  "verificationUri": "https://github.com/login/device",
+  "expiresAt": "2026-11-14T10:15:00.000Z",
+  "interval": 5
+}
+```
+
+`409 app_not_connected` (no app), `409 device_flow_disabled` (with `settingsUrl`: the app's page,
+where "Enable Device Flow" is), `422 github_rejected` (GitHub did not know the client ID),
+`502 invalid_verification_uri` (not `https` on GitHub's website: nothing is started) or
+`502 github_unreachable`. The gateway holds at most five flows; starting another cancels the oldest.
+
+`GET /github/login/{flowId}` answers `{ status, message?, settingsUrl?, user?, expiresAt?, interval? }`
+with `status` `pending` (with `expiresAt` and the current `interval`), `approved` (`user` is
+`{ login, id, name, avatarUrl, htmlUrl }`, or `null` with a `message` when GitHub would not say), `denied`,
+`expired`, `disabled` (`settingsUrl`) or `error` (`message`). A finished flow can be read for ten
+minutes. `404 flow_not_found` for one that never was, was cancelled or was forgotten.
+`DELETE /github/login/{flowId}` cancels: `{ cancelled: true }`, or `404`.
+
+`GET /github/user` answers `{ signedIn, user?, expiresAt?, refreshable, message? }`: `refreshable` is
+true when a refresh token and the app's client secret are both there; `message` says why a sign-in
+ended (it ran out and cannot be renewed, GitHub no longer accepts it) or could not be renewed right now
+(then it is kept and tried again). `avatarUrl` is `https` only and `htmlUrl` `https` on GitHub's
+website; one that is not is `null`. Who is signed in is cached for a minute.
+
+`DELETE /github/user` answers `{ signedOut: true, revoked, message, authorizationsUrl }`
+(`404 not_signed_in` when nobody is). The tokens are forgotten first, whatever follows; `revoked` is
+true when GitHub revoked the authorization (`DELETE /applications/{client_id}/grant`, which needs the
+app's client secret). Otherwise `message` says why and `authorizationsUrl` is where to revoke it by hand.
+
+`GET /github/user/repositories` answers
+
+```json
+{
+  "repositories": [
+    {
+      "fullName": "acme/app",
+      "owner": "acme",
+      "name": "app",
+      "private": true,
+      "htmlUrl": "https://github.com/acme/app",
+      "installationId": 1001,
+      "account": "acme",
+      "added": true,
+      "repoId": "repo_…"
+    }
+  ],
+  "truncated": false,
+  "limit": 1000,
+  "message": "…",
+  "warnings": ["…"]
+}
+```
+
+`added` says OpenClerq has a row for it (names are compared without regard to case); `repoId` is that
+row. The list stops at `limit` (1,000), and `truncated` and `message` say so. `warnings` name a
+suspended installation or names OpenClerq cannot use. `409 not_signed_in` when nobody is signed in (or
+GitHub no longer accepts the sign-in: it is dropped), `409 sign_in_unusable` when it cannot be used
+right now, `502 github_unreachable`.
+
+The sign-in is one vault entry, `GITHUB_USER_TOKENS`, which `POST /secrets`, `DELETE /secrets/<name>`,
+a spec's `publish.token_secret` and `agent.api_key_secret`, and the forge credential lookup all refuse
+(`400`). Every route here has a method on the client: `githubApp`, `githubManifest`,
+`importGithubApp`, `disconnectGithubApp`, `startGithubLogin`, `githubLogin`, `cancelGithubLogin`,
+`githubUser`, `githubSignOut`, `githubRepositories`.
 
 Other additions in the same change:
 
@@ -241,8 +320,8 @@ Other additions in the same change:
   (null for a local repository and for GitLab), and each automation's `credential` gains `auth` (its
   `publish.auth`) and its own `reachedWith`. Asking never makes a token.
 - A spec may set `publish.auth: auto | app | token`; `app` is refused for a `gitlab:` repository.
-- `POST /secrets` and `DELETE /secrets/<name>` refuse `GITHUB_APP_PRIVATE_KEY` and
-  `GITHUB_APP_CLIENT_SECRET` (`400`).
+- `POST /secrets` and `DELETE /secrets/<name>` refuse `GITHUB_APP_PRIVATE_KEY`,
+  `GITHUB_APP_CLIENT_SECRET` and `GITHUB_USER_TOKENS` (`400`).
 - A run's clone, fetch, push and pull request steps carry `credential` (the source, never a token) and,
   for the app, `pushedAs` / `openedBy` (`<slug>[bot]`). `POST /repos` with `check` may say
   `github-app:<slug>/installation/<id>` as its `credential.source`.
