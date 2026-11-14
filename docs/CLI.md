@@ -413,7 +413,7 @@ approval".
 - **Plain http.** A token sent over `http://` to another computer can be read by anyone on the way. The
   CLI refuses that, for every command, **before sending anything**, unless you pass `--insecure` (on that
   command; it is not remembered). Loopback addresses are exempt. Put TLS in front of a server instead
-  ([SERVER.md](SERVER.md#putting-a-reverse-proxy-in-front-of-it)). `login` refuses before it asks for a token.
+  ([SERVER.md](SERVER.md#putting-a-reverse-proxy-in-front)). `login` refuses before it asks for a token.
 - **A redirect is never followed.** A gateway does not redirect, so an answer of 301, 302, 307 or 308
   means something else is answering at that address, and following it would send your request, a
   POST's body with it, on to wherever it points, possibly over plain http. Every request is made with

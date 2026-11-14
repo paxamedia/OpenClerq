@@ -1115,13 +1115,13 @@ describe('builtin driver', () => {
     const decided = getStore()
       .prepare('SELECT decision, decided_by FROM approvals WHERE run_id = ?')
       .all(runId);
-    // The spec's approval timeout is its 24 h default, so only the agent's own
-    // time limit can end this wait. The wait is a timer set to the agent's
-    // deadline and the stop is the agent's signal, which fire within a
-    // millisecond of each other in either order (libuv times a timer from its
-    // cached clock, `Date.now()` can still read just before the deadline), so
-    // the row may say either. What must hold is that the request is closed as
-    // refused and not left for a person.
+    // The spec sets the approval timeout to 1 h, far longer than the agent's
+    // 2 s, so only the agent's own time limit can end this wait. The wait is a
+    // timer set to the agent's deadline and the stop is the agent's signal,
+    // which fire within a millisecond of each other in either order (libuv
+    // times a timer from its cached clock, `Date.now()` can still read just
+    // before the deadline), so the row may say either. What must hold is that
+    // the request is closed as refused and not left for a person.
     expect(decided).toHaveLength(1);
     expect(decided[0]).toMatchObject({ decision: 'denied' });
     expect(['agent-stopped', 'timeout']).toContain(decided[0].decided_by);
