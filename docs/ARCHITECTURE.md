@@ -737,9 +737,12 @@ through the user's own tunnel; see Remote mode in SECURITY.md. See [SECURITY.md]
 `apps/server` (`@clerq/server`, the `clerq-server` binary) runs this same gateway as a daemon with
 no desktop app: `createGateway()` with the settings read from the environment and `~/.clerq/.env`
 only, never the working directory's. `createGateway()` returns `close()`, which a stop (SIGTERM or
-SIGINT) calls: it stops accepting connections, gives requests in flight two seconds, then drops the
-rest (event streams never end by themselves), stops the schedules, the queue and the triggers, and
-closes the store (folding its write-ahead log into `clerq.db`). A run in flight is not cancelled
+SIGINT) calls: at once it stops the schedules, the queue and the triggers (so a run waiting for a
+slot is not started), stops accepting connections, refuses any new request with 503 and ends the
+event streams; requests already under way get until 2 s before the server's 10 s deadline, and what
+is still open is then ended; then it closes the store (folding its write-ahead log into
+`clerq.db`). A chat reply still being generated at that point is lost, and its run is settled as
+interrupted at the next start. A run in flight is not cancelled
 and not waited for: its lease stops being renewed, and the next start reclaims it through the same
 recovery a crashed gateway gets (see [Queue, leases and schedules](#queue-leases-and-schedules)).
 Agent and gate processes are not signalled by the gateway; the next start stops those it recorded

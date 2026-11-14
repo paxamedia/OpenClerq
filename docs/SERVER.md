@@ -140,12 +140,19 @@ them; they say what each line is for and which ones were left out on purpose.
 A dedicated account, its own state directory, and a read-only view of the rest of the system:
 
 ```bash
-sudo useradd --system --user-group --home-dir /var/lib/openclerq --shell /usr/sbin/nologin openclerq
+sudo useradd --system --user-group --no-create-home --home-dir /var/lib/openclerq \
+  --shell /usr/sbin/nologin openclerq
 sudo install -m 0755 clerq-server clerq-calc /usr/local/bin/
 sudo install -m 0644 apps/server/systemd/openclerq.service /etc/systemd/system/openclerq.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now openclerq
 ```
+
+The unit makes `/var/lib/openclerq` (the account's home, and the data directory's parent) owned by
+the service account with mode 0700 (`StateDirectoryMode=0700`; systemd's default would be 0755,
+which lets every user on the machine list the account's `~/.ssh` and `~/.gitconfig`). If you
+made the directory yourself first, for example with `useradd --create-home`, check it with
+`ls -ld /var/lib/openclerq` and run `sudo chmod 0700 /var/lib/openclerq` if it is wider.
 
 The agent CLIs must be installed where that account finds them (on its `PATH`, or under
 `/var/lib/openclerq`) and signed in as that account (for example, run `sudo -u openclerq -H claude` once and sign in).
@@ -159,9 +166,14 @@ Settings that are not secret go in the unit (`sudo systemctl edit openclerq`, th
 unit reads and which only root can see. Do not put them in the unit file itself: it is readable
 by every user.
 
-What the unit does at stop: systemd sends SIGTERM to `clerq-server` alone (`KillMode=mixed`); it
-stops within 10 s and exits 0; whatever agent processes remain are then killed by systemd. A
-failed start is retried every 5 s, at most five times in five minutes, and not at all after exit 2.
+What the unit does at stop: systemd sends SIGTERM to `clerq-server` alone (`KillMode=mixed`).
+At once it stops starting anything (a run waiting for a slot stays queued for the next start),
+refuses new requests with 503 and ends the open event streams; requests already under way get up
+to 8 s to finish; then it closes the store and exits 0 (or exits 1 if that has not happened by 10 s). Whatever agent
+processes remain are then killed by systemd. A chat reply still being generated when the 8 s are
+over is lost: the message you sent is kept, the reply is not stored, and the run is settled as
+interrupted at the next start; send the message again. A failed start is retried every 5 s, at
+most five times in five minutes, and not at all after exit 2.
 
 **Repositories outside the state directory.** The unit makes the system read-only to the service
 (`ProtectSystem=strict`); it can write `/var/lib/openclerq` and its private `/tmp`. Clones of
@@ -179,8 +191,10 @@ must be allowed to use it (`git config --global --add safe.directory /srv/repos/
 
 ### As a user service
 
-To run as yourself, with your own `~/.clerq`, your repositories and your signed-in CLIs (the same
-data directory the desktop app uses, so do not run both at once on one port):
+To run as yourself, with your own `~/.clerq`, your repositories and your signed-in CLIs. That is
+the desktop app's data directory too, and two gateways must not share a data directory, so do not
+run both at once against it (a second gateway's start-up recovery can settle the first one's runs
+as abandoned, because it cannot always tell that their gateway is still alive):
 
 ```bash
 mkdir -p ~/.local/bin ~/.config/systemd/user
@@ -359,6 +373,13 @@ server {
 
 Authorization and `Clerq-Api-Version` reach the gateway without any line for them: nginx passes
 request headers on unless told not to.
+
+nginx's _error_ log is a second place a query string can land: on a 502 or an upstream timeout it
+records the full request line, so `?token=` on an event-stream address ends up there. The
+`access_log` format above does not help with it. Where a client can send a header (the CLI, a script,
+anything that is not a browser's `EventSource`), send the token in `Authorization` and not in the
+address; and keep `error_log` at `crit` for this server (`error_log /var/log/nginx/openclerq.error.log crit;`),
+which leaves out those upstream failures, or keep that log as private as the token.
 
 ## Troubleshooting
 
