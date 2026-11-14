@@ -4,17 +4,19 @@
  * Produces: clerq-gateway (Bun-compiled), clerq-calc (copied from Rust build).
  * Requires: pnpm build:gateway, pnpm build:core run first. Bun for gateway compile.
  *
- * The binaries are built for the machine this runs on (macOS, Windows and Linux; Apple
- * Silicon and Intel, x64 and arm64) and named for the Rust target Tauri looks them up by
- * (`clerq-gateway-<triple>`). x64 on macOS and Linux is Bun's baseline build, which runs on
- * a CPU without AVX2; the default one dies with SIGILL there. The compile is
- * scripts/build-binary.js, the one the server and the CLI use.
+ * The binaries are built for the machine this runs on (macOS on Apple Silicon or Intel,
+ * Windows x64, Linux x64 or arm64) and named for the Rust target Tauri looks them up by
+ * (`clerq-gateway-<triple>`). x64 on macOS and Linux is Bun's baseline build, which runs on a
+ * CPU without AVX2; the default one dies with SIGILL there.
+ *
+ * This compiles with `bun build --compile` itself and not through scripts/build-binary.js (the
+ * server's and the CLI's compile): that script starts pnpm without a shell, which does not work
+ * for pnpm.cmd on Windows, where this runs on a release.
  */
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from './build-binary.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -35,7 +37,11 @@ export function sidecarTarget(platform = process.platform, arch = process.arch) 
   }
   if (platform === 'linux') {
     if (arch === 'x64') {
-      return { bunTarget: 'bun-linux-x64-baseline', rustTarget: 'x86_64-unknown-linux-gnu', exeExt: '' };
+      return {
+        bunTarget: 'bun-linux-x64-baseline',
+        rustTarget: 'x86_64-unknown-linux-gnu',
+        exeExt: '',
+      };
     }
     if (arch === 'arm64') {
       return { bunTarget: 'bun-linux-arm64', rustTarget: 'aarch64-unknown-linux-gnu', exeExt: '' };
@@ -64,32 +70,46 @@ function main() {
   run('pnpm build:gateway');
   run('pnpm build:core');
 
-  // 2. Compile the gateway to a binary with Bun (from the devDependency, which build-binary
-  //    finds, or fixes when pnpm skipped its install script). The packages are built, so skip that.
-  const staging = path.join(BINARIES_DIR, '.build');
-  let compiled;
+  // 2. Compile gateway to binary with Bun (from devDependency or PATH)
+  let bun = 'pnpm exec bun';
   try {
-    compiled = build({
-      entry: 'packages/gateway/src/cli.ts',
-      name: 'clerq-gateway',
-      target: bunTarget,
-      outDir: staging,
-      calc: 'none',
-      requireCalc: false,
-      skipBuild: true,
-      json: false,
-    });
-  } catch (e) {
-    console.error(`[build-sidecars] ${e instanceof Error ? e.message : e}`);
-    process.exit(1);
+    execSync('pnpm exec bun --version', { stdio: 'ignore' });
+  } catch {
+    // Bun's postinstall may not run under pnpm; try to fix and retry
+    const bunInstall = path.join(ROOT, 'node_modules', 'bun', 'install.js');
+    if (fs.existsSync(bunInstall)) {
+      try {
+        execSync(`node "${bunInstall}"`, { cwd: ROOT, stdio: 'inherit' });
+        execSync('pnpm exec bun --version', { stdio: 'ignore' });
+      } catch {
+        console.error('[build-sidecars] Run: cd node_modules/bun && node install.js');
+        process.exit(1);
+      }
+    } else {
+      try {
+        execSync('bun --version', { stdio: 'ignore' });
+        bun = 'bun';
+      } catch {
+        console.error('[build-sidecars] Bun is required. Run: pnpm add -D bun -w');
+        process.exit(1);
+      }
+    }
   }
+
   const gatewayOut = path.join(BINARIES_DIR, `clerq-gateway-${rustTarget}${exeExt}`);
-  fs.copyFileSync(compiled.binary, gatewayOut);
-  fs.chmodSync(gatewayOut, 0o755);
-  fs.rmSync(staging, { recursive: true, force: true });
+  run(
+    `${bun} build packages/gateway/src/cli.ts --compile --target=${bunTarget} --outfile=${gatewayOut}`
+  );
 
   // 3. Copy clerq-calc
-  const calcSrc = path.join(ROOT, 'packages', 'calculation-core', 'target', 'release', `clerq-calc${exeExt}`);
+  const calcSrc = path.join(
+    ROOT,
+    'packages',
+    'calculation-core',
+    'target',
+    'release',
+    `clerq-calc${exeExt}`
+  );
   if (!fs.existsSync(calcSrc)) {
     console.error('[build-sidecars] clerq-calc not found at', calcSrc);
     process.exit(1);
@@ -100,4 +120,15 @@ function main() {
   console.log('[build-sidecars] Done. Binaries:', gatewayOut, calcOut);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+/** Was this file started as the program, and not imported? (Real paths, so case and links do not matter.) */
+function isMain() {
+  try {
+    return (
+      fs.realpathSync.native(process.argv[1]) === fs.realpathSync.native(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) main();

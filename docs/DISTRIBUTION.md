@@ -140,8 +140,7 @@ The x64 targets are compiled for Bun's **baseline** build (`bun-linux-x64-baseli
 default x64 build needs AVX2 and ends with SIGILL on a CPU without it: a `kvm64` virtual machine, an
 older Xeon, a Mac from before Haswell. The tarball is still named `linux-x64` / `darwin-x64`, and
 the container image's amd64 build is baseline too. arm64 has one build. The desktop app's gateway
-sidecar (`scripts/build-sidecars.js`, which compiles it with the same `build-binary.js`) is baseline
-for x64 on an Intel Mac and on Linux. Windows still uses Bun's default x64 build, so a Windows PC
+sidecar (`scripts/build-sidecars.js`) is baseline for x64 on an Intel Mac and on Linux. Windows still uses Bun's default x64 build, so a Windows PC
 without AVX2 cannot run the desktop app's gateway.
 
 On a Mac, `CLERQ_TEST_PRETEND_LINUX=1 apps/server/scripts/test-install.sh <darwin tarball>` runs

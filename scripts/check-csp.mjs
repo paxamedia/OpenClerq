@@ -556,7 +556,18 @@ async function main() {
   return failed === 0 ? 0 : 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/** Was this file started as the program, and not imported? (Real paths, so case and links do not matter.) */
+function isMain() {
+  try {
+    return (
+      fs.realpathSync.native(process.argv[1]) === fs.realpathSync.native(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
   main().then(
     (code) => process.exit(code),
     (e) => {
