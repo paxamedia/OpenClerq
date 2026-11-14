@@ -85,11 +85,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # bun: where the compiled files land (apps/server/dist/<bun>/); x64 is Bun's
+          # baseline build, which runs on a CPU without AVX2.
           - target: linux-x64
+            bun: bun-linux-x64-baseline
             runner: ubuntu-latest
           - target: linux-arm64
+            bun: bun-linux-arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -119,10 +124,10 @@ jobs:
         run: node scripts/package-server.js --target ${{ matrix.target }} --out-dir server-files
 
       - name: Smoke test
-        run: node apps/server/scripts/smoke.mjs apps/server/dist/bun-${{ matrix.target }}/clerq-server
+        run: node apps/server/scripts/smoke.mjs apps/server/dist/${{ matrix.bun }}/clerq-server
 
       - name: Install shellcheck
-        run: command -v shellcheck || sudo apt-get install -y shellcheck
+        run: command -v shellcheck || { sudo apt-get update && sudo apt-get install -y shellcheck; }
 
       # install.sh against a fake release folder (the tarball, SHA256SUMS, install.sh)
       # served on 127.0.0.1, into a temporary folder. The runner's passwordless sudo
@@ -138,9 +143,9 @@ jobs:
       # where the units expect them first.
       - name: Verify the systemd units
         run: |
-          command -v systemd-analyze || sudo apt-get install -y systemd
+          command -v systemd-analyze || { sudo apt-get update && sudo apt-get install -y systemd; }
           systemd-analyze --version | head -n 1
-          bin=apps/server/dist/bun-${{ matrix.target }}
+          bin=apps/server/dist/${{ matrix.bun }}
           sudo install -m 0755 "$bin/clerq-server" "$bin/clerq-calc" /usr/local/bin/
           sudo useradd --system --user-group --no-create-home --home-dir /var/lib/openclerq --shell /usr/sbin/nologin openclerq
           systemd-analyze verify --man=no apps/server/systemd/openclerq.service
@@ -163,6 +168,7 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 

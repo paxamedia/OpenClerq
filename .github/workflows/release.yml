@@ -3,13 +3,18 @@ name: Release
 # What a tag builds, and how the jobs depend on each other:
 #
 #   version ──┬─ release (macOS, Windows installers) ── publish (the GitHub Release, latest.json)
-#             │                                              │
-#             ├─ server (4 tarballs, in parallel) ───────────┴─ publish-server (adds the tarballs,
+#             │                                              │         │
+#             ├─ server (4 tarballs, in parallel) ───────────┤         │
+#             │                                              └─ publish-server (adds the tarballs,
 #             │                                                  SHA256SUMS and install.sh to it)
-#             └─ docker (one image per CPU) ── docker-manifest (ghcr.io/paxamedia/openclerq)
+#             └─ docker (one image per CPU) ───────────────────── docker-manifest (needs publish too:
+#                                                                  the version tags move only once
+#                                                                  the release exists)
 #
 # The desktop release never waits on the server or image jobs, and a failure in them
 # changes nothing that `publish` already published. Re-run the failed jobs to retry.
+# A tag with a "-" in it (v1.0.0-rc.1) is published as a pre-release, which GitHub never
+# serves as /releases/latest, and moves neither the `1` nor the `latest` image tag.
 
 on:
   push:
@@ -112,12 +117,17 @@ jobs:
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
           node scripts/generate-updater-manifest.js "$VERSION" "$RELEASE_URL"
 
+      # A tag with a "-" (v1.0.0-rc.1) is a pre-release. GitHub does not serve a pre-release as
+      # /releases/latest, so neither the installer's nor the desktop updater's `latest/download`
+      # address (latest.json) finds it: installed apps stay on the last stable release, and a
+      # tester takes an rc by its own address. Without this, an rc tag became "latest".
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           files: release/*
           generate_release_notes: true
           draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -136,19 +146,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # bun: where the compiled files land (apps/server/dist/<bun>/). x64 is Bun's baseline
+          # build, which needs no AVX2 (the default x64 build dies with SIGILL without it).
           - target: linux-x64
+            bun: bun-linux-x64-baseline
             runner: ubuntu-latest
             rust: x86_64-unknown-linux-gnu
           - target: linux-arm64
+            bun: bun-linux-arm64
             runner: ubuntu-24.04-arm
             rust: aarch64-unknown-linux-gnu
           - target: darwin-arm64
+            bun: bun-darwin-arm64
             runner: macos-latest
             rust: aarch64-apple-darwin
           - target: darwin-x64
+            bun: bun-darwin-x64-baseline
             runner: macos-latest
             rust: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -181,7 +198,7 @@ jobs:
       # The programs this runner can run are run, against the tarball itself.
       - name: Smoke test the server binary
         if: matrix.target != 'darwin-x64'
-        run: node apps/server/scripts/smoke.mjs apps/server/dist/bun-${{ matrix.target }}/clerq-server
+        run: node apps/server/scripts/smoke.mjs apps/server/dist/${{ matrix.bun }}/clerq-server
 
       - name: Test the installer against this tarball
         if: matrix.target != 'darwin-x64'
@@ -190,7 +207,7 @@ jobs:
       - name: Check the cross-compiled files are x86_64
         if: matrix.target == 'darwin-x64'
         run: |
-          for f in apps/server/dist/bun-darwin-x64/clerq-server apps/server/dist/bun-darwin-x64/clerq-calc apps/cli/dist/bun-darwin-x64/clerq; do
+          for f in apps/server/dist/bun-darwin-x64-baseline/clerq-server apps/server/dist/bun-darwin-x64-baseline/clerq-calc apps/cli/dist/bun-darwin-x64-baseline/clerq; do
             file "$f" | tee /dev/stderr | grep -q x86_64
           done
 
@@ -210,6 +227,7 @@ jobs:
     name: Add the server files to the release
     needs: [publish, server]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -240,6 +258,7 @@ jobs:
             server-files/SHA256SUMS
             server-files/install.sh
           fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -261,6 +280,7 @@ jobs:
             runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
@@ -325,10 +345,14 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Needs `publish` as well as the images: the version tags (and `latest`) move only once the
+  # GitHub Release exists, so a failed desktop build leaves no `latest` image for a release
+  # nobody can download. The untagged digests the image jobs pushed are all that is left then.
   docker-manifest:
     name: Publish the image
-    needs: [docker]
+    needs: [docker, publish]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: write
