@@ -400,7 +400,9 @@ export async function startEgressSidecar(
     progress(`Pulling ${image}, the egress proxy's image; this can take minutes the first time.`);
     const pulled = await call(['pull', image], PULL_MS);
     await checkpoint();
-    if (pulled.code !== 0) await fail(`pull ${image}`, pulled);
+    if (pulled.code !== 0) {
+      await fail(`start the egress proxy (its image ${image} could not be pulled)`, pulled);
+    }
   }
 
   const created = await call(['network', 'create', '--internal', ...labels, network], 30_000);

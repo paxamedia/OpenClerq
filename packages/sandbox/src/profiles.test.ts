@@ -660,7 +660,7 @@ describe('container profile, against a fake runtime', () => {
       await expect(
         exec(spec({ network: ['registry.npmjs.org'] }), 'sh', ['-c', 'true'])
       ).rejects.toThrow(
-        /pull .*node:24-alpine, which the egress allowlist needs: pull access denied/
+        /start the egress proxy \(its image .*node:24-alpine could not be pulled\), which the egress allowlist needs: pull access denied/
       );
       expect(commandRuns()).toEqual([]);
       expect(calls().some((c) => c[0] === 'rm')).toBe(true);
