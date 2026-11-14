@@ -382,7 +382,7 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
   // First of all: a spec written for another version may have other keys, and "unknown key"
   // would be the wrong thing to tell its author.
   const version = r.get(['version']);
-  if (version !== undefined && version !== null && version !== SPEC_VERSION) {
+  if (version !== undefined && version !== SPEC_VERSION) {
     r.fail(
       ['version'],
       typeof version === 'number' && Number.isInteger(version) && version > SPEC_VERSION

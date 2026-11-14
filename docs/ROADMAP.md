@@ -314,8 +314,9 @@ retry: # only after a crash, a provider outage or an expired lease
   backoff: 1m # doubles with each retry, at most 1h
 ```
 
-`version` is the version of this format. Leave it out and it is 1. A spec that names another
-version is refused when saved, previewed or read, with its line: "This automation was written for
+`version` is the version of this format. Leave it out and it is 1; an empty `version:` is not the
+same as leaving it out and is refused. A spec that names another version is refused when saved,
+previewed or read, with its line: "This automation was written for
 spec version 2; this OpenClerq reads version 1." A later version that changes the format will
 translate older specs when it reads them; stored specs are never rewritten.
 

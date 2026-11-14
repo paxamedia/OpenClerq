@@ -62,8 +62,6 @@ describe('parseSpec', () => {
       expect(parseSpec(`version: 1\n${MINIMAL}`)).toEqual(plain);
       expect(parseSpec(`${MINIMAL}\nversion: 1\n`)).toEqual(plain);
       expect(parseSpec(`version: 1.0\n${MINIMAL}`)).toEqual(plain);
-      // A null is the key left empty, which is leaving it out.
-      expect(parseSpec(`version:\n${MINIMAL}`)).toEqual(plain);
     });
 
     it('refuses a newer version, naming the line and saying what this release reads', () => {
@@ -73,6 +71,16 @@ describe('parseSpec', () => {
       );
       expect(error).toMatchObject({ line: 2, column: 10, code: 'invalid_spec' });
       expect(errorOf(`version: 12\n${MINIMAL}`).message).toContain('spec version 12;');
+    });
+
+    it('refuses a version with nothing in it, by line: leave the key out instead', () => {
+      for (const empty of ['version:', 'version: ~', 'version: null', "version: ''"]) {
+        const error = errorOf(`name: deps\n${empty}\n${MINIMAL.replace('name: deps\n', '')}`);
+        expect(error.message, empty).toMatch(
+          /^Line 2, column \d+: "version" must be 1, the spec version this OpenClerq reads\. Leave it out for the same\.$/
+        );
+        expect(error.line, empty).toBe(2);
+      }
     });
 
     it('refuses what is not a version, in words', () => {
