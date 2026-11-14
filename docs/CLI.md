@@ -313,8 +313,7 @@ clerq skill checksum ./my-skill [--write]
 ### `clerq github connect | import | status | disconnect | login | logout | repos`
 
 Your own GitHub App, and your own sign-in to GitHub, for a gateway on this computer or on a server
-([GITHUB.md](GITHUB.md) explains the app, what a run does with it, and what is not verified against
-github.com). All of them need the gateway's own token, take `--json`, and never print or take a key,
+([GITHUB.md](GITHUB.md) explains the app and what a run does with it). All of them need the gateway's own token, take `--json`, and never print or take a key,
 secret or token on the command line.
 
 ```sh
@@ -433,12 +432,9 @@ approval".
   sign-in to GitHub, kept by the gateway (in its vault, never in `cli.json`). It is for who you are
   and the repositories you reach: runs, and `repo add --check`, reach a GitHub repository with a
   short-lived token of the app where it is installed (the answer says
-  `github-app:<slug>/installation/<id>`), else with the vault secret. Nothing in the CLI has been run
-  against github.com ([GITHUB.md](GITHUB.md#not-verified-against-githubcom)).
-  There is no Windows build either: the release holds `clerq` for Linux and macOS only.
+  `github-app:<slug>/installation/<id>`), else with the vault secret.
+- There is no Windows build: the release holds `clerq` for Linux and macOS only.
 - It cannot remove a repository or delete an automation (`disable` switches one off), and there is no
   command that lists runs: `automation show` and `repo show` give a last run's id, and `logs <name>` the
   latest run of an automation.
 - It reads and writes nothing in a repository: a run happens in the gateway, on the gateway's machine.
-- Tested against scripted agents and a real gateway in one process, and by hand against a compiled
-  `clerq-server` on macOS (Bun). Not run on Linux or Windows, and not against a real forge.

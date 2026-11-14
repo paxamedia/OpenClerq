@@ -1,6 +1,6 @@
 # Distribution — Code Signing & Notarization
 
-OpenClerq desktop app installers are unsigned by default. For public distribution, configure macOS code signing and notarization.
+The macOS and Windows installers are not code-signed yet, so macOS (Gatekeeper) and Windows (SmartScreen) ask before the first launch. To sign your own build, configure macOS code signing and notarization as below.
 
 There are two kinds of signature, and they are not the same thing. The **updater key** (below) signs
 the update bundles and `SHA256SUMS`, so an installed app and the installer can tell a file the project
@@ -96,17 +96,15 @@ GTK 3, which Tauri lists as their dependencies, so the package manager pulls the
 that does not have WebKitGTK 4.1 cannot install them. An AppImage brings its own copy of most
 libraries, so it depends less on the distribution; it still uses the system's glibc and graphics
 drivers. All three are built on Ubuntu 22.04 (glibc 2.35), so a distribution with an older glibc will
-not run them. That is reasoning from how they are built, not a list of distributions anyone has
-tried: CI builds the packages on every push, unpacks the `.deb` and the AppImage and runs the gateway from them (`build.yml`, `build-linux`, `scripts/check-linux-packages.sh`), but
-they have not been run on a range of Linux desktops.
+not run them.
 
 **In-app updates work for the AppImage only.** The updater replaces the AppImage file with the new
 one, after checking its signature. A `.deb` or `.rpm` is installed by your package manager. Tauri signs
 both (the release has their `.sig`), but `latest.json` does not offer them, so "Check for updates"
 reports an error that none of the platforms it looked for are listed: download the new package and
 install it over the old one. That is a choice, not a limit: the updater would install them by
-running `dpkg -i` or `rpm -U` as root, through a polkit, `zenity`, `kdialog` or `sudo` prompt, a path
-nobody has run, and a stolen update key would then be root on those machines
+running `dpkg -i` or `rpm -U` as root, through a polkit, `zenity`, `kdialog` or `sudo` prompt, so a stolen update key would be
+root on those machines
 ([RELEASING.md](RELEASING.md#the-deb-and-rpm-are-signed-and-not-offered-as-updates)). `latest.json` lists `linux-x86_64-appimage` and `linux-aarch64-appimage` and
 deliberately not the plain `linux-<cpu>` key: the updater would offer a `.deb` or `.rpm` install an
 AppImage it cannot install over a package.
@@ -169,8 +167,8 @@ Besides the desktop installers and `latest.json`, a release holds:
 | `SHA256SUMS.minisig`                             | its signature, by the updater key, in the minisign format: `minisign -Vm SHA256SUMS -P <key>` ([RELEASING.md](RELEASING.md))           |
 | `install.sh`                                     | the installer, `curl -fsSL https://github.com/paxamedia/OpenClerq/releases/latest/download/install.sh \| sh`                           |
 
-The Linux binaries are for glibc systems (the musl targets compile but have never run). They are
-built on Ubuntu runners; no older distribution has been tried. The programs are **not code-signed or
+The Linux binaries are for glibc systems (not Alpine or other musl systems). They are
+built on Ubuntu runners, so a system with an older glibc may not run them. The programs are **not code-signed or
 notarized**. `SHA256SUMS` is signed with the updater key (`SHA256SUMS.minisig`), so a download that
 matches it is the one the project released: `install.sh` checks that when `minisign` is installed and
 otherwise says it checked integrity only, and [RELEASING.md](RELEASING.md) shows the command for doing
@@ -183,8 +181,8 @@ gives every one owner `root:root` (ids 0) and the commit's time (`SOURCE_DATE_EP
 `git log -1 --format=%ct`) as its mtime, and writes a gzip header with no file name or time (what
 `gzip -n` leaves out). Two builds of the same commit on the same machine, with the same Node, give
 the same bytes in the archive; the compressed stream comes from the zlib of the Node that runs the
-script, so a different Node build can compress differently. Whether the three compiled programs are
-byte-identical between two builds was checked for linux-x64 only (T9a) and is not enforced.
+script, so a different Node build can compress differently. The three compiled programs are not
+guaranteed to be byte-identical between two builds.
 
 ### The container image
 
@@ -213,18 +211,13 @@ signed in to GitHub: `docker logout ghcr.io; docker pull ghcr.io/paxamedia/openc
 
 ### What runs when
 
-- **On every push to `main` and every pull request** (`ci.yml`): `server-linux` packages the
-  tarball on x64 and arm64 Ubuntu, runs `smoke.mjs`, runs `test-install.sh` (a fake release folder
-  served on 127.0.0.1: the checksum and its signature with the real `minisign`, a tampered tarball,
-  the installed programs talking to each other, `sudo` and `--system`) and has `systemd-analyze` read
-  both units; `docker` builds the image on an amd64 and an arm64 runner without pushing and runs
-  `test-image.sh`; `verify` also runs the desktop CSP check (`scripts/check-csp.mjs`, see
-  [SECURITY.md](SECURITY.md)).
-- **On every push to `main`, every pull request** (`build.yml`): the desktop app, unsigned, for macOS,
-  Windows and Linux (`build-linux` on x64 and arm64, which also stages the release files from the real
-  bundle folders, unpacks the `.deb` and the AppImage, checks the sidecars and the bundled plugin are in them and runs the gateway from the unpacked tree).
-  On a **push to `main` only**, `updater-key` signs a file with the repository's signing secrets and
-  checks it against the public key in `tauri.conf.json` ([RELEASING.md](RELEASING.md)).
+- **On every push to `main` and every pull request** (`ci.yml`): the checks, the Linux server
+  tarball on x64 and arm64 with its install and smoke scripts, and the container image on amd64 and
+  arm64 (built, not pushed).
+- **On every push to `main` and every pull request** (`build.yml`): the desktop app, unsigned, for
+  macOS, Windows and Linux (x64 and arm64). On a **push to `main` only**, `updater-key` signs a file
+  with the repository's signing secrets and checks it against the public key in `tauri.conf.json`
+  ([RELEASING.md](RELEASING.md)).
 - **On a `v*` tag** (`release.yml`):
 
   ```text
@@ -240,8 +233,8 @@ signed in to GitHub: `docker logout ghcr.io; docker pull ghcr.io/paxamedia/openc
   a failure in them does not undo it. `publish-server` runs only when the desktop release and all
   four tarballs succeeded; if one fails, fix the cause and use **Re-run failed jobs**.
   `docker-manifest` needs `publish` too, so the `<version>`, `<major>` and `latest` tags move only
-  once the GitHub Release exists (the image jobs before it push untagged digests, which nobody
-  can pull by name). Until
+  once the GitHub Release exists (the image jobs before it push untagged digests, which cannot
+  be pulled by name). Until
   `publish-server` has run, `releases/latest/download/install.sh` is a 404 and the installer says the
   server files may not be uploaded yet. Server tarballs are uploaded as `server-<target>` artifacts,
   deliberately not `*-build`, which is what `publish` collects.
@@ -253,8 +246,7 @@ signed in to GitHub: `docker logout ghcr.io; docker pull ghcr.io/paxamedia/openc
   `releases/latest/download/latest.json` finds it: installed apps are not offered the rc and stay on
   the last stable release (the rc's `latest.json` is on its own release, reachable by its tag's
   address, for a tester who points an app there), and the installer installs the last stable one
-  unless `CLERQ_VERSION=1.0.0-rc.1` names it. Before this was set, `publish` left `prerelease` off,
-  so an rc tag became "latest" and would have been offered to every installed app.
+  unless `CLERQ_VERSION=1.0.0-rc.1` names it.
 
 ---
 
@@ -294,8 +286,7 @@ Linux (x64 and arm64), stages each platform's files with the architecture in the
 signature verifies against the public key in `tauri.conf.json` (`scripts/verify-signatures.js`), writes
 `latest.json` from the signed bundles (`scripts/generate-updater-manifest.js`) and publishes the GitHub
 Release. A release whose signatures do not verify is not made: it would offer an update that every
-installed app refuses. The check also fails a release built without the signing secrets, which used to
-publish installers and no `latest.json`. In parallel it builds the server tarballs and the container
+installed app refuses. The check also fails a release built without the signing secrets. In parallel it builds the server tarballs and the container
 image, then adds the tarballs, `install.sh`, `SHA256SUMS` and `SHA256SUMS.minisig` to the release and
 pushes the image (see [the server and image](#server-and-command-line-linux-and-macos)).
 

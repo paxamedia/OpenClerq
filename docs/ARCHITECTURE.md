@@ -260,7 +260,7 @@ request answers `409 run_cancelled`.
 
 Hang-up detection works when the gateway runs under Node — the server and CLI installs. Under
 Bun, which the desktop sidecar is compiled with, nothing signals a hang-up once the request body
-has been read (verified on Bun 1.3.10). So a streamed answer names its run in its first event,
+has been read. So a streamed answer names its run in its first event,
 `{"type":"start","runId":…}`, and `POST /runs/:id/cancel` stops that run on any runtime. The
 client library cancels by id when its caller aborts, and the chat console's **Stop** button uses
 it.
@@ -285,7 +285,7 @@ as a lower bound. Keyless local providers cost nothing. `GET /metrics` reports
 Memory is a store of **records**: a key, a value (any JSON), and a type, which is one of `fact`
 (something true: a rate, a name, a deadline), `preference` (how you like things done), `decision`
 (a choice and why), `procedure` (how to do something) and `note` (anything else). A key may hold any
-number of records. Each has an id, an origin (`user`, `agent`, `import` for what 0.5 left behind,
+number of records. Each has an id, an origin (`user`, `agent`, `import` for records carried over from the older memory table,
 `consolidation` for a summary), a source session, a confidence from 0 to 1, a status and `created_at`,
 `updated_at` and `expires_at`; a record past its expiry is never read, and is removed at start and when
 memory is read, at most hourly. A record holds at most 20,000 characters.
@@ -333,7 +333,7 @@ unattended, and a webhook's message may be written by whoever calls it. A key or
 a tag: every `<` and `>` in a note is escaped (`&lt;`, `&gt;`) before it is placed in the block.
 Memory that cannot be read is left out, never a failed answer.
 
-The 0.5 `memory` table (one value per key) was rebuilt by store migration 16, which copies every row
+An older `memory` table (one value per key) is rebuilt by store migration 16, which copies every row
 across with its dates, keeping its type when it is one of the five (anything else becomes `fact`) and
 marking its origin `import`, so nothing is lost; migration 17 adds `agent_derived`. `GET /memory`, `GET /memory/:key`,
 `POST /memory` and `DELETE /memory/:key` answer as before with the record's other fields added:
@@ -652,12 +652,6 @@ name is kept in `run_processes.container` (store migration 19) so the next gatew
 crashed one left, and sweeps by label for what was made before the record. What each profile does and does not enforce is in
 [SECURITY.md §2.1](SECURITY.md#21-automation-sandbox-profiles).
 
-The container profile is tested against a fake runtime in every `pnpm test` (`profiles.test.ts`, `sandbox.integration.test.ts`) and
-against a real engine in CI, in the `container-profile` job: `packages/sandbox/src/container.real.test.ts` and the last describe of
-`packages/gateway/src/automations/sandbox.integration.test.ts` run only when `CLERQ_TEST_CONTAINER_RUNTIME` names a runtime
-(`docker`, `podman` or a path), and are skipped otherwise. Their runtime is a small wrapper that records each call's arguments, and
-`scripts/container-debug.sh` prints that record, the engine's labelled containers and networks with their state, and the egress proxies' logs when a test fails.
-
 #### Remote repositories
 
 `targets.repos` takes one of `local:<path>`, `github:owner/name`, `gitlab:group/name` or an https
@@ -709,10 +703,10 @@ Each user brings their own GitHub App ([GITHUB.md](GITHUB.md) says why and how).
 
 - `config.ts`: the connection (`settings` key `github.app`: app id, slug, name, client id, owner, URLs;
   no secret), the two fixed vault names for the private key and client secret, and the API and web
-  bases (`CLERQ_GITHUB_API`, `CLERQ_GITHUB_WEB`: internal settings so a test can point the gateway at a
-  fake server; self-hosted GitHub Enterprise stays refused).
+  bases (`CLERQ_GITHUB_API`, `CLERQ_GITHUB_WEB`: internal settings for those addresses; self-hosted GitHub
+  Enterprise stays refused).
 - `jwt.ts`: the app's RS256 JWT (`iss` the App ID, `iat` a minute back, `exp` nine minutes ahead) with
-  `node:crypto` and no library; it runs under Bun too (checked on 1.3.10).
+  `node:crypto` and no library; it runs under Bun too.
 - `api.ts`: one request to GitHub: a timeout, no redirect followed, and no credential, request body or
   response body in an error (GitHub's own `message`, cut short).
 - `app.ts` (`GithubApp`): `installationFor(owner/name)` (`GET /repos/{owner}/{repo}/installation`, cached
@@ -738,10 +732,6 @@ Each user brings their own GitHub App ([GITHUB.md](GITHUB.md) says why and how).
   `/user/installations`. The token is for identity and that list only: a run never uses it. Every
   text from GitHub passes through `scrub()` (the tokens and device codes it has seen, and anything
   shaped like one) before it is answered or logged.
-- `fake-github.ts`: the fake GitHub the tests run against: the API (it checks the JWT, the token's
-  permissions and repository, revocation and a manifest code's single use) and GitHub's website (the
-  manifest form's redirect, the device flow with a scriptable person, user tokens that expire and
-  refresh once, a revocable grant). The API and the website are one server there.
 
 A run (`execute()` in `runner.ts`) holds what it is given in `HeldCredentials`: each credential's
 token (and its Basic form) joins the run's redaction set, the error that ends the run is scrubbed of
@@ -813,8 +803,8 @@ API version 1 (see [API.md](API.md)). `?names=run.,approval.` filters by name pr
 15 s (`CLERQ_SSE_HEARTBEAT_MS`). `GET /events` is the older form: the last 100 events, then live.
 
 Licensing is a separate concern: `middleware/license.ts` attaches entitlement information and
-never rejects in the OSS build. Conflating the two was the pre-0.4 design and is what left the
-gateway open.
+never rejects in the OSS build. Authentication and licensing are separate concerns, and neither
+stands in for the other.
 
 The listener binds `127.0.0.1` unless `CLERQ_HOST` says otherwise. Remote access (a phone) goes
 through the user's own tunnel; see Remote mode in SECURITY.md. See [SECURITY.md](SECURITY.md).
@@ -919,9 +909,9 @@ The database is brought up to date when the gateway starts: migrations run once 
 after a copy of the database is written to `backups/` (not for a new one), and a database from a
 newer OpenClerq is refused. See [UPGRADING.md](UPGRADING.md).
 
-A pre-0.5 `memory.json` or `triggers.json` is imported into `clerq.db` on first start and kept as
+An old `memory.json` or `triggers.json` is imported into `clerq.db` on first start and kept as
 `*.migrated`. The remaining JSON files are read-modify-write with no locking, so concurrent
-writers can clobber each other; they move into the store as the rest of 0.5 lands.
+writers can overwrite each other (last write wins).
 
 ---
 

@@ -46,7 +46,7 @@ OpenClerq OSS ships a small, safe default set:
 - Output also includes `bytes`, the file size on disk.
 - Safety — the path is resolved against a `realpath`'d root (`capabilities.fsRoot`) and refused if any of the following hold:
   - it traverses out of the root (`../../etc/passwd`);
-  - it lands in a sibling directory that merely shares a prefix (`/srv/repo-secrets` against a root of `/srv/repo` — this passed the pre-0.4 check);
+  - it lands in a sibling directory that merely shares a prefix (`/srv/repo-secrets` against a root of `/srv/repo`);
   - it is absolute, drive-qualified, or UNC;
   - it contains a NUL byte;
   - it passes through a symlink whose target leaves the root;
@@ -100,8 +100,7 @@ Requests are refused when:
 Bodies over `httpMaxBytes` (default 256 KiB) are truncated rather than buffered whole.
 
 > **Residual risk.** Addresses are checked after DNS resolution, but the connection resolves
-> again, leaving a narrow DNS-rebinding window. Closing it needs a pinned-address dispatcher,
-> tracked for release 0.5.
+> again, leaving a narrow DNS-rebinding window. Closing it needs a pinned-address dispatcher.
 
 ---
 

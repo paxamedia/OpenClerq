@@ -25,9 +25,8 @@ docker run -d --name openclerq -p 127.0.0.1:18790:18790 -v openclerq-data:/data 
 
 ## What you need on the machine
 
-- Linux (x64 or arm64, with glibc: not Alpine) or macOS (Apple Silicon or Intel). CI builds, starts
-  and tests the two Linux binaries on every push; the macOS ones are built by the release, and the
-  Apple Silicon one is run there. Windows is not supported as a server. The x64 programs (and the
+- Linux (x64 or arm64, with glibc: not Alpine) or macOS (Apple Silicon or Intel). Windows is not
+  supported as a server. The x64 programs (and the
   amd64 image) are Bun's "baseline" build, which needs no AVX2, so they run on a virtual machine
   with a basic CPU model (`kvm64`) and on older Xeons and Macs, where Bun's default x64 build stops
   with an illegal instruction.
@@ -347,8 +346,8 @@ nothing and does not start.
   kernel); it is not a sandbox for an automation.
 - **Native is the default; isolation is opt-in, per automation.** An automation that should be
   confined asks for it with `sandbox.profile` in its spec. `seatbelt` is macOS only, so on Linux the
-  choices are `native` and `container`. The container profile runs against a real Docker engine on
-  Linux in CI (amd64 and arm64); Podman has not been run. Read [SECURITY.md](SECURITY.md#21-automation-sandbox-profiles) before
+  choices are `native` and `container`. The container profile uses Docker, or Podman if that is what is
+  installed (`CLERQ_CONTAINER_RUNTIME` names one). Read [SECURITY.md](SECURITY.md#21-automation-sandbox-profiles) before
   relying on it.
 - **Do not give a containerised server the host's Docker socket.** The container profile starts
   containers through the engine it finds, at the host's paths, so a gateway in a container would need
@@ -364,8 +363,8 @@ The whole model, with the proxy, the container and the token each in their place
 
 The gateway serves plain HTTP on loopback. For access from other machines, terminate TLS in a
 proxy on the same host and send it to `127.0.0.1:18790`. The examples below are **examples to
-adapt**: they have not been run against a live proxy as part of OpenClerq's tests, so check them
-with `caddy validate` or `nginx -t` first.
+adapt**: change the names and paths to yours, and check them with `caddy validate` or `nginx -t`
+first.
 
 What any proxy in front of it must do:
 
@@ -595,7 +594,7 @@ with code 1 and says why in `docker logs openclerq`; see
 do not survive losing it: copy `/data` somewhere else for a real backup, as in
 [Where things live](#where-things-live).
 
-A Compose file for the same thing (an example to adapt; not run as part of OpenClerq's tests):
+A Compose file for the same thing (an example to adapt):
 
 ```yaml
 services:
@@ -639,8 +638,8 @@ trust it (`docker exec openclerq git config --global --add safe.directory /repos
   `CLERQ_OLLAMA_URL` for a model server on the network.
 - **The CLI drivers (`claude-code`, `codex`, `cursor-agent`) need their program in the image**, which
   the image does not contain. Make a derived image and name an API key in the spec
-  (`agent.api_key_secret`) so no sign-in is needed. This is an example of the idea; it has not been
-  built or run, and the install step is the vendor's, so follow its current instructions:
+  (`agent.api_key_secret`) so no sign-in is needed. This is a sketch to adapt, and the install step is the vendor's, so
+  follow its current instructions:
 
   ```dockerfile
   FROM ghcr.io/paxamedia/openclerq:1

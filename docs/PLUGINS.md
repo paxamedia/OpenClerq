@@ -89,7 +89,7 @@ that must outlast an update.
 
 [`packages/plugin-sdk/examples/hello-plugin`](../packages/plugin-sdk/examples/hello-plugin) is a
 complete plugin: a route, a trigger, a declared secret, a call with `ctx.fetch` to a declared host,
-a page, and `upgrade`, `start` and `stop`. A test loads it the way you would install it. To try it:
+a page, and `upgrade`, `start` and `stop`. To try it:
 
 1. Copy the folder into the modules folder: the one `CLERQ_MODULES_DIR` names (a folder of plugin
    folders, or one plugin), and restart OpenClerq. Folders added while it runs are found at the next start.
@@ -294,8 +294,7 @@ and whose checksum is exactly the listed one is approved when it is first seen, 
 approved by `bundled`. **One plugin is bundled: `chat`, the chat console**
 ([below](#the-chat-console-the-reference-plugin)). The examples are not bundled and need approval like
 any other. A bundled plugin with a file changed is treated like any other: not approved by the list,
-and the approval it had is for what it was. A test recomputes every line of the list from the plugin's
-folder, so editing a bundled plugin without updating its line fails it.
+and the approval it had is for what it was.
 
 The app puts the bundled plugins' folders where the gateway looks for them: a release build of the desktop app carries each
 one as a resource and starts the gateway with `CLERQ_BUNDLED_PLUGINS_DIR` naming that folder (a `tauri dev` session
@@ -479,8 +478,7 @@ app's `ModuleUI`, `ModuleProps` and `ModuleContext` remain as aliases (the last 
 
 **What such a UI may import.** The SDK (`@clerq/plugin-sdk/ui`), `@clerq/gateway-client`, `react`,
 `lucide-react`, and one entry of the app: **`@clerq/web/plugin-ui`**. It is the whole of what a plugin's
-UI takes from the app, a list of names and not a path into its source, and a test pins it so that it grows
-on purpose:
+UI takes from the app: a list of names, not a path into its source. The list grows only on purpose:
 
 | Group               | Names                                                                                                                                             |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -638,10 +636,10 @@ like the app.** The page runs in the app's own JavaScript context:
 - the desktop window has Tauri's global (`withGlobalTauri` is on), so page code can call `invoke('gateway_token')`;
 - it can call `fetch` itself, read what the app keeps, and touch the DOM the shell draws.
 
-The console keeps to the rules (a test fails if its source imports `gateway`, `setGateway*`, `hasGatewayToken` or
-`createGatewayClient` as values, takes anything from the app but `@clerq/web/plugin-ui`, or calls an endpoint its
-manifest does not list), and the surface above hands a plugin nothing extra. Those are things the console is held to,
-and they are not walls. The honest reading: **approving a bundled plugin whose page is built into the app is
+The console keeps to the rules (it does not import `gateway`, `setGateway*`, `hasGatewayToken` or
+`createGatewayClient` as values, takes nothing from the app but `@clerq/web/plugin-ui`, and calls only endpoints its
+manifest lists), and the surface above hands a plugin nothing extra. Those are rules the console follows,
+and they are not walls. In short: **approving a bundled plugin whose page is built into the app is
 approving code that is as trusted as the app**; what the manifest and the scoped client give you is a declaration to
 review and a client that checks it, for code that behaves.
 
@@ -665,8 +663,7 @@ they stay when the plugin is left out. The plugin is **the console's UI plus its
 routes into the plugin, as `entry.server`, is not part of 1.0.
 
 Leaving the console out of the app's bundled list removes the Chat page (its rail entry, its palette commands and
-search) and changes nothing else; the desktop's list of bundled modules and its resource list name it together, and
-a test fails if they differ.
+search) and changes nothing else; the desktop's list of bundled modules and its resource list name it together.
 
 ## Not in this release
 

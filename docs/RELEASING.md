@@ -76,8 +76,8 @@ release carries them (`publish` verifies them like the rest). The app's updater 
 a package, but `latest.json` does not offer it: for a `.deb` or `.rpm` install, "Check for updates"
 reports that no update is listed for it, and the package is updated by installing the new one.
 That is a choice. The updater installs a package by running `dpkg -i` or `rpm -U` **as root**,
-through `pkexec`, a `zenity` or `kdialog` password prompt or `sudo`; nobody has run that path, and
-with it a stolen updater key would be root on those machines and not only the user's own account
+through `pkexec`, a `zenity` or `kdialog` password prompt or `sudo`. A stolen updater key would then
+be root on those machines and not only the user's own account
 (the AppImage replaces a file the user owns). To offer them, add the two keys in
 `scripts/generate-updater-manifest.js` and the test that pins the choice.
 

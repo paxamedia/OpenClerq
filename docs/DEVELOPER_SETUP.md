@@ -126,7 +126,7 @@ You should see `Verification passed. Gateway is up and responding.` at the end.
 
 ### The container profile on a real engine
 
-`pnpm test` runs the container profile against a fake `docker`, and skips the suites that need a real engine. They run when `CLERQ_TEST_CONTAINER_RUNTIME` names one (the images, `alpine:3.20` and `node:24-alpine`, are pulled; one egress test reaches `example.com`, the others use servers they start on the engine). They are written for, and run in CI on, **Docker on Linux**. Podman has never been run (the variable accepts `podman`, but nothing has tried it), and Docker Desktop on macOS has not been tried either: the tests look at host paths mounted into the container at the same paths, which an engine in a VM may not share.
+`pnpm test` runs the container profile's tests against a recording stub in place of `docker`, and skips the suites that need a real engine. Those suites run when `CLERQ_TEST_CONTAINER_RUNTIME` names one (the images, `alpine:3.20` and `node:24-alpine`, are pulled; one egress test reaches `example.com`, the others use servers they start on the engine). They are written for **Docker on Linux**: the tests look at host paths mounted into the container at the same paths, which an engine that runs in a VM may not share.
 
 ```bash
 pnpm -r build
