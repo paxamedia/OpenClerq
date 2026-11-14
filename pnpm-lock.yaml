@@ -220,7 +220,36 @@ importers:
         version: 5.9.3
 
   packages/module-sdk:
+    dependencies:
+      '@clerq/plugin-sdk':
+        specifier: workspace:^
+        version: link:../plugin-sdk
     devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@types/node@22.19.11)(vite@7.3.7(@types/node@22.19.11)(lightningcss@1.33.0)(yaml@2.9.0))
+
+  packages/plugin-sdk:
+    dependencies:
+      '@clerq/gateway-client':
+        specifier: workspace:^
+        version: link:../gateway-client
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.11
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.28
+      lucide-react:
+        specifier: 1.51.0
+        version: 1.51.0(@types/react@18.3.28)(react@18.3.1)
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
       typescript:
         specifier: ^5.6.0
         version: 5.9.3

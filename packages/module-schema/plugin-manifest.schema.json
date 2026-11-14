@@ -1,0 +1,299 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://clerq.dev/schemas/plugin-manifest-v1.json",
+  "title": "OpenClerq plugin manifest, version 1",
+  "description": "manifest.json of an OpenClerq plugin. A manifest without manifestVersion is a legacy module (module-manifest.json). The validator in @clerq/plugin-sdk/manifest is the reference: it also checks what a schema cannot, such as that entry files exist and that permissions.net holds hosts rather than addresses.",
+  "type": "object",
+  "required": ["manifestVersion", "id", "name", "version", "description", "engines", "permissions"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "manifestVersion": {
+      "const": 1,
+      "description": "The manifest format this file is written in."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "maxLength": 64,
+      "not": {
+        "const": "core"
+      },
+      "description": "Lower-case words joined by single hyphens, like my-plugin. It is also a URL segment and a table prefix."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$",
+      "description": "A semantic version."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "engines": {
+      "type": "object",
+      "required": ["api"],
+      "properties": {
+        "api": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The OpenClerq API version the plugin needs (API_VERSION in @clerq/gateway-client). A plugin whose version this OpenClerq does not serve is refused."
+        }
+      },
+      "additionalProperties": false
+    },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![\\\\/])(?![A-Za-z]:)(?!.*(^|[\\\\/])\\.\\.([\\\\/]|$))[^\\u0000]+$",
+          "description": "One self-contained ES module that exports definePlugin({ ... }) as its default."
+        },
+        "ui": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![\\\\/])(?![A-Za-z]:)(?!.*(^|[\\\\/])\\.\\.([\\\\/]|$))[^\\u0000]+$",
+          "description": "A directory with an index.html, served at /api/modules/<id>/ui/."
+        }
+      },
+      "additionalProperties": false
+    },
+    "skills": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![\\\\/])(?![A-Za-z]:)(?!.*(^|[\\\\/])\\.\\.([\\\\/]|$))[^\\u0000]+$",
+      "description": "A directory of SKILL.md files."
+    },
+    "config": {
+      "type": "object",
+      "description": "Defaults for ctx.config, overlaid with ~/.clerq/modules/<id>.json."
+    },
+    "services": {
+      "type": "array",
+      "description": "launchd agents the plugin may start and stop.",
+      "items": {
+        "anyOf": [
+          {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+          },
+          {
+            "type": "object",
+            "required": ["label"],
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+              },
+              "name": {
+                "type": "string"
+              },
+              "plist": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "description": "What the plugin needs. Required, even when it is {}. The person approves exactly this; with enforcement on, what a plugin does through its context is checked against it.",
+      "properties": {
+        "exec": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Exact commands it runs through ctx.exec."
+        },
+        "fs": {
+          "type": "object",
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Folders it reads through ctx.fs."
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Folders it writes through ctx.fs."
+            }
+          },
+          "additionalProperties": false
+        },
+        "net": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Hosts it calls through ctx.fetch: api.example.com, *.example.com, host:443."
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Its vault names, without the <id>/ prefix."
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "launchd labels."
+        },
+        "llm": {
+          "type": "boolean",
+          "description": "Whether it calls models. Recorded; the context offers no model helper yet."
+        },
+        "api": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(GET|POST|PUT|PATCH|DELETE|\\*) /(?!\\*(/|$))(?!:)[^\\s/]+([^\\s]*)$"
+          },
+          "description": "Core endpoints its UI or server calls, as METHOD /path, e.g. GET /runs/:id. A UI token reaches these and nothing else of the core API."
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": {
+                "enum": ["fact", "preference", "decision", "procedure", "note"]
+              }
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "enum": ["fact", "preference", "decision", "procedure", "note"]
+              }
+            }
+          },
+          "additionalProperties": false,
+          "description": "Memory types it reads and writes. Recorded; the context offers no memory helper yet."
+        }
+      },
+      "additionalProperties": false
+    },
+    "extensions": {
+      "type": "object",
+      "description": "What the module adds to the shell",
+      "properties": {
+        "nav": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "home.tile": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "record.panel": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "record.action": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "search": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "inbox.item": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        },
+        "settings.page": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/extensionItem"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "extensionItem": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "A path inside the module's UI, opened at #/m/<module>/<path>; {ref} stands for a record's ref"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "order": {
+          "type": "number"
+        },
+        "size": {
+          "enum": ["s", "m", "l"]
+        },
+        "types": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*:[a-z][a-z0-9_-]*$"
+          },
+          "description": "Record types as <module>:<type>, e.g. core:person"
+        },
+        "trigger": {
+          "type": "string",
+          "description": "record.action: the module trigger to fire with { ref }"
+        },
+        "confirm": {
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": ["approval", "reply", "task", "alert"]
+        }
+      }
+    }
+  }
+}

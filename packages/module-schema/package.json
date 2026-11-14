@@ -1,7 +1,7 @@
 {
   "name": "@clerq/module-schema",
   "version": "0.5.1",
-  "description": "Clerq module manifest schema and types",
+  "description": "Clerq module and plugin manifest schemas and types",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,11 +10,14 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
-    }
+    },
+    "./manifest.schema.json": "./manifest.schema.json",
+    "./plugin-manifest.schema.json": "./plugin-manifest.schema.json"
   },
   "files": [
     "dist",
-    "manifest.schema.json"
+    "manifest.schema.json",
+    "plugin-manifest.schema.json"
   ],
   "scripts": {
     "build": "tsc"

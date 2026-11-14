@@ -1,0 +1,61 @@
+{
+  "name": "@clerq/plugin-sdk",
+  "version": "0.5.1",
+  "description": "The OpenClerq plugin contract: manifest v1, the plugin context and lifecycle, UI types, and the checksum of a plugin's code",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js",
+      "default": "./dist/manifest.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js",
+      "default": "./dist/node.js"
+    },
+    "./ui": {
+      "types": "./dist/ui.d.ts",
+      "import": "./dist/ui.js",
+      "default": "./dist/ui.js"
+    }
+  },
+  "files": [
+    "dist",
+    "examples"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clerq/gateway-client": "workspace:^"
+  },
+  "peerDependencies": {
+    "lucide-react": "*",
+    "react": "^18.3.0"
+  },
+  "peerDependenciesMeta": {
+    "lucide-react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "lucide-react": "1.51.0",
+    "react": "^18.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.5"
+  }
+}

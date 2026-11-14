@@ -1,6 +1,10 @@
 /**
  * Clerq module manifest schema and types.
  * Used by module loader (desktop + gateway) to validate and load modules.
+ *
+ * This is the *legacy* manifest: the one without `manifestVersion`. A plugin's
+ * manifest (version 1) is described by `plugin-manifest.schema.json` in this
+ * package and checked by `validateManifest` in `@clerq/plugin-sdk/manifest`.
  */
 
 export interface ModuleManifest {
@@ -33,7 +37,10 @@ export interface ModuleManifest {
   coreEndpoints?: string[];
   /** launchd agents the module may start and stop. */
   services?: Array<string | { label: string; name?: string; plist?: string }>;
-  /** What the module needs. Declared and shown to the operator; not enforced. */
+  /**
+   * What the module needs. Declared, shown to the operator and recorded; with
+   * enforcement on, what it does through its context is checked against it.
+   */
   permissions?: {
     exec?: string[];
     fs?: { read?: string[]; write?: string[] };
@@ -41,6 +48,9 @@ export interface ModuleManifest {
     secrets?: string[];
     services?: string[];
     llm?: boolean;
+    /** Core endpoints, as `METHOD /path`; read together with `coreEndpoints`. */
+    api?: string[];
+    memory?: { read?: string[]; write?: string[] };
   };
   /** What the module adds to the shell. */
   extensions?: Partial<Record<ExtensionPoint, ManifestExtensionItem[]>>;

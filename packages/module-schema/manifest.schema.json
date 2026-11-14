@@ -108,7 +108,7 @@
     },
     "permissions": {
       "type": "object",
-      "description": "What the module needs. Declared and shown to the operator; not enforced",
+      "description": "What the module needs. Declared and shown to the operator; with enforcement on (Settings, Plugins) what a module does through its context is checked against it",
       "properties": {
         "exec": {
           "type": "array",
@@ -154,6 +154,31 @@
         },
         "llm": {
           "type": "boolean"
+        },
+        "api": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Core endpoints it calls, as METHOD /path; read together with coreEndpoints"
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
