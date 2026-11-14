@@ -10,7 +10,7 @@
 
 > _Open-source local MCS for agentic automation. Small desktop worker that runs on your machine, with knowledge, tools, and context kept locally._
 
-**Status: 1.0.0 (2026-11-14).** The first stable release. The gateway's API is versioned (`/v1`) and only grows through 1.x ([API](docs/API.md)); the database is backed up before an upgrade and an older program refuses a newer one ([UPGRADING](docs/UPGRADING.md)). Agents run as you unless you choose isolation per automation, and plugin and skill checks are a switch you turn on: [THREAT_MODEL](docs/THREAT_MODEL.md) says what 1.0 defends against and what it does not, and the [CHANGELOG](CHANGELOG.md) lists what was not verified.
+**Status: 1.0.0 (2026-11-14).** The first stable release. The gateway's API is versioned (`/v1`) and only grows through 1.x ([API](docs/API.md)); the database is backed up before an upgrade and an older program refuses a newer one ([UPGRADING](docs/UPGRADING.md)). Agents run as you unless you choose isolation per automation, and plugin and skill checks are a switch you turn on: [THREAT_MODEL](docs/THREAT_MODEL.md) says what 1.0 defends against and what it does not, and the [CHANGELOG](CHANGELOG.md) lists what changed.
 
 **Clerq** is a small, generic desktop automation platform: programmable by developers on their local machine (as is, use at your own risk, no responsibility), and also offered as a hosted service with accounts, subscriptions, and modules that bundle built-in skills.
 
@@ -27,7 +27,7 @@
 
 \*\*Skills are available by module. You can build and load your own modules (for different roles and countries) on top of the core engine. See [About Clerq](docs/ABOUT_CLERQ.md).
 
-> **Security.** As of 0.4 the gateway is authenticated and binds loopback only. Every endpoint
+> **Security.** The gateway is authenticated and binds loopback only. Every endpoint
 > except `/health` and `/version` needs a bearer token, generated on first run at `~/.clerq/gateway-token`:
 >
 > ```bash
@@ -47,7 +47,7 @@
 
 ## Installing
 
-From **1.0.0** there are three ways to run **OpenClerq**, all on the [releases page](https://github.com/paxamedia/OpenClerq/releases) (and `ghcr.io` for the image) once the `v1.0.0` tag is built:
+From **1.0.0** there are three ways to run **OpenClerq**, all on the [releases page](https://github.com/paxamedia/OpenClerq/releases) (and `ghcr.io` for the image):
 
 | You want                                                 | Get                                                                                                                                                            | More                                                                     |
 | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -61,7 +61,7 @@ The installers are not code-signed for macOS or Windows, so Gatekeeper and Smart
 
 Prebuilt **macOS** (.dmg), **Windows** (.msi or .exe) and **Linux** (.deb, .rpm or AppImage) installers give users a **download-and-run** experience: install, launch the app, and the **gateway and calculation engine start automatically** — no separate terminal or Node setup needed.
 
-**On Linux**, from 1.0.0, for x64 and arm64: `sudo apt install ./Clerq_<version>_amd64.deb` on Debian and Ubuntu, `sudo dnf install ./Clerq-<version>-1.x86_64.rpm` on Fedora, or the AppImage anywhere else (`chmod +x Clerq_<version>_x86_64.AppImage`, then run it). They need WebKitGTK 4.1 and a glibc as new as Ubuntu 22.04's. In-app updates work for the AppImage; a `.deb` or `.rpm` is updated by installing the new package. Which file for which distribution, FUSE for AppImages, and what has and has not been tried: [Distribution](docs/DISTRIBUTION.md#linux).
+**On Linux**, from 1.0.0, for x64 and arm64: `sudo apt install ./Clerq_<version>_amd64.deb` on Debian and Ubuntu, `sudo dnf install ./Clerq-<version>-1.x86_64.rpm` on Fedora, or the AppImage anywhere else (`chmod +x Clerq_<version>_x86_64.AppImage`, then run it). They need WebKitGTK 4.1 and a glibc as new as Ubuntu 22.04's. In-app updates work for the AppImage; a `.deb` or `.rpm` is updated by installing the new package. Which file for which distribution, and FUSE for AppImages: [Distribution](docs/DISTRIBUTION.md#linux).
 
 The bundle description and the in-app **About** screen state clearly:
 

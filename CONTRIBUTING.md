@@ -56,7 +56,7 @@ pnpm --filter @clerq/gateway test   # Gateway unit tests (skill selector, etc.)
 pnpm test:rust                      # Rust calculation-core tests (cargo test)
 ```
 
-Full project build: `pnpm build`. We do not require tests for the first OSS release; manual verification is the bar.
+Full project build: `pnpm build`.
 
 ## Submitting changes
 
@@ -67,14 +67,14 @@ Full project build: `pnpm build`. We do not require tests for the first OSS rele
 5. **Open a pull request** against the default branch. Describe what you changed and why.
 6. **Respond** to any review feedback.
 
-We do not require a test suite for the first OSS release; manual local verification is the bar. If you add tests, they are welcome.
+Tests with your change are welcome.
 
 ## Code and docs
 
 - **Gateway:** TypeScript/Node in `packages/gateway/`.
 - **Desktop:** Tauri v2 + React in `apps/desktop/`.
 - **Rust engine:** `packages/calculation-core/`.
-- **Skills:** Markdown with YAML frontmatter in `skills/`; see [Module system](docs/MODULE_SYSTEM.md) and [Developer setup – Developing your own module](docs/DEVELOPER_SETUP.md#9-developing-your-own-module-skill).
+- **Skills:** Markdown with YAML frontmatter in `skills/`; see [Module system](docs/MODULE_SYSTEM.md) and [Skills](docs/SKILLS.md).
 
 No formal code style guide yet; match the existing style in the file you edit.
 

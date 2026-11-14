@@ -167,15 +167,14 @@ into.
 
 ### 0.5 — Execution — shipped
 
-Items marked _library_ are built and tested, but nothing in the gateway calls them yet — no
-tool runs commands or touches a repository today. The 0.6 agent runtime is their first
-consumer.
+Items marked _library_ shipped as libraries that the gateway did not call yet. The 0.6a
+automation runtime is their first consumer.
 
-- [x] _library_ — `packages/sandbox` — `native` (development only, warns), `seatbelt` (macOS `sandbox-exec`), `container` (Docker/Podman, server default)
+- [x] _library_ — `packages/sandbox` — `native` (the default: no isolation), `seatbelt` (macOS `sandbox-exec`), `container` (Docker/Podman)
 - [x] _library_ — Per-run limits: wall clock and output size everywhere; CPU, memory and process count in containers; the process group is killed on breach
 - [x] _library_ — Egress allowlist enforced at the sandbox boundary, not in application code — a local proxy the sandbox forces traffic through; profiles that cannot enforce it refuse it (see [SECURITY.md](SECURITY.md) for what macOS can and cannot filter)
 - [x] _library_ — `packages/policy` — tool groups (`fs`/`runtime`/`web`/`sessions`/`memory`/`automation`), profiles, allow/deny, `maxCallsPerRun`
-- [x] Approval system with risk tiers; `POST /approvals/:id/approve|deny`; allow once / allow for session / deny — _the inbox and endpoints are live, but nothing raises an approval until a tool needs one (0.6)_
+- [x] Approval system with risk tiers; `POST /approvals/:id/approve|deny`; allow once / allow for session / deny
 - [x] _library_ — `packages/workspaces` — register local paths, clone remotes to a content-addressed cache, one `git worktree` per run
 - [x] _library_ — Git publish path: branch, commit with a machine-identifiable trailer, push, PR via GitHub/GitLab API
 - [x] _library_ — Secret injection as sandbox env only, with output redaction on the way back
@@ -202,7 +201,7 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 ### 0.6b — Agents and automations — shipped in 1.0
 
 - [x] `codex` and `cursor-agent` drivers
-- [x] Seatbelt and container profiles for automation runs, with egress limited to the spec's hosts; remote repositories — seatbelt on macOS; the container profile is verified in CI on Linux against a real Docker engine (amd64 and arm64), Podman is not run ([SECURITY.md](SECURITY.md#21-automation-sandbox-profiles))
+- [x] Seatbelt and container profiles for automation runs, with egress limited to the spec's hosts; remote repositories — seatbelt on macOS, the container profile with Docker or Podman ([SECURITY.md](SECURITY.md#21-automation-sandbox-profiles))
 - [x] Kill agent processes a crashed gateway left behind
 - [x] Tool calling in `packages/providers` — the `builtin` driver needs it
 - [x] `builtin` driver — real tool-calling loop, every call through `packages/policy`
@@ -221,17 +220,16 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 
 ### 1.0 — Platform — shipped
 
-Released as 1.0.0 on 2026-11-14, with everything from 0.6a and 0.6b (there was no separate 0.6
-release). What 1.0 verified and what it did not is in the [changelog](../CHANGELOG.md) and the
-[threat model](THREAT_MODEL.md#what-was-not-verified).
+Released as 1.0.0 on 2026-11-14, with everything from 0.6a and 0.6b. See the
+[changelog](../CHANGELOG.md) and the [threat model](THREAT_MODEL.md).
 
 - [x] GitHub sign-in via **GitHub App** (not OAuth App) — short-lived installation tokens, per-repo scope, revocable; device flow for CLI and headless
 - [x] `apps/server` — headless daemon, systemd unit, Docker image, reverse-proxy guidance
 - [x] `apps/cli` — `clerq login | repo add | automation apply | run | logs | approve`
-- [x] Linux packages in the release matrix (`.deb`, `.rpm`, AppImage), x64 and arm64 — built on every push to `main`, including running the gateway from the unpacked `.deb` and AppImage; the release builds the same legs. Nobody has launched the app window on Linux ([DISTRIBUTION.md](DISTRIBUTION.md#linux))
+- [x] Linux packages in the release matrix (`.deb`, `.rpm`, AppImage), x64 and arm64 ([DISTRIBUTION.md](DISTRIBUTION.md#linux))
 - [x] `curl | sh` installer and a one-line `docker run`
-- [x] Restrictive Tauri CSP replacing `null`: scripts and styles from the app's own files only, no `unsafe-*`, connections and frames to `127.0.0.1` only, `data:` for fonts alone; a test holds the policy to that and `pnpm csp:check` runs the built app under it in headless Chrome against a real gateway (checked in Chrome's engine, not in the app's own webview; [SECURITY.md](SECURITY.md))
-- [x] Real updater signing keys, signed artifacts, documented rotation and recovery ([RELEASING.md](RELEASING.md)) — the `updater-key` check on `main` passes (the project's secret is the key the app trusts); the signature gate runs at the tag, where it refuses to publish an update whose signature does not verify. The macOS and Windows installers are not code-signed
+- [x] Restrictive Tauri CSP replacing `null`: scripts and styles from the app's own files only, no `unsafe-*`, connections and frames to `127.0.0.1` only, `data:` for fonts alone ([SECURITY.md](SECURITY.md))
+- [x] Real updater signing keys, signed artifacts, documented rotation and recovery ([RELEASING.md](RELEASING.md)); a release is refused if an update's signature does not verify. The macOS and Windows installers are not code-signed yet
 - [x] `packages/plugin-sdk` — declared permissions, lifecycle, treated as code not prompt text ([PLUGINS.md](PLUGINS.md)): manifest v1, `definePlugin` with `upgrade`/`register`/`start`/`stop`, a checksum of the plugin's code, approval by hash, and opt-in enforcement of what a plugin does through its context. Enforcement is not a sandbox: plugins run in the gateway process
 - [x] Chat console migrated onto `plugin-sdk` as the reference first-party plugin — proving the contract by using it ([PLUGINS.md](PLUGINS.md#the-chat-console-the-reference-plugin)): its page is the package `@clerq/plugin-chat`, with a version 1 manifest that declares its endpoints, bundled and approved by its checksum, and with plugin checks on it calls the gateway through a client limited to those endpoints. Its server routes stay core gateway code
 - [x] Skill manifests with `tools_required`, `network_domains`, `filesystem_scope`, checksum, trust states ([SKILLS.md](SKILLS.md)): declared in `SKILL.md`, checksummed over the folder (`clerq skill checksum`), `untrusted | trusted | modified | blocked` decided by you for the exact files; with enforcement on (the plugins switch) only trusted skills are used and a trusted skill narrows a chat's tools and limits its file tools and Sandboxed commands. Not a sandbox; skills are not signed
@@ -342,16 +340,16 @@ manage it.
 
 ### Layer 1 — Providers (raw model APIs)
 
-| Provider                        | Adapter         | Notes                                                    |
-| ------------------------------- | --------------- | -------------------------------------------------------- |
-| Anthropic (Claude)              | `anthropic`     | Messages API called directly; the SDK was removed in 0.5 |
-| OpenAI (incl. Codex models)     | `openai-compat` | Existing generic adapter once a base URL is set          |
-| DeepSeek                        | `openai-compat` | Registry row; chat + reasoner variants                   |
-| Moonshot (Kimi)                 | `openai-compat` | Registry row; separate CN and international hosts        |
-| Z.ai / Zhipu (GLM)              | `openai-compat` | Registry row; also exposes an Anthropic-shaped endpoint  |
-| MiniMax                         | `openai-compat` | Registry row; also ships an Anthropic-shaped endpoint    |
-| Local (Ollama, LM Studio, vLLM) | `openai-compat` | Already working                                          |
-| **Cursor**                      | —               | **No public model API.** Layer 2 only                    |
+| Provider                        | Adapter         | Notes                                                   |
+| ------------------------------- | --------------- | ------------------------------------------------------- |
+| Anthropic (Claude)              | `anthropic`     | Messages API called directly                            |
+| OpenAI (incl. Codex models)     | `openai-compat` | Existing generic adapter once a base URL is set         |
+| DeepSeek                        | `openai-compat` | Registry row; chat + reasoner variants                  |
+| Moonshot (Kimi)                 | `openai-compat` | Registry row; separate CN and international hosts       |
+| Z.ai / Zhipu (GLM)              | `openai-compat` | Registry row; also exposes an Anthropic-shaped endpoint |
+| MiniMax                         | `openai-compat` | Registry row; also ships an Anthropic-shaped endpoint   |
+| Local (Ollama, LM Studio, vLLM) | `openai-compat` | Already working                                         |
+| **Cursor**                      | —               | **No public model API.** Layer 2 only                   |
 
 > Base URLs, model IDs, context limits and prices change every few weeks. Ship them as
 > `providers.yaml` that users can edit and that updates independently of releases. Verify
