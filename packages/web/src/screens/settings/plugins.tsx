@@ -95,6 +95,18 @@ export function wouldStop(plugins: PluginInfo[]): string[] {
 /** The first characters of a hash, enough to compare by eye. */
 export const shortHash = (h: string | null): string => (h ? h.slice(0, 12) : '—');
 
+/** Shown when the list now says something other than what the dialog was opened on. */
+export const CHANGED_NOTE =
+  'This plugin changed while you were reviewing it. Close this and review it again: nothing shown here can be approved.';
+
+/** Whether the plugin now listed is not the one that was opened for review (changed, or gone). */
+export function changedSince(
+  opened: Pick<PluginInfo, 'checksum' | 'permissionsHash'>,
+  now: Pick<PluginInfo, 'checksum' | 'permissionsHash'> | undefined
+): boolean {
+  return !now || now.checksum !== opened.checksum || now.permissionsHash !== opened.permissionsHash;
+}
+
 const STALE =
   'The plugin changed while you were reviewing it. Nothing was approved. Review it again.';
 
@@ -193,6 +205,7 @@ export function ReviewDialog({
   open,
   busy,
   error,
+  changed,
   onClose,
   onApprove,
 }: {
@@ -201,6 +214,8 @@ export function ReviewDialog({
   open: boolean;
   busy?: boolean;
   error?: string | null;
+  /** The list now shows something else than what this dialog was opened on. */
+  changed?: boolean;
   onClose: () => void;
   onApprove: () => void;
 }) {
@@ -226,7 +241,13 @@ export function ReviewDialog({
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            <Button variant="primary" icon={Check} busy={busy} onClick={onApprove}>
+            <Button
+              variant="primary"
+              icon={Check}
+              busy={busy}
+              disabled={changed}
+              onClick={onApprove}
+            >
               Approve
             </Button>
           </>
@@ -262,6 +283,11 @@ export function ReviewDialog({
             {enforce
               ? 'Enforcement is on: the plugin will not run until you approve it.'
               : 'Enforcement is off, so this plugin runs whether or not you approve it. The approval is recorded, and counts if you turn enforcement on.'}
+          </p>
+        )}
+        {changed && (
+          <p className="tone-text-err" role="alert">
+            {CHANGED_NOTE}
           </p>
         )}
         {error && (
@@ -455,7 +481,8 @@ export function PluginsSection() {
   const live = useLive();
   const toast = useToast();
   const list = useResource('plugins', () => client.plugins(), { on: ['modules'] });
-  const [reviewing, setReviewing] = useState<string | null>(null);
+  // What was opened for review, as it was then: the list may change under the dialog.
+  const [reviewing, setReviewing] = useState<PluginInfo | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -463,7 +490,13 @@ export function PluginsSection() {
 
   const plugins = list.data?.plugins ?? [];
   const enforce = list.data?.enforce ?? false;
-  const current = plugins.find((p) => p.id === reviewing) ?? null;
+  const current = reviewing;
+  const changed = current
+    ? changedSince(
+        current,
+        plugins.find((p) => p.id === current.id)
+      )
+    : false;
 
   const refresh = async () => {
     await list.reload();
@@ -526,7 +559,7 @@ export function PluginsSection() {
               busyId={busyId}
               onReview={(p) => {
                 setError(null);
-                setReviewing(p.id);
+                setReviewing(p);
               }}
               onEnable={(p) => void act(p, 'enable')}
               onDisable={(p) => void act(p, 'disable')}
@@ -541,6 +574,7 @@ export function PluginsSection() {
           open
           busy={busyId === current.id}
           error={error}
+          changed={changed}
           onClose={() => setReviewing(null)}
           onApprove={() => void approve()}
         />

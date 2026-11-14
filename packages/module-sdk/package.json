@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "vitest run"
+    "test": "tsc --noEmit -p tsconfig.test.json && vitest run"
   },
   "dependencies": {
     "@clerq/plugin-sdk": "workspace:^"

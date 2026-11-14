@@ -1,8 +1,8 @@
 /**
  * @clerq/plugin-sdk: what an OpenClerq plugin's server code is given.
  *
- * A plugin's server entry (the manifest's `entry.server`) is one
- * self-contained ESM bundle that exports `definePlugin({ ... })` as its default:
+ * A plugin's server entry (the manifest's `entry.server`) is an ES module that
+ * exports `definePlugin({ ... })` as its default:
  *
  * ```ts
  * import { definePlugin } from '@clerq/plugin-sdk';
@@ -27,8 +27,10 @@
  * checks on what goes *through the context*. It is not a sandbox: direct Node
  * APIs (`child_process`, `fs`, `fetch`) are not blocked.
  *
- * This entry is types plus a few small helpers with no runtime dependencies, so
- * a plugin bundle stays self-contained. The manifest validator is at
+ * The whole folder the entry is in is the plugin's code: it is hashed, approved and run from a
+ * copy, so the entry may import from its own folder and from nowhere else: a bare package name
+ * or an absolute path is outside the approval. This entry is types plus a few small helpers with
+ * no runtime dependencies, so a bundle that includes it stays small. The manifest validator is at
  * `@clerq/plugin-sdk/manifest`, the checksum helpers at `@clerq/plugin-sdk/node`
  * and the UI types at `@clerq/plugin-sdk/ui`.
  */
@@ -423,8 +425,12 @@ export interface PluginPermissions {
   memory: { read: string[]; write: string[] };
 }
 
-/** The pre-1.0 name of {@link PluginPermissions}. */
-export type ModulePermissions = PluginPermissions;
+/**
+ * The pre-1.0 name of {@link PluginPermissions}, as it was: `api` and `memory` did not exist,
+ * so a literal written against it still compiles.
+ */
+export type ModulePermissions = Omit<PluginPermissions, 'api' | 'memory'> &
+  Partial<Pick<PluginPermissions, 'api' | 'memory'>>;
 
 /** Raised, and audited, when enforcement is on and a plugin goes beyond what it declared. */
 export class PluginPermissionError extends Error {
@@ -502,7 +508,11 @@ export interface PluginTimer {
 export interface PluginContext {
   /** The manifest id. */
   readonly id: string;
-  /** The plugin's directory on disk. */
+  /**
+   * The plugin's directory. For a plugin (manifest version 1) it is the read-only copy the
+   * gateway runs from, which holds exactly the files that were hashed and approved; a file the
+   * checksum does not cover is not there. For a legacy module it is the folder on disk.
+   */
   readonly dir: string;
   readonly version: string;
   /**

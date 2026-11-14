@@ -157,14 +157,18 @@ export function saveApproval(id: string, a: Approval): void {
 
 const ENFORCE_KEY = 'plugins.enforce';
 
-/** Whether the person has turned plugin permission enforcement on. Off unless they did. */
+/**
+ * Whether the person has turned plugin permission enforcement on. Off unless they did, and on
+ * when it cannot be told: a store that cannot be read, or a value that is neither `true` nor
+ * `false`, must not switch the checks off.
+ */
 export function enforcing(): boolean {
-  if (!isStoreOpen()) return false;
   try {
+    if (!isStoreOpen()) return true;
     const row = getStore().prepare('SELECT value FROM settings WHERE key = ?').get(ENFORCE_KEY);
-    return row?.value === 'true';
+    return row === undefined ? false : row.value !== 'false';
   } catch {
-    return false;
+    return true;
   }
 }
 

@@ -9,6 +9,8 @@ import { ToastProvider } from '../../ui/Toast';
 import {
   approvalNote,
   approveReviewed,
+  CHANGED_NOTE,
+  changedSince,
   ENFORCE_NOTE,
   EnforceDialog,
   EnforceSwitch,
@@ -250,6 +252,37 @@ describe('reviewing a plugin', () => {
   it('abbreviates a hash for the eye, and a missing one as a dash', () => {
     expect(shortHash('abcdef0123456789')).toBe('abcdef012345');
     expect(shortHash(null)).toBe('—');
+  });
+});
+
+describe('a plugin that changes under an open review', () => {
+  it('is told apart from the one that was opened: by either hash, or by being gone', async () => {
+    const { mailroom } = await fixturePlugins();
+    expect(changedSince(mailroom, { ...mailroom })).toBe(false);
+    expect(changedSince(mailroom, { ...mailroom, checksum: 'f'.repeat(64) })).toBe(true);
+    expect(changedSince(mailroom, { ...mailroom, permissionsHash: 'f'.repeat(64) })).toBe(true);
+    expect(changedSince(mailroom, undefined)).toBe(true);
+  });
+
+  it('says so in the dialog and cannot be approved from it', async () => {
+    const { mailroom } = await fixturePlugins();
+    const dialog = (changed: boolean) =>
+      html(
+        <ReviewDialog
+          plugin={mailroom}
+          enforce={false}
+          open
+          changed={changed}
+          onClose={noop}
+          onApprove={noop}
+        />
+      );
+    const changed = dialog(true);
+    expect(changed).toContain(CHANGED_NOTE.replace(/'/g, '&#x27;'));
+    expect(changed).toMatch(/<button[^>]*disabled[^>]*>(?:(?!<\/button>)[\s\S])*Approve/);
+    const same = dialog(false);
+    expect(same).not.toContain('changed while you were reviewing it');
+    expect(same).not.toMatch(/<button[^>]*disabled[^>]*>(?:(?!<\/button>)[\s\S])*Approve/);
   });
 });
 
