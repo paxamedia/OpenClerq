@@ -1,9 +1,10 @@
 #!/bin/sh
 # What a container engine holds after the container-profile tests, written to be read from a CI
 # log: the engine, every container and network that carries the label `clerq.run` (in any state,
-# so a proxy that crashed shows up), each one's state and logs (the egress proxy's among them),
-# and the command lines the tests' runtime wrapper recorded (arguments only, never the
-# environment). The tests call it when one fails, and CI runs it after a failed job.
+# so a proxy that crashed shows up), each one's state, the egress proxies' logs, and the command
+# lines the tests' runtime wrapper recorded (arguments only, never the environment; secrets go
+# to a container by name, so no command line has one). The tests call it when one fails, and CI
+# runs it after a failed job.
 #
 # Usage: scripts/container-debug.sh <runtime> [<file of recorded runtime calls> [<byte to start at>]]
 #
@@ -33,11 +34,18 @@ section "networks"
 section "networks labelled clerq.run"
 "$runtime" network ls --filter label=clerq.run --format 'table {{.Name}}\t{{.Driver}}\t{{.Label "clerq.run"}}' 2>&1
 
+# The state of every labelled container (its status, exit code and the engine's error, no
+# environment), but logs only of the egress proxies: they hold hosts and ports and nothing a
+# command printed. A command's output can hold anything, a secret among it, and a CI log is public.
 for name in $("$runtime" ps -a --filter label=clerq.run --format '{{.Names}}' 2>/dev/null); do
   section "state of $name"
   "$runtime" inspect --format '{{json .State}}' "$name" 2>&1
-  section "logs of $name (last 80 lines; an egress proxy logs what it allowed and refused)"
-  "$runtime" logs --tail 80 "$name" 2>&1
+  case "$name" in
+    *-egress)
+      section "logs of $name (last 80 lines: what the proxy allowed and refused)"
+      "$runtime" logs --tail 80 "$name" 2>&1
+      ;;
+  esac
 done
 
 for name in $("$runtime" network ls --filter label=clerq.run --format '{{.Name}}' 2>/dev/null); do
