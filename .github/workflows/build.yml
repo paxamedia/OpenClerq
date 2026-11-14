@@ -119,13 +119,35 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # NO_STRIP and APPIMAGE_EXTRACT_AND_RUN are for linuxdeploy, which makes the AppImage:
-      # its own `strip` fails on binaries from newer toolchains (and would cut off the code a
-      # Bun-compiled sidecar keeps appended to its file), and it needs no FUSE this way.
-      # build-desktop.js sets both and makes the Linux build verbose, which is what shows
-      # linuxdeploy's own output when it fails; they are named here too, so they are seen.
-      - name: Build sidecars and desktop (unsigned)
-        run: pnpm run build:installers
+      - name: Build the sidecars
+        run: pnpm run build:sidecars
+
+      # What the sidecars are, before anything bundles them. The first Linux builds failed in
+      # linuxdeploy: its gtk plugin ran ldd on the Bun-compiled gateway in usr/bin and aborted
+      # ("Failed to run ldd: exited with code 1"). The gateway now goes to /usr/share/clerq, which
+      # linuxdeploy does not scan (tauri.linux.conf.json); this step stays, so that what ldd and
+      # readelf say about each program is in the log of every Linux build.
+      - name: Look at the sidecars
+        run: |
+          set +e
+          cd apps/desktop/src-tauri/binaries
+          for f in *; do
+            echo "=== $f"
+            ls -l "$f"
+            file "$f"
+            readelf -h -l "$f" | grep -E "Type:|Machine:|Entry point|Requesting program interpreter|INTERP|DYNAMIC"
+            readelf -d "$f" | grep -E "NEEDED|FLAGS"
+            ldd "$f"
+            echo "ldd exit=$?"
+          done
+
+      # NO_STRIP and APPIMAGE_EXTRACT_AND_RUN are for linuxdeploy, which makes the AppImage: its own
+      # `strip` fails on binaries from newer toolchains (and would cut off the code a Bun-compiled
+      # program keeps appended to its file), and it needs no FUSE this way. build-desktop.js sets
+      # both and makes the Linux build verbose, which is what shows linuxdeploy's own output when
+      # it fails; they are named here too, so they are seen.
+      - name: Build the desktop (unsigned)
+        run: node scripts/build-desktop.js
         env:
           CI: true
           NO_STRIP: true
