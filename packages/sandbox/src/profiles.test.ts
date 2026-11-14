@@ -419,10 +419,15 @@ describe('container profile, against a fake runtime', () => {
       signal: controller.signal,
       onSpawn: (p) => (name = p.container?.name ?? ''),
     });
-    for (let i = 0; i < 100 && !fs.existsSync(path.join(bin, `state-${name}.pid`)); i++) {
+    // The fake runtime writes its pid file when it starts; every package's tests run at once, so it may
+    // be slow to. Wait for it for longer than a loaded machine needs, and say so if it never comes.
+    const pidFile = path.join(bin, `state-${name}.pid`);
+    for (let i = 0; i < 500 && !(name && fs.existsSync(pidFile)); i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
-    const inner = Number(fs.readFileSync(path.join(bin, `state-${name}.pid`), 'utf8'));
+    if (!fs.existsSync(pidFile))
+      throw new Error(`The fake runtime wrote no pid file at ${pidFile}.`);
+    const inner = Number(fs.readFileSync(pidFile, 'utf8'));
     expect(alive(inner)).toBe(true);
     const asked = Date.now();
     controller.abort();
