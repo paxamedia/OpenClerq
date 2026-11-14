@@ -182,6 +182,40 @@ describe('the imports', () => {
     expect(stray).toEqual([]);
   });
 
+  it('take nothing from the client but types and words: not the app’s own client, nor a way to set its token', () => {
+    // The client module also exports the shared `gateway`, on which the desktop sets the gateway's own token
+    // (`setGatewayToken`). Code built into the app runs in the app's JavaScript context, so this is a rule the
+    // console keeps and this test holds it to, not a wall: see "What the scoped client does and does not do".
+    const FROM_CLIENT = /import\s+(type\s+)?([^;]*?)\s+from\s+['"]@clerq\/gateway-client['"]/g;
+    const stray: string[] = [];
+    for (const { file, text } of sources) {
+      for (const m of text.matchAll(FROM_CLIENT)) {
+        const clause = m[2].trim();
+        if (m[1]) continue; // `import type { … }`: no value comes with it
+        if (/^\*\s+as\b/.test(clause) || !clause.startsWith('{')) {
+          stray.push(`${file}: ${clause} (a namespace or default import takes everything)`);
+          continue;
+        }
+        const names = clause
+          .replace(/^\{|\}$/g, '')
+          .split(',')
+          .map((n) => n.trim())
+          .filter((n) => n && !n.startsWith('type '));
+        for (const name of names) {
+          const value = name.split(/\s+as\s+/)[0];
+          if (/^(gateway|setGateway\w*|hasGatewayToken|createGatewayClient)$/.test(value)) {
+            stray.push(`${file}: ${value}`);
+          }
+        }
+      }
+      // A re-export would pass it on.
+      expect(text, file).not.toMatch(
+        /export\s+\{[^}]*\bgateway\b[^}]*\}\s+from\s+['"]@clerq\/gateway-client['"]/
+      );
+    }
+    expect(stray).toEqual([]);
+  });
+
   it('reach nothing in the app by a path', () => {
     for (const { file, text } of sources) {
       expect(text, file).not.toMatch(/from\s+['"]\.\.\/\.\.\//);

@@ -245,7 +245,7 @@ plugin's UI may import (`@clerq/web/plugin-ui`). The gateway lists it as a bundl
 checksum. Everything above, the sessions, the managed loop, approvals, drafts, the mode diff, is the gateway's
 own code and stays core, whether or not the page is in the app; moving those routes into the plugin is not part
 of 1.0. With plugin checks on, the page talks to the gateway through a client over a module UI token limited to
-the endpoints the manifest declares; with them off it uses the app's own client. Taking the page out of the app's
+the endpoints the manifest declares, which checks the declared contract of code built into the app and is not isolation from it (see PLUGINS.md); with them off it uses the app's own client. Taking the page out of the app's
 bundled list removes the Chat page and changes nothing else.
 
 ### Cancellation and the kill switch

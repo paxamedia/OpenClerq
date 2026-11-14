@@ -485,16 +485,31 @@ on purpose:
 | Controls            | `Button`, `IconButton`, `Checkbox`, `SegmentedControl`, `Input`, `Select`, `Textarea`, `Dialog`, `Drawer`, `Split`, `StatusTag`, `useToast`, `cx` |
 | Display             | `CodeBlock`, `KeyValue`, `ProgressLine`, `EmptyState`, `CompareBars`, `metricText`, `metricValue`, `When`                                         |
 | The page            | `Page`, `PageHeader`, `PageSkeleton`, `Loaded`, `ErrorState`, `useMedia`, `PHONE_QUERY`                                                           |
-| Data and navigation | `useClient`, `useResource`, `useLive`, `navigate`                                                                                                 |
+| Data and navigation | `useClient`, `useResource`, `useInvalidate`, `navigate`                                                                                           |
 | Words and numbers   | `describeCron`, `duration`, `errorMessage`, `exactTime`, `money`, `tokens`                                                                        |
 
 `useClient()` is the client **the shell gave the plugin**, not the app's own (see
-[below](#how-the-scoped-client-works)). The surface has no host (so no config file, updater or
-notification), no live-store constructor and no app-wide client. A plugin's CSS is its own; it may use the
-app's design tokens (`var(--space-3)`, `var(--line)`) and these shared text classes: `page-hint`,
-`page-link`, `page-link-button`, `page-mono`, `page-muted`, `tone-text-err`. A plugin built apart from the
-app must resolve the same `react` and the same `@clerq/web` as the app, because its components read the app's
-contexts; a bundled plugin in this repository does, as a workspace package.
+[below](#how-the-scoped-client-works)). Three more things are the plugin's own, so that what the plugin does
+cannot change what the shell decides from:
+
+- **A live store.** `useResource` in a plugin's page reads and writes a store that belongs to that plugin (the
+  console's `sessions` and `providers` do not share a key with the core screens'). The shell's own store, which
+  holds what the shell read with the app's client and receives every event the gateway sends, is not reachable:
+  there is no `useLive`. `useInvalidate()` refetches the plugin's own store. The plugin's store follows the shell's
+  event stream, which is operator-scoped: the shell tells it which kinds of data changed (`sessions`, `approvals`),
+  never the events themselves, and the plugin refetches with its own client. While that stream is down the plugin's
+  store polls, like the shell's.
+- **A reduced host.** `props.host` has `kind`, `version` and an `openUrl` that opens only `https:` addresses.
+  It has nothing that repoints the app's client (`setGatewayUrl`), writes its settings (`writeConfig`) or the API
+  key (`saveApiKey`), posts a form (`openForm`) or shows a notification. This holds for every module the shell draws.
+- **A shell that does not read what a plugin can write.** Whether checks are on, and what a plugin may be given, come
+  from `GET /plugins`, read by the shell into its own store, which a plugin cannot reach.
+
+A plugin's CSS is its own; it may use the app's design tokens (`var(--space-3)`, `var(--line)`) and these shared
+text classes: `page-hint`, `page-link`, `page-link-button`, `page-mono`, `page-muted`, `tone-text-err`. A plugin
+built apart from the app must resolve the same `react` and the same `@clerq/web` as the app, because its components
+read the app's contexts; a bundled plugin in this repository does, as a workspace package. These are limits on what
+the surface hands out, and they are not isolation: see [What the scoped client does and does not do](#what-the-scoped-client-does-and-does-not-do).
 
 `@clerq/web/testing` has `PluginTestFrame`, which supplies the client, live data and toasts to a plugin's
 components in a test, and `@clerq/web/fixtures` a fixture client to go with it.
@@ -602,11 +617,39 @@ while it is unapproved). The shell asks for it with the **gateway token** (the a
 and **renews it when 70% of its life has passed**, on a timer, so a session outlives any one token. A token lasts
 15 minutes by default; a request that began with a token (a streamed answer, say) keeps it, since the gateway
 looks at a token when a request starts. If a renewal fails the shell tries again after ten seconds, and the
-token in hand keeps working until it ends. The palette's commands and search for the plugin use the same client.
+token in hand keeps working until it ends. A token the gateway **refuses** (revoked with
+`DELETE /modules/<id>/tokens`, or the plugin was switched off and on) is replaced on the first refusal: the client
+asks the shell for a new one and sends the request once more, once, so the person sees nothing. When there is no
+token that works (it ended while every renewal failed, or the gateway refused it and a new one could not be had),
+the page says it could not get a token and makes no call, until one arrives. The palette's commands and search for
+the plugin use the same client.
 
-The gateway token never reaches the plugin: what `useClient()` returns is the scoped client, and the module token
-reaches nothing that is `/plugins`, `/secrets`, `/skills/:slug/trust`, a token route or anything else the gateway
-keeps for its own token. A call the manifest does not declare is `403`.
+### What the scoped client does and does not do
+
+For a plugin whose page is **compiled into the app**, the scoped client **checks the declared contract**: the
+gateway holds what the page asks of it, through the client it was handed, to what the manifest declares and the
+person approved, and a change to the manifest needs a new approval. **It is not isolation, and such code is trusted
+like the app.** The page runs in the app's own JavaScript context:
+
+- `@clerq/gateway-client` exports `gateway` and `setGatewayToken`, and the desktop sets the gateway's own token on that
+  shared client, so code that imports it holds the full token;
+- the desktop window has Tauri's global (`withGlobalTauri` is on), so page code can call `invoke('gateway_token')`;
+- it can call `fetch` itself, read what the app keeps, and touch the DOM the shell draws.
+
+The console keeps to the rules (a test fails if its source imports `gateway`, `setGateway*`, `hasGatewayToken` or
+`createGatewayClient` as values, takes anything from the app but `@clerq/web/plugin-ui`, or calls an endpoint its
+manifest does not list), and the surface above hands a plugin nothing extra. Those are things the console is held to,
+and they are not walls. The honest reading: **approving a bundled plugin whose page is built into the app is
+approving code that is as trusted as the app**; what the manifest and the scoped client give you is a declaration to
+review and a client that checks it, for code that behaves.
+
+A UI a plugin ships **in its own folder** (`entry.ui`) is different. It is drawn in an iframe
+(`sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"`, no referrer) served from
+the gateway's own address, and the shell posts it its module token by `postMessage`, to that address only. In the
+desktop app that address is not the app window's, so the frame's JavaScript cannot reach the app's (the browser
+keeps different origins apart), and no Tauri capability names a remote address, so Tauri's commands are not
+offered to it. The token it was posted is the only credential it has; what that token reaches is what the manifest
+declares. Frames of different plugins share the gateway's origin, so they share its browser storage.
 
 A change to what the manifest declares follows the rules above: with checks on, the plugin is not approved by the
 bundled list any more (its checksum is not the listed one) and waits for approval, with no token, until you review
