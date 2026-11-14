@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
-    "build:binary": "node ../../scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server --with-calc",
+    "build:binary": "node ../../scripts/build-binary.js --entry apps/server/src/main.ts --name clerq-server",
     "smoke": "node scripts/smoke.mjs",
     "test": "vitest run"
   },

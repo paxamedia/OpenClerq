@@ -136,6 +136,19 @@ export async function openDatabase(path: string): Promise<Database> {
       }
     },
     close() {
+      // Fold the write-ahead log into the database file and remove it, so the
+      // file alone is the whole database once the process has stopped (a copy
+      // of `clerq.db` taken then misses nothing). Bun's close does not do this
+      // while statements are still alive, and leaves the log beside the file.
+      // Best effort: another process reading the file can keep it from
+      // finishing, and the log is then simply recovered by the next open.
+      if (path !== ':memory:') {
+        try {
+          handle.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        } catch {
+          /* nothing to fold, or the file is busy */
+        }
+      }
       handle.close();
     },
   };

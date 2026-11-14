@@ -1,0 +1,107 @@
+# OpenClerq server as a system service. An example to adapt, not a promise that
+# every line suits every machine. docs/SERVER.md walks through installing it.
+#
+#   sudo useradd --system --user-group --home-dir /var/lib/openclerq \
+#        --shell /usr/sbin/nologin openclerq
+#   sudo install -m 0755 clerq-server clerq-calc /usr/local/bin/
+#   sudo install -m 0644 openclerq.service /etc/systemd/system/openclerq.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now openclerq
+#
+# Settings go in the [Service] section below or, for anything secret (provider
+# keys, CLERQ_GATEWAY_TOKEN), in /etc/openclerq/openclerq.env, which only root
+# needs to read (`sudo systemctl edit openclerq` for a drop-in is the other way):
+#
+#   CLERQ_HOST             address to listen on          (default 127.0.0.1)
+#   CLERQ_PORT             port to listen on             (default 18790)
+#   CLERQ_GATEWAY_TOKEN    the API token; left out, one is made at
+#                          /var/lib/openclerq/.clerq/gateway-token on first start
+#   CLERQ_CALC_PATH        the clerq-calc binary         (default: next to clerq-server)
+#   ANTHROPIC_API_KEY, OPENAI_API_KEY, ...   provider keys, as the providers name them
+#
+# Agents run as this service account, with the permissions below and nothing
+# more. A repository outside /var/lib/openclerq needs ReadWritePaths= (see the
+# note at ProtectSystem).
+
+[Unit]
+Description=OpenClerq server
+Documentation=https://github.com/paxamedia/OpenClerq/blob/main/docs/SERVER.md
+After=network-online.target
+Wants=network-online.target
+# Stop trying after five failed starts in five minutes: a refusal to start
+# (a database from a newer version, a port in use) does not fix itself.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=openclerq
+Group=openclerq
+
+# The data directory is $HOME/.clerq, so HOME is the state directory: one place
+# for the database, backups, token, vault, clones and worktrees. systemd makes
+# /var/lib/openclerq, owned by the service account, mode 0700.
+StateDirectory=openclerq
+WorkingDirectory=/var/lib/openclerq
+Environment=HOME=/var/lib/openclerq
+Environment=CLERQ_HOST=127.0.0.1
+Environment=CLERQ_PORT=18790
+EnvironmentFile=-/etc/openclerq/openclerq.env
+
+ExecStart=/usr/local/bin/clerq-server
+
+# The server stops within 10 s of SIGTERM (exit 0) or exits 1 after 10 s;
+# 15 s gives systemd's own wait some margin before it uses SIGKILL.
+TimeoutStopSec=15
+# SIGTERM goes to clerq-server alone, so it can stop on its own terms: a run in
+# flight is not interrupted by its agent dying underneath it and is picked up
+# by the next start. Whatever agent and gate processes are left once it has
+# exited are then killed by systemd.
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+# Exit 2 is a bad argument or setting; starting again changes nothing.
+RestartPreventExitStatus=2
+
+# --- Hardening that agents can live with ---
+# Agents are ordinary programs (git, node, compilers, test runners, ssh) run as
+# this account. Each line below is one that does not stop them.
+#
+# No setuid or capability gain through exec. An agent that wants sudo does not get it.
+NoNewPrivileges=yes
+# A /tmp and /var/tmp of the service's own, gone when it stops.
+PrivateTmp=yes
+# Everything outside the state directory, /tmp and the API file systems is
+# read-only to the service: /usr, /etc, /boot, and every other path. The
+# state directory (which holds the database, clones and worktrees) is writable
+# because StateDirectory= says so. A local repository elsewhere is not, so a
+# run on it fails with "Read-only file system" until it is named here, e.g.:
+#   ReadWritePaths=/srv/repos /home/alice/code
+# (Add "-" before a path that may not exist: ReadWritePaths=-/srv/repos.)
+ProtectSystem=strict
+# Kernel knobs and interfaces no build or test run should touch.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# --- Left out on purpose ---
+# ProtectHome=      Local repositories are often under /home, and ReadWritePaths=
+#                   cannot bring a path back from beneath a hidden /home. The
+#                   account's own home is the state directory, and file modes
+#                   already keep it out of other people's.
+# PrivateDevices=   Some agent tools and test suites need pseudo-terminals.
+# RestrictNamespaces=, SystemCallFilter=, MemoryDenyWriteExecute=
+#                   bubblewrap and rootless containers need namespaces; agents
+#                   run whatever they run; node and Bun JIT-compile code.
+# ProtectProc=, RestrictAddressFamilies=
+#                   The server lists processes to clean up after a crashed
+#                   run, and tools ask the kernel for network interfaces.
+# UMask=            A shared repository must stay readable by its other users.
+
+[Install]
+WantedBy=multi-user.target

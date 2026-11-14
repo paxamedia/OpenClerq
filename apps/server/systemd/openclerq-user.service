@@ -1,0 +1,49 @@
+# OpenClerq server as a user service: it runs as you, with your own ~/.clerq,
+# your repositories and everything else you can reach. An example to adapt.
+#
+#   mkdir -p ~/.local/bin ~/.config/systemd/user
+#   install -m 0755 clerq-server clerq-calc ~/.local/bin/
+#   install -m 0644 openclerq-user.service ~/.config/systemd/user/openclerq.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now openclerq
+#   loginctl enable-linger "$USER"     # keep it running when you are logged out
+#
+# Settings: add Environment= lines below, or run `systemctl --user edit openclerq`
+# for a drop-in, or put them in ~/.clerq/.env (a variable in the unit wins):
+#
+#   CLERQ_HOST             address to listen on          (default 127.0.0.1)
+#   CLERQ_PORT             port to listen on             (default 18790)
+#   CLERQ_GATEWAY_TOKEN    the API token; left out, one is made at
+#                          ~/.clerq/gateway-token on first start
+#   CLERQ_CALC_PATH        the clerq-calc binary         (default: next to clerq-server)
+#   ANTHROPIC_API_KEY, OPENAI_API_KEY, ...   provider keys, as the providers name them
+#
+# Agents run as you. Nothing here confines them: they can read and write what
+# you can. For a service with its own account and a read-only system, use the
+# system unit (openclerq.service) instead.
+
+[Unit]
+Description=OpenClerq server
+Documentation=https://github.com/paxamedia/OpenClerq/blob/main/docs/SERVER.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# %h is your home directory. HOME is not set here: the service gets yours, and
+# the data directory is ~/.clerq, the same one the desktop app uses.
+ExecStart=%h/.local/bin/clerq-server
+# EnvironmentFile=-%h/.config/openclerq/openclerq.env
+
+# See openclerq.service for why each of these is set.
+TimeoutStopSec=15
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=2
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
