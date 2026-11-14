@@ -1,6 +1,6 @@
 {
   "name": "@clerq/cli",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "The OpenClerq command line: sign in to a gateway, add repositories, apply automations, run them and follow them",
   "private": true,
   "type": "module",

@@ -43,7 +43,7 @@ export function homeOf(env: Env): string {
   return path.resolve(home);
 }
 
-/** `clerq 0.5.1 (API version 1)`. */
+/** `clerq 1.0.0 (API version 1)`. */
 export async function versionLine(): Promise<string> {
   const { API_VERSION } = await import('@clerq/gateway-client/protocol');
   return `clerq ${CLI_VERSION} (API version ${API_VERSION})`;

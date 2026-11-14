@@ -1,6 +1,6 @@
 {
   "name": "@clerq/store",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "SQLite-backed durable store for Clerq: sessions, runs, steps and audit",
   "type": "module",
   "main": "dist/index.js",

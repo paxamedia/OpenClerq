@@ -2,7 +2,7 @@
 /**
  * Keep one version across the repository.
  *
- *   node scripts/sync-version.js 0.5.0   set every file to 0.5.0
+ *   node scripts/sync-version.js 1.0.0   set every file to 1.0.0
  *   node scripts/sync-version.js         re-sync every file to package.json's version
  *   node scripts/sync-version.js --check report drift and exit 1, writing nothing (CI)
  *
@@ -27,7 +27,7 @@ const check = args.includes('--check');
 const versionArg = args.find((a) => !a.startsWith('--'));
 
 if (versionArg && !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(versionArg)) {
-  console.error(`"${versionArg}" is not a semantic version (expected e.g. 0.5.0).`);
+  console.error(`"${versionArg}" is not a semantic version (expected e.g. 1.0.0).`);
   process.exit(1);
 }
 
@@ -85,6 +85,20 @@ const targets = [
     pattern: /export const CLI_VERSION = '[^']+';/,
     replace: (v) => `export const CLI_VERSION = '${v}';`,
     current: (m) => m[0].match(/'([^']+)'/)[1],
+  },
+  {
+    // The example output of `clerq status` in the CLI's page: the gateway's release...
+    file: 'docs/CLI.md',
+    pattern: /(Gateway is {2}OpenClerq )\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/,
+    replace: (v) => `$1${v}`,
+    current: (m) => m[0].match(/OpenClerq (\S+)$/)[1],
+  },
+  {
+    // ...and the CLI's own.
+    file: 'docs/CLI.md',
+    pattern: /(This CLI {4})\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/,
+    replace: (v) => `$1${v}`,
+    current: (m) => m[0].match(/ (\S+)$/)[1],
   },
 ];
 

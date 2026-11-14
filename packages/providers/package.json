@@ -1,6 +1,6 @@
 {
   "name": "@clerq/providers",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "Model provider registry and adapters, with token and cost accounting",
   "type": "module",
   "main": "dist/index.js",

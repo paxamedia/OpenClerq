@@ -140,7 +140,7 @@ const DEFAULT_CORS_ORIGINS = [
 ].join(',');
 
 /** Single source of truth for the version reported over the API. */
-export const GATEWAY_VERSION = '0.5.1';
+export const GATEWAY_VERSION = '1.0.0';
 
 /**
  * A provider problem — no key, unreachable endpoint, vendor error — is a

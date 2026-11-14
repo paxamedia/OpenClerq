@@ -1,6 +1,6 @@
 {
   "name": "@clerq/sandbox",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "Execution isolation: what a spawned process can physically do",
   "type": "module",
   "main": "dist/index.js",

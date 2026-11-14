@@ -1,6 +1,6 @@
 {
   "name": "@clerq/server",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "OpenClerq server: the gateway as a headless daemon (systemd, containers, a home server)",
   "private": true,
   "type": "module",

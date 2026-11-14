@@ -1,6 +1,6 @@
 {
   "name": "@clerq/gateway",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "Clerq agent gateway for local administrative automation",
   "type": "module",
   "main": "dist/index.js",

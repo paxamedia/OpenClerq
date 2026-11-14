@@ -1,6 +1,6 @@
 {
   "name": "@clerq/gateway-client",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "Gateway API client for Clerq desktop and modules",
   "type": "module",
   "main": "dist/index.js",

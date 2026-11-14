@@ -1,6 +1,6 @@
 {
   "name": "@clerq/plugin-sdk",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "The OpenClerq plugin contract: manifest v1, the plugin context and lifecycle, UI types, and the checksum of a plugin's code",
   "type": "module",
   "main": "dist/index.js",

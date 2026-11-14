@@ -1,6 +1,6 @@
 {
   "name": "@clerq/web",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "private": true,
   "description": "The OpenClerq interface: design system, shell and every screen, for the desktop and other apps",
   "type": "module",

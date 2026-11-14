@@ -1,6 +1,6 @@
 [package]
 name = "clerq-desktop"
-version = "0.5.1"
+version = "1.0.0"
 description = "Clerq — local administrative agent desktop app"
 authors = ["Clerq Team"]
 license = "MIT"

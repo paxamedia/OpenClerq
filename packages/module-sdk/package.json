@@ -1,6 +1,6 @@
 {
   "name": "@clerq/module-sdk",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "Superseded by @clerq/plugin-sdk, which it re-exports: the types and helpers a pre-1.0 OpenClerq module is written against",
   "type": "module",
   "main": "dist/index.js",

@@ -1,6 +1,6 @@
 {
   "name": "@clerq/plugin-chat",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "private": true,
   "description": "The OpenClerq chat console, as a first-party plugin on @clerq/plugin-sdk: its manifest and its UI",
   "type": "module",

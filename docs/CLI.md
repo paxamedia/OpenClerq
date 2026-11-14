@@ -133,8 +133,8 @@ Every command takes `--json`, `--gateway`, `--profile`, `--insecure`, `--no-colo
 Gateway     http://127.0.0.1:18790  (the gateway on this computer, the default)
 Profile     none in use
 Token       in ~/.clerq/gateway-token
-Gateway is  OpenClerq 0.5.1, API 1 (serves 1), store schema 21
-This CLI    0.5.1, API 1
+Gateway is  OpenClerq 1.0.0, API 1 (serves 1), store schema 23
+This CLI    1.0.0, API 1
 Compatible  yes
 Token is    accepted
 ```
