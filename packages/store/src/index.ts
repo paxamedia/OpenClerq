@@ -22,9 +22,14 @@ export {
   migrateModule,
   addTenantColumns,
   checkModuleSql,
+  moduleSqlViolation,
+  foreignObjects,
+  foreignReference,
   moduleTablePrefix,
   ModuleMigrationError,
+  type ModuleSqlViolation,
 } from './module-migrations.js';
+export { allNames, referencedNames, sqlWords } from './sql-names.js';
 export {
   BACKUPS_KEPT,
   LOCK_STALE_MS,

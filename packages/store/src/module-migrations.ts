@@ -5,7 +5,11 @@
  * underscores) and nothing else: a migration that creates, alters, drops or
  * writes any other object is refused before it runs. This keeps modules from
  * colliding with core tables and with each other; it is not a security
- * boundary, since module code has the store anyway.
+ * boundary, since module code has the store anyway. A migration may also not
+ * *read* an object that is not the module's own (`CREATE VIEW … AS SELECT … FROM
+ * settings`, `INSERT … SELECT … FROM messages`): that is checked by where names
+ * stand in the text, so it keeps a module out of the gateway's tables by
+ * mistake, not by force.
  *
  * Every table a module creates gets a `tenant_id` column (default
  * `default`) and an index on it, added by the store after each migration,
@@ -18,6 +22,7 @@
 import crypto from 'node:crypto';
 import type { Database } from './driver.js';
 import type { Migration } from './migrations.js';
+import { referencedNames } from './sql-names.js';
 
 export class ModuleMigrationError extends Error {
   constructor(message: string) {
@@ -103,27 +108,75 @@ function bare(name: string): { schema?: string; object: string } {
   return parts.length === 2 ? { schema: parts[0], object: parts[1] } : { object: parts[0] };
 }
 
-/** Throw unless every object `sql` creates, changes or writes belongs to the module. */
-export function checkModuleSql(moduleId: string, sql: string): void {
+/** What is wrong with a statement, for a caller that says it in its own words. */
+export type ModuleSqlViolation =
+  | { kind: 'forbidden'; word: string }
+  | { kind: 'object'; name: string };
+
+/**
+ * The first thing in `sql` that is not the module's to do: a forbidden keyword, or an object it
+ * creates, changes or writes that is not its own. `reindex` also refuses `REINDEX` with no name
+ * (it rebuilds every index) and with a name that is not the module's.
+ */
+export function moduleSqlViolation(
+  moduleId: string,
+  sql: string,
+  opts: { reindex?: boolean } = {}
+): ModuleSqlViolation | null {
   const text = code(sql);
   const forbidden = FORBIDDEN.exec(text);
-  if (forbidden) {
-    throw new ModuleMigrationError(
-      `${forbidden[1].toUpperCase()} is not allowed in a module migration.`
-    );
-  }
+  if (forbidden) return { kind: 'forbidden', word: forbidden[1].toUpperCase() };
   const prefix = moduleTablePrefix(moduleId);
+  const own = (name: string) => {
+    const { schema, object } = bare(name);
+    return !(schema && schema.toLowerCase() !== 'main') && object.toLowerCase().startsWith(prefix);
+  };
   for (const re of TARGETS) {
     re.lastIndex = 0;
     for (const m of text.matchAll(re)) {
-      const { schema, object } = bare(m[1]);
-      if ((schema && schema.toLowerCase() !== 'main') || !object.toLowerCase().startsWith(prefix)) {
-        throw new ModuleMigrationError(
-          `"${m[1]}" is not one of this module's objects; its names must start with ${prefix}.`
-        );
-      }
+      if (!own(m[1])) return { kind: 'object', name: m[1] };
     }
   }
+  if (opts.reindex) {
+    const re = new RegExp(String.raw`\bREINDEX\b(?:\s+${NAME})?`, 'gi');
+    for (const m of text.matchAll(re)) {
+      if (m[1] === undefined) return { kind: 'object', name: 'REINDEX' };
+      if (!own(m[1])) return { kind: 'object', name: m[1] };
+    }
+  }
+  return null;
+}
+
+/** Throw unless every object `sql` creates, changes or writes belongs to the module. */
+export function checkModuleSql(moduleId: string, sql: string): void {
+  const v = moduleSqlViolation(moduleId, sql);
+  if (!v) return;
+  if (v.kind === 'forbidden') {
+    throw new ModuleMigrationError(`${v.word} is not allowed in a module migration.`);
+  }
+  throw new ModuleMigrationError(
+    `"${v.name}" is not one of this module's objects; its names must start with ${moduleTablePrefix(moduleId)}.`
+  );
+}
+
+/**
+ * The tables, views, indexes and triggers a module's SQL may not touch: everything in the
+ * database that is not named `mod_<id>__*` (SQLite's own `sqlite_*` are caught by their prefix).
+ */
+export function foreignObjects(db: Database, moduleId: string): Set<string> {
+  const prefix = moduleTablePrefix(moduleId);
+  return new Set(
+    db
+      .prepare('SELECT name FROM sqlite_master')
+      .all()
+      .map((r) => String(r.name).toLowerCase())
+      .filter((n) => !n.startsWith(prefix))
+  );
+}
+
+/** The first object `sql` reads or writes, by where names stand, that is not the module's. */
+export function foreignReference(sql: string, foreign: ReadonlySet<string>): string | undefined {
+  return referencedNames(sql).find((n) => foreign.has(n) || n.startsWith('sqlite_'));
 }
 
 function checksum(sql: string): string {
@@ -154,6 +207,21 @@ export function migrateModule(db: Database, moduleId: string, migrations: Migrat
       .all(moduleId)
       .map((r) => [Number(r.id), String(r.checksum)])
   );
+  // A migration that is about to run may not read what is not the module's: a view over
+  // `settings`, a copy of `messages` into its own table. One that ran before is not looked at again.
+  const pending = sorted.filter((m) => !applied.has(m.id));
+  if (pending.length > 0) {
+    const foreign = foreignObjects(db, moduleId);
+    for (const m of pending) {
+      const read = foreignReference(m.sql, foreign);
+      if (read) {
+        throw new ModuleMigrationError(
+          `Migration ${m.id} (${m.name}) reads "${read}", which is not one of this module's objects; ` +
+            `a migration may only use names that start with ${moduleTablePrefix(moduleId)}.`
+        );
+      }
+    }
+  }
   // Data a newer copy of the module wrote: this copy does not know what it
   // changed, so it is not started on it. Like a changed migration, refused.
   const shipped = sorted.length > 0 ? sorted[sorted.length - 1].id : 0;

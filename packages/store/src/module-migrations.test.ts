@@ -1,8 +1,10 @@
+import crypto from 'node:crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   openStore,
   migrateModule,
   checkModuleSql,
+  moduleSqlViolation,
   ModuleMigrationError,
   type Database,
 } from './index.js';
@@ -112,12 +114,131 @@ describe('module migrations', () => {
       'CREATE VIRTUAL TABLE mod_hello_world__fts USING fts5(text)',
       `CREATE TRIGGER mod_hello_world__t AFTER INSERT ON mod_hello_world__items
          BEGIN UPDATE mod_hello_world__items SET text = text WHERE id = NEW.id; END`,
+      // (Reading is looked at when a migration is about to run, by migrateModule, not here.)
       'CREATE VIEW mod_hello_world__v AS SELECT id FROM runs',
       `INSERT INTO mod_hello_world__items (id, text) VALUES (1, 'x')
          ON CONFLICT (id) DO UPDATE SET text = excluded.text`,
       "/* it's a comment */ CREATE TABLE mod_hello_world__c (id INTEGER)",
     ];
     for (const sql of allowed) expect(() => checkModuleSql('hello-world', sql), sql).not.toThrow();
+  });
+});
+
+describe('what a migration may read', () => {
+  const mig = (sql: string, id = 1) => ({ id, name: 'm', sql });
+  const own = 'CREATE TABLE mod_hello_world__items (id INTEGER PRIMARY KEY, text TEXT);';
+
+  it.each([
+    'CREATE VIEW mod_hello_world__v AS SELECT key, value FROM settings',
+    'CREATE VIEW mod_hello_world__v AS SELECT * FROM "settings"',
+    'CREATE VIEW mod_hello_world__v AS SELECT * FROM main.settings',
+    "CREATE VIEW mod_hello_world__v AS SELECT * FROM 'settings'",
+    'CREATE VIEW mod_hello_world__v AS SELECT * FROM mod_hello_world__items, settings',
+    'CREATE VIEW mod_hello_world__v AS SELECT * FROM (settings)',
+    'CREATE VIEW mod_hello_world__v AS SELECT a.id FROM mod_hello_world__items a JOIN runs r ON r.id = a.id',
+    'CREATE VIEW mod_hello_world__v AS SELECT (SELECT value FROM settings LIMIT 1) AS v',
+    `CREATE TRIGGER mod_hello_world__t AFTER INSERT ON mod_hello_world__items
+       BEGIN INSERT INTO mod_hello_world__items (text) SELECT value FROM settings; END`,
+    'INSERT INTO mod_hello_world__items (text) SELECT content FROM messages',
+    'CREATE TABLE mod_hello_world__j (id INTEGER REFERENCES runs(id))',
+    'CREATE VIEW mod_hello_world__v AS SELECT * FROM sqlite_master',
+  ])('refuses %s, before anything runs', (view) => {
+    expect(() => migrateModule(db, 'hello-world', [mig(own), mig(view, 2)])).toThrow(
+      ModuleMigrationError
+    );
+    // Nothing of it was applied, not even the first, harmless migration.
+    expect(
+      db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'mod_hello_world__%'").all()
+    ).toEqual([]);
+  });
+
+  it('says which migration, and what it read', () => {
+    expect(() =>
+      migrateModule(db, 'hello-world', [
+        mig('CREATE VIEW mod_hello_world__v AS SELECT * FROM settings'),
+      ])
+    ).toThrow(
+      'Migration 1 (m) reads "settings", which is not one of this module\'s objects; a migration may only use names that start with mod_hello_world__.'
+    );
+  });
+
+  it('does not take a word for a table: a column, a value, a comment or an alias is not a read', () => {
+    const fine = [
+      'CREATE TABLE mod_hello_world__notes (id INTEGER, memory TEXT, runs INTEGER, messages TEXT, settings TEXT)',
+      "INSERT INTO mod_hello_world__items (text) VALUES ('messages'), ('settings'), ('runs')",
+      "UPDATE mod_hello_world__items SET text = 'memory' WHERE text = 'settings'",
+      "CREATE VIEW mod_hello_world__v AS SELECT text AS runs, text AS memory FROM mod_hello_world__items WHERE text IN ('messages', 'settings')",
+      'CREATE VIEW mod_hello_world__w AS SELECT i.text FROM mod_hello_world__items AS i JOIN mod_hello_world__items j ON i.id = j.id',
+      '-- FROM settings\nCREATE INDEX mod_hello_world__ix ON mod_hello_world__items (text)',
+      'CREATE VIEW mod_hello_world__x AS SELECT * FROM main.mod_hello_world__items',
+    ];
+    expect(
+      migrateModule(db, 'hello-world', [mig(own), ...fine.map((f, i) => mig(f, i + 2))])
+    ).toHaveLength(fine.length + 1);
+  });
+
+  it('does not look again at a migration that ran before', () => {
+    // As it would have been, written before the check: it is recorded, and left alone.
+    db.exec('CREATE TABLE mod_hello_world__old (id INTEGER)');
+    db.exec('CREATE VIEW mod_hello_world__oldv AS SELECT * FROM settings');
+    const sql = 'CREATE VIEW mod_hello_world__oldv AS SELECT * FROM settings';
+    db.prepare(
+      'INSERT INTO module_migrations (module_id, id, name, checksum, applied_at) VALUES (?, ?, ?, ?, ?)'
+    ).run('hello-world', 1, 'm', crypto.createHash('sha256').update(sql).digest('hex'), 'now');
+    expect(migrateModule(db, 'hello-world', [mig(sql)])).toEqual([]);
+  });
+
+  it('counts another module’s tables as foreign, and its own as its own', () => {
+    migrateModule(db, 'crm', [
+      { id: 1, name: 'a', sql: 'CREATE TABLE mod_crm__deals (id INTEGER)' },
+    ]);
+    expect(() =>
+      migrateModule(db, 'hello-world', [
+        mig('CREATE VIEW mod_hello_world__v AS SELECT * FROM mod_crm__deals'),
+      ])
+    ).toThrow(ModuleMigrationError);
+  });
+});
+
+describe('moduleSqlViolation', () => {
+  it('names the first thing that is not the module’s, or nothing', () => {
+    expect(moduleSqlViolation('hello-world', 'SELECT 1')).toBeNull();
+    expect(moduleSqlViolation('hello-world', 'PRAGMA user_version')).toEqual({
+      kind: 'forbidden',
+      word: 'PRAGMA',
+    });
+    expect(moduleSqlViolation('hello-world', 'DROP INDEX idx_repos_name')).toEqual({
+      kind: 'object',
+      name: 'idx_repos_name',
+    });
+    expect(moduleSqlViolation('hello-world', 'DROP INDEX IF EXISTS idx_x')).toEqual({
+      kind: 'object',
+      name: 'idx_x',
+    });
+    expect(moduleSqlViolation('hello-world', 'DROP TRIGGER IF EXISTS some_trigger')).toEqual({
+      kind: 'object',
+      name: 'some_trigger',
+    });
+    expect(moduleSqlViolation('hello-world', 'DROP INDEX mod_hello_world__ix')).toBeNull();
+  });
+
+  it('refuses REINDEX, with no name or another’s, when asked to', () => {
+    expect(moduleSqlViolation('hello-world', 'REINDEX')).toBeNull();
+    expect(moduleSqlViolation('hello-world', 'REINDEX', { reindex: true })).toEqual({
+      kind: 'object',
+      name: 'REINDEX',
+    });
+    expect(moduleSqlViolation('hello-world', 'reindex;', { reindex: true })).toEqual({
+      kind: 'object',
+      name: 'REINDEX',
+    });
+    expect(moduleSqlViolation('hello-world', 'REINDEX idx_repos_name', { reindex: true })).toEqual({
+      kind: 'object',
+      name: 'idx_repos_name',
+    });
+    expect(
+      moduleSqlViolation('hello-world', 'REINDEX "mod_hello_world__ix"', { reindex: true })
+    ).toBeNull();
   });
 });
 
