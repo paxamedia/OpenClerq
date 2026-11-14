@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectSkill } from './skill-selector.js';
+import { rankSkills, selectSkill } from './skill-selector.js';
 import type { SkillMeta } from '../skills-loader.js';
 
 const skills: SkillMeta[] = [
@@ -46,5 +46,27 @@ describe('selectSkill', () => {
   it('returns fallback for empty skills', () => {
     const r = selectSkill('VAT Region1', []);
     expect(r.fallbackToExplain).toBe(true);
+  });
+});
+
+describe('rankSkills', () => {
+  it('lists every match, best first, and in the order given among equals', () => {
+    const list: SkillMeta[] = [
+      { slug: 'plain', name: 'Plain' },
+      { slug: 'a', name: 'A', triggers: ['report'] },
+      { slug: 'b', name: 'B', triggers: ['report', 'plain'] },
+      { slug: 'c', name: 'C', triggers: ['nothing'] },
+    ];
+    expect(rankSkills('the plain report', list).map((s) => s.slug)).toEqual(['a', 'b', 'plain']);
+    expect(rankSkills('the report', list).map((s) => s.slug)).toEqual(['a', 'b']);
+  });
+
+  it('agrees with selectSkill on the first, and is empty when nothing matches or the message is', () => {
+    for (const m of ['What is VAT for Region1?', 'Region2 rules', 'Payroll gross amount']) {
+      expect(rankSkills(m, skills)[0]?.slug).toBe(selectSkill(m, skills).skillSlug);
+    }
+    expect(rankSkills('weather', skills)).toEqual([]);
+    expect(rankSkills('   ', skills)).toEqual([]);
+    expect(rankSkills('vat', [])).toEqual([]);
   });
 });

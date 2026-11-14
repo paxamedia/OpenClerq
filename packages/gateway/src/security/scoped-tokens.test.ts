@@ -39,6 +39,23 @@ describe('scopes', () => {
     expect(principalAllows(p, 'PUT', '/remote')).toBe(false);
   });
 
+  it('never decide a skill, whatever they say: trust, block and untrust are the operator’s', () => {
+    const p = { kind: 'module' as const, scopes: ['* /*'] };
+    for (const action of ['trust', 'block', 'untrust']) {
+      for (const path of [
+        `/skills/a/${action}`,
+        `/SKILLS/a/${action.toUpperCase()}`,
+        `/skills/a%20b/${action}/`,
+      ]) {
+        expect(principalAllows(p, 'POST', path), path).toBe(false);
+      }
+    }
+    // Reading the list is not a decision.
+    expect(principalAllows(p, 'GET', '/skills')).toBe(true);
+    expect(principalAllows(p, 'GET', '/skills/a')).toBe(true);
+    expect(principalAllows({ kind: 'operator' }, 'POST', '/skills/a/trust')).toBe(true);
+  });
+
   it('compare paths as Express routes them: any case, decoded, no empty segments', () => {
     const p = { kind: 'module' as const, scopes: ['* /*'] };
     for (const path of [

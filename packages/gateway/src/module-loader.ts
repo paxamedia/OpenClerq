@@ -320,6 +320,27 @@ export function getModuleSkillsDirs(modules: LoadedModule[]): string[] {
 }
 
 /**
+ * Each loaded module's skills folder with where it came from: `plugin:<id>` for a plugin, whose
+ * skills are approved with it, `module:<id>` for a legacy module, whose skills have trust states
+ * of their own. Read from the staged copy when there is one.
+ */
+export function getModuleSkillSources(
+  modules: LoadedModule[]
+): Array<{ dir: string; source: string }> {
+  const out: Array<{ dir: string; source: string }> = [];
+  for (const mod of modules) {
+    const skillsPath = path.join(mod.stageDir ?? mod.dir, skillsDirOf(mod.manifest));
+    if (fssync.existsSync(skillsPath) && fssync.statSync(skillsPath).isDirectory()) {
+      out.push({
+        dir: skillsPath,
+        source: `${mod.kind === 'plugin' ? 'plugin' : 'module'}:${mod.id}`,
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Mount a module's routes on the Express app at /api/modules/:moduleId/...
  */
 export function mountModuleRoutes(app: Express, module: LoadedModule): void {

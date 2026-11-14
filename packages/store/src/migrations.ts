@@ -620,4 +620,29 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: 23,
+    name: 'skill_trust',
+    // What the person decided about a skill that is not part of a plugin (a plugin's skills are
+    // approved with the plugin): trusted, with the checksum of the files they looked at, what
+    // the skill declared and which files there were (so a later change can be shown), or
+    // blocked. A skill with no row has not been decided on, and a change to a trusted skill's
+    // files is found by comparing the checksum, never by a flag. `source` is where the skill was
+    // found (`directory`, or `module:<id>` / `plugin:<id>`), `slug` its name there.
+    sql: `
+      CREATE TABLE skill_trust (
+        source     TEXT NOT NULL,
+        slug       TEXT NOT NULL,
+        status     TEXT NOT NULL CHECK (status IN ('trusted','blocked')),
+        checksum   TEXT,
+        name       TEXT,
+        version    TEXT,
+        needs      TEXT,
+        files      TEXT,
+        decided_at TEXT NOT NULL,
+        decided_by TEXT NOT NULL,
+        PRIMARY KEY (source, slug)
+      );
+    `,
+  },
 ];

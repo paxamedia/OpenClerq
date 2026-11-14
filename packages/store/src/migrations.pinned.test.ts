@@ -45,6 +45,7 @@ const PINNED: Array<[id: number, sha256: string]> = [
   [20, '6eae6541d691acc6d344d0392de6efdc6a385e206d8b9220df91a4840b41c34c'],
   [21, 'e009721cfef388c541f90fb5593acf99b80faec61a8776ae86ffc2993ba10b7c'],
   [22, 'ec258e42ecf97847291ac21fd1d2ae54dfc0abfd595e0d51ec4e5f8a6c7c1eec'],
+  [23, 'f50c280802cfc2baaea2001d5f96870914a94cf2ff7729ba1cea20d580cedabe'],
 ];
 
 const WHY =

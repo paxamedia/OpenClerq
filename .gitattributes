@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# A skill's checksum is over its bytes: keep the bundled skills' line endings the same on every platform.
+skills/** text eol=lf

@@ -273,6 +273,20 @@ export class ModuleHost {
     return enforcing();
   }
 
+  /**
+   * Whether the plugin that is running (or, if none, the one on disk) is the one that was
+   * approved. The skills a plugin ships are approved with it, so this is their trust.
+   */
+  pluginApproved(id: string): boolean {
+    const entry = this.entries.get(id);
+    if (!entry) return false;
+    try {
+      return approvalOf(readPluginRow(id), entry.loaded ?? entry.current).status === 'approved';
+    } catch {
+      return false;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // The steps a person or the gateway asks for
 

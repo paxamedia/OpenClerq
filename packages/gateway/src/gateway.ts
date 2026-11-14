@@ -7,19 +7,16 @@ import { licenseCheck } from './middleware/license.js';
 import { requireAuth, resolveGatewayToken } from './security/auth.js';
 import { logger } from './logger.js';
 import { getCalcBinaryPath, runEvalCalc } from './calc.js';
-import {
-  getSkillsDir,
-  loadSkillsFromDir,
-  loadSkillContent,
-  loadSkillContentFrom,
-  saveSkillFrontmatter,
-} from './skills-loader.js';
+import { getSkillsDir, saveSkillFrontmatter } from './skills-loader.js';
 import type { ChatMessage } from '@clerq/providers';
 import { getExplanation, buildContextPreview } from './agent/explain.js';
 import { getLLMProviderStatus, getAvailableModels, listProviders } from './agent/llm-provider.js';
 import { runTask } from './agent/task.js';
-import { selectSkill } from './agent/skill-selector.js';
-import { getModuleSkillsDirs } from './module-loader.js';
+import { getModuleSkillSources } from './module-loader.js';
+import { SkillCatalog } from './skills/catalog.js';
+import { BUNDLED_SKILLS } from './skills/bundled-skills.js';
+import { mountSkillRoutes } from './skills/routes.js';
+import { skillChoiceOf, skillTaskTrace } from './skills/use.js';
 import { ModuleHost } from './modules/host.js';
 import { BUNDLED_PLUGINS } from './modules/bundled-plugins.js';
 import { mountPluginRoutes } from './modules/plugin-routes.js';
@@ -332,6 +329,17 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     fetchImpl: config.plugins?.fetch,
     hookTimeoutMs: config.plugins?.hookTimeoutMs,
   });
+  // Every use of a skill goes through here: read once, hashed, judged (skills/catalog.ts).
+  const skills = new SkillCatalog({
+    sources: () => [
+      { dir: skillsDir, source: 'directory' },
+      ...getModuleSkillSources(modules.loaded()),
+    ],
+    enforcing: () => modules.enforcing(),
+    pluginApproved: (id) => modules.pluginApproved(id),
+    bundled: config.skills?.bundled ?? BUNDLED_SKILLS,
+    beforeRead: config.skills?.beforeRead,
+  });
 
   // Origins are reflected only when explicitly allow-listed. There is no wildcard
   // path: a wildcard lets any page the user visits drive their local gateway.
@@ -616,52 +624,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     }
   });
 
-  app.get('/skills', async (_req, res) => {
-    try {
-      const skills = await loadSkillsFromDir(skillsDir);
-      const moduleSkillsDirs = getModuleSkillsDirs(modules.loaded());
-      for (const dir of moduleSkillsDirs) {
-        const fromModule = await loadSkillsFromDir(dir);
-        const seen = new Set(skills.map((s) => s.slug));
-        for (const s of fromModule) {
-          if (!seen.has(s.slug)) {
-            seen.add(s.slug);
-            skills.push(s);
-          }
-        }
-      }
-      if (skills.length === 0) {
-        return res.json({
-          skills: [
-            {
-              slug: 'example',
-              name: 'Example',
-              description:
-                'Add skills in your skills directory. See skills/example for a template.',
-            },
-          ],
-          source: 'fallback',
-        });
-      }
-      res.json({ skills, source: moduleSkillsDirs.length > 0 ? 'disk+modules' : 'disk' });
-    } catch (e) {
-      logger.error('skills load error', { err: e instanceof Error ? e.message : String(e) });
-      res.status(500).json({ error: 'skills_load_failed' });
-    }
-  });
-
-  app.get('/skills/:slug', async (req: Request, res: Response) => {
-    const slug = typeof req.params?.slug === 'string' ? req.params.slug : '';
-    if (!slug) return res.status(400).json({ error: 'slug required' });
-    try {
-      const content = await loadSkillContent(skillsDir, slug);
-      if (!content) return res.status(404).json({ error: 'skill_not_found', slug });
-      res.json({ meta: content.meta, body: content.body });
-    } catch (e) {
-      logger.error('skill load error', { slug, err: e instanceof Error ? e.message : String(e) });
-      res.status(500).json({ error: 'skill_load_failed' });
-    }
-  });
+  mountSkillRoutes(app, skills, { enforcing: () => modules.enforcing() });
 
   app.put('/skills/:slug', async (req: Request, res: Response) => {
     const slug = typeof req.params?.slug === 'string' ? req.params.slug : '';
@@ -1023,7 +986,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       } catch {
         // Unresolvable: the managed side says why.
       }
-      const managed = await managedContext(managedDeps, session, text, model);
+      const managed = await managedContext(managedDeps, session, text, model, { preview: true });
       res.json({
         raw: {
           system: null,
@@ -1037,6 +1000,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
           system: managed.system,
           messages,
           skill: managed.skill,
+          skillPolicy: managed.skillPolicy,
           memory: managed.memory,
           tools: managed.tools,
           model: managed.model,
@@ -1270,16 +1234,21 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       if (sessionId && !getSession(sessionId)) {
         return res.status(404).json({ error: 'session_not_found', id: sessionId });
       }
-      // The skill's instructions are loaded as /task loads them, so the
-      // preview shows what a task with this skill would send. With a session,
-      // its conversation so far is included, as a managed turn sends it.
-      const skill = skillSlug ? await loadSkillContentFrom(allSkillsDirs(), skillSlug) : null;
+      // The skill is chosen as /task chooses it (read once, judged on what was read), so the
+      // preview shows what a task with this skill would send, and says when it would not be used.
+      const picked = skillSlug ? await skills.use(skillSlug) : null;
+      const passedOver = Boolean(picked && !picked.use && picked.skipped.length > 0);
       const preview = buildContextPreview({
         question: question || '(no question)',
         context: body.context,
-        skillSlug,
-        skillName: typeof body?.skillName === 'string' ? body.skillName : skill?.meta.name,
-        skillInstructions: skill?.body,
+        skillSlug: passedOver ? undefined : skillSlug,
+        skillName: passedOver
+          ? undefined
+          : typeof body?.skillName === 'string'
+            ? body.skillName
+            : picked?.use?.name,
+        skillInstructions: picked?.view?.body,
+        skillTrust: picked?.use?.trust,
         history: sessionId ? conversation(sessionId) : undefined,
         // What a managed turn would carry from memory, under the memory policy.
         memory: savedNotes(question)?.text,
@@ -1287,7 +1256,10 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       // A managed chat message ends its system prompt with the word on its tools.
       const session = sessionId ? getSession(sessionId) : null;
       if (session) preview.systemPrompt += `\n\n${toolPrompt(session.workspace)}`;
-      res.json(preview);
+      res.json({
+        ...preview,
+        ...(picked ? { skill: picked.use, skillsSkipped: picked.skipped } : {}),
+      });
     } catch (e) {
       logger.error('context preview error', { err: e instanceof Error ? e.message : String(e) });
       res.status(500).json({ error: 'context_preview_failed' });
@@ -1374,44 +1346,11 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     );
   }
 
-  /** Skills directories in lookup order: the configured one, then each module's. */
-  function allSkillsDirs(): string[] {
-    return [skillsDir, ...getModuleSkillsDirs(modules.loaded())];
-  }
-
-  /** Every skill: the configured directory's, then each module's not already seen. */
-  async function allSkills(): Promise<Awaited<ReturnType<typeof loadSkillsFromDir>>> {
-    let skills: Awaited<ReturnType<typeof loadSkillsFromDir>> = [];
-    try {
-      skills = await loadSkillsFromDir(skillsDir);
-      for (const dir of getModuleSkillsDirs(modules.loaded())) {
-        const fromModule = await loadSkillsFromDir(dir);
-        const seen = new Set(skills.map((s) => s.slug));
-        for (const s of fromModule) {
-          if (!seen.has(s.slug)) {
-            seen.add(s.slug);
-            skills.push(s);
-          }
-        }
-      }
-    } catch {
-      // continue with what was read
-    }
-    return skills;
-  }
-
   /** What a managed chat message runs with. */
   const managedDeps: ManagedDeps = {
     driver: config.chatDriver ?? defaultDriver('builtin'),
-    async selectSkill(message) {
-      const selection = selectSkill(message, await allSkills());
-      if (!selection.skillSlug) return {};
-      const skill = await loadSkillContentFrom(allSkillsDirs(), selection.skillSlug);
-      return {
-        slug: selection.skillSlug,
-        name: selection.skill?.name,
-        instructions: skill?.body,
-      };
+    async selectSkill(message, opts) {
+      return skillChoiceOf(await skills.pick(message, { record: !opts?.preview }));
     },
     memory: (message) => savedNotes(message),
     path: () => automationDeps.path(),
@@ -1432,10 +1371,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     message: string,
     opts: { model?: string; dryRun?: boolean; history?: ChatMessage[]; memory?: boolean } = {}
   ) {
-    const selection = selectSkill(message.trim(), await allSkills());
-    const skill = selection.skillSlug
-      ? await loadSkillContentFrom(allSkillsDirs(), selection.skillSlug)
-      : null;
+    const picked = await skills.pick(message.trim());
     const runCalc = fssync.existsSync(calcPath)
       ? async (expression: string, inputs?: Record<string, number>) => {
           const r = await runEvalCalc({ expression, inputs: inputs ?? {} }, calcPath);
@@ -1444,9 +1380,11 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       : undefined;
     return runTask({
       message: message.trim(),
-      skillSlug: selection.skillSlug,
-      skillName: selection.skill?.name,
-      skillInstructions: skill?.body,
+      skillSlug: picked.use?.slug,
+      skillName: picked.use?.name,
+      skillInstructions: picked.view?.body,
+      skillTrust: picked.use?.trust,
+      skillTrace: skillTaskTrace(picked),
       runCalc,
       model: opts.model,
       dryRun: opts.dryRun,

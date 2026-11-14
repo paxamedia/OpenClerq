@@ -46,4 +46,39 @@ describe('runTask', () => {
     );
     expect(user).toBe('What is VAT?');
   });
+
+  it('puts what the skill choice left to say in the trace, after the skill step, in a dry run and a real one', async () => {
+    const skillTrace = [
+      { step: 'skill_skipped', detail: 'The skill "old" (modified) matched but was not used.' },
+      { step: 'skill_trust', detail: 'vat is untrusted.' },
+    ];
+    const dry = await runTask({
+      message: 'What is VAT?',
+      skillSlug: 'vat',
+      skillTrace,
+      dryRun: true,
+    });
+    expect(dry.trace?.map((s) => s.step)).toEqual([
+      'skill_select',
+      'skill_skipped',
+      'skill_trust',
+      'explain',
+    ]);
+    callLLM.mockResolvedValue({ text: 'answer', model: 'm', provider: 'p', costUsd: 0 });
+    const real = await runTask({
+      message: 'What is VAT?',
+      skillSlug: 'vat',
+      skillName: 'VAT rules',
+      skillInstructions: 'Be exact.',
+      skillTrust: 'untrusted',
+      skillTrace,
+    });
+    expect(real.trace?.map((s) => s.step)).toEqual([
+      'skill_select',
+      'skill_skipped',
+      'skill_trust',
+      'explain',
+    ]);
+    expect(callLLM.mock.calls.at(-1)?.[0]).toContain('(trust state: untrusted)');
+  });
 });

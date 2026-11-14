@@ -42,6 +42,9 @@ const OPERATOR_ONLY = [
   /^\/github(\/|$)/,
   // Which plugins run and what they were approved for: a plugin's own UI token must never approve itself.
   /^\/plugins(\/|$)/,
+  // What a person decided about a skill: trust it, block it, forget the decision. A module's or a
+  // phone's token must never trust the skill that module ships.
+  /^\/skills\/[^/]+\/(trust|block|untrust)(\/|$)/,
   // Every event and log line, of every tenant: /events/stream is the filtered form.
   /^\/events$/,
   /^\/logs(\/|$)/,

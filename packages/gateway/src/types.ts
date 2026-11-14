@@ -21,6 +21,16 @@ export interface GatewayConfig {
     fetch?: typeof fetch;
     hookTimeoutMs?: number;
   };
+  /**
+   * Skill trust overrides. `bundled` lists the skills that ship with OpenClerq, by slug and
+   * the checksum they ship with; a skill with that slug and those exact files is trusted
+   * (default: `BUNDLED_SKILLS`). `beforeRead` is for tests: it runs after the skills folders are
+   * listed and before a skill's files are read.
+   */
+  skills?: {
+    bundled?: Readonly<Record<string, string>>;
+    beforeRead?(skillDir: string): void | Promise<void>;
+  };
   /** Development conveniences. Does NOT affect authentication. */
   devMode?: boolean;
   model?: string;

@@ -30,6 +30,9 @@ import {
 import { evaluate, type PolicyRules } from '@clerq/policy';
 import { ProviderError, type ChatMessage } from '@clerq/providers';
 import { managedSystemPrompt } from '../agent/explain.js';
+import { addRunStep } from '../runs.js';
+import { skillPolicy, type SkillPolicy } from '../skills/enforce.js';
+import type { SkillChoice } from '../skills/use.js';
 import { getRegistry, resolveTarget } from '../agent/llm-provider.js';
 import { eventRecorder } from '../agent/record-events.js';
 import { askForApproval } from '../automations/runner.js';
@@ -48,17 +51,12 @@ export const CHAT_APPROVAL_TIMEOUT_MS = 10 * 60_000;
 /** The most a managed chat message may run, tools and approvals included. */
 export const CHAT_TIMEOUT_MS = 30 * 60_000;
 
-/** The selected skill, as the gateway's skills loader found it. */
-export interface SkillChoice {
-  slug?: string;
-  name?: string;
-  instructions?: string;
-}
+export type { SkillChoice } from '../skills/use.js';
 
 export interface ManagedDeps {
   driver: Driver;
   /** Pick a skill for the message, as /task does. */
-  selectSkill(message: string): Promise<SkillChoice>;
+  selectSkill(message: string, opts?: { preview?: boolean }): Promise<SkillChoice>;
   /** The memory block for the message, under the memory policy, or undefined. */
   memory(message: string): { text: string; count: number } | undefined;
   /** PATH for commands in an attached folder. */
@@ -70,7 +68,13 @@ export interface ManagedDeps {
 /** What managed mode adds to a message, beyond what raw sends. */
 export interface ManagedContext {
   system: string;
-  skill: SkillChoice | null;
+  skill: Pick<SkillChoice, 'slug' | 'name' | 'instructions'> | null;
+  /**
+   * What the skill did to this message: its trust state, the skills passed over, the tools
+   * narrowed to, the paths and hosts enforced, and the same in plain words. Nothing is changed
+   * unless enforcement is on and the skill is trusted (skills/enforce.ts).
+   */
+  skillPolicy: SkillPolicy;
   memory: { text: string; count: number } | null;
   /** The model the message goes to, as provider/model. */
   model: string;
@@ -119,9 +123,10 @@ export async function managedContext(
   deps: ManagedDeps,
   session: Session,
   message: string,
-  model: string | undefined
+  model: string | undefined,
+  opts: { preview?: boolean } = {}
 ): Promise<ManagedContext> {
-  const skill = await deps.selectSkill(message.trim());
+  const skill = await deps.selectSkill(message.trim(), { preview: opts.preview });
   const memory = deps.memory(message) ?? null;
   const chosen = Boolean(model?.trim());
   const ref = qualified(model);
@@ -136,24 +141,33 @@ export async function managedContext(
           }
         })
         .filter((m) => m !== ref);
-  const rules = chatPolicy({
+  const chatRules = chatPolicy({
     workspace: Boolean(session.workspace),
     permissionMode: session.permissionMode,
     memoryReadTypes: getMemoryPolicy().readTypes,
   });
+  const offered = (r: PolicyRules) =>
+    offeredTools(r, {
+      repository: Boolean(session.workspace),
+      extra: chatTools({ sessionId: session.id, runId: '', rules: r }),
+    });
+  const policy = skillPolicy(chatRules, skill, {
+    workspace: Boolean(session.workspace),
+    sandboxed: session.permissionMode === 'sandboxed',
+    offered: (r) => offered(r).map((t) => t.name),
+  });
+  const rules = policy.rules;
   const system = [
     managedSystemPrompt({
       skillSlug: skill.slug,
       skillName: skill.name,
       skillInstructions: skill.instructions,
+      skillTrust: skill.trust,
       memory: memory?.text,
     }),
     toolPrompt(session.workspace),
   ].join('\n\n');
-  const tools = offeredTools(rules, {
-    repository: Boolean(session.workspace),
-    extra: chatTools({ sessionId: session.id, runId: '', rules }),
-  }).map((t) => ({
+  const tools = offered(rules).map((t) => ({
     name: t.name,
     modelName: t.definition.name,
     risk: t.risk,
@@ -163,7 +177,10 @@ export async function managedContext(
   }));
   return {
     system,
-    skill: skill.slug ? skill : null,
+    skill: skill.slug
+      ? { slug: skill.slug, name: skill.name, instructions: skill.instructions }
+      : null,
+    skillPolicy: policy,
     memory,
     model: ref,
     chosen,
@@ -195,14 +212,16 @@ export function providerSecrets(): Record<string, string> {
 /**
  * The isolation for a chat's commands and file tools: none (the user's access)
  * unless the conversation is Sandboxed, then seatbelt with writes only in the
- * folder and the chat's home, no network, and credential stores and the
- * gateway's own state unreadable.
+ * folder and the chat's home, no network (or only the hosts a trusted skill
+ * declares, with enforcement on), and credential stores and the gateway's own
+ * state unreadable.
  */
-export function chatSandbox(session: Session): SandboxOptions {
+export function chatSandbox(session: Session, hosts?: readonly string[] | null): SandboxOptions {
   if (session.permissionMode !== 'sandboxed' || !session.workspace) return { profile: 'native' };
   return {
     profile: 'seatbelt',
-    network: 'none',
+    // Nothing, unless a trusted skill the user turned enforcement on for declares hosts (skills/enforce.ts).
+    network: hosts && hosts.length > 0 ? [...hosts] : 'none',
     allowWrite: [chatHome(session.id)],
     denyRead: [...new Set([...credentialPaths(os.homedir()), ...gatewayStateDirs()])],
   };
@@ -223,6 +242,35 @@ export interface ManagedTurnResult {
   drafts: Array<Pick<Draft, 'id' | 'name'>>;
   toolCalls: number;
   model: string;
+}
+
+/**
+ * Put what the skill did on the message's run, as a step, when there is anything to say: a skill
+ * was used though not trusted, or one was passed over, or one declares needs. Never throws.
+ */
+function recordSkillStep(runId: string, p: SkillPolicy): void {
+  if (p.notes.length === 0) return;
+  try {
+    addRunStep(runId, {
+      kind: 'tool',
+      input: {
+        name: 'skill.select',
+        skill: p.used?.slug ?? null,
+        trust: p.used?.trust ?? null,
+        checksum: p.used?.checksum ?? null,
+      },
+      output: {
+        notes: p.notes,
+        skipped: p.skipped.map((s) => ({ skill: s.slug, trust: s.trust, note: s.note })),
+        ...(p.narrowedTo ? { narrowedTo: p.narrowedTo, removed: p.removed } : {}),
+        ...(p.fileScope ? { fileScope: p.fileScope } : {}),
+        ...(p.network ? { network: p.network } : {}),
+      },
+      status: p.skipped.length > 0 || (p.used && p.used.trust !== 'trusted') ? 'warning' : 'ok',
+    });
+  } catch {
+    // The record of a choice must not fail the message it describes.
+  }
 }
 
 /**
@@ -272,6 +320,7 @@ export async function runManagedTurn(
         input.onEvent?.({ type: 'approval_decided', id: approval.id, approved }),
     });
 
+  recordSkillStep(runId, context.skillPolicy);
   const recorder = eventRecorder(runId);
   const history = input.history.map((m) => ({ role: m.role, content: m.content }));
   let result: DriverResult | undefined;
@@ -288,7 +337,8 @@ export async function runManagedTurn(
     system: context.system,
     extraTools,
     timeoutMs: CHAT_TIMEOUT_MS,
-    sandbox: chatSandbox(session),
+    sandbox: chatSandbox(session, context.skillPolicy.network),
+    ...(context.skillPolicy.fileScope ? { fileScope: context.skillPolicy.fileScope } : {}),
     // A home of the conversation's own: `~` is not the user's, nor ~/.clerq under it.
     // Without a folder no command runs, and no home is made.
     env: session.workspace ? chatCommandEnv(session.id, deps.path()) : { PATH: deps.path() },

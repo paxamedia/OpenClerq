@@ -16,6 +16,10 @@ export interface TaskRequest {
   skillName?: string;
   /** Optional: the skill's instructions (SKILL.md body), sent with the explain call */
   skillInstructions?: string;
+  /** Optional: the skill's trust state, said in the prompt and the trace. */
+  skillTrust?: string;
+  /** Optional: what the skill choice left to say in the trace (skills passed over, trust, needs). */
+  skillTrace?: TaskStep[];
   /** Optional: run calculation when intent detected (e.g. "Calculate 25% on 100") */
   runCalc?: (
     expression: string,
@@ -52,12 +56,12 @@ export interface TaskResponse {
  * Run a single agent task: optionally run calculation, then get AI explanation.
  */
 export async function runTask(req: TaskRequest): Promise<TaskResponse> {
-  const { message, skillSlug, skillName, skillInstructions, runCalc, dryRun } = req;
+  const { message, skillSlug, skillName, skillInstructions, skillTrust, runCalc, dryRun } = req;
   const trimmed = message?.trim() ?? '';
   const trace: TaskStep[] = [];
 
   if (dryRun) {
-    trace.push({ step: 'skill_select', detail: skillSlug ?? 'auto' });
+    trace.push({ step: 'skill_select', detail: skillSlug ?? 'auto' }, ...(req.skillTrace ?? []));
     if (req.memory) {
       trace.push({
         step: 'memory',
@@ -97,7 +101,7 @@ export async function runTask(req: TaskRequest): Promise<TaskResponse> {
     };
   }
 
-  trace.push({ step: 'skill_select', detail: skillSlug ?? 'auto' });
+  trace.push({ step: 'skill_select', detail: skillSlug ?? 'auto' }, ...(req.skillTrace ?? []));
   if (req.memory) {
     trace.push({
       step: 'memory',
@@ -128,6 +132,7 @@ export async function runTask(req: TaskRequest): Promise<TaskResponse> {
     skillSlug,
     skillName,
     skillInstructions,
+    skillTrust,
     history: req.history,
     memory: req.memory?.text,
     model: req.model,
