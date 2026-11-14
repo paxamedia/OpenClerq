@@ -1099,7 +1099,9 @@ describe('builtin driver', () => {
       builtinSpec(
         'builtin-deadline',
         '  model: fake/priced\n  permission_mode: default\n',
-        'publish:\n  push: false'
+        // The approval timeout is far longer than the agent's 2 s, so the
+        // agent's time limit is what ends the wait.
+        'publish:\n  push: false\napprovals:\n  timeout: 1h'
       ).replace('  profile: native', '  profile: native\n  timeout: 2s')
     );
     expect(created.status).toBe(201);
@@ -1113,7 +1115,16 @@ describe('builtin driver', () => {
     const decided = getStore()
       .prepare('SELECT decision, decided_by FROM approvals WHERE run_id = ?')
       .all(runId);
-    expect(decided).toEqual([{ decision: 'denied', decided_by: 'agent-stopped' }]);
+    // The spec's approval timeout is its 24 h default, so only the agent's own
+    // time limit can end this wait. The wait is a timer set to the agent's
+    // deadline and the stop is the agent's signal, which fire within a
+    // millisecond of each other in either order (libuv times a timer from its
+    // cached clock, `Date.now()` can still read just before the deadline), so
+    // the row may say either. What must hold is that the request is closed as
+    // refused and not left for a person.
+    expect(decided).toHaveLength(1);
+    expect(decided[0]).toMatchObject({ decision: 'denied' });
+    expect(['agent-stopped', 'timeout']).toContain(decided[0].decided_by);
     // Nothing flips the finished run back to executing afterwards.
     await new Promise((r) => setTimeout(r, 200));
     expect((await json<{ status: string }>(`/runs/${runId}`)).body.status).toBe('failed');
