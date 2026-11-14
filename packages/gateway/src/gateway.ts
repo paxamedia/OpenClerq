@@ -58,7 +58,7 @@ import { mountMemoryRoutes } from './memory-routes.js';
 import { memoryBlock } from './memory-context.js';
 import { pruneExpired } from './memory-layer.js';
 import { getStore, initStore, isStoreOpen } from './store.js';
-import { schemaVersion, StoreBackupError, StoreTooNewError } from '@clerq/store';
+import { schemaVersion, StoreBackupError, StoreBusyError, StoreTooNewError } from '@clerq/store';
 import {
   API_VERSION,
   API_VERSION_HEADER,
@@ -185,7 +185,8 @@ export function createGateway(config: GatewayConfig = {}): {
   /**
    * Settles once the store is open and modules are loaded. Rejects, after the
    * server has stopped, when the store cannot be used at all: a database from
-   * a newer OpenClerq, or one that could not be backed up before an upgrade.
+   * a newer OpenClerq, one that could not be backed up before an upgrade, or
+   * one that another process was still upgrading after two minutes.
    */
   ready: Promise<void>;
 } {
@@ -1398,10 +1399,15 @@ export function createGateway(config: GatewayConfig = {}): {
       // Records past their expiry are removed; reads skip them either way.
       pruneExpired();
     } catch (e) {
-      // A database from a newer OpenClerq, or one that could not be backed up
-      // before an upgrade, is not something to run beside half-working: say
-      // why in plain words, stop serving, and let `ready` reject.
-      if (e instanceof StoreTooNewError || e instanceof StoreBackupError) {
+      // A database from a newer OpenClerq, one that could not be backed up
+      // before an upgrade, or one another process is still upgrading, is not
+      // something to run beside half-working: say why in plain words, stop
+      // serving, and let `ready` reject.
+      if (
+        e instanceof StoreTooNewError ||
+        e instanceof StoreBackupError ||
+        e instanceof StoreBusyError
+      ) {
         logger.error(e.message);
         server.close();
         server.closeAllConnections?.();

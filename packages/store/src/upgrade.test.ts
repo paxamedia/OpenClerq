@@ -189,7 +189,13 @@ describe('the newest copies are kept', () => {
     fs.writeFileSync(path.join(dir, 'clerq-schema9-20260101T000000000Z.db-wal'), 'x');
     fs.writeFileSync(path.join(dir, 'notes.txt'), 'mine');
     fs.writeFileSync(path.join(dir, 'clerq-schema3-by-hand.db'), 'mine');
-    fs.writeFileSync(path.join(dir, 'clerq-schema2-20260115T000000000Z.db.partial'), 'half');
+    // A copy a run died while writing, long ago; and one that is being written right now.
+    const dead = path.join(dir, 'clerq-schema2-20260115T000000000Z.db.4242.partial');
+    const live = path.join(dir, 'clerq-schema12-20261114T000000000Z.db.4243.partial');
+    fs.writeFileSync(dead, 'half');
+    fs.writeFileSync(live, 'half');
+    const longAgo = new Date(Date.now() - 60 * 60_000);
+    fs.utimesSync(dead, longAgo, longAgo);
 
     (await openStore(file)).close();
 
@@ -206,8 +212,10 @@ describe('the newest copies are kept', () => {
     const left = fs.readdirSync(dir);
     expect(left).toContain('notes.txt');
     expect(left).toContain('clerq-schema3-by-hand.db');
-    // A copy an earlier run died while writing is not a backup, and goes.
-    expect(left.some((n) => n.endsWith('.partial'))).toBe(false);
+    // A copy an earlier run died while writing is not a backup, and goes; one still being
+    // written by another process is left alone.
+    expect(left).not.toContain(path.basename(dead));
+    expect(left).toContain(path.basename(live));
   });
 
   it('never deletes the copy it has just made, even if the clock went backwards', async () => {

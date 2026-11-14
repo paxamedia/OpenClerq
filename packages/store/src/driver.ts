@@ -103,10 +103,12 @@ export async function openDatabase(path: string): Promise<Database> {
   // config files this store replaces were read-modify-write with no locking.
   // :memory: databases do not support WAL, and do not need it.
   if (path !== ':memory:') {
+    // Wait rather than fail immediately when another writer holds the lock. First,
+    // because the pragmas below take a lock too: a second process opening the file
+    // while the first is upgrading it failed here with "database is locked".
+    handle.exec('PRAGMA busy_timeout = 5000');
     handle.exec('PRAGMA journal_mode = WAL');
     handle.exec('PRAGMA synchronous = NORMAL');
-    // Wait rather than fail immediately when another writer holds the lock.
-    handle.exec('PRAGMA busy_timeout = 5000');
   }
   handle.exec('PRAGMA foreign_keys = ON');
 

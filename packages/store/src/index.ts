@@ -13,7 +13,7 @@ import { openDatabase, type Database } from './driver.js';
 import { MIGRATIONS } from './migrations.js';
 import { clerqHome, ensurePrivateDir, restrictFile } from './local-files.js';
 import { ensureMemoryIndex } from './memory.js';
-import { backupDatabase, backupsDir, refuseNewer } from './upgrade.js';
+import { acquireUpgradeLock, backupDatabase, backupsDir, refuseNewer } from './upgrade.js';
 
 export type { Database, Statement, Row, Param } from './driver.js';
 export { openDatabase } from './driver.js';
@@ -27,12 +27,18 @@ export {
 } from './module-migrations.js';
 export {
   BACKUPS_KEPT,
+  LOCK_STALE_MS,
+  LOCK_WAIT_MS,
+  PARTIAL_STALE_MS,
   StoreBackupError,
+  StoreBusyError,
   StoreTooNewError,
+  acquireUpgradeLock,
   backupDatabase,
   backupsDir,
   listBackups,
   newestKnownSchema,
+  upgradeLockFile,
 } from './upgrade.js';
 export { importLegacyJson, type ImportResult } from './import-legacy.js';
 export {
@@ -140,6 +146,22 @@ export function migrate(db: Database, hooks: MigrateHooks = {}): number[] {
 export interface OpenStoreOptions {
   /** Told what an upgrade did: which migrations ran, and where the backup is. */
   log?: (message: string, detail: Record<string, unknown>) => void;
+  /** How long to wait for another process that is upgrading the same database (default two minutes). */
+  lockWaitMs?: number;
+}
+
+/** The ids of the core migrations `db` has applied; none for a database never migrated. */
+function appliedIds(db: Database): number[] {
+  const table = db
+    .prepare(
+      "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+    )
+    .get();
+  if (!table) return [];
+  return db
+    .prepare('SELECT id FROM schema_migrations')
+    .all()
+    .map((r) => Number(r.id));
 }
 
 /**
@@ -170,7 +192,14 @@ export async function openStore(
   const created = !fs.existsSync(target);
 
   const db = await openDatabase(target);
+  let unlock: () => void = () => undefined;
   try {
+    // One process upgrades at a time. Whoever gets the lock second finds, once it has
+    // it, that the first has already migrated, and goes on without a copy of its own.
+    const applied = new Set(appliedIds(db));
+    if (MIGRATIONS.some((m) => !applied.has(m.id))) {
+      unlock = await acquireUpgradeLock(target, options.lockWaitMs);
+    }
     migrate(db, {
       backups: backupsDir(target),
       backup: (from) => backupDatabase(db, target, from),
@@ -185,6 +214,8 @@ export async function openStore(
     // Do not leave the file open behind a refusal.
     db.close();
     throw e;
+  } finally {
+    unlock();
   }
   // Migrating writes, so the WAL and shared-memory files exist by now too. A
   // database this call created is ours to tighten regardless of the opt-out.
