@@ -149,41 +149,54 @@ fn html_escape(text: &str) -> String {
     out
 }
 
-/// The page that posts `fields` to `url` by itself, or why it will not be made. `url` must be on
-/// GitHub's website (https, no user name), and the fields few, named plainly and not long.
+/// Whether `login` could be a GitHub user or organisation name: 1 to 39 letters, digits and
+/// hyphens, starting with a letter or digit.
+fn is_account_name(login: &str) -> bool {
+    !login.is_empty()
+        && login.len() <= 39
+        && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !login.starts_with('-')
+}
+
+/// Whether `rest` (what follows `https://github.com/`) is the page that takes a new app's
+/// manifest: `settings/apps/new` or `organizations/<org>/settings/apps/new`, with the one-time
+/// `?state=` the gateway made (64 lowercase hex digits) and nothing else.
+fn is_manifest_page(rest: &str) -> bool {
+    let Some((path, query)) = rest.split_once('?') else {
+        return false;
+    };
+    let path_ok = match path.split('/').collect::<Vec<_>>().as_slice() {
+        ["settings", "apps", "new"] => true,
+        ["organizations", org, "settings", "apps", "new"] => is_account_name(org),
+        _ => false,
+    };
+    let state_ok = query
+        .strip_prefix("state=")
+        .is_some_and(|s| s.len() == 64 && s.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
+    path_ok && state_ok
+}
+
+/// The page that posts a new GitHub App's manifest by itself, or why it will not be made. It
+/// is made for one purpose and nothing else: `url` must be GitHub's manifest page (see
+/// `is_manifest_page`) and the one field `manifest`, not long.
 fn form_page(url: &str, fields: &BTreeMap<String, String>) -> Result<String, String> {
     let rest = url
         .strip_prefix(FORM_TARGET)
-        .ok_or("Only forms for https://github.com can be opened.")?;
-    if rest
-        .chars()
-        .any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '<')
-    {
-        return Err("That address is not one this form may post to.".to_string());
+        .ok_or("Only GitHub's page for a new app can be opened.")?;
+    if !is_manifest_page(rest) {
+        return Err("That address is not GitHub's page for a new app.".to_string());
     }
-    if fields.is_empty() || fields.len() > 4 {
-        return Err("A form has one to four fields.".to_string());
+    let manifest = match (fields.len(), fields.get("manifest")) {
+        (1, Some(value)) => value,
+        _ => return Err("The form has one field, \"manifest\".".to_string()),
+    };
+    if manifest.len() > 64 * 1024 {
+        return Err("The manifest is far longer than it should be.".to_string());
     }
-    let mut inputs = String::new();
-    for (name, value) in fields {
-        let plain = !name.is_empty()
-            && name.len() <= 32
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-        if !plain {
-            return Err(format!("\"{}\" is not a field name.", name));
-        }
-        if value.len() > 64 * 1024 {
-            return Err(format!(
-                "The field \"{}\" is far longer than it should be.",
-                name
-            ));
-        }
-        inputs.push_str(&format!(
-            "<input type=\"hidden\" name=\"{}\" value=\"{}\">\n",
-            html_escape(name),
-            html_escape(value)
-        ));
-    }
+    let inputs = format!(
+        "<input type=\"hidden\" name=\"manifest\" value=\"{}\">\n",
+        html_escape(manifest)
+    );
     Ok(format!(
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Continue to GitHub</title>\n\
 <style>body{{font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem}}</style>\n\
@@ -595,19 +608,21 @@ mod tests {
         assert_eq!(after, "ANTHROPIC_API_KEY_BACKUP=b\nANTHROPIC_API_KEY=k\n");
     }
 
+    const STATE: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
     fn manifest_fields(value: &str) -> BTreeMap<String, String> {
         BTreeMap::from([("manifest".to_string(), value.to_string())])
     }
 
+    fn page_url(path: &str) -> String {
+        format!("https://github.com/{}?state={}", path, STATE)
+    }
+
     #[test]
     fn the_form_page_posts_one_escaped_field_to_github() {
-        let page = form_page(
-            "https://github.com/settings/apps/new?state=abc",
-            &manifest_fields("{\"name\":\"A \\\"<b>\\\" & co\"}"),
-        )
-        .unwrap();
-        assert!(page
-            .contains("method=\"post\" action=\"https://github.com/settings/apps/new?state=abc\""));
+        let url = page_url("settings/apps/new");
+        let page = form_page(&url, &manifest_fields("{\"name\":\"A \\\"<b>\\\" & co\"}")).unwrap();
+        assert!(page.contains(&format!("method=\"post\" action=\"{}\"", url)));
         assert!(page.contains("name=\"manifest\""));
         assert!(page.contains("&lt;b&gt;"));
         assert!(page.contains("&amp; co"));
@@ -617,33 +632,69 @@ mod tests {
     }
 
     #[test]
-    fn the_form_page_will_not_post_anywhere_but_github() {
+    fn the_form_page_takes_the_page_for_a_new_app_for_a_person_or_an_organisation() {
+        let fields = manifest_fields("{}");
+        assert!(form_page(&page_url("settings/apps/new"), &fields).is_ok());
+        assert!(form_page(
+            &page_url("organizations/acme-org/settings/apps/new"),
+            &fields
+        )
+        .is_ok());
+        assert!(form_page(&page_url("organizations/A1/settings/apps/new"), &fields).is_ok());
+    }
+
+    #[test]
+    fn the_form_page_will_not_post_to_any_other_page_of_github_or_anywhere_else() {
         let fields = manifest_fields("{}");
         for url in [
-            "http://github.com/settings/apps/new",
-            "https://github.com.evil.example/settings/apps/new",
-            "https://evil.example/https://github.com/",
-            "javascript:alert(1)",
-            "file:///etc/passwd",
-            "https://github.com/x\" onload=\"y",
-            "https://github.com/x y",
-            "",
+            // Not GitHub, or not https.
+            "http://github.com/settings/apps/new?state=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            format!("https://github.com.evil.example/settings/apps/new?state={}", STATE),
+            format!("https://evil.example/https://github.com/settings/apps/new?state={}", STATE),
+            format!("https://user@github.com/settings/apps/new?state={}", STATE),
+            "javascript:alert(1)".to_string(),
+            "file:///etc/passwd".to_string(),
+            String::new(),
+            // GitHub, but not the page for a new app.
+            "https://github.com/".to_string(),
+            page_url("settings/tokens/new"),
+            page_url("settings/apps/new/extra"),
+            page_url("settings/apps"),
+            page_url("login/oauth/authorize"),
+            page_url("organizations/settings/apps/new"),
+            page_url("organizations/a/b/settings/apps/new"),
+            page_url("../settings/apps/new"),
+            page_url("settings/apps/new/"),
+            // A bad organisation name.
+            page_url("organizations/-acme/settings/apps/new"),
+            page_url("organizations/ac me/settings/apps/new"),
+            page_url("organizations/ac%2Fme/settings/apps/new"),
+            page_url(&format!("organizations/{}/settings/apps/new", "a".repeat(40))),
+            // A missing, short, long or odd state, or more query.
+            "https://github.com/settings/apps/new".to_string(),
+            "https://github.com/settings/apps/new?state=abc".to_string(),
+            format!("https://github.com/settings/apps/new?state={}0", STATE),
+            format!("https://github.com/settings/apps/new?state={}", STATE.to_uppercase()),
+            format!("https://github.com/settings/apps/new?state={}&x=1", STATE),
+            format!("https://github.com/settings/apps/new?x=1&state={}", STATE),
+            format!("https://github.com/settings/apps/new?state={}#x", STATE),
+            format!("https://github.com/settings/apps/new?state={}\" onload=\"y", STATE),
+            format!("https://github.com/settings/apps/new?state={} ", STATE),
         ] {
-            assert!(form_page(url, &fields).is_err(), "{} was accepted", url);
+            assert!(form_page(&url, &fields).is_err(), "{} was accepted", url);
         }
     }
 
     #[test]
-    fn the_form_page_keeps_its_fields_few_plain_and_short() {
-        let url = "https://github.com/settings/apps/new";
-        assert!(form_page(url, &BTreeMap::new()).is_err());
-        let many: BTreeMap<String, String> = (0..5)
-            .map(|i| (format!("f{}", i), "x".to_string()))
-            .collect();
-        assert!(form_page(url, &many).is_err());
-        let odd = BTreeMap::from([("a\"b".to_string(), "x".to_string())]);
-        assert!(form_page(url, &odd).is_err());
-        assert!(form_page(url, &manifest_fields(&"x".repeat(64 * 1024 + 1))).is_err());
-        assert!(form_page(url, &manifest_fields(&"x".repeat(64 * 1024))).is_ok());
+    fn the_form_page_has_exactly_one_field_named_manifest_and_not_a_long_one() {
+        let url = page_url("settings/apps/new");
+        assert!(form_page(&url, &BTreeMap::new()).is_err());
+        let other = BTreeMap::from([("code".to_string(), "x".to_string())]);
+        assert!(form_page(&url, &other).is_err());
+        let mut two = manifest_fields("{}");
+        two.insert("extra".to_string(), "x".to_string());
+        assert!(form_page(&url, &two).is_err());
+        assert!(form_page(&url, &manifest_fields(&"x".repeat(64 * 1024 + 1))).is_err());
+        assert!(form_page(&url, &manifest_fields(&"x".repeat(64 * 1024))).is_ok());
     }
 }
