@@ -96,6 +96,8 @@ export interface GithubAppOptions {
   installedTtlMs?: number;
   missingTtlMs?: number;
   listTtlMs?: number;
+  /** A revoke is given up on after this long (default 8 s), whatever the general limit. */
+  revokeTimeoutMs?: number;
 }
 
 /** What GitHub says about an app: from `GET /app`, or from a manifest's conversion. */
@@ -191,6 +193,8 @@ export class GithubApp {
   private readonly installedTtl: number;
   private readonly missingTtl: number;
   private readonly listTtl: number;
+  /** How long a revoke may take: the general limit, or less. */
+  readonly revokeTimeoutMs: number;
   private lookups = new Map<string, { until: number; value: InstallationLookup }>();
   private lookupsInFlight = new Map<string, Promise<InstallationLookup>>();
   private tokens = new Map<string, MintedToken>();
@@ -203,6 +207,10 @@ export class GithubApp {
     this.installedTtl = options.installedTtlMs ?? INSTALLED_TTL_MS;
     this.missingTtl = options.missingTtlMs ?? MISSING_TTL_MS;
     this.listTtl = options.listTtlMs ?? LIST_TTL_MS;
+    this.revokeTimeoutMs = Math.min(
+      options.timeoutMs ?? API_TIMEOUT_MS,
+      options.revokeTimeoutMs ?? REVOKE_TIMEOUT_MS
+    );
   }
 
   /** The stored connection, or null. */
@@ -548,7 +556,7 @@ export class GithubApp {
     try {
       await githubRequest(
         { method: 'DELETE', path: '/installation/token', bearer: token },
-        this.api
+        { ...this.api, timeoutMs: this.revokeTimeoutMs }
       );
     } catch (e) {
       logger.warn('Could not revoke a GitHub installation token; it expires by itself', {

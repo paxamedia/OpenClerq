@@ -5,6 +5,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { API_TIMEOUT_MS } from './api.js';
 import {
   AppUnavailable,
   GithubApp,
@@ -13,6 +14,7 @@ import {
   MISSING_TTL_MS,
   PERMISSIONS,
   REFRESH_BEFORE_EXPIRY_MS,
+  REVOKE_TIMEOUT_MS,
 } from './app.js';
 import { APP_PRIVATE_KEY_SECRET, writeAppConfig } from './config.js';
 import { FakeGithub } from './fake-github.js';
@@ -286,12 +288,23 @@ describe('what an installation token is for', () => {
     expect(JSON.stringify(warn.mock.calls)).toContain('acme/app');
   });
 
+  it('gives up on a revoke after eight seconds, however long other calls may take', () => {
+    // The defaults: other calls wait 15 s, a revoke 8 s, so a run's end is not held longer.
+    expect(API_TIMEOUT_MS).toBe(15_000);
+    expect(REVOKE_TIMEOUT_MS).toBe(8_000);
+    expect(make().revokeTimeoutMs).toBe(8_000);
+    // A tighter general limit still wins, and a looser one does not lengthen it.
+    expect(make({ timeoutMs: 3_000 }).revokeTimeoutMs).toBe(3_000);
+    expect(make({ timeoutMs: 60_000 }).revokeTimeoutMs).toBe(8_000);
+  });
+
   it('does not wait for ever for a revoke that GitHub does not answer', async () => {
     fake.install({ repos: ['acme/app'] });
-    const quick = make({ timeoutMs: 150 });
-    const found = await quick.installationFor('acme/app');
+    // The general limit is left at its default (15 s): only the revoke's own cap can end the wait.
+    const slow = make({ revokeTimeoutMs: 200 });
+    const found = await slow.installationFor('acme/app');
     if (!found.installed) throw new Error('installed');
-    const t = await quick.mint('acme/app', found.installation, 'push', 'run_a');
+    const t = await slow.mint('acme/app', found.installation, 'push', 'run_a');
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     fake.hang = '/installation/token';
     const began = Date.now();
