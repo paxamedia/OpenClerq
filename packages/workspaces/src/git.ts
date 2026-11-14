@@ -75,6 +75,11 @@ export interface GitOptions {
   signal?: AbortSignal;
   /** Resolve instead of throwing on a non-zero exit. */
   allowFailure?: boolean;
+  /**
+   * How long, once git has exited and what is left of its group is killed, to wait for its
+   * output to close before failing (see `git()`). Default 10 s; a test shortens it.
+   */
+  pipesTimeoutMs?: number;
 }
 
 const DEFAULT_TIMEOUT = 120_000;
@@ -83,23 +88,14 @@ const DEFAULT_TIMEOUT = 120_000;
 const REMOTE_COMMANDS = new Set(['clone', 'fetch', 'pull', 'push', 'ls-remote']);
 
 /**
- * How long git waits for output that has stopped, once it exits: stdout and
- * stderr are normally closed the instant it does, so this is only for a
- * helper that was left holding them.
+ * The longest to wait, after git has exited, for its output to close. Whatever
+ * git started in its own group is killed when it exits, which closes the pipes
+ * at once; this is only for something that left the group (`setsid`) and kept
+ * them. Past it the call fails: returning the output read so far could be a
+ * truncated `git diff --numstat` that a gate then judges.
  */
-const DRAIN_MS = 500;
+const PIPES_TIMEOUT_MS = 10_000;
 
-/**
- * Run git, to its end or to `timeoutMs`.
- *
- * git runs in a process group of its own, and the timeout (or an abort) kills
- * the whole group: `git remote-http` and the other helpers git starts are not
- * git's own children to stop, and one that is left running holds the output
- * open, which used to keep a stalled check pending, and alive, for good. The
- * call settles when git exits, not when every helper has let go of its output.
- * A command that talks to a remote also gets curl's low-speed limit for the
- * length of the timeout, so a server that goes silent ends the transfer itself.
- */
 /** The subcommand in `args`: the first word that is not an option or an option's value (`-c x=y`, `-C dir`). */
 function subcommand(args: string[]): string {
   for (let i = 0; i < args.length; i++) {
@@ -126,9 +122,29 @@ export function gitArgv(args: string[], opts: Pick<GitOptions, 'harden' | 'timeo
   ];
 }
 
+/**
+ * Run git, to its end or to `timeoutMs`.
+ *
+ * git runs in a process group of its own. The timeout (or an abort) kills the
+ * whole group: `git remote-http` and the other helpers git starts are not git's
+ * own children to stop, and one left running holds the output open, which used
+ * to keep a stalled check pending, and alive, for good. A killed command settles
+ * as soon as git exits, with what it had printed and `timedOut` set.
+ *
+ * A command that ends by itself is different: its output must be whole. When git
+ * exits, what is left of its group is killed (a helper that kept the pipes would
+ * otherwise hold the call), and the call waits for the pipes to close, so every
+ * byte is read however long the event loop was busy. Only a process that left
+ * the group can keep them open past `pipesTimeoutMs`, and the call then fails
+ * rather than return output that may be cut short.
+ *
+ * A command that talks to a remote also gets curl's low-speed limit for the
+ * length of the timeout, so a server that goes silent ends the transfer itself.
+ */
 export function git(args: string[], opts: GitOptions): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+    const pipesTimeoutMs = opts.pipesTimeoutMs ?? PIPES_TIMEOUT_MS;
     const argv = gitArgv(args, opts);
     const windows = process.platform === 'win32';
     const child = spawn('git', argv, {
@@ -153,7 +169,7 @@ export function git(args: string[], opts: GitOptions): Promise<GitResult> {
     let stopped = false;
     let settled = false;
     let exitCode: number | null = null;
-    let drain: NodeJS.Timeout | undefined;
+    let held: NodeJS.Timeout | undefined;
     child.stdout.on('data', (c) => (stdout += c.toString()));
     child.stderr.on('data', (c) => (stderr += c.toString()));
 
@@ -179,6 +195,16 @@ export function git(args: string[], opts: GitOptions): Promise<GitResult> {
       }
     };
 
+    /** What git left running in its group, once git itself has gone (the group is not empty only then). */
+    const killGroup = () => {
+      if (windows || child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        /* nothing left: the usual case */
+      }
+    };
+
     const stop = () => {
       stopped = true;
       killTree();
@@ -195,7 +221,7 @@ export function git(args: string[], opts: GitOptions): Promise<GitResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      clearTimeout(drain);
+      clearTimeout(held);
       opts.signal?.removeEventListener('abort', onAbort);
       // Whatever still holds the pipes no longer matters: this call is over.
       child.stdout.destroy();
@@ -216,7 +242,7 @@ export function git(args: string[], opts: GitOptions): Promise<GitResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      clearTimeout(drain);
+      clearTimeout(held);
       opts.signal?.removeEventListener('abort', onAbort);
       reject(new GitError(`Could not run git: ${e.message}`, null, ''));
     });
@@ -229,8 +255,25 @@ export function git(args: string[], opts: GitOptions): Promise<GitResult> {
         finish(code);
         return;
       }
-      // Normally 'close' comes in the same instant, with all of the output.
-      drain = setTimeout(() => finish(code), DRAIN_MS);
+      // git has finished. Stop what it left in its group, then wait for 'close': that is when
+      // every byte has been read, however busy the event loop was in between.
+      killGroup();
+      held = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        opts.signal?.removeEventListener('abort', onAbort);
+        child.stdout.destroy();
+        child.stderr.destroy();
+        reject(
+          new GitError(
+            `git ${subcommand(args)} finished, but a process it started still holds its output open ` +
+              `after ${Math.round(pipesTimeoutMs / 1000)} s, so the output may be incomplete`,
+            code,
+            stderr
+          )
+        );
+      }, pipesTimeoutMs);
     });
 
     child.on('close', (code) => finish(code ?? exitCode));

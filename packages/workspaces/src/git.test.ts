@@ -126,6 +126,84 @@ describe('git()', () => {
     15_000
   );
 
+  it('returns all of a large output even when the event loop is blocked as git exits', async () => {
+    // 3,000 config entries make `git config --list` print about a quarter of a megabyte: several
+    // pipe-fulls, so git is still writing, then exits with the last of it unread, while the loop is busy.
+    const env: Record<string, string> = { GIT_CONFIG_COUNT: '3000' };
+    for (let i = 0; i < 3000; i++) {
+      env[`GIT_CONFIG_KEY_${i}`] = `clerq.key${i}`;
+      env[`GIT_CONFIG_VALUE_${i}`] = 'v'.repeat(70);
+    }
+    const expected = execFileSync('git', ['config', '--list'], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    });
+    expect(expected.length).toBeGreaterThan(200_000);
+
+    // Blocked for longer than the old half-second wait, in every turn of the loop: a callback that
+    // runs just after git's exit is noticed, and holds the loop past a drain timer set by it.
+    let spinning = true;
+    const spin = () => {
+      for (const end = Date.now() + 700; Date.now() < end; );
+      if (spinning) setImmediate(spin);
+    };
+    setImmediate(spin);
+    try {
+      const result = await git(['config', '--list'], { cwd, env });
+      expect(result.code).toBe(0);
+      expect(result.stdout.length).toBe(expected.length);
+      expect(result.stdout).toBe(expected);
+    } finally {
+      spinning = false;
+    }
+  }, 60_000);
+
+  it.skipIf(!posix)(
+    'stops what git left running in its group when git exits, and still returns its output whole',
+    async () => {
+      // The alias runs `sleep` in the background with git's stdout and stderr: git exits at once,
+      // and without the kill the pipes would stay open for as long as the sleep does.
+      const marker = `983${process.pid}`;
+      const started = Date.now();
+      const result = await git(['-c', `alias.leak=!sleep ${marker} & echo hello`, 'leak'], { cwd });
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(result).toMatchObject({ code: 0, stdout: 'hello\n' });
+      expect(await leftOf(`sleep ${marker}`)).toEqual([]);
+    },
+    15_000
+  );
+
+  it.skipIf(!posix)(
+    'fails, instead of returning what it has, when something that left the group keeps the output open',
+    async () => {
+      // perl moves itself to a session of its own (setsid), out of reach of the group kill; the
+      // alias waits until it has, since git exits the moment `echo` does.
+      const marker = `982${process.pid}`;
+      const alias = `!perl -e 'use POSIX; POSIX::setsid(); exec "sleep", "${marker}"' & sleep 0.5; echo hello`;
+      const started = Date.now();
+      try {
+        const err = await git(['-c', `alias.escape=${alias}`, 'escape'], {
+          cwd,
+          pipesTimeoutMs: 1000,
+        }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(GitError);
+        expect((err as GitError).message).toBe(
+          'git escape finished, but a process it started still holds its output open after 1 s, so the output may be incomplete'
+        );
+        expect(Date.now() - started).toBeLessThan(4000);
+      } finally {
+        try {
+          execFileSync('pkill', ['-f', `sleep ${marker}`]);
+        } catch {
+          /* already gone */
+        }
+      }
+      expect(await leftOf(`sleep ${marker}`)).toEqual([]);
+    },
+    15_000
+  );
+
   it.skipIf(!posix)('rejects a timeout in plain words unless failures are allowed', async () => {
     const marker = `986${process.pid}`;
     const err = await git(
