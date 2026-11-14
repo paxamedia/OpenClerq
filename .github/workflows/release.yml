@@ -149,7 +149,7 @@ jobs:
       # verifies against the public key built into the apps. A release that fails this would
       # offer an update no installed app accepts, so the job stops here and nothing is released.
       - name: Check every updater signature against the app's public key
-        run: node scripts/verify-signatures.js --require release/
+        run: node scripts/verify-signatures.js --require --version "${GITHUB_REF_NAME#v}" release/
 
       - name: Generate latest.json (updater manifest)
         run: |
@@ -326,10 +326,10 @@ jobs:
       - name: Check the signature, with this repository's checker and with minisign
         run: |
           set -eu
-          node scripts/verify-signatures.js --sig server-files/SHA256SUMS.minisig server-files/SHA256SUMS
+          node scripts/verify-signatures.js --version "${GITHUB_REF_NAME#v}" --sig server-files/SHA256SUMS.minisig server-files/SHA256SUMS
           sudo apt-get update
           sudo apt-get install -y minisign
-          key=$(node scripts/verify-signatures.js --key-line)
+          key=$(node scripts/verify-signatures.js --version "${GITHUB_REF_NAME#v}" --key-line)
           minisign -Vm server-files/SHA256SUMS -x server-files/SHA256SUMS.minisig -P "$key"
           # install.sh carries the same key, and says so.
           grep -qF "$key" server-files/install.sh

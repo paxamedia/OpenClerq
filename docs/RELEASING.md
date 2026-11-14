@@ -192,14 +192,37 @@ releases, and the first is signed with the **old** key.
    private key and its password; nothing can sign the bridge without them.
 2. **The bridge release**, in one commit:
    - put the **new** public key in `plugins.updater.pubkey` of `tauri.conf.json`; apps built from
-     it trust the new key from then on;
+     it trust the new key from then on. Set the version of the bridge release
+     (`node scripts/sync-version.js X.Y.Z`);
    - put the **old** public key, in the form `tauri.conf.json` keeps it, in
      `apps/desktop/src-tauri/updater-bridge.pub`. Its presence tells the scripts that this
      release is still signed with the old key, so the signature gate, the key check and
      `publish-server` check against that key instead of the config's. `install.sh` keeps the old
      key for this release (a test requires it to match the key signing the release);
+   - **prove you hold the new key.** A bridge tells every app that installs it to trust the new
+     key from then on; if nobody holds that key (a mistyped one, one from a pair whose private
+     half is lost), those apps could never update in-app again, and nothing else would show it. So
+     every check refuses a bridge without `apps/desktop/src-tauri/updater-bridge.proof`: a
+     signature, made with the **new** private key, of a statement that names the version, the old
+     key and the new key. Make it with the new key:
+
+     ```bash
+     node scripts/verify-signatures.js --bridge-statement /tmp/bridge-statement.txt
+     TAURI_SIGNING_PRIVATE_KEY_PATH=~/.tauri/clerq-updater-new.key \
+       pnpm --dir apps/desktop exec tauri signer sign /tmp/bridge-statement.txt
+     cp /tmp/bridge-statement.txt.sig apps/desktop/src-tauri/updater-bridge.proof
+     ```
+
+     (`tauri signer sign` asks for the new key's password, or reads
+     `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.) The proof is for this version, this old key and this
+     new key: change any of them and it must be made again;
+
    - leave the repository secrets as they are (the old key), then tag. Installed apps verify the
      bridge with the key they have and install it; the new key is inside it.
+
+   While the two bridge files are there, `updater-key` on `main` says so in a warning, and the
+   release job and the key check print `BRIDGE RELEASE <version>`.
+
 3. **Keep the bridge release available, and leave it as the latest release for a good while.** An
    app asks `releases/latest/download/latest.json` and installs only what that offers. An app that
    has not updated by the time a release signed with the new key is published finds a signature it
@@ -207,12 +230,19 @@ releases, and the first is signed with the **old** key.
    release page. Do not delete the bridge: it is what a person who wants to move on the supported
    way installs, and it holds the evidence of what was published. How long to wait is a
    judgement: nothing in the project tells how many installs have not yet taken it.
-4. **Switch to the new key**, in one more commit: replace the secrets
-   `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` with the new pair, delete
-   `updater-bridge.pub`, and put the new key in `install.sh` (`MINISIGN_KEY`) and in the table
-   above. The `updater-key` job on `main` must be green before you tag: it proves the new secret
-   is the key now in the config. (If the secrets were swapped before the file was deleted, or the
-   other way round, it is red.)
+
+   **Anything released after the bridge, a hotfix included, is signed with the new key**, because
+   every app that took the bridge refuses a release signed with the old one. So it ends the wait,
+   and it needs step 4 first. The checks hold you to that: the proof is for the bridge's version
+   only, so a later version that still has the two bridge files fails `publish` and turns
+   `updater-key` red, instead of publishing a release the bridged apps would refuse.
+
+4. **Switch to the new key**, in one more commit, before the next release of any kind: replace the
+   secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` with the new pair,
+   **delete `updater-bridge.pub` and `updater-bridge.proof`**, and put the new key in `install.sh`
+   (`MINISIGN_KEY`) and in the table above. The `updater-key` job on `main` must be green before
+   you tag: it proves the new secret is the key now in the config. (If the secrets were swapped
+   before the files were deleted, or the other way round, it is red.)
 5. **Destroy the old key** only when you decide no install still depends on it. Until then it is a
    key that can sign an update the stranded apps accept; the update must also be served from the
    project's release address, which is some protection and not a guarantee.

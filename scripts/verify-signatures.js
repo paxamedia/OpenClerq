@@ -17,11 +17,14 @@
  * one --sig names). The public key is --pubkey (a file, or the text itself) or, by default, the
  * key this checkout's releases are signed with: the one in apps/desktop/src-tauri/tauri.conf.json,
  * the key the apps trust, except in the one release of a key rotation, the bridge, which is signed
- * with the previous key and says so by having apps/desktop/src-tauri/updater-bridge.pub
- * (docs/RELEASING.md).
+ * with the previous key and says so by having apps/desktop/src-tauri/updater-bridge.pub and
+ * updater-bridge.proof (docs/RELEASING.md). The proof is a signature, made with the NEW key, of a
+ * statement that names this release's version, the previous key and the new key: without it nobody
+ * has shown that anyone holds the key the apps are about to be told to trust, and the proof of
+ * one version is no proof for the next, so a bridge left in place fails the release after it.
  *
  * --require, for a folder: there must be at least one signature, and every updater bundle in it
- * (`.app.tar.gz`, `.AppImage`, `.msi`, `-setup.exe`: what Tauri signs) must have one. A release
+ * (`.app.tar.gz`, `.AppImage`, `.msi`, `-setup.exe`: what the app's updater uses) must have one. A release
  * with an unsigned bundle is one no installed app will update to.
  *
  * Exit status: 0 when every signature verified, 1 when one did not (or --require is not met),
@@ -46,6 +49,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TAURI_CONF = path.join(ROOT, 'apps', 'desktop', 'src-tauri', 'tauri.conf.json');
 /** Exists only in a rotation's bridge release: the previous public key, which still signs that release. */
 const BRIDGE_KEY = path.join(path.dirname(TAURI_CONF), 'updater-bridge.pub');
+/** Its companion: a signature by the new key that the new key's holder agreed to this bridge. */
+const BRIDGE_PROOF = path.join(path.dirname(TAURI_CONF), 'updater-bridge.proof');
 
 const UNTRUSTED = 'untrusted comment:';
 const TRUSTED = 'trusted comment: ';
@@ -242,29 +247,94 @@ export function pubkeyFromConfig(configFile = TAURI_CONF) {
   return key;
 }
 
+/** The app's version, from a tauri.conf.json. */
+export function versionFromConfig(configFile = TAURI_CONF) {
+  const version = JSON.parse(fs.readFileSync(configFile, 'utf8'))?.version;
+  if (typeof version !== 'string' || version.trim() === '') fail(`${configFile} has no version.`);
+  return version.trim();
+}
+
 /**
- * The key a checkout's releases are signed with, as { pubkey, bridge }. Normally that is the
- * app's own key. In the bridge release of a key rotation, tauri.conf.json already holds the new
- * key (so the apps built from it trust that from then on) while the release is still signed with
- * the old one, which is what the installed apps trust and verify the bridge with: the old key's
- * public half is then in `updater-bridge.pub`. A bridge file that holds the app's own key is a
- * mistake (a bridge changes the key) and is refused.
+ * What the new key signs to say "I hold this key, and this bridge is mine": the version it is for,
+ * the key the apps trust now and the key they will trust. Both keys are in their bare form.
  */
-export function signingKey(confFile = TAURI_CONF, bridgeFile = BRIDGE_KEY) {
+export function bridgeStatement({ version, previous, next }) {
+  return `OpenClerq updater key bridge\nversion: ${version}\nprevious: ${previous.line}\nnext: ${next.line}\n`;
+}
+
+/** The statement for this checkout's bridge (`updater-bridge.pub` and the config), to be signed with the new key. */
+export function bridgeStatementFor(confFile = TAURI_CONF, bridgeFile = BRIDGE_KEY) {
+  if (!fs.existsSync(bridgeFile)) fail(`${path.basename(bridgeFile)} does not exist: there is no bridge to make a proof for.`);
+  return bridgeStatement({
+    version: versionFromConfig(confFile),
+    previous: parsePublicKey(fs.readFileSync(bridgeFile)),
+    next: parsePublicKey(pubkeyFromConfig(confFile)),
+  });
+}
+
+/**
+ * The key a checkout's releases are signed with, as { pubkey, bridge, version }. Normally that is
+ * the app's own key. In the bridge release of a key rotation, tauri.conf.json already holds the
+ * new key (so the apps built from it trust that from then on) while the release is still signed
+ * with the old one, which is what the installed apps trust and verify the bridge with: the old
+ * key's public half is then in `updater-bridge.pub`.
+ *
+ * A bridge changes what every app that installs it will trust, so it is accepted only with
+ * `updater-bridge.proof`: a signature by the new key (the one in the config) of the bridge's
+ * statement, which names the version in the config. A missing proof, one made with another key
+ * (nobody has shown they hold the new one: apps that took the bridge could never update again),
+ * or one made for another version (a bridge left in place when a later release is made: apps that
+ * took the bridge would refuse a release signed with the old key) is refused. A bridge file that
+ * holds the app's own key is a mistake, and so is a proof with no bridge. `releaseVersion`, when
+ * given (the tag's), must be the config's.
+ */
+export function signingKey(
+  confFile = TAURI_CONF,
+  bridgeFile = BRIDGE_KEY,
+  proofFile = path.join(path.dirname(bridgeFile), 'updater-bridge.proof'),
+  releaseVersion = undefined
+) {
   const app = pubkeyFromConfig(confFile);
-  if (!fs.existsSync(bridgeFile)) return { pubkey: app, bridge: false };
+  const version = versionFromConfig(confFile);
+  if (releaseVersion !== undefined && releaseVersion !== version) {
+    fail(`The release is ${releaseVersion} and ${path.basename(confFile)} says ${version}.`);
+  }
+  const bridgeName = path.basename(bridgeFile);
+  const proofName = path.basename(proofFile);
+  if (!fs.existsSync(bridgeFile)) {
+    if (fs.existsSync(proofFile)) {
+      fail(`${proofName} is here and ${bridgeName} is not: delete the proof too, or put the bridge back.`);
+    }
+    return { pubkey: app, bridge: false, version };
+  }
   const previous = fs.readFileSync(bridgeFile);
   const old = parsePublicKey(previous);
   const current = parsePublicKey(app);
   if (old.key.equals(current.key)) {
     fail(
-      `${path.basename(bridgeFile)} holds the same key as ${path.basename(confFile)}: a bridge release changes the key. Delete the file if the rotation is over.`
+      `${bridgeName} holds the same key as ${path.basename(confFile)}: a bridge release changes the key. Delete the file if the rotation is over.`
     );
   }
-  return { pubkey: previous, bridge: true };
+  if (!fs.existsSync(proofFile)) {
+    fail(
+      `${bridgeName} is here and ${proofName} is not. A bridge tells every app that installs it to trust ${keyIdText(current.keyId)} from then on, so the holder of that key must sign a proof (node scripts/verify-signatures.js --bridge-statement <file>, signed with the new private key: docs/RELEASING.md). If the rotation is over, delete ${bridgeName}.`
+    );
+  }
+  try {
+    verifySignature({
+      publicKey: current,
+      signature: fs.readFileSync(proofFile),
+      message: Buffer.from(bridgeStatement({ version, previous: old, next: current })),
+    });
+  } catch (e) {
+    fail(
+      `${proofName} does not prove this bridge: it must be a signature, made with the new private key (${keyIdText(current.keyId)}), of the statement for version ${version}, the previous key ${keyIdText(old.keyId)} and the new key. It was made with another key (if nobody holds the new key, the apps that install this release could never update in-app again), or for another version (a bridge belongs to one release: after it, delete both bridge files), or for other keys. (${e.message})`
+    );
+  }
+  return { pubkey: previous, bridge: true, version };
 }
 
-/** The files Tauri signs for the updater, by name. */
+/** The bundles the app's updater uses, by name: `--require` wants a signature for each. (Tauri 2.10 signs the .deb and .rpm too, which the updater is not offered, so they are verified when they have one and not required to.) */
 export function isUpdaterBundle(name) {
   return (
     name.endsWith('.app.tar.gz') ||
@@ -282,7 +352,12 @@ function printable(text) {
 const USAGE = `Usage: node scripts/verify-signatures.js [options] <folder | file | file.sig>...
   --pubkey <file|text>   The public key to check against (default: the key releases are signed
                          with: plugins.updater.pubkey of apps/desktop/src-tauri/tauri.conf.json,
-                         or updater-bridge.pub beside it in a key rotation's bridge release)
+                         or, in a key rotation's bridge release, updater-bridge.pub beside it,
+                         accepted only with a valid updater-bridge.proof)
+  --config <file>        Read the key, the version and the bridge files beside this tauri.conf.json
+  --version <x.y.z>      The version being released (the tag's); it must be the config's
+  --bridge-statement <file>
+                         Write the statement the NEW key must sign for this bridge, and exit
   --sig <file>           The signature of the one file given (default: <file>.sig)
   --require              For a folder: at least one signature, and one for every updater bundle
   --print-key            Print the public key in minisign form and exit
@@ -302,6 +377,9 @@ export function parseArgs(argv) {
     const a = args.shift();
     if (a === '--pubkey') o.pubkey = take(a);
     else if (a === '--sig') o.sig = take(a);
+    else if (a === '--config') o.config = take(a);
+    else if (a === '--version') o.version = take(a).replace(/^v/, '');
+    else if (a === '--bridge-statement') o.bridgeStatement = take(a);
     else if (a === '--require') o.require = true;
     else if (a === '--print-key') o.printKey = true;
     else if (a === '--key-line') o.keyLine = true;
@@ -315,7 +393,11 @@ export function parseArgs(argv) {
 
 /** The public key for the options: a file named by --pubkey, the text, or the one releases are signed with. */
 function loadPublicKey(o) {
-  if (o.pubkey === undefined) return signingKey();
+  if (o.pubkey === undefined) {
+    const conf = o.config ? path.resolve(o.config) : TAURI_CONF;
+    const bridge = path.join(path.dirname(conf), 'updater-bridge.pub');
+    return signingKey(conf, bridge, path.join(path.dirname(conf), 'updater-bridge.proof'), o.version);
+  }
   if (fs.existsSync(o.pubkey) && fs.statSync(o.pubkey).isFile()) {
     return { pubkey: fs.readFileSync(o.pubkey), bridge: false };
   }
@@ -350,17 +432,31 @@ export function run(o, out = console.log, err = console.error) {
     out(USAGE);
     return 0;
   }
+  if (o.bridgeStatement) {
+    try {
+      const conf = o.config ? path.resolve(o.config) : TAURI_CONF;
+      const text = bridgeStatementFor(conf, path.join(path.dirname(conf), 'updater-bridge.pub'));
+      fs.writeFileSync(o.bridgeStatement, text);
+      out(
+        `Wrote ${o.bridgeStatement}. Sign it with the NEW private key (pnpm --dir apps/desktop exec tauri signer sign <that file>) and keep the signature as updater-bridge.proof beside tauri.conf.json.`
+      );
+      return 0;
+    } catch (e) {
+      err(e.message);
+      return 2;
+    }
+  }
   let publicKey;
   try {
     const chosen = loadPublicKey(o);
     publicKey = parsePublicKey(chosen.pubkey);
     if (chosen.bridge && !o.keyLine) {
       out(
-        'Bridge release: checking against the previous key (updater-bridge.pub), which is what the installed apps trust now; tauri.conf.json holds the key they will trust after it.'
+        `BRIDGE RELEASE ${chosen.version}: checking against the PREVIOUS key (updater-bridge.pub), the one installed apps trust now. The holder of the key in tauri.conf.json signed updater-bridge.proof for this version only; apps that install this release will trust that key from then on. The bridge belongs to this release: delete both bridge files before any other release.`
       );
     }
   } catch (e) {
-    err(`The public key is not usable: ${e.message}`);
+    err(`Cannot tell which key signs this release: ${e.message}`);
     return 2;
   }
   if (o.keyLine) {

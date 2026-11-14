@@ -424,47 +424,245 @@ describe('against what the Tauri CLI writes', () => {
 
 describe('the key a release is signed with', () => {
   interface Signing {
-    signingKey(conf?: string, bridge?: string): { pubkey: string | Buffer; bridge: boolean };
+    signingKey(
+      conf?: string,
+      bridge?: string,
+      proof?: string,
+      releaseVersion?: string
+    ): { pubkey: string | Buffer; bridge: boolean; version: string };
+    bridgeStatementFor(conf?: string, bridge?: string): string;
   }
   const keys = script as unknown as Signing;
-  const config = (key: string) => {
+
+  /** A checkout in a temporary folder: a config for `version` trusting `next`, and its bridge files, if any. */
+  function checkout(version: string, next: Signer) {
     const dir = fs.mkdtempSync(path.join(tmp, 'conf-'));
-    const file = path.join(dir, 'tauri.conf.json');
-    fs.writeFileSync(file, JSON.stringify({ plugins: { updater: { pubkey: key } } }));
-    return { file, bridge: path.join(dir, 'updater-bridge.pub') };
-  };
-  const oldKey = publicKeyFile(newSigner());
-  const newKey = publicKeyFile(newSigner());
+    const conf = path.join(dir, 'tauri.conf.json');
+    fs.writeFileSync(
+      conf,
+      JSON.stringify({ version, plugins: { updater: { pubkey: tauriWrap(publicKeyFile(next)) } } })
+    );
+    return {
+      dir,
+      conf,
+      bridge: path.join(dir, 'updater-bridge.pub'),
+      proof: path.join(dir, 'updater-bridge.proof'),
+    };
+  }
+  /** A whole rotation's bridge: the old key in the bridge file, and a proof signed by `prover`. */
+  function bridgeOf(version = '1.0.1', prover?: (next: Signer) => Signer) {
+    const old = newSigner();
+    const next = newSigner();
+    const c = checkout(version, next);
+    fs.writeFileSync(c.bridge, publicKeyFile(old));
+    const statement = keys.bridgeStatementFor(c.conf, c.bridge);
+    fs.writeFileSync(
+      c.proof,
+      tauriWrap(signFile(prover ? prover(next) : next, Buffer.from(statement)))
+    );
+    return { ...c, old, next };
+  }
+  const signing = (c: { conf: string; bridge: string; proof: string }, v?: string) =>
+    keys.signingKey(c.conf, c.bridge, c.proof, v);
 
-  it('is the app’s own key, except in the bridge release of a rotation', () => {
-    const c = config(tauriWrap(newKey));
-    expect(keys.signingKey(c.file, c.bridge)).toEqual({ pubkey: tauriWrap(newKey), bridge: false });
-    // The bridge: the apps built from this checkout trust the new key, and the release is still
-    // signed with the old one, whose public half is in updater-bridge.pub.
-    fs.writeFileSync(c.bridge, oldKey);
-    const bridge = keys.signingKey(c.file, c.bridge);
-    expect(bridge.bridge).toBe(true);
-    expect(script.parsePublicKey(bridge.pubkey).key).toEqual(script.parsePublicKey(oldKey).key);
+  it('is the app’s own key when there is no bridge', () => {
+    const c = checkout('1.0.0', newSigner());
+    const k = signing(c);
+    expect(k).toMatchObject({ bridge: false, version: '1.0.0' });
+    expect(script.parsePublicKey(k.pubkey).line).toBe(
+      script.parsePublicKey(fs.readFileSync(c.conf, 'utf8').match(/"pubkey":"([^"]+)"/)![1]).line
+    );
   });
 
-  it('refuses a bridge file that holds the app’s own key, or no key', () => {
-    const c = config(tauriWrap(newKey));
-    fs.writeFileSync(c.bridge, newKey);
-    expect(() => keys.signingKey(c.file, c.bridge)).toThrow(/same key/);
+  it('is the previous key in a bridge release, when the holder of the new key has signed for this version', () => {
+    const b = bridgeOf('1.0.1');
+    const k = signing(b);
+    expect(k).toMatchObject({ bridge: true, version: '1.0.1' });
+    // The key that signs the release is the OLD one, which the installed apps trust now.
+    expect(script.parsePublicKey(k.pubkey).key).toEqual(
+      script.parsePublicKey(publicKeyFile(b.old)).key
+    );
+    // The proof may as well be the plain file; the tag may be given with the version.
+    fs.writeFileSync(
+      b.proof,
+      signFile(b.next, Buffer.from(keys.bridgeStatementFor(b.conf, b.bridge)))
+    );
+    expect(signing(b, '1.0.1').bridge).toBe(true);
+  });
+
+  it('refuses a bridge to a key nobody has shown they hold: no proof, or a proof by any other key', () => {
+    const b = bridgeOf();
+    fs.rmSync(b.proof);
+    expect(() => signing(b)).toThrow(/updater-bridge\.proof is not/);
+    // Someone sets the config to key X and signs a "proof" with the old key, a third key, or X's
+    // public half: only a signature made with X's private key counts.
+    for (const who of [b.old, newSigner(), newSigner(b.next.keyId)]) {
+      fs.writeFileSync(
+        b.proof,
+        tauriWrap(signFile(who, Buffer.from(keys.bridgeStatementFor(b.conf, b.bridge))))
+      );
+      expect(() => signing(b), 'a proof by another key').toThrow(/does not prove this bridge/);
+    }
+    // Garbage, and a proof of something else, made with the right key.
+    fs.writeFileSync(b.proof, 'nothing');
+    expect(() => signing(b)).toThrow(/does not prove this bridge/);
+    fs.writeFileSync(b.proof, tauriWrap(signFile(b.next, Buffer.from('I agree\n'))));
+    expect(() => signing(b)).toThrow(/does not prove this bridge/);
+  });
+
+  it('refuses a bridge left in place for the next release: the proof is for one version', () => {
+    const b = bridgeOf('1.0.1');
+    expect(signing(b).bridge).toBe(true);
+    // The hotfix: the same files, the next version in the config (and the tag).
+    fs.writeFileSync(
+      b.conf,
+      fs.readFileSync(b.conf, 'utf8').replace('"version":"1.0.1"', '"version":"1.0.2"')
+    );
+    expect(() => signing(b)).toThrow(/for version 1\.0\.2.*after it, delete both bridge files/);
+  });
+
+  it('refuses a proof for other keys: another previous key under the same new key, or another new key', () => {
+    const b = bridgeOf();
+    fs.writeFileSync(b.bridge, publicKeyFile(newSigner()));
+    expect(() => signing(b)).toThrow(/does not prove this bridge/);
+    const c = bridgeOf();
+    fs.writeFileSync(
+      c.conf,
+      JSON.stringify({
+        version: '1.0.1',
+        plugins: { updater: { pubkey: tauriWrap(publicKeyFile(newSigner())) } },
+      })
+    );
+    expect(() => signing(c)).toThrow(/does not prove this bridge/);
+  });
+
+  it('refuses a bridge file that holds the app’s own key, a proof with no bridge, a tag that is not the config’s version', () => {
+    const own = newSigner();
+    const c = checkout('1.0.1', own);
+    fs.writeFileSync(c.bridge, publicKeyFile(own));
+    expect(() => signing(c)).toThrow(/same key/);
     fs.writeFileSync(c.bridge, 'not a key');
-    expect(() => keys.signingKey(c.file, c.bridge)).toThrow();
+    expect(() => signing(c)).toThrow();
+    fs.rmSync(c.bridge);
+    fs.writeFileSync(c.proof, 'left over');
+    expect(() => signing(c)).toThrow(/is here and updater-bridge\.pub is not/);
+    fs.rmSync(c.proof);
+    expect(() => signing(c, '1.0.2')).toThrow(
+      /The release is 1\.0\.2 and tauri\.conf\.json says 1\.0\.1/
+    );
+    expect(signing(c, '1.0.1').bridge).toBe(false);
   });
+
+  it('is what the command checks releases against, and says plainly that this is a bridge', () => {
+    const b = bridgeOf('1.0.1');
+    const dir = fs.mkdtempSync(path.join(tmp, 'rel-'));
+    const body = Buffer.from('bundle');
+    fs.writeFileSync(path.join(dir, 'x.msi'), body);
+    fs.writeFileSync(path.join(dir, 'x.msi.sig'), tauriWrap(signFile(b.old, body)));
+    const go = (argv: string[]) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const status = script.run(
+        script.parseArgs(argv),
+        (l) => out.push(l),
+        (l) => err.push(l)
+      );
+      return { status, out: out.join('\n'), err: err.join('\n') };
+    };
+    const ok = go(['--config', b.conf, '--version', 'v1.0.1', '--require', dir]);
+    expect(ok.status).toBe(0);
+    expect(ok.out).toContain('BRIDGE RELEASE 1.0.1');
+    expect(ok.out).toContain('PREVIOUS key');
+    expect(ok.out).toContain(`key ${script.keyIdText(b.old.keyId)}`);
+    // Signed with the new key, the bundle is one the installed apps would refuse.
+    fs.writeFileSync(path.join(dir, 'x.msi.sig'), tauriWrap(signFile(b.next, body)));
+    expect(go(['--config', b.conf, dir]).status).toBe(1);
+    // A tag that is not the bridge's version, and a bridge with no proof, stop the check itself.
+    const wrongTag = go(['--config', b.conf, '--version', '1.0.2', dir]);
+    expect(wrongTag.status).toBe(2);
+    expect(wrongTag.err).toContain('The release is 1.0.2');
+    fs.rmSync(b.proof);
+    const noProof = go(['--config', b.conf, '--key-line']);
+    expect(noProof.status).toBe(2);
+    expect(noProof.err).toContain('Cannot tell which key signs this release');
+  });
+
+  it('writes the statement for the new key to sign, which is the one the check recomputes', () => {
+    const b = bridgeOf('1.0.1');
+    const file = path.join(b.dir, 'statement.txt');
+    const out: string[] = [];
+    expect(
+      script.run(script.parseArgs(['--config', b.conf, '--bridge-statement', file]), (l) =>
+        out.push(l)
+      )
+    ).toBe(0);
+    const text = fs.readFileSync(file, 'utf8');
+    expect(text).toBe(keys.bridgeStatementFor(b.conf, b.bridge));
+    expect(text).toContain('version: 1.0.1\n');
+    expect(text).toContain(`previous: ${script.parsePublicKey(publicKeyFile(b.old)).line}\n`);
+    expect(text).toContain(`next: ${script.parsePublicKey(publicKeyFile(b.next)).line}\n`);
+    expect(out.join('\n')).toContain('NEW private key');
+    // No bridge, no statement.
+    const none = checkout('1.0.1', newSigner());
+    expect(
+      script.run(
+        script.parseArgs(['--config', none.conf, '--bridge-statement', file]),
+        undefined,
+        () => {}
+      )
+    ).toBe(2);
+  });
+
+  const cli = path.join(root, 'apps', 'desktop', 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
+  it.skipIf(!fs.existsSync(cli))(
+    'accepts a proof the Tauri CLI signed with a key it generated, which is how an owner makes one',
+    () => {
+      const dir = fs.mkdtempSync(path.join(tmp, 'tauri-bridge-'));
+      const password = crypto.randomBytes(12).toString('hex');
+      const keyFile = path.join(dir, 'new.key');
+      const tauri = (args: string[], env: Record<string, string> = {}) =>
+        execFileSync(process.execPath, [cli, ...args], {
+          env: { ...process.env, ...env },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf8',
+        });
+      tauri(['signer', 'generate', '--ci', '-p', password, '-w', keyFile]);
+      const old = newSigner();
+      const c = checkout('2.0.0', newSigner());
+      fs.writeFileSync(
+        c.conf,
+        JSON.stringify({
+          version: '2.0.0',
+          plugins: { updater: { pubkey: fs.readFileSync(`${keyFile}.pub`, 'utf8').trim() } },
+        })
+      );
+      fs.writeFileSync(c.bridge, publicKeyFile(old));
+      const statement = path.join(dir, 'statement.txt');
+      expect(
+        script.run(
+          script.parseArgs(['--config', c.conf, '--bridge-statement', statement]),
+          () => {}
+        )
+      ).toBe(0);
+      tauri(['signer', 'sign', '-f', keyFile, '-p', password, statement]);
+      fs.copyFileSync(`${statement}.sig`, c.proof);
+      expect(signing(c, '2.0.0')).toMatchObject({ bridge: true, version: '2.0.0' });
+      // The next release with the same files: refused.
+      fs.writeFileSync(c.conf, fs.readFileSync(c.conf, 'utf8').replace('2.0.0', '2.0.1'));
+      expect(() => signing(c)).toThrow(/does not prove this bridge/);
+    }
+  );
 
   it('is the one the installer carries, so that SHA256SUMS is checked with what signs it', () => {
     const installer = fs.readFileSync(path.join(root, 'apps/server/install.sh'), 'utf8');
     const embedded = /^MINISIGN_KEY="(RW[A-Za-z0-9+/]{54})"$/m.exec(installer)?.[1];
     expect(embedded).toBeDefined();
-    const signing = keys.signingKey();
+    const k = keys.signingKey();
     expect(script.parsePublicKey(embedded as string).key).toEqual(
-      script.parsePublicKey(signing.pubkey).key
+      script.parsePublicKey(k.pubkey).key
     );
     expect(script.parsePublicKey(embedded as string).keyId).toEqual(
-      script.parsePublicKey(signing.pubkey).keyId
+      script.parsePublicKey(k.pubkey).keyId
     );
   });
 });

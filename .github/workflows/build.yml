@@ -196,11 +196,23 @@ jobs:
           printf 'OpenClerq updater key check\n' > "$RUNNER_TEMP/key-check.txt"
           pnpm --dir apps/desktop exec tauri signer sign "$RUNNER_TEMP/key-check.txt" > /dev/null
 
+      # A bridge release (docs/RELEASING.md, rotation) has updater-bridge.pub beside tauri.conf.json:
+      # the secret is then the PREVIOUS key, checked against that file, and the file is accepted only
+      # with a proof by the new key for this version. It belongs to one release; this says so
+      # whenever it is there, so that a bridge left in place after its release is seen.
+      - name: Say so when this checkout is a key bridge
+        run: |
+          if [ -e apps/desktop/src-tauri/updater-bridge.pub ] || [ -e apps/desktop/src-tauri/updater-bridge.proof ]; then
+            echo "::warning title=Key bridge present::apps/desktop/src-tauri/updater-bridge.pub or .proof is in this checkout: it is a key rotation's bridge release, signed with the PREVIOUS key. The files are for one version only; delete them before any other release (docs/RELEASING.md)."
+          else
+            echo "No key bridge in this checkout: the signing key is the app's own."
+          fi
+
       - name: Check the signature against the key in tauri.conf.json
         run: |
           if node scripts/verify-signatures.js "$RUNNER_TEMP/key-check.txt"; then
-            echo "The signing secret is the key the app trusts."
+            echo "The signing secret is the key this checkout is signed with (the app's, or in a bridge release the previous one, as said above)."
           else
-            echo "::error title=Wrong updater key::The signing secret does not match plugins.updater.pubkey in tauri.conf.json: updates signed with it would be refused by every installed app. See docs/RELEASING.md (rotation and recovery)."
+            echo "::error title=Wrong updater key::The signing secret does not match the key this checkout is signed with (plugins.updater.pubkey in tauri.conf.json; in a bridge release the previous key, and a valid proof for this version): updates signed with it would be refused by every installed app. See docs/RELEASING.md (rotation and recovery)."
             exit 1
           fi
