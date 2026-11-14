@@ -30,7 +30,8 @@ import { GithubSection } from './github';
 import { MemorySection } from './memory';
 import { PluginsSection } from './plugins';
 import { FallbackSection } from './routing';
-import { AdvancedSection, SecretsSection, SkillsSection, TriggersSection } from './sections';
+import { AdvancedSection, SecretsSection, TriggersSection } from './sections';
+import { SkillsSection } from './skills';
 import './settings.css';
 
 export const SETTINGS_SECTIONS = [
@@ -47,7 +48,11 @@ export const SETTINGS_SECTIONS = [
     label: 'Plugins',
     keywords: 'modules permissions approve approval enforce enforcement trust checksum legacy',
   },
-  { id: 'skills', label: 'Skills', keywords: 'schema' },
+  {
+    id: 'skills',
+    label: 'Skills',
+    keywords: 'schema trust trusted block blocked untrust checksum enforce enforcement declare',
+  },
   { id: 'memory', label: 'Memory', keywords: 'entries' },
   { id: 'triggers', label: 'Triggers', keywords: 'cron webhook file watcher schedule task' },
   { id: 'remote', label: 'Remote', keywords: 'phone tunnel proxy https ntfy push' },

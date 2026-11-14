@@ -533,6 +533,21 @@ export function ModeDiffView({ sessionId, text }: { sessionId: string; text: str
   return <ModeDiffBody diff={diff} />;
 }
 
+const SKILL_STATE_WORDS: Record<string, string> = {
+  trusted: 'trusted',
+  untrusted: 'not trusted',
+  modified: 'changed since you trusted it',
+  blocked: 'blocked',
+};
+
+/** The skill a message would get, with where it stands; "None" when there is none. */
+export function skillLine(m: ModeDiff['managed']): string {
+  const name = m.skill?.name ?? m.skill?.slug;
+  if (!name) return 'None';
+  const trust = m.skillPolicy?.used?.trust;
+  return trust ? `${name} (${SKILL_STATE_WORDS[trust] ?? trust})` : name;
+}
+
 /** The comparison itself: every line of the system prompt is an addition. */
 export function ModeDiffBody({ diff }: { diff: ModeDiff }) {
   const m = diff.managed;
@@ -557,7 +572,10 @@ export function ModeDiffBody({ diff }: { diff: ModeDiff }) {
                 : m.model,
             mono: true,
           },
-          { label: 'Skill', value: m.skill?.name ?? m.skill?.slug ?? 'None' },
+          {
+            label: 'Skill',
+            value: skillLine(m),
+          },
           {
             label: 'Saved notes',
             value: m.memory ? `${m.memory.count} added to the prompt` : 'None',
@@ -570,6 +588,15 @@ export function ModeDiffBody({ diff }: { diff: ModeDiff }) {
           },
         ]}
       />
+      {(m.skillPolicy?.notes.length ?? 0) > 0 && (
+        <ul className="chat-checks" aria-label="What the skill did">
+          {m.skillPolicy.notes.map((n) => (
+            <li key={n}>
+              <span>{n}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <ul className="chat-checks" aria-label="Tools offered">
         {m.tools.map((t) => (
           <li key={t.name}>

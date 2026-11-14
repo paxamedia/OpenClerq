@@ -70,7 +70,7 @@ describe('the Plugins section', () => {
     const data = await c.plugins();
     const out = html(<PluginsSection />, { plugins: data });
     expect(out).toContain('Plugins');
-    expect(out).toContain('Enforce plugin permissions');
+    expect(out).toContain('Enforce what plugins and skills declare');
     for (const name of [
       'Notes',
       'Mailroom',
@@ -342,7 +342,7 @@ describe('the enforcement switch', () => {
   it('is off or on as the gateway says, and has a label', () => {
     const off = html(<EnforceSwitch enforce={false} onChange={noop} />);
     expect(off).toMatch(/role="switch"[^>]*aria-checked="false"/);
-    expect(off).toContain('Enforce plugin permissions');
+    expect(off).toContain('Enforce what plugins and skills declare');
     const on = html(<EnforceSwitch enforce onChange={noop} />);
     expect(on).toMatch(/role="switch"[^>]*aria-checked="true"/);
   });

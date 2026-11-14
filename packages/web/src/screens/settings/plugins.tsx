@@ -23,9 +23,12 @@ import { useLive, useResource } from '../../app/live';
 import { Loaded, Section } from '../../shell/layout';
 import { When } from '../common';
 
-/** What the switch does and does not do. One paragraph, shown beside it. */
+/**
+ * What the switch does and does not do. One paragraph, shown beside it in Plugins and in Skills:
+ * the setting is one, for both.
+ */
 export const ENFORCE_NOTE =
-  'Off, a plugin’s permissions are shown, recorded and audited, and nothing is blocked. On, a plugin that you have not approved, or that has changed since you approved it, does not run, and what a plugin does through OpenClerq (its secrets, background services, programs, network calls and files) has to stay within what it declared. Plugins run inside OpenClerq’s background service with its access, so this is not a sandbox: it makes a plugin’s declarations true for one that behaves, and catches mistakes. A plugin can still use the computer directly.';
+  'Off, what a plugin or a skill declares is shown and recorded, and nothing is blocked or narrowed (a skill you have blocked is still not used). On, a plugin you have not approved, or that has changed since you approved it, does not run, and what it does through OpenClerq (its secrets, background services, programs, network calls and files) has to stay within what it declared; a skill you have not trusted, or that has changed since you trusted it, is not used, and a trusted skill’s declarations narrow the tools a chat is offered to the ones it lists, limit the chat’s file tools to the paths it lists and, in a Sandboxed chat, send its commands’ network through a proxy that allows only the hosts it lists (macOS filters by port, not by host). Plugins run inside OpenClerq’s background service with its access, so this is not a sandbox: it makes a plugin’s declarations true for one that behaves, and catches mistakes. A plugin can still use the computer directly. A skill is text for the model, not code: trusting it says the text is the text you read, not that the model will follow only that, and commands in a chat that is not Sandboxed are not limited.';
 
 export const STATE_LABEL: Record<PluginState, string> = {
   enabled: 'Enabled',
@@ -395,7 +398,7 @@ export function EnforceSwitch({
         checked={enforce}
         onChange={onChange}
         disabled={busy}
-        label="Enforce plugin permissions"
+        label="Enforce what plugins and skills declare"
       />
       <p className="page-hint">{ENFORCE_NOTE}</p>
     </div>
@@ -405,26 +408,39 @@ export function EnforceSwitch({
 export function EnforceDialog({
   open,
   names,
+  skillNames,
   busy,
   onClose,
   onConfirm,
 }: {
   open: boolean;
-  names: string[];
+  /** Plugins that would stop; leave out when they are not known here. */
+  names?: string[];
+  /** Skills that would stop being used; leave out when they are not known here. */
+  skillNames?: string[];
   busy?: boolean;
   onClose: () => void;
   onConfirm: () => void;
 }) {
+  const parts: string[] = [];
+  if (names === undefined) parts.push('A plugin you have not approved will stop.');
+  else if (names.length > 0) {
+    parts.push(
+      `${names.join(', ')} ${names.length === 1 ? 'has' : 'have'} not been approved, and will stop until you approve ${names.length === 1 ? 'it' : 'them'}.`
+    );
+  } else parts.push('Every plugin that is running has been approved, so none will stop.');
+  if (skillNames === undefined) parts.push('A skill you have not trusted will stop being used.');
+  else if (skillNames.length > 0) {
+    parts.push(
+      `${skillNames.join(', ')} ${skillNames.length === 1 ? 'has' : 'have'} not been trusted, and will not be used until you trust ${skillNames.length === 1 ? 'it' : 'them'}.`
+    );
+  } else parts.push('Every skill is trusted, so all of them keep being used.');
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="Enforce plugin permissions?"
-      description={
-        names.length > 0
-          ? `${names.join(', ')} ${names.length === 1 ? 'has' : 'have'} not been approved, and will stop until you approve ${names.length === 1 ? 'it' : 'them'}.`
-          : 'Every plugin that is running has been approved, so none will stop.'
-      }
+      title="Enforce what plugins and skills declare?"
+      description={parts.join(' ')}
       actions={
         <>
           <Button variant="ghost" onClick={onClose}>

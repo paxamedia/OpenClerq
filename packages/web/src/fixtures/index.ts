@@ -5,6 +5,7 @@
  * `createFixtureClient({ now })` fixes the clock so screenshots are stable.
  */
 
+import { GatewayError } from '@clerq/gateway-client';
 import type {
   Approval,
   ArtifactInfo,
@@ -21,6 +22,7 @@ import type {
   RunDetail,
   RunStep,
   RunSummary,
+  SkillInfo,
 } from '@clerq/gateway-client';
 import type { GatewayClient } from '../app/client';
 import { nextFirings } from '../app/cron';
@@ -1444,6 +1446,122 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
     changes: { code: false, permissions: false, version: false },
     permissionChanges: [],
   };
+  // Skills: one of each state, with what each declares and, for the changed one, what changed.
+  const skillBase = {
+    description: undefined as string | undefined,
+    origin: 'directory',
+    trustedBy: null as SkillInfo['trustedBy'],
+    trustedAt: null as string | null,
+    declared: { tools: [] as string[], domains: [] as string[], paths: [] as string[] },
+    checksum: null as string | null,
+    computedChecksum: null as string | null,
+    checksumMatches: null as boolean | null,
+    warnings: [] as string[],
+    changes: null as SkillInfo['changes'],
+    files: [{ path: 'SKILL.md', sha256: 'f'.repeat(64), size: 612 }],
+    problem: null as string | null,
+  };
+  const sum = (c: string) => `sha256:${c.repeat(64)}`;
+  const skillList: SkillInfo[] = [
+    {
+      ...skillBase,
+      slug: 'vat-core',
+      name: 'VAT',
+      description: 'VAT rules and rates',
+      version: '1.2.0',
+      trust: 'trusted',
+      trustReason: 'You trusted this version on 2026-11-02.',
+      trustedBy: 'user',
+      trustedAt: '2026-11-02T09:00:00.000Z',
+      declared: {
+        tools: ['fs.read', 'group:fs'],
+        domains: ['ecb.europa.eu'],
+        paths: ['docs/', '~/Notes'],
+      },
+      checksum: sum('a'),
+      computedChecksum: sum('a'),
+      checksumMatches: true,
+    },
+    {
+      ...skillBase,
+      slug: 'payroll-base',
+      name: 'Payroll',
+      description: 'Gross to net',
+      version: '0.9.1',
+      trust: 'untrusted',
+      trustReason: 'You have not decided on this skill.',
+      declared: { tools: ['shell.exec'], domains: [], paths: [] },
+      computedChecksum: sum('b'),
+      warnings: [
+        'tools_required: "shell.exec" is not a tool OpenClerq has. Did you mean runtime.shell?',
+      ],
+    },
+    {
+      ...skillBase,
+      slug: 'reports',
+      name: 'Reports',
+      description: 'Quarterly reports from the ledger export',
+      version: '1.1.0',
+      trust: 'modified',
+      trustReason: 'Its files have changed since you trusted it.',
+      declared: { tools: ['fs.read', 'fs.write'], domains: [], paths: ['reports/'] },
+      checksum: sum('d'),
+      computedChecksum: sum('c'),
+      checksumMatches: false,
+      files: [
+        { path: 'SKILL.md', sha256: 'e'.repeat(64), size: 700 },
+        { path: 'templates/q.md', sha256: '1'.repeat(64), size: 90 },
+      ],
+      changes: {
+        files: { added: ['templates/q.md'], removed: [], changed: ['SKILL.md'] },
+        needs: [
+          {
+            change: 'added',
+            key: 'tools',
+            item: 'fs.write',
+            text: 'Now says it uses the tool fs.write',
+          },
+        ],
+        version: { from: '1.0.0', to: '1.1.0' },
+      },
+    },
+    {
+      ...skillBase,
+      slug: 'old-notes',
+      name: 'Old notes',
+      description: 'Superseded by Reports',
+      version: '0.2.0',
+      origin: 'module:ledger-legacy',
+      trust: 'blocked',
+      trustReason: 'You blocked this skill.',
+      computedChecksum: sum('9'),
+    },
+    {
+      ...skillBase,
+      slug: 'example',
+      name: 'Example',
+      description: 'Minimal skill template. Copy this folder to create your own skill.',
+      version: '2026.1',
+      trust: 'trusted',
+      trustReason: 'It ships with OpenClerq, unchanged.',
+      trustedBy: 'bundled',
+      computedChecksum: sum('5'),
+    },
+    {
+      ...skillBase,
+      slug: 'mail-triage',
+      name: 'Mail triage',
+      description: 'Sort the inbox',
+      version: '2.0.0',
+      origin: 'plugin:mailroom',
+      trust: 'trusted',
+      trustReason: 'Approved with its plugin.',
+      trustedBy: 'plugin',
+      declared: { tools: [], domains: ['imap.example.com'], paths: [] },
+      computedChecksum: sum('4'),
+    },
+  ];
+
   let pluginEnforce = false;
   const plugins: PluginInfo[] = [
     {
@@ -2183,6 +2301,15 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
             'You are Clerq…\n\n<memory>\n- [preference] tone: British English\n</memory>\n\nYou can use tools in this conversation.',
           messages,
           skill: null,
+          skillPolicy: {
+            used: null,
+            skipped: [],
+            narrowedTo: null,
+            removed: [],
+            fileScope: null,
+            network: null,
+            notes: [],
+          },
           memory: { text: '<memory>…</memory>', count: 1 },
           tools: [
             { name: 'memory.search', modelName: 'search_memory', risk: 'read', decision: 'allow' },
@@ -2296,29 +2423,59 @@ export function createFixtureClient(opts: FixtureOptions = {}): GatewayClient {
     saveCapabilities: () => ok({ ok: true }),
     skills: () =>
       ok({
-        source: '~/.clerq/skills',
-        skills: opts.empty
-          ? []
-          : [
-              {
-                slug: 'vat-core',
-                name: 'VAT',
-                description: 'VAT rules and rates',
-                version: '1.2.0',
-              },
-              {
-                slug: 'payroll-base',
-                name: 'Payroll',
-                description: 'Gross to net',
-                version: '0.9.1',
-              },
-            ],
+        source: opts.empty ? 'fallback' : 'disk+modules',
+        enforce: pluginEnforce,
+        skills: opts.empty ? [] : skillList,
       }),
-    skill: (slug: string) =>
-      ok({
-        meta: { slug, name: slug, description: 'A skill.', inputSchema: { type: 'object' } },
+    skill: (slug: string) => {
+      const info = skillList.find((k) => k.slug === slug) ?? { ...skillList[0], slug, name: slug };
+      return ok({
+        meta: {
+          slug,
+          name: info.name,
+          description: info.description ?? 'A skill.',
+          inputSchema: { type: 'object' },
+        },
         body: '# Instructions\n\nExplain the rule, then point to the engine for the number.',
-      }),
+        skill: info,
+      });
+    },
+    trustSkill: (slug: string, checksum: string) => {
+      const k = skillList.find((x) => x.slug === slug);
+      if (!k) return Promise.reject(new Error('No such skill.'));
+      if (k.computedChecksum !== checksum) {
+        return Promise.reject(
+          new GatewayError('Gateway 409', 409, {
+            error: 'trust_stale',
+            message: 'The skill changed after you looked at it.',
+          })
+        );
+      }
+      k.trust = 'trusted';
+      k.trustedBy = 'user';
+      k.trustedAt = iso(now);
+      k.trustReason = `You trusted this version on ${iso(now).slice(0, 10)}.`;
+      k.changes = null;
+      return ok({ skill: k });
+    },
+    blockSkill: (slug: string) => {
+      const k = skillList.find((x) => x.slug === slug);
+      if (!k) return Promise.reject(new Error('No such skill.'));
+      k.trust = 'blocked';
+      k.trustedBy = null;
+      k.trustReason = 'You blocked this skill.';
+      return ok({ skill: k });
+    },
+    untrustSkill: (slug: string) => {
+      const k = skillList.find((x) => x.slug === slug);
+      if (!k) return Promise.reject(new Error('No such skill.'));
+      k.trust = 'untrusted';
+      k.trustedBy = null;
+      k.trustedAt = null;
+      k.trustReason = 'You have not decided on this skill.';
+      k.changes = null;
+      return ok({ skill: k });
+    },
     updateSkill: () => ok({ ok: true }),
     memory: () => ok({ entries: memory.filter((m) => m.status === 'active') }),
     getMemory: (key: string) => ok(memory.find((m) => m.key === key)),

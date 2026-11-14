@@ -501,3 +501,13 @@
   color: var(--ink-2);
   font: var(--type-secondary);
 }
+
+.skill-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill-checksum code {
+  overflow-wrap: anywhere;
+}

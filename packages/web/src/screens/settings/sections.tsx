@@ -1,14 +1,12 @@
 /** Settings sections that edit what the background service stores. */
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { BookOpen, KeyRound, Play, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
-import type { SkillMeta } from '@clerq/gateway-client';
+import { KeyRound, Play, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
 import { Button, IconButton } from '../../ui/Button';
 import { SegmentedControl, Switch } from '../../ui/Choice';
-import { CodeBlock, EmptyState } from '../../ui/Display';
+import { EmptyState } from '../../ui/Display';
 import { Input, Select, Textarea } from '../../ui/Field';
 import { Dialog } from '../../ui/Modal';
-import { Table } from '../../ui/Table';
 import { useToast } from '../../ui/Toast';
 import { useClient, useHost, type AppConfig } from '../../app/client';
 import { describeCron } from '../../app/cron';
@@ -199,162 +197,6 @@ export function SecretsSection() {
 }
 
 // ---------------------------------------------------------------------------
-
-function SkillEditor({
-  slug,
-  all,
-  onClose,
-}: {
-  slug: string;
-  all: SkillMeta[];
-  onClose: () => void;
-}) {
-  const client = useClient();
-  const detail = useResource(`skill:${slug}`, () => client.skill(slug));
-  const { save, busy } = useSaver();
-  const [input, setInput] = useState('');
-  const [output, setOutput] = useState('');
-  const [deps, setDeps] = useState('');
-  const [problem, setProblem] = useState<string | null>(null);
-
-  useEffect(() => {
-    const m = detail.data?.meta;
-    if (!m) return;
-    setInput(m.inputSchema ? JSON.stringify(m.inputSchema, null, 2) : '');
-    setOutput(m.outputSchema ? JSON.stringify(m.outputSchema, null, 2) : '');
-    setDeps(m.dependsOn?.join(', ') ?? '');
-  }, [detail.data]);
-
-  const parse = (text: string, which: string): Record<string, unknown> | null | undefined => {
-    if (!text.trim()) return null;
-    try {
-      return JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      setProblem(`The ${which} schema isn’t valid JSON.`);
-      return undefined;
-    }
-  };
-
-  const submit = async () => {
-    setProblem(null);
-    const inputSchema = parse(input, 'input');
-    const outputSchema = parse(output, 'output');
-    if (inputSchema === undefined || outputSchema === undefined) return;
-    const list = deps
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    await save(slug, () =>
-      client.updateSkill(slug, { inputSchema, outputSchema, dependsOn: list.length ? list : null })
-    );
-  };
-
-  const unknown = deps
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s && !all.some((k) => k.slug === s));
-
-  return (
-    <Dialog
-      open
-      onClose={onClose}
-      title={detail.data?.meta.name ?? slug}
-      size="lg"
-      actions={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Close
-          </Button>
-          <Button variant="primary" icon={Save} busy={busy} onClick={submit}>
-            Save
-          </Button>
-        </>
-      }
-    >
-      <Loaded resource={detail} what="the skill" skeleton="text">
-        {(d) => (
-          <div className="settings-form">
-            {d.meta.description && <p className="page-hint">{d.meta.description}</p>}
-            <Textarea
-              label="Input schema"
-              mono
-              rows={6}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              hint="JSON Schema. Leave empty for none."
-            />
-            <Textarea
-              label="Output schema"
-              mono
-              rows={6}
-              value={output}
-              onChange={(e) => setOutput(e.target.value)}
-            />
-            <Input
-              label="Depends on"
-              value={deps}
-              onChange={(e) => setDeps(e.target.value)}
-              placeholder="vat-core, payroll-base"
-              hint={unknown.length ? undefined : 'Other skills, by slug, separated by commas.'}
-              error={
-                unknown.length ? `Not a skill here: ${unknown.join(', ')}.` : (problem ?? undefined)
-              }
-            />
-            <CodeBlock title="Instructions" code={d.body} wrap maxHeight="md" />
-          </div>
-        )}
-      </Loaded>
-    </Dialog>
-  );
-}
-
-export function SkillsSection() {
-  const client = useClient();
-  const skills = useResource('skills', () => client.skills());
-  const [editing, setEditing] = useState<string | null>(null);
-  return (
-    <Section title="Skills">
-      <Loaded resource={skills} what="skills" skeleton="rows">
-        {(d) => (
-          <>
-            <p className="page-hint">
-              From <code>{d.source}</code>.
-            </p>
-            <Table
-              label="Skills"
-              rows={d.skills}
-              rowKey={(s) => s.slug}
-              onRowClick={(s) => setEditing(s.slug)}
-              columns={[
-                { key: 'name', header: 'Skill', cell: (s) => s.name, sortValue: (s) => s.name },
-                {
-                  key: 'desc',
-                  header: 'What it does',
-                  cell: (s) => <span className="page-muted">{s.description ?? ''}</span>,
-                },
-                {
-                  key: 'version',
-                  header: 'Version',
-                  cell: (s) => s.version ?? '',
-                  mono: true,
-                  width: 'sm',
-                },
-              ]}
-              empty={
-                <EmptyState icon={BookOpen} title="No skills here">
-                  Add skill folders to the skills directory under Advanced.
-                </EmptyState>
-              }
-            />
-            {editing && (
-              <SkillEditor slug={editing} all={d.skills} onClose={() => setEditing(null)} />
-            )}
-          </>
-        )}
-      </Loaded>
-    </Section>
-  );
-}
 
 // ---------------------------------------------------------------------------
 
