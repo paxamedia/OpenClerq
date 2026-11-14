@@ -131,6 +131,22 @@ added**, and the body carries `check`. For one already listed, the answer is `20
 it, and `check.credential` says only the secret's name, whether the hook found one and where it came
 from. Like every route it needs the token; a scoped token reaches it only if its scopes name it.
 
+## Errors
+
+A request that fails before a route can answer it, or that a route lets fail, gets a JSON answer that
+holds nothing taken from the request, and carries `Clerq-Api-Version` like every answer:
+
+| Status    | `error`                  | When                                                                                                 |
+| --------- | ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| 400       | `invalid_json`           | the body is not valid JSON (the answer does not quote it, and neither does the log)                  |
+| 413       | `payload_too_large`      | the body is over the limit (`CLERQ_MAX_BODY`, 1 MB by default)                                       |
+| 404, 403  | `not_found`, `forbidden` | a file that is not there or not allowed, such as a module's `ui/` file                               |
+| other 4xx | `invalid_request`        | the request could not be read                                                                        |
+| 500       | `internal`               | anything else: the log has the method, path (no query) and where it was thrown, not the error's text |
+
+A route's own errors (`400 invalid_request`, `404 repo_not_found`, …) are as that route documents them;
+this is only what no route answered. It applies to a module's routes too.
+
 ## The GitHub App
 
 Connecting the user's own GitHub App, and what a run does with it, is in [GITHUB.md](GITHUB.md).

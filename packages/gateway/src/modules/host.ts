@@ -12,6 +12,7 @@ import express, { type Express } from 'express';
 import { migrateModule, type Migration } from '@clerq/store';
 import { getStore } from '../store.js';
 import { logger } from '../logger.js';
+import { apiErrors } from '../error-handler.js';
 import { loadModulesFromDir, type LoadedModule } from '../module-loader.js';
 import { createModuleContext, type ContextHandle } from './context.js';
 import { ModuleTriggers, TriggerError } from './triggers.js';
@@ -143,7 +144,9 @@ export class ModuleHost {
         express.static(ui, { fallthrough: false, dotfiles: 'deny' })
       );
     }
-    this.app.use(`/api/modules/${mod.id}`, handle.router);
+    // Mounted after the core's error handler, so it carries its own: it also answers for the
+    // files above (an error from them goes to the next handler on a matching path).
+    this.app.use(`/api/modules/${mod.id}`, handle.router, apiErrors);
     this.record(entry);
     logger.info('Module loaded', { moduleId: mod.id, version: mod.manifest.version });
   }

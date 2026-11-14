@@ -111,6 +111,7 @@ import {
   mountGithubRoutes,
 } from './github/index.js';
 import { mountRoutingRoutes } from './routing-routes.js';
+import { apiErrors } from './error-handler.js';
 import { startAutomationSchedules, stopAutomationSchedules } from './automations/scheduler.js';
 import { readKillPause, writeKillPause } from './kill-state.js';
 import {
@@ -1610,6 +1611,10 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     if (abandoned()) return;
     markReady();
   };
+
+  // After every route (a module's own routers carry theirs, see modules/host.ts): a failed
+  // request gets a JSON answer that holds nothing from the request.
+  app.use(apiErrors);
 
   const server = app.listen(port, host, (listenError?: Error) => {
     startup = begin(listenError).catch((e: unknown) => {

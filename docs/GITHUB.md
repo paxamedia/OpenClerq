@@ -41,7 +41,9 @@ their own vault. Making one is one confirmation on GitHub's page.
 
 Two ways. Both end with the app's id, slug and client ID stored in settings and its **private key**
 (and client secret, if there is one) in the vault, under the fixed names `GITHUB_APP_PRIVATE_KEY` and
-`GITHUB_APP_CLIENT_SECRET`. Neither is ever returned by a route or written to a log. Every route
+`GITHUB_APP_CLIENT_SECRET`. OpenClerq returns neither from any route and writes neither to a log or an
+error answer: a request body that is not valid JSON is refused with a plain `400 invalid_json` that repeats
+none of it (the gateway answers every failed request that way, see [API.md](API.md#errors)). Every route
 below needs the gateway token (`~/.clerq/gateway-token`), is not reachable with a phone's or a
 module's token, and exists under `/v1` as well as bare.
 

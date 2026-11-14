@@ -113,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A request body that is not valid JSON no longer comes back quoted.** Express answered it with its default error page: a stack trace and a snippet of the body (the start of a private key posted to `/github/app/import`, say), and wrote the stack to stderr. The gateway now ends every route, a module's too, with one handler: `400 invalid_json`, `413 payload_too_large` over `CLERQ_MAX_BODY`, a generic 4xx for another failure of the request itself, `500 internal` for anything else, all JSON and with `Clerq-Api-Version`. The log line has the method, the path without its query, the status and where an error was thrown, never the body, the headers or an error's own text ([docs/API.md](docs/API.md#errors)).
 - Deleting a memory entry from the desktop sent no gateway token.
 - Cron triggers with a weekday or day-of-month field, such as `0 8 * * 1`, could fail to fire: node-cron 4.2.1 miscalculated when they were next due. Upgraded to 4.6.0.
 - A module list saved in the desktop settings hid modules bundled with later releases.
