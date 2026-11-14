@@ -43,7 +43,7 @@ designed on that basis.
 
 ## 2. What is protected today
 
-- **The gateway is authenticated.** Every endpoint except `/health` requires a bearer token, compared in constant time. There is no development bypass. The token is generated on first run at `~/.clerq/gateway-token` (mode 0600), or supplied via `CLERQ_GATEWAY_TOKEN`.
+- **The gateway is authenticated.** Every endpoint except `/health` and `/version` requires a bearer token, compared in constant time. There is no development bypass. The token is generated on first run at `~/.clerq/gateway-token` (mode 0600), or supplied via `CLERQ_GATEWAY_TOKEN`.
 - **Scoped tokens.** A module UI's token reaches only its module's routes and the core endpoints its manifest declares, and expires (15 minutes by default). Scoped tokens are stored as SHA-256 hashes, can be revoked at once, and never reach token, device, remote or vault endpoints, the unfiltered `/events` or the logs. A scoped token of a tenant other than `default` reaches only what is kept per tenant.
 - **Module permissions are declared, not enforced.** A manifest's `permissions` are parsed, listed and audited when they change, but module server code still runs with the gateway's full access.
 - **Tenants are kept apart in the gateway.** Records, links, activities, inbox items and module tables are filtered by tenant, and a scoped token is bound to its tenant. Module code shares the process and the database, so a module's raw SQL must filter on its tenant itself; database-level isolation (row-level security) is planned.
@@ -138,7 +138,7 @@ feature and needs TLS and a reverse proxy in front of it.
 A change that violates one of these does not merge.
 
 1. **Localhost by default.** Network binding requires an explicit flag _and_ configured authentication. Never both defaults.
-2. **No unauthenticated path, ever** — including in development. Generate a token on first run and hand it to the desktop app. `/health` is the only public endpoint, and it reveals no configuration.
+2. **No unauthenticated path, ever** — including in development. Generate a token on first run and hand it to the desktop app. `/health` and `/version` are the public endpoints, and they reveal no configuration.
 3. **Authentication and licensing are separate concepts.** Licensing answers _is this install entitled to feature X_. Authentication answers _is this caller allowed to control this gateway_. Neither may substitute for the other.
 4. **Sandbox by default wherever code executes.** A `native` profile is a developer convenience that must be chosen deliberately and shown as a warning in the UI. Application-layer allowlists are not a sandbox.
 5. **Deny egress by default.** An automation reaches only the hosts its spec names, enforced at the sandbox boundary rather than in application code. This is the primary defence against a prompt-injected agent exfiltrating a repository.
@@ -200,7 +200,7 @@ Run before tagging any release.
 ### Gateway
 
 - [ ] Binds `127.0.0.1` unless remote mode is explicitly configured
-- [ ] All endpoints except `/health` require a bearer token
+- [ ] All endpoints except `/health` and `/version` require a bearer token
 - [ ] No `CLERQ_DEV` code path disables authentication
 - [ ] CORS restricted to known origins; no `*`
 - [ ] Rate limits and body size limits on webhook endpoints

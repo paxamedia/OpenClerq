@@ -667,11 +667,13 @@ same token check as every other, and a scoped token reaches them only if its sco
 
 ## 4. Gateway
 
-The gateway is the control plane. Endpoints:
+The gateway is the control plane. Every route is served under `/v1` (the bare paths below are
+aliases that keep working through 1.x), every response carries `Clerq-Api-Version`, and within
+version 1 changes are additive only. See [API.md](API.md). Endpoints:
 
 | Group       | Endpoints                                                                                                                                                                                                               |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status      | `GET /health`, `GET /metrics`, `GET /logs/stream` (SSE)                                                                                                                                                                 |
+| Status      | `GET /health`, `GET /version`, `GET /metrics`, `GET /logs/stream` (SSE)                                                                                                                                                 |
 | Models      | `GET /models`, `GET /providers`                                                                                                                                                                                         |
 | Agent       | `POST /task`, `POST /explain`, `POST /context/preview`                                                                                                                                                                  |
 | Skills      | `GET /skills`, `GET /skills/:slug`, `PUT /skills/:slug`                                                                                                                                                                 |
@@ -702,7 +704,7 @@ observability (call counts, latency, tokens, cost, failure rates); and dynamic m
 
 ### Authentication
 
-Every endpoint except `GET /health` requires a bearer token:
+Every endpoint except `GET /health`, `GET /version` and `POST /devices/pair` requires a bearer token:
 
 ```
 Authorization: Bearer $(cat ~/.clerq/gateway-token)
@@ -718,7 +720,8 @@ set. There is no development bypass — `CLERQ_DEV` affects conveniences, never 
 `GET /events/stream` sends every event on the bus as SSE, with `id: <epoch>-<seq>`. A client that
 reconnects with `Last-Event-ID` gets what it missed from the last 500 events; when that is not
 possible (a restarted gateway, or a gap that is too old) it gets an `event: reset` frame and
-should refetch. `?names=run.,approval.` filters by name prefix. A `: ping` comment goes out every
+should refetch. A client ignores event types and fields it does not know: new ones are added within
+API version 1 (see [API.md](API.md)). `?names=run.,approval.` filters by name prefix. A `: ping` comment goes out every
 15 s (`CLERQ_SSE_HEARTBEAT_MS`). `GET /events` is the older form: the last 100 events, then live.
 
 Licensing is a separate concern: `middleware/license.ts` attaches entitlement information and
@@ -743,6 +746,7 @@ All errors use one shape, and carry no PII:
 | Code                                                                                   | HTTP | Meaning                                                                     |
 | -------------------------------------------------------------------------------------- | ---- | --------------------------------------------------------------------------- |
 | `unauthorized`                                                                         | 401  | Missing or invalid bearer token                                             |
+| `unsupported_api_version`, `api_version_mismatch`                                      | 400  | A version the gateway does not serve, or two that disagree, before auth     |
 | `question is required`                                                                 | 400  | `/explain` called without a question                                        |
 | `message is required`                                                                  | 400  | `/task` called without a message                                            |
 | `expression or spec.formulas required`                                                 | 400  | `/calculate/eval` needs one or the other                                    |
@@ -794,6 +798,7 @@ manifest permits executing exactly those two binaries and nothing else.
 | ---------------------------- | --------------------------------------------------------------- |
 | `~/.clerq/gateway-token`     | Bearer token for the local API (mode 0600)                      |
 | `~/.clerq/clerq.db`          | SQLite: runs and steps, approvals, memory, triggers, audit log  |
+| `~/.clerq/backups/`          | A copy of the database before each upgrade, the newest five     |
 | `~/.clerq/providers.yaml`    | Optional replacement for the built-in provider registry         |
 | `~/.clerq/config.json`       | Gateway URL, module paths, UI settings                          |
 | `~/.clerq/.env`              | Provider API key, if configured                                 |
@@ -802,6 +807,10 @@ manifest permits executing exactly those two binaries and nothing else.
 | `~/.clerq/vault.key`         | Master key, mode 0600 — only where there is no keychain         |
 | `~/.clerq/secrets.audit.log` | Append-only vault access log                                    |
 | `~/.clerq/workspaces/`       | Worktrees of automation runs in progress                        |
+
+The database is brought up to date when the gateway starts: migrations run once each, in order,
+after a copy of the database is written to `backups/` (not for a new one), and a database from a
+newer OpenClerq is refused. See [UPGRADING.md](UPGRADING.md).
 
 A pre-0.5 `memory.json` or `triggers.json` is imported into `clerq.db` on first start and kept as
 `*.migrated`. The remaining JSON files are read-modify-write with no locking, so concurrent

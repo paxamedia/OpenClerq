@@ -231,7 +231,7 @@ consumer of `packages/policy`, `packages/sandbox` and `packages/workspaces`.
 - [ ] `packages/plugin-sdk` — declared permissions, lifecycle, treated as code not prompt text
 - [ ] Chat console migrated onto `plugin-sdk` as the reference first-party plugin — proving the contract by using it
 - [ ] Skill manifests with `tools_required`, `network_domains`, `filesystem_scope`, checksum, trust states
-- [ ] Versioned API protocol + migration system
+- [x] Versioned API protocol + migration system
 - [ ] Published threat model and documented plugin/skill trust boundary
 
 ### Post-1.0 — Differentiators
@@ -249,6 +249,7 @@ Automations are files — versioned, diffable, reviewable in a pull request, and
 recipes.
 
 ```yaml
+version: 1 # the spec format; optional, and 1 is the only version so far
 name: nightly-dependency-triage
 description: Audit deps, patch safe bumps, open a draft PR
 
@@ -312,6 +313,11 @@ retry: # only after a crash, a provider outage or an expired lease
   max_retries: 2
   backoff: 1m # doubles with each retry, at most 1h
 ```
+
+`version` is the version of this format. Leave it out and it is 1. A spec that names another
+version is refused when saved, previewed or read, with its line: "This automation was written for
+spec version 2; this OpenClerq reads version 1." A later version that changes the format will
+translate older specs when it reads them; stored specs are never rewritten.
 
 Three surfaces over the same object: a form for people who want a form, a YAML pane for
 people who want the file, and `clerq automation apply nightly.yaml` for people who want CI to

@@ -26,7 +26,7 @@
 \*\*Skills are available by module. You can build and load your own modules (for different roles and countries) on top of the core engine. See [About Clerq](docs/ABOUT_CLERQ.md).
 
 > **Security.** As of 0.4 the gateway is authenticated and binds loopback only. Every endpoint
-> except `/health` needs a bearer token, generated on first run at `~/.clerq/gateway-token`:
+> except `/health` and `/version` needs a bearer token, generated on first run at `~/.clerq/gateway-token`:
 >
 > ```bash
 > curl -H "Authorization: Bearer $(cat ~/.clerq/gateway-token)" http://127.0.0.1:18790/skills
@@ -182,6 +182,7 @@ For one-click run after building the app, see [Installing](#installing) (macOS: 
 | Method   | Path             | Description                                                                                                        |
 | -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ |
 | GET      | /health          | Service health; includes `llm.mode` (`api` or `local`) and `llm.provider`                                          |
+| GET      | /version         | The gateway's release, the API versions it serves and the database schema; no token. See [API](docs/API.md)        |
 | GET      | /skills          | List skills (from disk or fallback)                                                                                |
 | GET      | /skills/:slug    | Get skill detail (meta, body). PUT to update schemas/dependencies.                                                 |
 | GET      | /metrics         | Observability: uptime, LLM calls, latency, token usage                                                             |
@@ -226,6 +227,8 @@ clerq/
 | [**ABOUT_CLERQ**](docs/ABOUT_CLERQ.md)               | What OpenClerq is; attribution; OSS vs hosted scope           |
 | [**DEVELOPER_SETUP**](docs/DEVELOPER_SETUP.md)       | Install, run, and verify OpenClerq locally (macOS + Windows)  |
 | [ARCHITECTURE](docs/ARCHITECTURE.md)                 | Components and local data flow                                |
+| [API](docs/API.md)                                   | Versioned gateway API: `/v1`, the header, the 1.x promise     |
+| [UPGRADING](docs/UPGRADING.md)                       | Upgrades, backups, downgrades, spec and API versions          |
 | [ARITHMETIC_API](docs/ARITHMETIC_API.md)             | Calculation engine: operators, functions, examples            |
 | [MODULE_SYSTEM](docs/MODULE_SYSTEM.md)               | How skills and modules are structured (schemas, dependencies) |
 | [TOOLS](docs/TOOLS.md)                               | Built‑in tools (filesystem, HTTP) and how to extend them      |

@@ -129,7 +129,7 @@ You should see `Verification passed. Gateway is up and responding.` at the end.
 
 With the gateway running on `http://127.0.0.1:18790`.
 
-Every endpoint except `/health` needs the bearer token the gateway wrote on first start:
+Every endpoint except `/health` and `/version` needs the bearer token the gateway wrote on first start:
 
 ```bash
 export CLERQ_TOKEN=$(cat ~/.clerq/gateway-token)
