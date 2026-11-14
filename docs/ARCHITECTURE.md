@@ -654,7 +654,7 @@ The container profile is tested against a fake runtime in every `pnpm test` (`pr
 against a real engine in CI, in the `container-profile` job: `packages/sandbox/src/container.real.test.ts` and the last describe of
 `packages/gateway/src/automations/sandbox.integration.test.ts` run only when `CLERQ_TEST_CONTAINER_RUNTIME` names a runtime
 (`docker`, `podman` or a path), and are skipped otherwise. Their runtime is a small wrapper that records each call's arguments, and
-`scripts/container-debug.sh` prints that record and the engine's labelled containers, networks and logs when a test fails.
+`scripts/container-debug.sh` prints that record, the engine's labelled containers and networks with their state, and the egress proxies' logs when a test fails.
 
 #### Remote repositories
 

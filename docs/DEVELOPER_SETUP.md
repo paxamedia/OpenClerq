@@ -126,7 +126,7 @@ You should see `Verification passed. Gateway is up and responding.` at the end.
 
 ### The container profile on a real engine
 
-`pnpm test` runs the container profile against a fake `docker`, and skips the suites that need a real engine. With Docker or Podman installed, they run when `CLERQ_TEST_CONTAINER_RUNTIME` names it (the images, `alpine:3.20` and `node:24-alpine`, are pulled, and the egress tests reach `example.com`):
+`pnpm test` runs the container profile against a fake `docker`, and skips the suites that need a real engine. They run when `CLERQ_TEST_CONTAINER_RUNTIME` names one (the images, `alpine:3.20` and `node:24-alpine`, are pulled; one egress test reaches `example.com`, the others use servers they start on the engine). They are written for, and run in CI on, **Docker on Linux**. Podman has never been run (the variable accepts `podman`, but nothing has tried it), and Docker Desktop on macOS has not been tried either: the tests look at host paths mounted into the container at the same paths, which an engine in a VM may not share.
 
 ```bash
 pnpm -r build
@@ -135,7 +135,7 @@ CLERQ_TEST_CONTAINER_RUNTIME=docker pnpm --filter @clerq/gateway exec vitest run
   src/automations/sandbox.integration.test.ts -t 'real container engine'
 ```
 
-A failing test prints the engine's labelled containers and networks with their logs and the docker command lines it ran (`scripts/container-debug.sh`); `CLERQ_TEST_DEBUG_DIR` sets where the record of those calls is kept.
+A failing test prints the engine's labelled containers and networks with their state, the egress proxies' logs and the docker command lines it ran (`scripts/container-debug.sh`); `CLERQ_TEST_DEBUG_DIR` sets where the record of those calls is kept.
 
 ---
 
