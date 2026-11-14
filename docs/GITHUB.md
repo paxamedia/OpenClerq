@@ -24,7 +24,7 @@ repositories in general.
 - [The pull request's author](#the-pull-requests-author)
 - [Revoking, uninstalling, disconnecting](#revoking-uninstalling-disconnecting)
 - [What is stored where](#what-is-stored-where)
-- [Not verified against github.com](#not-verified-against-githubcom)
+- [Routes](#routes)
 
 ## Why a GitHub App, and why your own
 
@@ -100,7 +100,7 @@ connect` writes that page to a private temporary folder, opens it with your syst
    that says "Connected. Now install the app on the repositories it may use:" with the link.
 
 After the app is created, switch on **Enable Device Flow** by hand if you want to sign in (next
-section): GitHub's manifest has no field for it, as far as the documentation shows.
+section): GitHub's manifest has no field for it.
 
 The callback refuses, and stores nothing, if the state is unknown, was used, is older than ten
 minutes, or arrives at another address than the one the manifest named (so behind a proxy, pass the
@@ -277,8 +277,8 @@ asks for nothing beyond identity and the list of your installations.)
 | `pull_requests` | write | open the draft pull request                               |
 | `metadata`      | read  | GitHub gives this to every app                            |
 
-It does not ask for `workflows`, so GitHub should refuse a push that adds or changes a file under
-`.github/workflows/` (not verified, see the end); that is deliberate.
+It does not ask for `workflows`, so GitHub refuses a push that adds or changes a file under
+`.github/workflows/`; that is deliberate.
 
 Write access to `contents` can push to any branch the app may write to. OpenClerq only ever pushes
 the run's own new branch, and never merges (see [SECURITY.md](SECURITY.md)); branch protection on
@@ -423,58 +423,3 @@ Details and error codes are in [API.md](API.md#the-github-app). Every route has 
 (`@clerq/gateway-client`: `githubApp`, `githubManifest`, `importGithubApp`, `disconnectGithubApp`,
 `startGithubLogin`, `githubLogin`, `cancelGithubLogin`, `githubUser`, `githubSignOut`,
 `githubRepositories`); the callback is a browser's, so it has none.
-
-## Not verified against github.com
-
-Everything here was tested against a fake GitHub API that follows GitHub's documentation and what
-we know of its behaviour, not against github.com (no live call is made in development). Check these
-once against the real service before relying on them:
-
-- **The manifest.** That GitHub accepts exactly these fields: `hook_attributes` with
-  `active: false` and a URL (the homepage, never called), no `callback_urls`, `public: false`,
-  `request_oauth_on_install: false`, `default_events: []`, and a `redirect_url` on `http://127.0.0.1`.
-  That the conversion returns `id`, `slug`, `client_id`, `client_secret`, `pem`, `owner` and `permissions`.
-- **`repositories` with `permissions` in one call** to `POST /app/installations/{id}/access_tokens`
-  (the documentation lists them as independent body parameters), and the shape of the answer
-  (`permissions`, `repository_selection`, `repositories`) that OpenClerq checks.
-- **Revoking.** That `DELETE /installation/token` with the token as its own bearer answers `204`, and
-  what GitHub does to a token when its app is uninstalled or its key deleted.
-- **The JWT.** That `iss` as the App ID (OpenClerq's choice; GitHub also takes the client ID) is
-  accepted, with `iat` a minute in the past and `exp` nine minutes ahead.
-- **Pushing over HTTPS** with the installation token as `x-access-token` Basic credentials (the
-  documented form), and that a push that touches `.github/workflows/` is refused without
-  `workflows` permission.
-- **A repository that was renamed** answers `301` to `GET /repos/{owner}/{repo}/installation`;
-  OpenClerq does not follow it and reports that the app could not be asked.
-- **Where Enable Device Flow is.** That the app's settings page has a section "Identifying and
-  authorizing users" with a checkbox "Enable Device Flow" (the words `clerq github login`, Settings and
-  the callback page send people to look for), and that the settings address OpenClerq links,
-  `<github>/settings/apps/<slug>` (`<github>/organizations/<org>/settings/apps/<slug>` for an
-  organisation's app, built from the slug, as the callback page's link is), opens that page.
-- **Device flow.** That an app made from a manifest needs "Enable Device Flow" switched on by hand
-  (as far as the manifest documentation shows it is not a manifest field), and that GitHub then
-  answers `POST /login/device/code` with `device_code`, `user_code`, `verification_uri` (on
-  github.com), `expires_in` and `interval`; that errors come in a 200's body or a 4xx
-  (`device_flow_disabled`, `incorrect_client_credentials`; OpenClerq reads the body whatever the
-  status); the poll's `authorization_pending`, `slow_down` (with a new `interval`), `access_denied`
-  and `expired_token`; that `Accept: application/json` with a JSON body is accepted by both
-  `/login/` endpoints; and what a wrong client ID answers to the code request.
-- **User tokens.** That the device flow's answer carries `expires_in`, `refresh_token` and
-  `refresh_token_expires_in` (about 8 hours and 6 months) when the app expires user tokens, and none
-  when it does not; that `grant_type=refresh_token` with the client id and secret returns a new pair
-  and spends the old refresh token; the error names `bad_refresh_token` and
-  `incorrect_client_credentials`.
-- **The user's reads.** `GET /user` with `Authorization: Bearer <user token>`; `GET
-/user/installations` (`{ installations: [...] }`) and `GET /user/installations/{id}/repositories`
-  (`{ repositories: [...] }`) with that token, `per_page=100` and `Link` paging; that a suspended
-  installation refuses its repositories; that `avatar_url` and `html_url` are the https addresses
-  OpenClerq expects.
-- **Revoking the sign-in.** That `DELETE /applications/{client_id}/grant` with basic credentials
-  `client_id:client_secret` and a body of `{ "access_token": … }` works for a GitHub App's client id
-  (the documentation is written for OAuth apps, and also describes `DELETE
-/applications/{client_id}/token`, which revokes one token without the grant), that it answers `204`,
-  what it answers for an expired token (OpenClerq reads `404` and `422` as "could not revoke by that
-  token"), and that the page a person revokes from is `<github>/settings/apps/authorizations`.
-- **A browser posting the manifest form** to `/settings/apps/new` and following the redirect to the
-  gateway: the page `clerq github connect` and Settings write, as opposed to the fake's imitation of
-  it.
