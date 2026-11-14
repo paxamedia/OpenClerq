@@ -38,16 +38,6 @@ let gatewayBaseUrl: string = DEFAULT_GATEWAY_URL;
 let gatewayToken: string | null = null;
 let gatewayTenant: string | null = null;
 
-/** The gateway's address without a trailing slash. */
-function baseUrl(): string {
-  return gatewayBaseUrl.replace(/\/$/, '');
-}
-
-/** A route's full address: the base, `/v1`, then the route's own path. */
-function apiUrl(path: string): string {
-  return `${baseUrl()}${apiPrefix()}${path.startsWith('/') ? path : `/${path}`}`;
-}
-
 export function setGatewayBaseUrl(baseUrl: string): void {
   gatewayBaseUrl = baseUrl?.trim() || DEFAULT_GATEWAY_URL;
 }
@@ -70,15 +60,6 @@ export function setGatewayTenant(tenant: string | null): void {
 
 export function hasGatewayToken(): boolean {
   return gatewayToken !== null;
-}
-
-/** What every request carries: the protocol version, the token and the tenant, when set. */
-function authHeaders(): Record<string, string> {
-  return {
-    [API_VERSION_HEADER]: String(API_VERSION),
-    ...(gatewayToken ? { Authorization: `Bearer ${gatewayToken}` } : {}),
-    ...(gatewayTenant ? { 'X-Clerq-Tenant': gatewayTenant } : {}),
-  };
 }
 
 /** A refusal from the gateway, with its status and parsed JSON body when it had one. */
@@ -136,9 +117,9 @@ async function readRefusal(
  * or 308 its body, to wherever it points, and a plain-http hop would send them
  * in the clear: whoever chose this address chose it, not what answered there.
  */
-function redirectRefusal(): GatewayError {
+function redirectRefusal(where: string): GatewayError {
   const message =
-    `${baseUrl()} answered with a redirect, and a redirect is not followed: it would send your ` +
+    `${where} answered with a redirect, and a redirect is not followed: it would send your ` +
     'requests to wherever it points. Use the address it should be reached at (an https:// address, ' +
     'when a proxy redirects http to https).';
   return new GatewayError(message, 0, { error: 'redirect_refused', message });
@@ -147,52 +128,6 @@ function redirectRefusal(): GatewayError {
 /** The responses `fetch` follows, or, in a browser, the opaque one it gives for `redirect: 'manual'`. */
 function isRedirect(res: Response): boolean {
   return res.type === 'opaqueredirect' || [301, 302, 303, 307, 308].includes(res.status);
-}
-
-/**
- * Every request to the gateway goes through here, and never follows a redirect:
- * the gateway does not redirect, so one is something else answering at the
- * address, and following it would send the request (a POST's body included) on.
- *
- * `redirect: 'manual'` and a look at the answer, not `redirect: 'error'`: with
- * 'error', Node's fetch sometimes leaves a stream running after its signal is
- * aborted (an event stream that never ended, in about one run in eight of the
- * CLI's tests), and with 'manual' it does not.
- */
-async function gatewayFetch(url: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(url, { ...init, redirect: 'manual' });
-  if (isRedirect(res)) {
-    void res.body?.cancel().catch(() => undefined);
-    throw redirectRefusal();
-  }
-  return res;
-}
-
-async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await gatewayFetch(apiUrl(path), {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options?.headers },
-  });
-  if (!res.ok) {
-    const { text, json } = await readRefusal(res);
-    throw (
-      versionRefusal(res.status, json) ??
-      new GatewayError(`Gateway ${res.status}: ${text || res.statusText}`, res.status, json)
-    );
-  }
-  return res.json() as Promise<T>;
-}
-
-/** A DELETE that answers `{ ok: true }`, with the token the gateway needs. */
-async function deleteOk(path: string): Promise<{ ok: boolean }> {
-  const res = await gatewayFetch(apiUrl(path), { method: 'DELETE', headers: authHeaders() });
-  if (!res.ok) {
-    const { json } = await readRefusal(res);
-    throw (
-      versionRefusal(res.status, json) ?? new Error(String(json?.error ?? `Gateway ${res.status}`))
-    );
-  }
-  return { ok: true };
 }
 
 /** One SSE frame's fields. Comment lines (heartbeats) are skipped. */
@@ -1323,1154 +1258,1291 @@ function incompatible(
   return { ok: false, kind, gateway, api, reason };
 }
 
-/** Ask an address that is not answering /v1 whether it is a gateway from before 1.0. */
-async function probeOlderGateway(): Promise<CompatibilityResult> {
-  const where = baseUrl();
-  let answered = false;
-  let health = null as { service?: unknown; version?: unknown; api?: unknown } | null;
-  try {
-    // Without the version header or a token: a plain GET needs no CORS preflight,
-    // which a gateway from before 1.0 would refuse for the header.
-    const res = await gatewayFetch(`${where}/health`);
-    answered = true;
-    if (res.ok) health = (await res.json()) as typeof health;
-  } catch (e) {
-    // An address that redirects is something answering, not nothing: say so.
-    if (e instanceof GatewayError && e.body?.error === 'redirect_refused') {
-      return incompatible('unexpected', e.message);
-    }
-    /* nothing there, or not JSON */
-  }
-  if (!answered) {
-    return incompatible('unreachable', `Nothing answered at ${where}. Is OpenClerq running?`);
-  }
-  if (!health || health.service !== 'clerq-gateway' || health.api !== undefined) {
-    return incompatible(
-      'unexpected',
-      `Something answered at ${where}, but not like an OpenClerq gateway.`
-    );
-  }
-  const version = typeof health.version === 'string' ? health.version : null;
-  return incompatible(
-    'gateway_older',
-    `This gateway${version ? ` (version ${version})` : ''} is older than 1.0 and does not report an API version. ` +
-      'Update the gateway, or the background service it runs in.',
-    version
-  );
+/**
+ * Where a client sends its requests, and as whom. Each is read at every request, so a
+ * setting changed later (`setGatewayBaseUrl`) or a token that was renewed is used by the next call.
+ */
+interface Connection {
+  baseUrl(): string;
+  token(): string | null;
+  tenant(): string | null;
 }
 
-async function checkCompatibility(): Promise<CompatibilityResult> {
-  let res: Response;
-  try {
-    res = await gatewayFetch(apiUrl('/version'), {
-      headers: { [API_VERSION_HEADER]: String(API_VERSION) },
-    });
-  } catch (e) {
-    if (e instanceof GatewayError && e.body?.error === 'redirect_refused') {
-      return incompatible('unexpected', e.message);
-    }
-    // A gateway from before 1.0 refuses the version header in a browser's
-    // preflight, which looks the same as nothing listening. Ask it plainly.
-    return probeOlderGateway();
-  }
+/** Every call of a client, bound to one connection. `gateway` and `createGatewayClient` both make theirs here. */
+function buildClient(conn: Connection) {
+  /** The gateway's address without a trailing slash. */
+  const baseUrl = (): string => conn.baseUrl().replace(/\/$/, '');
 
-  if (res.ok) {
-    let info: Partial<VersionInfo> | null = null;
-    try {
-      info = (await res.json()) as Partial<VersionInfo>;
-    } catch {
-      /* not JSON */
-    }
-    const supported = info?.api?.supported;
-    if (!info || !Array.isArray(supported) || typeof info.api?.version !== 'number') {
-      return incompatible(
-        'unexpected',
-        `Something answered at ${baseUrl()}, but not like an OpenClerq gateway.`
-      );
-    }
-    const api = {
-      version: info.api.version,
-      supported: supported.filter((v) => typeof v === 'number'),
+  /** A route's full address: the base, `/v1`, then the route's own path. */
+  const apiUrl = (path: string): string =>
+    `${baseUrl()}${apiPrefix()}${path.startsWith('/') ? path : `/${path}`}`;
+
+  /** What every request carries: the protocol version, the token and the tenant, when set. */
+  const authHeaders = (): Record<string, string> => {
+    const token = conn.token();
+    const tenant = conn.tenant();
+    return {
+      [API_VERSION_HEADER]: String(API_VERSION),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(tenant ? { 'X-Clerq-Tenant': tenant } : {}),
     };
-    const gatewayVersion = typeof info.gateway === 'string' ? info.gateway : null;
-    if (api.supported.includes(API_VERSION)) {
-      return { ok: true, kind: 'compatible', gateway: gatewayVersion, api, reason: null };
+  };
+
+  /**
+   * Every request to the gateway goes through here, and never follows a redirect:
+   * the gateway does not redirect, so one is something else answering at the
+   * address, and following it would send the request (a POST's body included) on.
+   *
+   * `redirect: 'manual'` and a look at the answer, not `redirect: 'error'`: with
+   * 'error', Node's fetch sometimes leaves a stream running after its signal is
+   * aborted (an event stream that never ended, in about one run in eight of the
+   * CLI's tests), and with 'manual' it does not.
+   */
+  async function gatewayFetch(url: string, init?: RequestInit): Promise<Response> {
+    const res = await fetch(url, { ...init, redirect: 'manual' });
+    if (isRedirect(res)) {
+      void res.body?.cancel().catch(() => undefined);
+      throw redirectRefusal(baseUrl());
     }
-    const newer = Math.max(...api.supported) > API_VERSION;
-    return incompatible(
-      newer ? 'gateway_newer' : 'gateway_older',
-      incompatibilityReason(api.supported),
-      gatewayVersion,
-      api
-    );
+    return res;
   }
 
-  const { json } = await readRefusal(res);
-  const refused = versionRefusal(res.status, json);
-  if (refused) {
-    const supported = Array.isArray(json?.supported)
-      ? (json.supported as unknown[]).filter((v): v is number => typeof v === 'number')
-      : [];
-    const newer = supported.length > 0 && Math.max(...supported) > API_VERSION;
-    return incompatible(
-      newer ? 'gateway_newer' : 'gateway_older',
-      refused.message,
-      null,
-      supported.length > 0 ? { version: Math.max(...supported), supported } : null
-    );
-  }
-  // A gateway from before 1.0 has no /v1 and no public /version: 404 with a token, 401 without.
-  if (res.status === 404 || res.status === 401) return probeOlderGateway();
-  return incompatible('unexpected', `The gateway answered ${res.status} to GET /version.`);
-}
-
-export const gateway = {
-  getUrl: () => gatewayBaseUrl,
-
-  health(): Promise<HealthResponse> {
-    return fetchJson<HealthResponse>('/health');
-  },
-
-  /** GET /version: the gateway's release, the API versions it serves, the store's schema. */
-  version(): Promise<VersionInfo> {
-    return fetchJson<VersionInfo>('/version');
-  },
-
-  /**
-   * Whether this gateway speaks the API version this client needs. Never
-   * throws: an unreachable or older gateway is an answer, with the reason in
-   * plain words. It needs no token (GET /version is public).
-   */
-  async checkCompatibility(): Promise<CompatibilityResult> {
-    try {
-      return await checkCompatibility();
-    } catch {
-      // A connection that dropped while the answer was being read.
-      return incompatible('unreachable', `Nothing answered at ${baseUrl()}. Is OpenClerq running?`);
-    }
-  },
-
-  metrics(): Promise<{
-    version: string;
-    uptime_seconds: number;
-    service: string;
-    llm_cost_usd_total?: number;
-    llm_unpriced_calls_total?: number;
-    /** Times a call or a run moved to a fallback model because the one in use was unavailable. */
-    llm_fallbacks_total?: number;
-  }> {
-    return fetchJson('/metrics');
-  },
-
-  /**
-   * SSE endpoint URL. EventSource cannot set headers, so the token travels as a
-   * query parameter — accepted by the gateway on this endpoint only.
-   */
-  logsStreamUrl(): string {
-    const url = apiUrl('/logs/stream');
-    return gatewayToken ? `${url}?token=${encodeURIComponent(gatewayToken)}` : url;
-  },
-
-  /**
-   * URL for an EventSource on GET /events/stream. EventSource sends
-   * Last-Event-ID itself when it reconnects; `lastEventId` sets where a first
-   * connection starts. The token travels as a query parameter, as for logs.
-   */
-  eventsStreamUrl(opts: { names?: string[]; lastEventId?: string } = {}): string {
-    const params = new URLSearchParams();
-    if (gatewayToken) params.set('token', gatewayToken);
-    if (opts.names?.length) params.set('names', opts.names.join(','));
-    if (opts.lastEventId) params.set('lastEventId', opts.lastEventId);
-    const query = params.toString();
-    return query ? `${apiUrl('/events/stream')}?${query}` : apiUrl('/events/stream');
-  },
-
-  /**
-   * Follow GET /events/stream without EventSource (the token goes in a
-   * header), reconnecting after a drop and resuming from the last event seen.
-   * Resolves when `signal` aborts.
-   */
-  async streamEvents(onEvent: (event: ClerqEvent) => void, opts: EventStreamOptions = {}) {
-    let lastId = opts.lastEventId;
-    const retry = opts.retryMs ?? 3000;
-    const { signal } = opts;
-    while (!signal?.aborted) {
-      try {
-        const query = opts.names?.length
-          ? `?names=${encodeURIComponent(opts.names.join(','))}`
-          : '';
-        const res = await gatewayFetch(apiUrl(`/events/stream${query}`), {
-          headers: { ...authHeaders(), ...(lastId ? { 'Last-Event-ID': lastId } : {}) },
-          signal,
-        });
-        if (!res.ok || !res.body) {
-          const { json } = res.ok ? { json: null } : await readRefusal(res);
-          throw (
-            versionRefusal(res.status, json) ??
-            new GatewayError(`Gateway ${res.status}`, res.status, json)
-          );
-        }
-        opts.onOpen?.();
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let sep: number;
-          while ((sep = buffer.search(/\r?\n\r?\n/)) !== -1) {
-            const frame = parseFrame(buffer.slice(0, sep));
-            buffer = buffer.slice(sep).replace(/^\r?\n\r?\n/, '');
-            if (frame.id) lastId = frame.id;
-            if (frame.event === 'reset') opts.onReset?.();
-            else if (frame.data) onEvent(JSON.parse(frame.data) as ClerqEvent);
-          }
-        }
-      } catch (e) {
-        if (signal?.aborted) break;
-        // A refused token, or a version the gateway does not serve, will not get
-        // better by retrying.
-        if (
-          e instanceof GatewayError &&
-          (e.status === 401 ||
-            e.body?.error === 'redirect_refused' ||
-            versionRefusal(e.status, e.body))
-        ) {
-          throw e;
-        }
-      }
-      if (signal?.aborted) break;
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, retry);
-        signal?.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(t);
-            resolve();
-          },
-          { once: true }
-        );
-      });
-    }
-  },
-
-  models(): Promise<{ models: string[]; current: string }> {
-    return fetchJson<{ models: string[]; current: string }>('/models');
-  },
-
-  /** Every provider in the registry, with readiness and qualified model references. */
-  providers(): Promise<{
-    providers: ProviderInfo[];
-    current: { provider: string; model: string };
-  }> {
-    return fetchJson('/providers');
-  },
-
-  /**
-   * The default model, and the models chat and tasks use, in order, when it is
-   * unavailable. A call that names a model of its own never falls back.
-   */
-  routing(): Promise<{
-    default: { provider: string; model: string };
-    fallback: string[];
-    maxFallback: number;
-  }> {
-    return fetchJson('/routing');
-  },
-
-  setRouting(fallback: string[]): Promise<{ fallback: string[] }> {
-    return fetchJson('/routing', { method: 'PUT', body: JSON.stringify({ fallback }) });
-  },
-
-  // --- Chat console -----------------------------------------------------
-
-  sessions(limit = 50): Promise<{ sessions: ChatSession[] }> {
-    return fetchJson(`/sessions?limit=${encodeURIComponent(String(limit))}`);
-  },
-
-  createSession(
-    input: {
-      title?: string;
-      mode?: PipelineMode;
-      model?: string;
-      workspace?: string;
-      permissionMode?: ChatPermissionMode;
-    } = {}
-  ): Promise<ChatSession> {
-    return fetchJson('/sessions', { method: 'POST', body: JSON.stringify(input) });
-  },
-
-  session(id: string): Promise<ChatSession & { messages: ChatMessage[] }> {
-    return fetchJson(`/sessions/${encodeURIComponent(id)}`);
-  },
-
-  updateSession(
-    id: string,
-    patch: {
-      title?: string;
-      mode?: PipelineMode;
-      model?: string | null;
-      /** A folder path to attach, or null to detach. */
-      workspace?: string | null;
-      permissionMode?: ChatPermissionMode;
-    }
-  ): Promise<ChatSession> {
-    return fetchJson(`/sessions/${encodeURIComponent(id)}/update`, {
-      method: 'POST',
-      body: JSON.stringify(patch),
-    });
-  },
-
-  deleteSession(id: string): Promise<{ ok: boolean }> {
-    return fetchJson(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  },
-
-  /**
-   * Send a message and stream the answer.
-   *
-   * EventSource cannot POST, so this reads the response body directly. `onDelta`
-   * is called with each piece; the promise resolves with the stored message.
-   *
-   * Aborting `signal` stops the run on the gateway by id, not just by hanging
-   * up: the desktop sidecar runs under Bun, which cannot see a hang-up.
-   */
-  async sendMessage(
-    id: string,
-    input: {
-      text: string;
-      mode?: PipelineMode;
-      model?: string;
-      /** Finish and record the run even if this client disconnects. */
-      continueOnDisconnect?: boolean;
-    },
-    onDelta?: (text: string) => void,
-    signal?: AbortSignal,
-    /** Managed: tool activity, approvals to answer, drafts, as they happen (streaming only). */
-    onEvent?: (event: ChatStreamEvent) => void
-  ): Promise<{ runId: string; message: ChatMessage }> {
-    const res = await gatewayFetch(apiUrl(`/sessions/${encodeURIComponent(id)}/send`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ ...input, stream: Boolean(onDelta) }),
-      signal,
+  async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
+    const res = await gatewayFetch(apiUrl(path), {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options?.headers },
     });
     if (!res.ok) {
       const { text, json } = await readRefusal(res);
       throw (
         versionRefusal(res.status, json) ??
-        new Error(`Gateway ${res.status}: ${text || res.statusText}`)
+        new GatewayError(`Gateway ${res.status}: ${text || res.statusText}`, res.status, json)
       );
     }
-    if (!onDelta) return (await res.json()) as { runId: string; message: ChatMessage };
-    if (!res.body) throw new Error('Gateway returned an empty stream.');
+    return res.json() as Promise<T>;
+  }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let result: { runId: string; message: ChatMessage } | undefined;
-    let runId: string | undefined;
-    const cancelOnAbort = () => {
-      if (runId) void gateway.cancelRun(runId).catch(() => undefined);
-    };
-    signal?.addEventListener('abort', cancelOnAbort, { once: true });
+  /** A DELETE that answers `{ ok: true }`, with the token the gateway needs. */
+  async function deleteOk(path: string): Promise<{ ok: boolean }> {
+    const res = await gatewayFetch(apiUrl(path), { method: 'DELETE', headers: authHeaders() });
+    if (!res.ok) {
+      const { json } = await readRefusal(res);
+      throw (
+        versionRefusal(res.status, json) ??
+        new Error(String(json?.error ?? `Gateway ${res.status}`))
+      );
+    }
+    return { ok: true };
+  }
 
-    const handle = (frame: string): void => {
-      for (const line of frame.split(/\r?\n/)) {
-        if (!line.startsWith('data:')) continue;
-        const event = JSON.parse(line.slice(5).trim()) as {
-          type: string;
-          text?: string;
-          error?: string;
-          runId?: string;
-          message?: ChatMessage;
-        };
-        if (event.type === 'start' && event.runId) runId = event.runId;
-        else if (event.type === 'delta' && event.text) onDelta(event.text);
-        else if (
-          event.type === 'tool' ||
-          event.type === 'approval' ||
-          event.type === 'approval_decided' ||
-          event.type === 'draft'
-        )
-          onEvent?.(event as unknown as ChatStreamEvent);
-        else if (event.type === 'error') throw new Error(event.error ?? 'The model call failed.');
-        else if (event.type === 'done' && event.message) {
-          result = { runId: event.runId ?? '', message: event.message };
-        }
-      }
-    };
-
+  /** Ask an address that is not answering /v1 whether it is a gateway from before 1.0. */
+  async function probeOlderGateway(): Promise<CompatibilityResult> {
+    const where = baseUrl();
+    let answered = false;
+    let health = null as { service?: unknown; version?: unknown; api?: unknown } | null;
     try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let sep: number;
-        while ((sep = buffer.indexOf('\n\n')) !== -1) {
-          handle(buffer.slice(0, sep));
-          buffer = buffer.slice(sep + 2);
-        }
+      // Without the version header or a token: a plain GET needs no CORS preflight,
+      // which a gateway from before 1.0 would refuse for the header.
+      const res = await gatewayFetch(`${where}/health`);
+      answered = true;
+      if (res.ok) health = (await res.json()) as typeof health;
+    } catch (e) {
+      // An address that redirects is something answering, not nothing: say so.
+      if (e instanceof GatewayError && e.body?.error === 'redirect_refused') {
+        return incompatible('unexpected', e.message);
       }
-      if (buffer.trim()) handle(buffer);
-    } finally {
-      signal?.removeEventListener('abort', cancelOnAbort);
+      /* nothing there, or not JSON */
+    }
+    if (!answered) {
+      return incompatible('unreachable', `Nothing answered at ${where}. Is OpenClerq running?`);
+    }
+    if (!health || health.service !== 'clerq-gateway' || health.api !== undefined) {
+      return incompatible(
+        'unexpected',
+        `Something answered at ${where}, but not like an OpenClerq gateway.`
+      );
+    }
+    const version = typeof health.version === 'string' ? health.version : null;
+    return incompatible(
+      'gateway_older',
+      `This gateway${version ? ` (version ${version})` : ''} is older than 1.0 and does not report an API version. ` +
+        'Update the gateway, or the background service it runs in.',
+      version
+    );
+  }
+
+  async function checkCompatibility(): Promise<CompatibilityResult> {
+    let res: Response;
+    try {
+      res = await gatewayFetch(apiUrl('/version'), {
+        headers: { [API_VERSION_HEADER]: String(API_VERSION) },
+      });
+    } catch (e) {
+      if (e instanceof GatewayError && e.body?.error === 'redirect_refused') {
+        return incompatible('unexpected', e.message);
+      }
+      // A gateway from before 1.0 refuses the version header in a browser's
+      // preflight, which looks the same as nothing listening. Ask it plainly.
+      return probeOlderGateway();
     }
 
-    if (!result) throw new Error('The stream ended without an answer.');
-    return result;
-  },
-
-  compare(
-    id: string,
-    input: { text: string; models: string[]; continueOnDisconnect?: boolean }
-  ): Promise<{ runId: string; messageId: number; columns: ComparisonColumn[] }> {
-    return fetchJson(`/sessions/${encodeURIComponent(id)}/compare`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    });
-  },
-
-  /** What managed mode would add to `text` over raw, in this conversation. Calls no model. */
-  modeDiff(id: string, input: { text: string; model?: string }): Promise<ModeDiff> {
-    return fetchJson(`/sessions/${encodeURIComponent(id)}/mode-diff`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    });
-  },
-
-  /** Automations a model drafted in this conversation, oldest first. */
-  drafts(id: string): Promise<{ drafts: ChatDraft[] }> {
-    return fetchJson(`/sessions/${encodeURIComponent(id)}/drafts`);
-  },
-
-  draft(id: string, draftId: string): Promise<ChatDraft> {
-    return fetchJson(`/sessions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}`);
-  },
-
-  /** Check a draft against this machine and expand its schedule; executes nothing. */
-  dryRunDraft(id: string, draftId: string): Promise<DraftDryRun> {
-    return fetchJson(
-      `/sessions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}/dry-run`,
-      { method: 'POST', body: '{}' }
-    );
-  },
-
-  /** Save a draft as an automation. It starts switched off; enabling it is a separate action. */
-  saveDraft(
-    id: string,
-    draftId: string
-  ): Promise<{ id: string; name: string; enabled: false; authoredBy: string; source: string }> {
-    return fetchJson(
-      `/sessions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}/save`,
-      { method: 'POST', body: '{}' }
-    );
-  },
-
-  promote(id: string, messageId: number, index: number): Promise<ChatMessage> {
-    return fetchJson(`/sessions/${encodeURIComponent(id)}/promote`, {
-      method: 'POST',
-      body: JSON.stringify({ messageId, index }),
-    });
-  },
-
-  // --- Kill switch ------------------------------------------------------
-
-  /**
-   * Stop things now. By default: refuse pending approvals, cancel every run in
-   * flight, and pause triggers. Pass false to leave any part out.
-   */
-  kill(opts: { approvals?: boolean; runs?: boolean; triggers?: boolean } = {}): Promise<{
-    ok: boolean;
-    deniedApprovals: number;
-    cancelledRuns: number;
-    triggersPaused: boolean;
-  }> {
-    return fetchJson('/kill', { method: 'POST', body: JSON.stringify(opts) });
-  },
-
-  killStatus(): Promise<{ triggersPaused: boolean; since: string | null; activeRuns: number }> {
-    return fetchJson('/kill');
-  },
-
-  /** Restart triggers paused by the kill switch. */
-  resume(): Promise<{ ok: boolean; triggersResumed: boolean; wasPaused: boolean }> {
-    return fetchJson('/resume', { method: 'POST', body: '{}' });
-  },
-
-  /** Stop a run in flight. Rejects when the run is not running. */
-  cancelRun(id: string): Promise<{ ok: boolean; id: string }> {
-    return fetchJson(`/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: '{}' });
-  },
-
-  artifact(runId: string, artifactId: number): Promise<ArtifactInfo & { content: string }> {
-    return fetchJson(
-      `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(String(artifactId))}`
-    );
-  },
-
-  drivers(): Promise<{ drivers: DriverInfo[] }> {
-    return fetchJson('/drivers');
-  },
-
-  /** The repositories automations target. Read-only. */
-  repos(): Promise<{ repos: RepoSummary[] }> {
-    return fetchJson('/repos');
-  },
-
-  repo(id: string): Promise<RepoDetail> {
-    return fetchJson(`/repos/${encodeURIComponent(id)}`);
-  },
-
-  /**
-   * Add a repository by hand, as an automation's `targets.repos` names it:
-   * `local:<absolute path>` (a git work tree), `github:owner/name`,
-   * `gitlab:group/name` or an https URL on either. Adding one that is listed
-   * returns its row (`created: false`). With `check`, a remote is reached first
-   * with the credential a run would use, and nothing is added if it cannot be:
-   * that is a 422 `repo_unreachable` whose body carries `check`.
-   */
-  addRepo(target: string, opts: { check?: boolean } = {}): Promise<AddRepoResult> {
-    return fetchJson('/repos', {
-      method: 'POST',
-      body: JSON.stringify(opts.check === undefined ? { target } : { target, check: opts.check }),
-    });
-  },
-
-  automations(): Promise<{ automations: AutomationSummary[] }> {
-    return fetchJson('/automations');
-  },
-
-  // --- GitHub: the app (operator only) --------------------------------------------------
-  //
-  // GET /github/app/callback is GitHub's own redirect to the browser, so it has no method
-  // here: a client never calls it.
-
-  /**
-   * Start creating the app from a manifest. `baseUrl` is the address the person's
-   * **browser** reaches this gateway at (GitHub sends it back there): http://127.0.0.1:<port>
-   * on this computer, https anywhere else. The browser then posts `manifest` to `url`
-   * as a form field named `manifest`; then poll `githubApp()` until it is connected.
-   */
-  githubManifest(input: {
-    baseUrl: string;
-    owner?: string;
-    name?: string;
-  }): Promise<GithubManifestOffer> {
-    return fetchJson('/github/app/manifest', { method: 'POST', body: JSON.stringify(input) });
-  },
-
-  /** Use an app that exists: its id, client ID and private key (and, to renew sign-ins, its client secret). */
-  importGithubApp(input: GithubImportInput): Promise<GithubImportResult> {
-    return fetchJson('/github/app/import', { method: 'POST', body: JSON.stringify(input) });
-  },
-
-  /** The connected app and where it is installed. `refresh` asks GitHub again instead of the minute's cache. */
-  githubApp(opts: { refresh?: boolean } = {}): Promise<GithubAppStatus> {
-    return fetchJson(`/github/app${opts.refresh ? '?refresh=1' : ''}`);
-  },
-
-  /** Forget the app and its key (and sign the person out). The app stays on GitHub; the answer says where to delete it. */
-  disconnectGithubApp(): Promise<GithubDisconnectResult> {
-    return fetchJson('/github/app', { method: 'DELETE' });
-  },
-
-  // --- GitHub: the person's sign-in (the app's device flow) ------------------------------
-  //
-  // The user token is for who is signed in and which repositories they reach through the
-  // app. It is not used to clone, push or open a pull request: runs use installation tokens.
-
-  /** Start a device flow. The person types `userCode` at `verificationUri`; poll `githubLogin(flowId)`. */
-  startGithubLogin(): Promise<GithubLoginStart> {
-    return fetchJson('/github/login', { method: 'POST', body: '{}' });
-  },
-
-  githubLogin(flowId: string): Promise<GithubLoginStatus> {
-    return fetchJson(`/github/login/${encodeURIComponent(flowId)}`);
-  },
-
-  cancelGithubLogin(flowId: string): Promise<{ cancelled: boolean }> {
-    return fetchJson(`/github/login/${encodeURIComponent(flowId)}`, { method: 'DELETE' });
-  },
-
-  /** Who is signed in to GitHub, if anyone. */
-  githubUser(): Promise<GithubUserStatus> {
-    return fetchJson('/github/user');
-  },
-
-  /** Sign out, and revoke the authorization on GitHub when the app's client secret allows it. */
-  githubSignOut(): Promise<GithubSignOutResult> {
-    return fetchJson('/github/user', { method: 'DELETE' });
-  },
-
-  /** The repositories the signed-in person reaches through the app (at most 1,000; `truncated` says). */
-  githubRepositories(): Promise<GithubUserRepositories> {
-    return fetchJson('/github/user/repositories');
-  },
-
-  automation(id: string): Promise<AutomationSummary & { source: string }> {
-    return fetchJson(`/automations/${encodeURIComponent(id)}`);
-  },
-
-  /** Check a spec against this machine without saving or running it. */
-  previewAutomation(spec: string, id?: string): Promise<AutomationPreview> {
-    return fetchJson('/automations/preview', {
-      method: 'POST',
-      body: JSON.stringify({ spec, id }),
-    });
-  },
-
-  /** Save a new automation. It starts disabled. */
-  createAutomation(spec: string): Promise<AutomationSummary & { source: string }> {
-    return fetchJson('/automations', { method: 'POST', body: JSON.stringify({ spec }) });
-  },
-
-  updateAutomation(id: string, spec: string): Promise<AutomationSummary & { source: string }> {
-    return fetchJson(`/automations/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ spec }),
-    });
-  },
-
-  deleteAutomation(id: string): Promise<{ ok: boolean }> {
-    return fetchJson(`/automations/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  },
-
-  setAutomationEnabled(id: string, enabled: boolean): Promise<AutomationSummary> {
-    return fetchJson(`/automations/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, {
-      method: 'POST',
-      body: '{}',
-    });
-  },
-
-  /**
-   * Start a run now. Resolves once the run exists; follow it with run().
-   * `queued` is true when the run waits for a place under the limit on runs at once.
-   * `model` runs it with that model instead of the spec's primary, used as chosen:
-   * if it is unavailable the run fails, and does not fall back to another.
-   */
-  runAutomation(id: string, model?: string): Promise<{ runId: string; queued?: boolean }> {
-    return fetchJson(`/automations/${encodeURIComponent(id)}/run`, {
-      method: 'POST',
-      body: JSON.stringify(model ? { model } : {}),
-    });
-  },
-
-  modules(): Promise<{ modules: ModuleInfo[] }> {
-    return fetchJson('/modules');
-  },
-
-  /** A short-lived token for a module's UI (default 15 minutes). Needs the gateway token. */
-  moduleToken(
-    id: string,
-    ttlSeconds?: number
-  ): Promise<{ token: string; expiresAt: string; scopes: string[] }> {
-    return fetchJson(`/modules/${encodeURIComponent(id)}/token`, {
-      method: 'POST',
-      body: JSON.stringify({ ttlSeconds }),
-    });
-  },
-
-  revokeModuleTokens(id: string): Promise<{ ok: boolean; revoked: number }> {
-    return fetchJson(`/modules/${encodeURIComponent(id)}/tokens`, { method: 'DELETE' });
-  },
-
-  /** Every module and plugin, with its state, what it declares and what was approved. */
-  plugins(): Promise<{ plugins: PluginInfo[]; enforce: boolean }> {
-    return fetchJson('/plugins');
-  },
-
-  /** Turn a plugin on. With enforcement on and no approval it waits for one. */
-  enablePlugin(id: string): Promise<{ plugin: PluginInfo }> {
-    return fetchJson(`/plugins/${encodeURIComponent(id)}/enable`, { method: 'POST', body: '{}' });
-  },
-
-  /** Turn a plugin off: it is stopped and what it set up is removed. */
-  disablePlugin(id: string): Promise<{ plugin: PluginInfo }> {
-    return fetchJson(`/plugins/${encodeURIComponent(id)}/disable`, { method: 'POST', body: '{}' });
-  },
-
-  /**
-   * Approve a plugin: send the `permissionsHash` and `checksum` the list showed. A plugin
-   * that has changed since gets 409 `approval_stale`: list it again and review what changed.
-   */
-  approvePlugin(
-    id: string,
-    seen: { permissionsHash: string; checksum: string }
-  ): Promise<{ plugin: PluginInfo }> {
-    return fetchJson(`/plugins/${encodeURIComponent(id)}/approve`, {
-      method: 'POST',
-      body: JSON.stringify(seen),
-    });
-  },
-
-  /** Whether plugin permissions are enforced. Off unless the person turned it on. */
-  pluginSettings(): Promise<{ enforce: boolean }> {
-    return fetchJson('/plugins/settings');
-  },
-
-  setPluginSettings(settings: { enforce: boolean }): Promise<{ enforce: boolean }> {
-    return fetchJson('/plugins/settings', { method: 'PUT', body: JSON.stringify(settings) });
-  },
-
-  /** Fire a module's trigger now. Resolves once its run exists. */
-  fireModuleTrigger(
-    id: string,
-    triggerId: string,
-    payload: unknown = {}
-  ): Promise<{ runId: string }> {
-    return fetchJson(
-      `/api/modules/${encodeURIComponent(id)}/triggers/${encodeURIComponent(triggerId)}`,
-      { method: 'POST', body: JSON.stringify(payload) }
-    );
-  },
-
-  // --- Shared records, extensions, search, inbox ----------------------
-
-  records(
-    opts: { type?: CoreRecordType; q?: string; limit?: number } = {}
-  ): Promise<{ records: CoreRecord[] }> {
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(opts)) if (v !== undefined) params.set(k, String(v));
-    return fetchJson(`/records${params.size ? `?${params}` : ''}`);
-  },
-
-  record(id: string): Promise<CoreRecord & { links: RecordLink[] }> {
-    return fetchJson(`/records/${encodeURIComponent(id)}`);
-  },
-
-  /** Find a person or organisation by email, phone or domain; created unless `create: false`. */
-  resolveRecord(input: {
-    type: 'person' | 'organisation';
-    name?: string;
-    emails?: string[];
-    phones?: string[];
-    domains?: string[];
-    create?: boolean;
-  }): Promise<{ record: CoreRecord; created: boolean; matchedBy: string[] }> {
-    return fetchJson('/records/resolve', { method: 'POST', body: JSON.stringify(input) });
-  },
-
-  links(ref: string): Promise<{ links: RecordLink[] }> {
-    return fetchJson(`/links?ref=${encodeURIComponent(ref)}`);
-  },
-
-  activities(recordId: string, limit = 50): Promise<{ activities: CoreRecord[] }> {
-    return fetchJson(`/records/${encodeURIComponent(recordId)}/activities?limit=${limit}`);
-  },
-
-  extensions(): Promise<Record<ExtensionPoint, ExtensionItem[]>> {
-    return fetchJson('/extensions');
-  },
-
-  search(
-    q: string,
-    opts: { types?: string[]; limit?: number } = {}
-  ): Promise<{ results: SearchHit[]; errors: Array<{ moduleId: string; error: string }> }> {
-    const params = new URLSearchParams({ q });
-    if (opts.types?.length) params.set('types', opts.types.join(','));
-    if (opts.limit) params.set('limit', String(opts.limit));
-    return fetchJson(`/search?${params}`);
-  },
-
-  inbox(
-    opts: { status?: InboxItem['status']; kind?: InboxItem['kind']; module?: string } = {}
-  ): Promise<{ items: InboxItem[] }> {
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(opts)) if (v !== undefined) params.set(k, String(v));
-    return fetchJson(`/inbox${params.size ? `?${params}` : ''}`);
-  },
-
-  setInboxStatus(id: string, status: InboxItem['status']): Promise<InboxItem> {
-    return fetchJson(`/inbox/items/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status }),
-    });
-  },
-
-  /** Answer an item; its module acts on it and the item is closed. */
-  respondInboxItem(
-    id: string,
-    response: { text?: string; data?: unknown }
-  ): Promise<{ item: InboxItem; result: unknown }> {
-    return fetchJson(`/inbox/items/${encodeURIComponent(id)}/respond`, {
-      method: 'POST',
-      body: JSON.stringify(response),
-    });
-  },
-
-  // --- Remote mode and devices ----------------------------------------
-
-  remote(): Promise<RemoteSettings> {
-    return fetchJson('/remote');
-  },
-
-  setRemote(patch: Partial<RemoteSettings>): Promise<RemoteSettings> {
-    return fetchJson('/remote', { method: 'PUT', body: JSON.stringify(patch) });
-  },
-
-  /** A single-use code (five minutes) and the QR payload `{ url, code, expires }`. */
-  createPairingCode(): Promise<{ code: string; url: string; expiresAt: string; qr: string }> {
-    return fetchJson('/devices/pairing', { method: 'POST', body: '{}' });
-  },
-
-  /** Used by the phone: needs no token, returns its device token. */
-  pairDevice(input: {
-    code: string;
-    deviceName: string;
-    platform: string;
-  }): Promise<{ device: Device; token: string; expiresAt: string; scopes: string[] }> {
-    return fetchJson('/devices/pair', { method: 'POST', body: JSON.stringify(input) });
-  },
-
-  devices(): Promise<{ devices: Device[] }> {
-    return fetchJson('/devices');
-  },
-
-  /** The calling device itself (device token only). */
-  thisDevice(): Promise<Device> {
-    return fetchJson('/devices/me');
-  },
-
-  revokeDevice(id: string): Promise<Device> {
-    return fetchJson(`/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  },
-
-  approvals(): Promise<{ approvals: Approval[] }> {
-    return fetchJson('/approvals');
-  },
-
-  /**
-   * Answer a pending approval. `by` says who decided, for the audit log (default
-   * `operator`); `reason` is kept with the decision.
-   */
-  decideApproval(
-    id: number,
-    decision: 'approve' | 'deny',
-    opts: { by?: string; reason?: string } = {}
-  ): Promise<{ ok: boolean }> {
-    return fetchJson(`/approvals/${id}/${decision}`, {
-      method: 'POST',
-      body: JSON.stringify({
-        ...(opts.by ? { by: opts.by } : {}),
-        ...(opts.reason ? { reason: opts.reason } : {}),
-      }),
-    });
-  },
-
-  /** Newest first. `since` keeps runs created at or after it, and allows up to 5000. */
-  runs(limit = 50, opts: { since?: string | Date } = {}): Promise<{ runs: RunSummary[] }> {
-    const since = opts.since instanceof Date ? opts.since.toISOString() : (opts.since ?? undefined);
-    const query = `limit=${encodeURIComponent(String(limit))}${
-      since ? `&since=${encodeURIComponent(since)}` : ''
-    }`;
-    return fetchJson(`/runs?${query}`);
-  },
-
-  run(id: string): Promise<RunDetail> {
-    return fetchJson(`/runs/${encodeURIComponent(id)}`);
-  },
-
-  /** The tool calls a run's agent made, in order. */
-  runToolCalls(id: string): Promise<{ toolCalls: ToolCallRecord[] }> {
-    return fetchJson(`/runs/${encodeURIComponent(id)}/tool-calls`);
-  },
-
-  secrets(): Promise<
-    | { secrets: string[]; keySource: 'env' | 'keychain' | 'file' | 'none'; keychain: string }
-    | { error: string }
-  > {
-    return fetchJson('/secrets');
-  },
-
-  setSecret(name: string, value: string): Promise<{ ok: boolean }> {
-    return fetchJson<{ ok: boolean }>('/secrets', {
-      method: 'POST',
-      body: JSON.stringify({ name, value }),
-    });
-  },
-
-  deleteSecret(name: string): Promise<{ ok: boolean }> {
-    return deleteOk(`/secrets/${encodeURIComponent(name)}`);
-  },
-
-  triggers(): Promise<{
-    cron?: Array<{ id: string; schedule: string; message: string }>;
-    file?: Array<{ id: string; path: string; message: string }>;
-    webhooks?: Record<string, { message: string }>;
-  }> {
-    return fetchJson('/triggers');
-  },
-
-  saveTriggers(config: {
-    cron?: Array<{ id: string; schedule: string; message: string }>;
-    file?: Array<{ id: string; path: string; message: string }>;
-    webhooks?: Record<string, { message: string }>;
-  }): Promise<{ ok: boolean }> {
-    return fetchJson<{ ok: boolean }>('/triggers', {
-      method: 'POST',
-      body: JSON.stringify(config),
-    });
-  },
-
-  systemPrompt(): Promise<{ prompt: string; default: string }> {
-    return fetchJson('/system-prompt');
-  },
-
-  saveSystemPrompt(prompt: string): Promise<{ ok: boolean }> {
-    return fetchJson<{ ok: boolean }>('/system-prompt', {
-      method: 'POST',
-      body: JSON.stringify({ prompt }),
-    });
-  },
-
-  reasoning(): Promise<{ temperature?: number; maxTokens?: number }> {
-    return fetchJson('/reasoning');
-  },
-
-  saveReasoning(config: { temperature?: number; maxTokens?: number }): Promise<{ ok: boolean }> {
-    return fetchJson<{ ok: boolean }>('/reasoning', {
-      method: 'POST',
-      body: JSON.stringify(config),
-    });
-  },
-
-  capabilities(): Promise<{ fsRoot?: string; httpAllowlist?: string[] }> {
-    return fetchJson('/capabilities');
-  },
-
-  saveCapabilities(config: {
-    fsRoot?: string;
-    httpAllowlist?: string[];
-  }): Promise<{ ok: boolean }> {
-    return fetchJson<{ ok: boolean }>('/capabilities', {
-      method: 'POST',
-      body: JSON.stringify(config),
-    });
-  },
-
-  skills(): Promise<SkillsResponse> {
-    return fetchJson<SkillsResponse>('/skills');
-  },
-
-  skill(slug: string): Promise<{ meta: SkillMeta; body: string; skill: SkillInfo }> {
-    return fetchJson(`/skills/${encodeURIComponent(slug)}`);
-  },
-
-  /**
-   * Trust a skill as it is now. `checksum` is the `computedChecksum` you were shown: if the files
-   * are not those any more, the answer is 409 `trust_stale` and nothing is trusted.
-   */
-  trustSkill(slug: string, checksum: string): Promise<{ skill: SkillInfo }> {
-    return fetchJson(`/skills/${encodeURIComponent(slug)}/trust`, {
-      method: 'POST',
-      body: JSON.stringify({ checksum }),
-    });
-  },
-
-  /** Never use this skill, with enforcement on or off. */
-  blockSkill(slug: string): Promise<{ skill: SkillInfo }> {
-    return fetchJson(`/skills/${encodeURIComponent(slug)}/block`, { method: 'POST', body: '{}' });
-  },
-
-  /** Forget what you decided about this skill: it is `untrusted` again. */
-  untrustSkill(slug: string): Promise<{ skill: SkillInfo }> {
-    return fetchJson(`/skills/${encodeURIComponent(slug)}/untrust`, { method: 'POST', body: '{}' });
-  },
-
-  /** Every record in use. A key may appear more than once; each record has its own id. */
-  memory(): Promise<{ entries: MemoryRecord[] }> {
-    return fetchJson('/memory');
-  },
-
-  getMemory(key: string): Promise<MemoryRecord> {
-    return fetchJson(`/memory/${encodeURIComponent(key)}`);
-  },
-
-  /** Set a key: the newest record of that key and type is updated, or one is made. */
-  setMemory(
-    key: string,
-    value: unknown,
-    extra: {
+    if (res.ok) {
+      let info: Partial<VersionInfo> | null = null;
+      try {
+        info = (await res.json()) as Partial<VersionInfo>;
+      } catch {
+        /* not JSON */
+      }
+      const supported = info?.api?.supported;
+      if (!info || !Array.isArray(supported) || typeof info.api?.version !== 'number') {
+        return incompatible(
+          'unexpected',
+          `Something answered at ${baseUrl()}, but not like an OpenClerq gateway.`
+        );
+      }
+      const api = {
+        version: info.api.version,
+        supported: supported.filter((v) => typeof v === 'number'),
+      };
+      const gatewayVersion = typeof info.gateway === 'string' ? info.gateway : null;
+      if (api.supported.includes(API_VERSION)) {
+        return { ok: true, kind: 'compatible', gateway: gatewayVersion, api, reason: null };
+      }
+      const newer = Math.max(...api.supported) > API_VERSION;
+      return incompatible(
+        newer ? 'gateway_newer' : 'gateway_older',
+        incompatibilityReason(api.supported),
+        gatewayVersion,
+        api
+      );
+    }
+
+    const { json } = await readRefusal(res);
+    const refused = versionRefusal(res.status, json);
+    if (refused) {
+      const supported = Array.isArray(json?.supported)
+        ? (json.supported as unknown[]).filter((v): v is number => typeof v === 'number')
+        : [];
+      const newer = supported.length > 0 && Math.max(...supported) > API_VERSION;
+      return incompatible(
+        newer ? 'gateway_newer' : 'gateway_older',
+        refused.message,
+        null,
+        supported.length > 0 ? { version: Math.max(...supported), supported } : null
+      );
+    }
+    // A gateway from before 1.0 has no /v1 and no public /version: 404 with a token, 401 without.
+    if (res.status === 404 || res.status === 401) return probeOlderGateway();
+    return incompatible('unexpected', `The gateway answered ${res.status} to GET /version.`);
+  }
+
+  const client = {
+    getUrl: () => conn.baseUrl(),
+
+    health(): Promise<HealthResponse> {
+      return fetchJson<HealthResponse>('/health');
+    },
+
+    /** GET /version: the gateway's release, the API versions it serves, the store's schema. */
+    version(): Promise<VersionInfo> {
+      return fetchJson<VersionInfo>('/version');
+    },
+
+    /**
+     * Whether this gateway speaks the API version this client needs. Never
+     * throws: an unreachable or older gateway is an answer, with the reason in
+     * plain words. It needs no token (GET /version is public).
+     */
+    async checkCompatibility(): Promise<CompatibilityResult> {
+      try {
+        return await checkCompatibility();
+      } catch {
+        // A connection that dropped while the answer was being read.
+        return incompatible(
+          'unreachable',
+          `Nothing answered at ${baseUrl()}. Is OpenClerq running?`
+        );
+      }
+    },
+
+    metrics(): Promise<{
+      version: string;
+      uptime_seconds: number;
+      service: string;
+      llm_cost_usd_total?: number;
+      llm_unpriced_calls_total?: number;
+      /** Times a call or a run moved to a fallback model because the one in use was unavailable. */
+      llm_fallbacks_total?: number;
+    }> {
+      return fetchJson('/metrics');
+    },
+
+    /**
+     * SSE endpoint URL. EventSource cannot set headers, so the token travels as a
+     * query parameter — accepted by the gateway on this endpoint only.
+     */
+    logsStreamUrl(): string {
+      const url = apiUrl('/logs/stream');
+      const token = conn.token();
+      return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+    },
+
+    /**
+     * URL for an EventSource on GET /events/stream. EventSource sends
+     * Last-Event-ID itself when it reconnects; `lastEventId` sets where a first
+     * connection starts. The token travels as a query parameter, as for logs.
+     */
+    eventsStreamUrl(opts: { names?: string[]; lastEventId?: string } = {}): string {
+      const params = new URLSearchParams();
+      const token = conn.token();
+      if (token) params.set('token', token);
+      if (opts.names?.length) params.set('names', opts.names.join(','));
+      if (opts.lastEventId) params.set('lastEventId', opts.lastEventId);
+      const query = params.toString();
+      return query ? `${apiUrl('/events/stream')}?${query}` : apiUrl('/events/stream');
+    },
+
+    /**
+     * Follow GET /events/stream without EventSource (the token goes in a
+     * header), reconnecting after a drop and resuming from the last event seen.
+     * Resolves when `signal` aborts.
+     */
+    async streamEvents(onEvent: (event: ClerqEvent) => void, opts: EventStreamOptions = {}) {
+      let lastId = opts.lastEventId;
+      const retry = opts.retryMs ?? 3000;
+      const { signal } = opts;
+      while (!signal?.aborted) {
+        try {
+          const query = opts.names?.length
+            ? `?names=${encodeURIComponent(opts.names.join(','))}`
+            : '';
+          const res = await gatewayFetch(apiUrl(`/events/stream${query}`), {
+            headers: { ...authHeaders(), ...(lastId ? { 'Last-Event-ID': lastId } : {}) },
+            signal,
+          });
+          if (!res.ok || !res.body) {
+            const { json } = res.ok ? { json: null } : await readRefusal(res);
+            throw (
+              versionRefusal(res.status, json) ??
+              new GatewayError(`Gateway ${res.status}`, res.status, json)
+            );
+          }
+          opts.onOpen?.();
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let sep: number;
+            while ((sep = buffer.search(/\r?\n\r?\n/)) !== -1) {
+              const frame = parseFrame(buffer.slice(0, sep));
+              buffer = buffer.slice(sep).replace(/^\r?\n\r?\n/, '');
+              if (frame.id) lastId = frame.id;
+              if (frame.event === 'reset') opts.onReset?.();
+              else if (frame.data) onEvent(JSON.parse(frame.data) as ClerqEvent);
+            }
+          }
+        } catch (e) {
+          if (signal?.aborted) break;
+          // A refused token, or a version the gateway does not serve, will not get
+          // better by retrying.
+          if (
+            e instanceof GatewayError &&
+            (e.status === 401 ||
+              e.body?.error === 'redirect_refused' ||
+              versionRefusal(e.status, e.body))
+          ) {
+            throw e;
+          }
+        }
+        if (signal?.aborted) break;
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, retry);
+          signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(t);
+              resolve();
+            },
+            { once: true }
+          );
+        });
+      }
+    },
+
+    models(): Promise<{ models: string[]; current: string }> {
+      return fetchJson<{ models: string[]; current: string }>('/models');
+    },
+
+    /** Every provider in the registry, with readiness and qualified model references. */
+    providers(): Promise<{
+      providers: ProviderInfo[];
+      current: { provider: string; model: string };
+    }> {
+      return fetchJson('/providers');
+    },
+
+    /**
+     * The default model, and the models chat and tasks use, in order, when it is
+     * unavailable. A call that names a model of its own never falls back.
+     */
+    routing(): Promise<{
+      default: { provider: string; model: string };
+      fallback: string[];
+      maxFallback: number;
+    }> {
+      return fetchJson('/routing');
+    },
+
+    setRouting(fallback: string[]): Promise<{ fallback: string[] }> {
+      return fetchJson('/routing', { method: 'PUT', body: JSON.stringify({ fallback }) });
+    },
+
+    // --- Chat console -----------------------------------------------------
+
+    sessions(limit = 50): Promise<{ sessions: ChatSession[] }> {
+      return fetchJson(`/sessions?limit=${encodeURIComponent(String(limit))}`);
+    },
+
+    createSession(
+      input: {
+        title?: string;
+        mode?: PipelineMode;
+        model?: string;
+        workspace?: string;
+        permissionMode?: ChatPermissionMode;
+      } = {}
+    ): Promise<ChatSession> {
+      return fetchJson('/sessions', { method: 'POST', body: JSON.stringify(input) });
+    },
+
+    session(id: string): Promise<ChatSession & { messages: ChatMessage[] }> {
+      return fetchJson(`/sessions/${encodeURIComponent(id)}`);
+    },
+
+    updateSession(
+      id: string,
+      patch: {
+        title?: string;
+        mode?: PipelineMode;
+        model?: string | null;
+        /** A folder path to attach, or null to detach. */
+        workspace?: string | null;
+        permissionMode?: ChatPermissionMode;
+      }
+    ): Promise<ChatSession> {
+      return fetchJson(`/sessions/${encodeURIComponent(id)}/update`, {
+        method: 'POST',
+        body: JSON.stringify(patch),
+      });
+    },
+
+    deleteSession(id: string): Promise<{ ok: boolean }> {
+      return fetchJson(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    },
+
+    /**
+     * Send a message and stream the answer.
+     *
+     * EventSource cannot POST, so this reads the response body directly. `onDelta`
+     * is called with each piece; the promise resolves with the stored message.
+     *
+     * Aborting `signal` stops the run on the gateway by id, not just by hanging
+     * up: the desktop sidecar runs under Bun, which cannot see a hang-up.
+     */
+    async sendMessage(
+      id: string,
+      input: {
+        text: string;
+        mode?: PipelineMode;
+        model?: string;
+        /** Finish and record the run even if this client disconnects. */
+        continueOnDisconnect?: boolean;
+      },
+      onDelta?: (text: string) => void,
+      signal?: AbortSignal,
+      /** Managed: tool activity, approvals to answer, drafts, as they happen (streaming only). */
+      onEvent?: (event: ChatStreamEvent) => void
+    ): Promise<{ runId: string; message: ChatMessage }> {
+      const res = await gatewayFetch(apiUrl(`/sessions/${encodeURIComponent(id)}/send`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ ...input, stream: Boolean(onDelta) }),
+        signal,
+      });
+      if (!res.ok) {
+        const { text, json } = await readRefusal(res);
+        throw (
+          versionRefusal(res.status, json) ??
+          new Error(`Gateway ${res.status}: ${text || res.statusText}`)
+        );
+      }
+      if (!onDelta) return (await res.json()) as { runId: string; message: ChatMessage };
+      if (!res.body) throw new Error('Gateway returned an empty stream.');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let result: { runId: string; message: ChatMessage } | undefined;
+      let runId: string | undefined;
+      const cancelOnAbort = () => {
+        if (runId) void client.cancelRun(runId).catch(() => undefined);
+      };
+      signal?.addEventListener('abort', cancelOnAbort, { once: true });
+
+      const handle = (frame: string): void => {
+        for (const line of frame.split(/\r?\n/)) {
+          if (!line.startsWith('data:')) continue;
+          const event = JSON.parse(line.slice(5).trim()) as {
+            type: string;
+            text?: string;
+            error?: string;
+            runId?: string;
+            message?: ChatMessage;
+          };
+          if (event.type === 'start' && event.runId) runId = event.runId;
+          else if (event.type === 'delta' && event.text) onDelta(event.text);
+          else if (
+            event.type === 'tool' ||
+            event.type === 'approval' ||
+            event.type === 'approval_decided' ||
+            event.type === 'draft'
+          )
+            onEvent?.(event as unknown as ChatStreamEvent);
+          else if (event.type === 'error') throw new Error(event.error ?? 'The model call failed.');
+          else if (event.type === 'done' && event.message) {
+            result = { runId: event.runId ?? '', message: event.message };
+          }
+        }
+      };
+
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sep: number;
+          while ((sep = buffer.indexOf('\n\n')) !== -1) {
+            handle(buffer.slice(0, sep));
+            buffer = buffer.slice(sep + 2);
+          }
+        }
+        if (buffer.trim()) handle(buffer);
+      } finally {
+        signal?.removeEventListener('abort', cancelOnAbort);
+      }
+
+      if (!result) throw new Error('The stream ended without an answer.');
+      return result;
+    },
+
+    compare(
+      id: string,
+      input: { text: string; models: string[]; continueOnDisconnect?: boolean }
+    ): Promise<{ runId: string; messageId: number; columns: ComparisonColumn[] }> {
+      return fetchJson(`/sessions/${encodeURIComponent(id)}/compare`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+    },
+
+    /** What managed mode would add to `text` over raw, in this conversation. Calls no model. */
+    modeDiff(id: string, input: { text: string; model?: string }): Promise<ModeDiff> {
+      return fetchJson(`/sessions/${encodeURIComponent(id)}/mode-diff`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+    },
+
+    /** Automations a model drafted in this conversation, oldest first. */
+    drafts(id: string): Promise<{ drafts: ChatDraft[] }> {
+      return fetchJson(`/sessions/${encodeURIComponent(id)}/drafts`);
+    },
+
+    draft(id: string, draftId: string): Promise<ChatDraft> {
+      return fetchJson(`/sessions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}`);
+    },
+
+    /** Check a draft against this machine and expand its schedule; executes nothing. */
+    dryRunDraft(id: string, draftId: string): Promise<DraftDryRun> {
+      return fetchJson(
+        `/sessions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}/dry-run`,
+        { method: 'POST', body: '{}' }
+      );
+    },
+
+    /** Save a draft as an automation. It starts switched off; enabling it is a separate action. */
+    saveDraft(
+      id: string,
+      draftId: string
+    ): Promise<{ id: string; name: string; enabled: false; authoredBy: string; source: string }> {
+      return fetchJson(
+        `/sessions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}/save`,
+        { method: 'POST', body: '{}' }
+      );
+    },
+
+    promote(id: string, messageId: number, index: number): Promise<ChatMessage> {
+      return fetchJson(`/sessions/${encodeURIComponent(id)}/promote`, {
+        method: 'POST',
+        body: JSON.stringify({ messageId, index }),
+      });
+    },
+
+    // --- Kill switch ------------------------------------------------------
+
+    /**
+     * Stop things now. By default: refuse pending approvals, cancel every run in
+     * flight, and pause triggers. Pass false to leave any part out.
+     */
+    kill(opts: { approvals?: boolean; runs?: boolean; triggers?: boolean } = {}): Promise<{
+      ok: boolean;
+      deniedApprovals: number;
+      cancelledRuns: number;
+      triggersPaused: boolean;
+    }> {
+      return fetchJson('/kill', { method: 'POST', body: JSON.stringify(opts) });
+    },
+
+    killStatus(): Promise<{ triggersPaused: boolean; since: string | null; activeRuns: number }> {
+      return fetchJson('/kill');
+    },
+
+    /** Restart triggers paused by the kill switch. */
+    resume(): Promise<{ ok: boolean; triggersResumed: boolean; wasPaused: boolean }> {
+      return fetchJson('/resume', { method: 'POST', body: '{}' });
+    },
+
+    /** Stop a run in flight. Rejects when the run is not running. */
+    cancelRun(id: string): Promise<{ ok: boolean; id: string }> {
+      return fetchJson(`/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: '{}' });
+    },
+
+    artifact(runId: string, artifactId: number): Promise<ArtifactInfo & { content: string }> {
+      return fetchJson(
+        `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(String(artifactId))}`
+      );
+    },
+
+    drivers(): Promise<{ drivers: DriverInfo[] }> {
+      return fetchJson('/drivers');
+    },
+
+    /** The repositories automations target. Read-only. */
+    repos(): Promise<{ repos: RepoSummary[] }> {
+      return fetchJson('/repos');
+    },
+
+    repo(id: string): Promise<RepoDetail> {
+      return fetchJson(`/repos/${encodeURIComponent(id)}`);
+    },
+
+    /**
+     * Add a repository by hand, as an automation's `targets.repos` names it:
+     * `local:<absolute path>` (a git work tree), `github:owner/name`,
+     * `gitlab:group/name` or an https URL on either. Adding one that is listed
+     * returns its row (`created: false`). With `check`, a remote is reached first
+     * with the credential a run would use, and nothing is added if it cannot be:
+     * that is a 422 `repo_unreachable` whose body carries `check`.
+     */
+    addRepo(target: string, opts: { check?: boolean } = {}): Promise<AddRepoResult> {
+      return fetchJson('/repos', {
+        method: 'POST',
+        body: JSON.stringify(opts.check === undefined ? { target } : { target, check: opts.check }),
+      });
+    },
+
+    automations(): Promise<{ automations: AutomationSummary[] }> {
+      return fetchJson('/automations');
+    },
+
+    // --- GitHub: the app (operator only) --------------------------------------------------
+    //
+    // GET /github/app/callback is GitHub's own redirect to the browser, so it has no method
+    // here: a client never calls it.
+
+    /**
+     * Start creating the app from a manifest. `baseUrl` is the address the person's
+     * **browser** reaches this gateway at (GitHub sends it back there): http://127.0.0.1:<port>
+     * on this computer, https anywhere else. The browser then posts `manifest` to `url`
+     * as a form field named `manifest`; then poll `githubApp()` until it is connected.
+     */
+    githubManifest(input: {
+      baseUrl: string;
+      owner?: string;
+      name?: string;
+    }): Promise<GithubManifestOffer> {
+      return fetchJson('/github/app/manifest', { method: 'POST', body: JSON.stringify(input) });
+    },
+
+    /** Use an app that exists: its id, client ID and private key (and, to renew sign-ins, its client secret). */
+    importGithubApp(input: GithubImportInput): Promise<GithubImportResult> {
+      return fetchJson('/github/app/import', { method: 'POST', body: JSON.stringify(input) });
+    },
+
+    /** The connected app and where it is installed. `refresh` asks GitHub again instead of the minute's cache. */
+    githubApp(opts: { refresh?: boolean } = {}): Promise<GithubAppStatus> {
+      return fetchJson(`/github/app${opts.refresh ? '?refresh=1' : ''}`);
+    },
+
+    /** Forget the app and its key (and sign the person out). The app stays on GitHub; the answer says where to delete it. */
+    disconnectGithubApp(): Promise<GithubDisconnectResult> {
+      return fetchJson('/github/app', { method: 'DELETE' });
+    },
+
+    // --- GitHub: the person's sign-in (the app's device flow) ------------------------------
+    //
+    // The user token is for who is signed in and which repositories they reach through the
+    // app. It is not used to clone, push or open a pull request: runs use installation tokens.
+
+    /** Start a device flow. The person types `userCode` at `verificationUri`; poll `githubLogin(flowId)`. */
+    startGithubLogin(): Promise<GithubLoginStart> {
+      return fetchJson('/github/login', { method: 'POST', body: '{}' });
+    },
+
+    githubLogin(flowId: string): Promise<GithubLoginStatus> {
+      return fetchJson(`/github/login/${encodeURIComponent(flowId)}`);
+    },
+
+    cancelGithubLogin(flowId: string): Promise<{ cancelled: boolean }> {
+      return fetchJson(`/github/login/${encodeURIComponent(flowId)}`, { method: 'DELETE' });
+    },
+
+    /** Who is signed in to GitHub, if anyone. */
+    githubUser(): Promise<GithubUserStatus> {
+      return fetchJson('/github/user');
+    },
+
+    /** Sign out, and revoke the authorization on GitHub when the app's client secret allows it. */
+    githubSignOut(): Promise<GithubSignOutResult> {
+      return fetchJson('/github/user', { method: 'DELETE' });
+    },
+
+    /** The repositories the signed-in person reaches through the app (at most 1,000; `truncated` says). */
+    githubRepositories(): Promise<GithubUserRepositories> {
+      return fetchJson('/github/user/repositories');
+    },
+
+    automation(id: string): Promise<AutomationSummary & { source: string }> {
+      return fetchJson(`/automations/${encodeURIComponent(id)}`);
+    },
+
+    /** Check a spec against this machine without saving or running it. */
+    previewAutomation(spec: string, id?: string): Promise<AutomationPreview> {
+      return fetchJson('/automations/preview', {
+        method: 'POST',
+        body: JSON.stringify({ spec, id }),
+      });
+    },
+
+    /** Save a new automation. It starts disabled. */
+    createAutomation(spec: string): Promise<AutomationSummary & { source: string }> {
+      return fetchJson('/automations', { method: 'POST', body: JSON.stringify({ spec }) });
+    },
+
+    updateAutomation(id: string, spec: string): Promise<AutomationSummary & { source: string }> {
+      return fetchJson(`/automations/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ spec }),
+      });
+    },
+
+    deleteAutomation(id: string): Promise<{ ok: boolean }> {
+      return fetchJson(`/automations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    },
+
+    setAutomationEnabled(id: string, enabled: boolean): Promise<AutomationSummary> {
+      return fetchJson(`/automations/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, {
+        method: 'POST',
+        body: '{}',
+      });
+    },
+
+    /**
+     * Start a run now. Resolves once the run exists; follow it with run().
+     * `queued` is true when the run waits for a place under the limit on runs at once.
+     * `model` runs it with that model instead of the spec's primary, used as chosen:
+     * if it is unavailable the run fails, and does not fall back to another.
+     */
+    runAutomation(id: string, model?: string): Promise<{ runId: string; queued?: boolean }> {
+      return fetchJson(`/automations/${encodeURIComponent(id)}/run`, {
+        method: 'POST',
+        body: JSON.stringify(model ? { model } : {}),
+      });
+    },
+
+    modules(): Promise<{ modules: ModuleInfo[] }> {
+      return fetchJson('/modules');
+    },
+
+    /** A short-lived token for a module's UI (default 15 minutes). Needs the gateway token. */
+    moduleToken(
+      id: string,
+      ttlSeconds?: number
+    ): Promise<{ token: string; expiresAt: string; scopes: string[] }> {
+      return fetchJson(`/modules/${encodeURIComponent(id)}/token`, {
+        method: 'POST',
+        body: JSON.stringify({ ttlSeconds }),
+      });
+    },
+
+    revokeModuleTokens(id: string): Promise<{ ok: boolean; revoked: number }> {
+      return fetchJson(`/modules/${encodeURIComponent(id)}/tokens`, { method: 'DELETE' });
+    },
+
+    /** Every module and plugin, with its state, what it declares and what was approved. */
+    plugins(): Promise<{ plugins: PluginInfo[]; enforce: boolean }> {
+      return fetchJson('/plugins');
+    },
+
+    /** Turn a plugin on. With enforcement on and no approval it waits for one. */
+    enablePlugin(id: string): Promise<{ plugin: PluginInfo }> {
+      return fetchJson(`/plugins/${encodeURIComponent(id)}/enable`, { method: 'POST', body: '{}' });
+    },
+
+    /** Turn a plugin off: it is stopped and what it set up is removed. */
+    disablePlugin(id: string): Promise<{ plugin: PluginInfo }> {
+      return fetchJson(`/plugins/${encodeURIComponent(id)}/disable`, {
+        method: 'POST',
+        body: '{}',
+      });
+    },
+
+    /**
+     * Approve a plugin: send the `permissionsHash` and `checksum` the list showed. A plugin
+     * that has changed since gets 409 `approval_stale`: list it again and review what changed.
+     */
+    approvePlugin(
+      id: string,
+      seen: { permissionsHash: string; checksum: string }
+    ): Promise<{ plugin: PluginInfo }> {
+      return fetchJson(`/plugins/${encodeURIComponent(id)}/approve`, {
+        method: 'POST',
+        body: JSON.stringify(seen),
+      });
+    },
+
+    /** Whether plugin permissions are enforced. Off unless the person turned it on. */
+    pluginSettings(): Promise<{ enforce: boolean }> {
+      return fetchJson('/plugins/settings');
+    },
+
+    setPluginSettings(settings: { enforce: boolean }): Promise<{ enforce: boolean }> {
+      return fetchJson('/plugins/settings', { method: 'PUT', body: JSON.stringify(settings) });
+    },
+
+    /** Fire a module's trigger now. Resolves once its run exists. */
+    fireModuleTrigger(
+      id: string,
+      triggerId: string,
+      payload: unknown = {}
+    ): Promise<{ runId: string }> {
+      return fetchJson(
+        `/api/modules/${encodeURIComponent(id)}/triggers/${encodeURIComponent(triggerId)}`,
+        { method: 'POST', body: JSON.stringify(payload) }
+      );
+    },
+
+    // --- Shared records, extensions, search, inbox ----------------------
+
+    records(
+      opts: { type?: CoreRecordType; q?: string; limit?: number } = {}
+    ): Promise<{ records: CoreRecord[] }> {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(opts)) if (v !== undefined) params.set(k, String(v));
+      return fetchJson(`/records${params.size ? `?${params}` : ''}`);
+    },
+
+    record(id: string): Promise<CoreRecord & { links: RecordLink[] }> {
+      return fetchJson(`/records/${encodeURIComponent(id)}`);
+    },
+
+    /** Find a person or organisation by email, phone or domain; created unless `create: false`. */
+    resolveRecord(input: {
+      type: 'person' | 'organisation';
+      name?: string;
+      emails?: string[];
+      phones?: string[];
+      domains?: string[];
+      create?: boolean;
+    }): Promise<{ record: CoreRecord; created: boolean; matchedBy: string[] }> {
+      return fetchJson('/records/resolve', { method: 'POST', body: JSON.stringify(input) });
+    },
+
+    links(ref: string): Promise<{ links: RecordLink[] }> {
+      return fetchJson(`/links?ref=${encodeURIComponent(ref)}`);
+    },
+
+    activities(recordId: string, limit = 50): Promise<{ activities: CoreRecord[] }> {
+      return fetchJson(`/records/${encodeURIComponent(recordId)}/activities?limit=${limit}`);
+    },
+
+    extensions(): Promise<Record<ExtensionPoint, ExtensionItem[]>> {
+      return fetchJson('/extensions');
+    },
+
+    search(
+      q: string,
+      opts: { types?: string[]; limit?: number } = {}
+    ): Promise<{ results: SearchHit[]; errors: Array<{ moduleId: string; error: string }> }> {
+      const params = new URLSearchParams({ q });
+      if (opts.types?.length) params.set('types', opts.types.join(','));
+      if (opts.limit) params.set('limit', String(opts.limit));
+      return fetchJson(`/search?${params}`);
+    },
+
+    inbox(
+      opts: { status?: InboxItem['status']; kind?: InboxItem['kind']; module?: string } = {}
+    ): Promise<{ items: InboxItem[] }> {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(opts)) if (v !== undefined) params.set(k, String(v));
+      return fetchJson(`/inbox${params.size ? `?${params}` : ''}`);
+    },
+
+    setInboxStatus(id: string, status: InboxItem['status']): Promise<InboxItem> {
+      return fetchJson(`/inbox/items/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+    },
+
+    /** Answer an item; its module acts on it and the item is closed. */
+    respondInboxItem(
+      id: string,
+      response: { text?: string; data?: unknown }
+    ): Promise<{ item: InboxItem; result: unknown }> {
+      return fetchJson(`/inbox/items/${encodeURIComponent(id)}/respond`, {
+        method: 'POST',
+        body: JSON.stringify(response),
+      });
+    },
+
+    // --- Remote mode and devices ----------------------------------------
+
+    remote(): Promise<RemoteSettings> {
+      return fetchJson('/remote');
+    },
+
+    setRemote(patch: Partial<RemoteSettings>): Promise<RemoteSettings> {
+      return fetchJson('/remote', { method: 'PUT', body: JSON.stringify(patch) });
+    },
+
+    /** A single-use code (five minutes) and the QR payload `{ url, code, expires }`. */
+    createPairingCode(): Promise<{ code: string; url: string; expiresAt: string; qr: string }> {
+      return fetchJson('/devices/pairing', { method: 'POST', body: '{}' });
+    },
+
+    /** Used by the phone: needs no token, returns its device token. */
+    pairDevice(input: {
+      code: string;
+      deviceName: string;
+      platform: string;
+    }): Promise<{ device: Device; token: string; expiresAt: string; scopes: string[] }> {
+      return fetchJson('/devices/pair', { method: 'POST', body: JSON.stringify(input) });
+    },
+
+    devices(): Promise<{ devices: Device[] }> {
+      return fetchJson('/devices');
+    },
+
+    /** The calling device itself (device token only). */
+    thisDevice(): Promise<Device> {
+      return fetchJson('/devices/me');
+    },
+
+    revokeDevice(id: string): Promise<Device> {
+      return fetchJson(`/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    },
+
+    approvals(): Promise<{ approvals: Approval[] }> {
+      return fetchJson('/approvals');
+    },
+
+    /**
+     * Answer a pending approval. `by` says who decided, for the audit log (default
+     * `operator`); `reason` is kept with the decision.
+     */
+    decideApproval(
+      id: number,
+      decision: 'approve' | 'deny',
+      opts: { by?: string; reason?: string } = {}
+    ): Promise<{ ok: boolean }> {
+      return fetchJson(`/approvals/${id}/${decision}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          ...(opts.by ? { by: opts.by } : {}),
+          ...(opts.reason ? { reason: opts.reason } : {}),
+        }),
+      });
+    },
+
+    /** Newest first. `since` keeps runs created at or after it, and allows up to 5000. */
+    runs(limit = 50, opts: { since?: string | Date } = {}): Promise<{ runs: RunSummary[] }> {
+      const since =
+        opts.since instanceof Date ? opts.since.toISOString() : (opts.since ?? undefined);
+      const query = `limit=${encodeURIComponent(String(limit))}${
+        since ? `&since=${encodeURIComponent(since)}` : ''
+      }`;
+      return fetchJson(`/runs?${query}`);
+    },
+
+    run(id: string): Promise<RunDetail> {
+      return fetchJson(`/runs/${encodeURIComponent(id)}`);
+    },
+
+    /** The tool calls a run's agent made, in order. */
+    runToolCalls(id: string): Promise<{ toolCalls: ToolCallRecord[] }> {
+      return fetchJson(`/runs/${encodeURIComponent(id)}/tool-calls`);
+    },
+
+    secrets(): Promise<
+      | { secrets: string[]; keySource: 'env' | 'keychain' | 'file' | 'none'; keychain: string }
+      | { error: string }
+    > {
+      return fetchJson('/secrets');
+    },
+
+    setSecret(name: string, value: string): Promise<{ ok: boolean }> {
+      return fetchJson<{ ok: boolean }>('/secrets', {
+        method: 'POST',
+        body: JSON.stringify({ name, value }),
+      });
+    },
+
+    deleteSecret(name: string): Promise<{ ok: boolean }> {
+      return deleteOk(`/secrets/${encodeURIComponent(name)}`);
+    },
+
+    triggers(): Promise<{
+      cron?: Array<{ id: string; schedule: string; message: string }>;
+      file?: Array<{ id: string; path: string; message: string }>;
+      webhooks?: Record<string, { message: string }>;
+    }> {
+      return fetchJson('/triggers');
+    },
+
+    saveTriggers(config: {
+      cron?: Array<{ id: string; schedule: string; message: string }>;
+      file?: Array<{ id: string; path: string; message: string }>;
+      webhooks?: Record<string, { message: string }>;
+    }): Promise<{ ok: boolean }> {
+      return fetchJson<{ ok: boolean }>('/triggers', {
+        method: 'POST',
+        body: JSON.stringify(config),
+      });
+    },
+
+    systemPrompt(): Promise<{ prompt: string; default: string }> {
+      return fetchJson('/system-prompt');
+    },
+
+    saveSystemPrompt(prompt: string): Promise<{ ok: boolean }> {
+      return fetchJson<{ ok: boolean }>('/system-prompt', {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      });
+    },
+
+    reasoning(): Promise<{ temperature?: number; maxTokens?: number }> {
+      return fetchJson('/reasoning');
+    },
+
+    saveReasoning(config: { temperature?: number; maxTokens?: number }): Promise<{ ok: boolean }> {
+      return fetchJson<{ ok: boolean }>('/reasoning', {
+        method: 'POST',
+        body: JSON.stringify(config),
+      });
+    },
+
+    capabilities(): Promise<{ fsRoot?: string; httpAllowlist?: string[] }> {
+      return fetchJson('/capabilities');
+    },
+
+    saveCapabilities(config: {
+      fsRoot?: string;
+      httpAllowlist?: string[];
+    }): Promise<{ ok: boolean }> {
+      return fetchJson<{ ok: boolean }>('/capabilities', {
+        method: 'POST',
+        body: JSON.stringify(config),
+      });
+    },
+
+    skills(): Promise<SkillsResponse> {
+      return fetchJson<SkillsResponse>('/skills');
+    },
+
+    skill(slug: string): Promise<{ meta: SkillMeta; body: string; skill: SkillInfo }> {
+      return fetchJson(`/skills/${encodeURIComponent(slug)}`);
+    },
+
+    /**
+     * Trust a skill as it is now. `checksum` is the `computedChecksum` you were shown: if the files
+     * are not those any more, the answer is 409 `trust_stale` and nothing is trusted.
+     */
+    trustSkill(slug: string, checksum: string): Promise<{ skill: SkillInfo }> {
+      return fetchJson(`/skills/${encodeURIComponent(slug)}/trust`, {
+        method: 'POST',
+        body: JSON.stringify({ checksum }),
+      });
+    },
+
+    /** Never use this skill, with enforcement on or off. */
+    blockSkill(slug: string): Promise<{ skill: SkillInfo }> {
+      return fetchJson(`/skills/${encodeURIComponent(slug)}/block`, { method: 'POST', body: '{}' });
+    },
+
+    /** Forget what you decided about this skill: it is `untrusted` again. */
+    untrustSkill(slug: string): Promise<{ skill: SkillInfo }> {
+      return fetchJson(`/skills/${encodeURIComponent(slug)}/untrust`, {
+        method: 'POST',
+        body: '{}',
+      });
+    },
+
+    /** Every record in use. A key may appear more than once; each record has its own id. */
+    memory(): Promise<{ entries: MemoryRecord[] }> {
+      return fetchJson('/memory');
+    },
+
+    getMemory(key: string): Promise<MemoryRecord> {
+      return fetchJson(`/memory/${encodeURIComponent(key)}`);
+    },
+
+    /** Set a key: the newest record of that key and type is updated, or one is made. */
+    setMemory(
+      key: string,
+      value: unknown,
+      extra: {
+        type?: MemoryType;
+        confidence?: number | null;
+        /** An ISO date and time in the future; the record is removed after it. */
+        expiresAt?: string | null;
+      } = {}
+    ): Promise<{ ok: boolean; record?: MemoryRecord }> {
+      return fetchJson('/memory', {
+        method: 'POST',
+        body: JSON.stringify({ key, value, ...extra }),
+      });
+    },
+
+    /** Forget a key: every record under it, summaries and the records behind them too. */
+    async deleteMemory(key: string): Promise<{ ok: boolean }> {
+      return deleteOk(`/memory/${encodeURIComponent(key)}`);
+    },
+
+    /** Records, newest first. `status: 'superseded'` lists those folded into a summary. */
+    memoryRecords(
+      filter: { type?: MemoryType; key?: string; status?: 'active' | 'superseded' | 'all' } = {}
+    ): Promise<{ records: MemoryRecord[] }> {
+      const q = new URLSearchParams();
+      for (const [k, v] of Object.entries(filter)) if (v) q.set(k, v);
+      return fetchJson(`/memory/records${q.size ? `?${q}` : ''}`);
+    },
+
+    /** Add a record. Unlike setMemory it never overwrites: a key may hold any number. */
+    addMemoryRecord(input: {
+      key: string;
+      value: unknown;
       type?: MemoryType;
       confidence?: number | null;
-      /** An ISO date and time in the future; the record is removed after it. */
       expiresAt?: string | null;
-    } = {}
-  ): Promise<{ ok: boolean; record?: MemoryRecord }> {
-    return fetchJson('/memory', { method: 'POST', body: JSON.stringify({ key, value, ...extra }) });
-  },
+      sourceSession?: string;
+    }): Promise<{ record: MemoryRecord }> {
+      return fetchJson('/memory/records', { method: 'POST', body: JSON.stringify(input) });
+    },
 
-  /** Forget a key: every record under it, summaries and the records behind them too. */
-  async deleteMemory(key: string): Promise<{ ok: boolean }> {
-    return deleteOk(`/memory/${encodeURIComponent(key)}`);
-  },
+    updateMemoryRecord(
+      id: string,
+      patch: {
+        key?: string;
+        value?: unknown;
+        type?: MemoryType;
+        confidence?: number | null;
+        expiresAt?: string | null;
+      }
+    ): Promise<{ record: MemoryRecord }> {
+      return fetchJson(`/memory/records/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+    },
 
-  /** Records, newest first. `status: 'superseded'` lists those folded into a summary. */
-  memoryRecords(
-    filter: { type?: MemoryType; key?: string; status?: 'active' | 'superseded' | 'all' } = {}
-  ): Promise<{ records: MemoryRecord[] }> {
-    const q = new URLSearchParams();
-    for (const [k, v] of Object.entries(filter)) if (v) q.set(k, v);
-    return fetchJson(`/memory/records${q.size ? `?${q}` : ''}`);
-  },
+    /** Delete one record. A summary takes the records folded into it along. */
+    deleteMemoryRecord(id: string): Promise<{ ok: boolean }> {
+      return deleteOk(`/memory/records/${encodeURIComponent(id)}`);
+    },
 
-  /** Add a record. Unlike setMemory it never overwrites: a key may hold any number. */
-  addMemoryRecord(input: {
-    key: string;
-    value: unknown;
-    type?: MemoryType;
-    confidence?: number | null;
-    expiresAt?: string | null;
-    sourceSession?: string;
-  }): Promise<{ record: MemoryRecord }> {
-    return fetchJson('/memory/records', { method: 'POST', body: JSON.stringify(input) });
-  },
+    /** Search by the words in a record's key and value; `mode` says whether the FTS index served it. */
+    searchMemory(
+      q: string,
+      types?: MemoryType[],
+      limit?: number
+    ): Promise<{ query: string; mode: 'fts5' | 'substring'; results: MemoryHit[] }> {
+      const params = new URLSearchParams({ q });
+      if (types?.length) params.set('types', types.join(','));
+      if (limit) params.set('limit', String(limit));
+      return fetchJson(`/memory/search?${params}`);
+    },
 
-  updateMemoryRecord(
-    id: string,
-    patch: {
-      key?: string;
-      value?: unknown;
-      type?: MemoryType;
-      confidence?: number | null;
-      expiresAt?: string | null;
-    }
-  ): Promise<{ record: MemoryRecord }> {
-    return fetchJson(`/memory/records/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    });
-  },
+    /**
+     * Fold the records of one key into a single record written by a model. They are
+     * kept, as `superseded`, and `unconsolidateMemory` restores them. A `model` is
+     * used as chosen; without one the default may fall back.
+     */
+    consolidateMemory(
+      key: string,
+      opts: { type?: MemoryType; model?: string } = {}
+    ): Promise<{ record: MemoryRecord; superseded: string[]; model?: string }> {
+      return fetchJson('/memory/consolidate', {
+        method: 'POST',
+        body: JSON.stringify({ key, ...opts }),
+      });
+    },
 
-  /** Delete one record. A summary takes the records folded into it along. */
-  deleteMemoryRecord(id: string): Promise<{ ok: boolean }> {
-    return deleteOk(`/memory/records/${encodeURIComponent(id)}`);
-  },
+    /** Undo a summary: it is removed and the records folded into it are in use again. */
+    unconsolidateMemory(id: string): Promise<{ restored: string[] }> {
+      return fetchJson(`/memory/records/${encodeURIComponent(id)}/unconsolidate`, {
+        method: 'POST',
+        body: '{}',
+      });
+    },
 
-  /** Search by the words in a record's key and value; `mode` says whether the FTS index served it. */
-  searchMemory(
-    q: string,
-    types?: MemoryType[],
-    limit?: number
-  ): Promise<{ query: string; mode: 'fts5' | 'substring'; results: MemoryHit[] }> {
-    const params = new URLSearchParams({ q });
-    if (types?.length) params.set('types', types.join(','));
-    if (limit) params.set('limit', String(limit));
-    return fetchJson(`/memory/search?${params}`);
-  },
+    /** The types of memory managed chats and tasks may read. An empty list turns it off for them. */
+    memoryPolicy(): Promise<{ readTypes: MemoryType[]; types: MemoryType[] }> {
+      return fetchJson('/memory/policy');
+    },
 
+    setMemoryPolicy(
+      readTypes: MemoryType[]
+    ): Promise<{ readTypes: MemoryType[]; types: MemoryType[] }> {
+      return fetchJson('/memory/policy', { method: 'PUT', body: JSON.stringify({ readTypes }) });
+    },
+
+    updateSkill(
+      slug: string,
+      patch: {
+        inputSchema?: Record<string, unknown> | null;
+        outputSchema?: Record<string, unknown> | null;
+        dependsOn?: string[] | null;
+      }
+    ): Promise<{ ok: boolean }> {
+      return fetchJson<{ ok: boolean }>(`/skills/${encodeURIComponent(slug)}`, {
+        method: 'PUT',
+        body: JSON.stringify(patch),
+      });
+    },
+
+    calculateEval(body: {
+      expression?: string;
+      inputs?: Record<string, number>;
+      spec?: { id?: string; formulas?: Record<string, string>; output_names?: string[] };
+    }): Promise<EvalCalcResponse> {
+      return fetchJson<EvalCalcResponse>('/calculate/eval', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+
+    filingPrep(body: { form_type?: string; data?: Record<string, unknown> }): Promise<{
+      form_type: string;
+      draft: Record<string, unknown>;
+      status: string;
+      note?: string;
+    }> {
+      return fetchJson('/filing/prep', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+
+    explain(
+      question: string,
+      context?: Record<string, unknown>,
+      model?: string
+    ): Promise<ExplainResponse> {
+      return fetchJson<ExplainResponse>('/explain', {
+        method: 'POST',
+        body: JSON.stringify({ question, context, model }),
+      });
+    },
+
+    contextPreview(body: {
+      question?: string;
+      context?: Record<string, unknown>;
+      skillSlug?: string;
+      skillName?: string;
+      /** Include this chat session's conversation, as a managed turn sends it. */
+      sessionId?: string;
+    }): Promise<ContextPreview> {
+      return fetchJson<ContextPreview>('/context/preview', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+
+    task(message: string, model?: string, dryRun?: boolean): Promise<TaskResponse> {
+      return fetchJson<TaskResponse>('/task', {
+        method: 'POST',
+        body: JSON.stringify({ message, model, dryRun }),
+      });
+    },
+
+    tools(): Promise<{ tools: ToolInfo[] }> {
+      return fetchJson<{ tools: ToolInfo[] }>('/tools');
+    },
+
+    runTool(name: string, input: unknown): Promise<{ name: string; result: unknown }> {
+      return fetchJson<{ name: string; result: unknown }>('/tools/run', {
+        method: 'POST',
+        body: JSON.stringify({ name, input }),
+      });
+    },
+  };
+
+  return client;
+}
+
+/** What a client is given: where the gateway is, and the token to send it. */
+export interface GatewayClientOptions {
+  /** The gateway's address. Default `http://127.0.0.1:18790`. */
+  baseUrl?: string;
   /**
-   * Fold the records of one key into a single record written by a model. They are
-   * kept, as `superseded`, and `unconsolidateMemory` restores them. A `model` is
-   * used as chosen; without one the default may fall back.
+   * The bearer token, or a function that returns the current one. The function is read at every
+   * request, so a token that is renewed (a module's UI token is, every few minutes) needs no new client.
    */
-  consolidateMemory(
-    key: string,
-    opts: { type?: MemoryType; model?: string } = {}
-  ): Promise<{ record: MemoryRecord; superseded: string[]; model?: string }> {
-    return fetchJson('/memory/consolidate', {
-      method: 'POST',
-      body: JSON.stringify({ key, ...opts }),
-    });
-  },
+  token?: string | null | (() => string | null);
+  /** Act in one tenant (sent as X-Clerq-Tenant). Default: the token's own. */
+  tenant?: string | null;
+}
 
-  /** Undo a summary: it is removed and the records folded into it are in use again. */
-  unconsolidateMemory(id: string): Promise<{ restored: string[] }> {
-    return fetchJson(`/memory/records/${encodeURIComponent(id)}/unconsolidate`, {
-      method: 'POST',
-      body: '{}',
-    });
-  },
+/** Every call the gateway answers, as methods. `gateway` is one; `createGatewayClient` makes another. */
+export type GatewayClient = ReturnType<typeof buildClient>;
 
-  /** The types of memory managed chats and tasks may read. An empty list turns it off for them. */
-  memoryPolicy(): Promise<{ readTypes: MemoryType[]; types: MemoryType[] }> {
-    return fetchJson('/memory/policy');
-  },
+/**
+ * A client of its own: its address, token and tenant are the ones given here and nothing
+ * `setGatewayBaseUrl`, `setGatewayToken` or `setGatewayTenant` does reaches it. For a token that
+ * is not the gateway's, such as a module's UI token, which can call only what the module declared.
+ */
+export function createGatewayClient(options: GatewayClientOptions = {}): GatewayClient {
+  const baseUrl = options.baseUrl?.trim() || DEFAULT_GATEWAY_URL;
+  const tenant = options.tenant?.trim() || null;
+  const token = options.token;
+  return buildClient({
+    baseUrl: () => baseUrl,
+    token: () => (typeof token === 'function' ? token() : token)?.trim() || null,
+    tenant: () => tenant,
+  });
+}
 
-  setMemoryPolicy(
-    readTypes: MemoryType[]
-  ): Promise<{ readTypes: MemoryType[]; types: MemoryType[] }> {
-    return fetchJson('/memory/policy', { method: 'PUT', body: JSON.stringify({ readTypes }) });
-  },
-
-  updateSkill(
-    slug: string,
-    patch: {
-      inputSchema?: Record<string, unknown> | null;
-      outputSchema?: Record<string, unknown> | null;
-      dependsOn?: string[] | null;
-    }
-  ): Promise<{ ok: boolean }> {
-    return fetchJson<{ ok: boolean }>(`/skills/${encodeURIComponent(slug)}`, {
-      method: 'PUT',
-      body: JSON.stringify(patch),
-    });
-  },
-
-  calculateEval(body: {
-    expression?: string;
-    inputs?: Record<string, number>;
-    spec?: { id?: string; formulas?: Record<string, string>; output_names?: string[] };
-  }): Promise<EvalCalcResponse> {
-    return fetchJson<EvalCalcResponse>('/calculate/eval', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-  },
-
-  filingPrep(body: { form_type?: string; data?: Record<string, unknown> }): Promise<{
-    form_type: string;
-    draft: Record<string, unknown>;
-    status: string;
-    note?: string;
-  }> {
-    return fetchJson('/filing/prep', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-  },
-
-  explain(
-    question: string,
-    context?: Record<string, unknown>,
-    model?: string
-  ): Promise<ExplainResponse> {
-    return fetchJson<ExplainResponse>('/explain', {
-      method: 'POST',
-      body: JSON.stringify({ question, context, model }),
-    });
-  },
-
-  contextPreview(body: {
-    question?: string;
-    context?: Record<string, unknown>;
-    skillSlug?: string;
-    skillName?: string;
-    /** Include this chat session's conversation, as a managed turn sends it. */
-    sessionId?: string;
-  }): Promise<ContextPreview> {
-    return fetchJson<ContextPreview>('/context/preview', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-  },
-
-  task(message: string, model?: string, dryRun?: boolean): Promise<TaskResponse> {
-    return fetchJson<TaskResponse>('/task', {
-      method: 'POST',
-      body: JSON.stringify({ message, model, dryRun }),
-    });
-  },
-
-  tools(): Promise<{ tools: ToolInfo[] }> {
-    return fetchJson<{ tools: ToolInfo[] }>('/tools');
-  },
-
-  runTool(name: string, input: unknown): Promise<{ name: string; result: unknown }> {
-    return fetchJson<{ name: string; result: unknown }>('/tools/run', {
-      method: 'POST',
-      body: JSON.stringify({ name, input }),
-    });
-  },
-};
+/**
+ * The client the app, the command line and a plugin's own code share: its address, token and tenant
+ * are the module-level settings (`setGatewayBaseUrl`, `setGatewayToken`, `setGatewayTenant`).
+ */
+export const gateway: GatewayClient = buildClient({
+  baseUrl: () => gatewayBaseUrl,
+  token: () => gatewayToken,
+  tenant: () => gatewayTenant,
+});

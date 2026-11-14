@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   API_VERSION,
   API_VERSION_HEADER,
+  createGatewayClient,
   gateway,
   setGatewayBaseUrl,
   setGatewayToken,
@@ -957,3 +958,101 @@ describe('redirects', () => {
     expect((await gateway.checkCompatibility()).kind).toBe('unreachable');
   });
 });
+
+describe('createGatewayClient', () => {
+  const headersOf = (i: number) => calls[i][1]?.headers as Record<string, string>;
+
+  it('is a client of its own: its address and token are the ones it was given', async () => {
+    stubFetch(() => Response.json({ sessions: [] }));
+    const scoped = createGatewayClient({
+      baseUrl: 'http://127.0.0.1:19999/',
+      token: 'clqm_scoped',
+    });
+    await scoped.sessions();
+    await gateway.sessions();
+    expect(calls[0][0]).toBe('http://127.0.0.1:19999/v1/sessions?limit=50');
+    expect(headersOf(0).Authorization).toBe('Bearer clqm_scoped');
+    expect(headersOf(0)[API_VERSION_HEADER]).toBe(String(API_VERSION));
+    // The shared client still has its own.
+    expect(calls[1][0]).toBe('http://127.0.0.1:18790/v1/sessions?limit=50');
+    expect(headersOf(1).Authorization).toBe('Bearer test-token-123');
+    expect(scoped.getUrl()).toBe('http://127.0.0.1:19999/');
+    expect(gateway.getUrl()).toBe('http://127.0.0.1:18790');
+  });
+
+  it('is not reached by what changes the shared client', async () => {
+    stubFetch(() => Response.json({ sessions: [] }));
+    const scoped = createGatewayClient({ baseUrl: 'http://127.0.0.1:19999', token: 'clqm_scoped' });
+    setGatewayBaseUrl('http://10.0.0.5:1234');
+    setGatewayToken('another-token');
+    await scoped.sessions();
+    expect(calls[0][0]).toBe('http://127.0.0.1:19999/v1/sessions?limit=50');
+    expect(headersOf(0).Authorization).toBe('Bearer clqm_scoped');
+    // And the other way: it has no setters to reach the shared one with.
+    setGatewayBaseUrl('http://127.0.0.1:18790');
+    setGatewayToken('test-token-123');
+    expect(Object.keys(scoped)).toEqual(Object.keys(gateway));
+  });
+
+  it('reads a token function at every request, so a renewed token is used by the next call', async () => {
+    stubFetch(() => Response.json({ sessions: [] }));
+    let current: string | null = 'clqm_first';
+    const scoped = createGatewayClient({ token: () => current });
+    await scoped.sessions();
+    current = 'clqm_second';
+    await scoped.sessions();
+    current = null;
+    await scoped.sessions();
+    expect(headersOf(0).Authorization).toBe('Bearer clqm_first');
+    expect(headersOf(1).Authorization).toBe('Bearer clqm_second');
+    expect(headersOf(2).Authorization).toBeUndefined();
+    // The default address, when none was given.
+    expect(calls[0][0]).toBe('http://127.0.0.1:18790/v1/sessions?limit=50');
+  });
+
+  it('sends its tenant, and the shared one’s is not its own', async () => {
+    stubFetch(() => Response.json({ sessions: [] }));
+    await createGatewayClient({ token: 't', tenant: ' acme ' }).sessions();
+    expect(headersOf(0)['X-Clerq-Tenant']).toBe('acme');
+    await createGatewayClient({ token: 't' }).sessions();
+    expect(headersOf(1)['X-Clerq-Tenant']).toBeUndefined();
+  });
+
+  it('uses its own token when a stream is stopped, to cancel the run it started', async () => {
+    const encoder = new TextEncoder();
+    const seen: Array<{ url: string; auth?: string }> = [];
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      seen.push({ url, auth: (init?.headers as Record<string, string>)?.Authorization });
+      if (url.endsWith('/cancel')) return Response.json({ ok: true });
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(frame({ type: 'start', runId: 'run_9' })));
+            controller.enqueue(encoder.encode(frame({ type: 'delta', text: 'partial' })));
+            init?.signal?.addEventListener('abort', () =>
+              controller.error(new DOMException('aborted', 'AbortError'))
+            );
+          },
+        })
+      );
+    });
+    const scoped = createGatewayClient({ token: 'clqm_scoped' });
+    const stop = new AbortController();
+    await expect(
+      scoped.sendMessage('ses_1', { text: 'hi' }, () => stop.abort(), stop.signal)
+    ).rejects.toThrow();
+    const cancel = seen.find((c) => c.url.endsWith('/runs/run_9/cancel'));
+    expect(cancel?.auth).toBe('Bearer clqm_scoped');
+  });
+
+  it('judges its own address when it checks compatibility', async () => {
+    stubFetch(() => redirectTo());
+    const r = await createGatewayClient({ baseUrl: 'http://127.0.0.1:19999' }).checkCompatibility();
+    expect(r.reason).toContain('http://127.0.0.1:19999 answered with a redirect');
+    expect(calls[0][0]).toBe('http://127.0.0.1:19999/v1/version');
+  });
+});
+
+function redirectTo(): Response {
+  return new Response(null, { status: 302, headers: { location: 'http://elsewhere.example/' } });
+}

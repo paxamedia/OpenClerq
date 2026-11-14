@@ -6,6 +6,7 @@
     "MEMORY_TYPES",
     "SUPPORTED_API_VERSIONS",
     "apiPrefix",
+    "createGatewayClient",
     "describeStep",
     "gateway",
     "hasGatewayToken",
