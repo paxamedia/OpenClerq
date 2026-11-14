@@ -9,15 +9,18 @@
  * to one), which is what the `container-profile` job in ci.yml sets. Without it
  * the whole suite is skipped, so `pnpm test` needs no engine. The images are
  * pulled first (alpine for the commands, node for the ones that need node and
- * for the egress proxy); the egress tests reach example.com, so they need the
- * internet.
+ * for the egress proxy). The egress tests are hermetic: the hosts the proxy
+ * allows and refuses are two small servers this file starts on the engine's
+ * default network, named in the allowlist by address. One test (and only
+ * one) reaches example.com, and says so.
  *
  * Everything the code asks of the runtime goes through a small wrapper script
  * that appends the call's arguments (never its environment) to
  * `$CLERQ_TEST_DEBUG_DIR/docker-calls.log` and then runs the real runtime. When
  * a test fails, `scripts/container-debug.sh` prints that log, every container
- * and network labelled `clerq.run` with its state and logs (the egress proxy's
- * among them), so a CI log is enough to see what happened.
+ * and network labelled `clerq.run` with its state, and the egress proxies' logs
+ * (not a command's: it could hold a secret), so a CI log is enough to see what
+ * happened.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -41,8 +44,14 @@ import {
 const WANTED = process.env.CLERQ_TEST_CONTAINER_RUNTIME;
 const COMMAND_IMAGE = 'docker.io/library/alpine:3.20';
 const NODE_IMAGE = DEFAULT_EGRESS_IMAGE;
+/** What an allowlist names in the tests that never connect to it. */
 const LISTED_HOST = 'example.com';
-const UNLISTED_HOST = 'example.org';
+const INTERNET_HOST = 'example.com';
+const INTERNET_REFUSED = 'example.org';
+/** A server on the engine's default network that answers on two ports. */
+const UPSTREAM_SCRIPT =
+  "for (const p of [8080, 8081]) require('node:http').createServer((q, s) => s.end('upstream ' + q.url))" +
+  ".listen(p, () => console.log('listening ' + p));";
 const SUITE = WANTED
   ? 'the container profile on a real engine'
   : 'the container profile on a real engine (skipped: set CLERQ_TEST_CONTAINER_RUNTIME=docker or podman to run it)';
@@ -333,6 +342,9 @@ awk -v root="$ROOT/" 'index($5, root) == 1 { split($6, o, ","); print "mount=" $
 /**
  * Runs in the node image, as the command: tries to leave the container by the
  * proxy and by every other way it can think of, and prints one RESULT line.
+ * PROBE says where: { listed, unlisted } are { host, connect, http, tls }:
+ * CONNECT to host:connect (then TLS and HEAD when `tls`, else a plain GET
+ * through the tunnel), and an absolute-form GET to http://host:http/.
  */
 const NET_PROBE = String.raw`
 const net = require('node:net');
@@ -340,23 +352,23 @@ const tls = require('node:tls');
 const http = require('node:http');
 const dns = require('node:dns');
 const fs = require('node:fs');
+const targets = JSON.parse(process.env.PROBE);
 const proxyUrl = process.env.HTTPS_PROXY || '';
 const proxy = proxyUrl ? new URL(proxyUrl) : null;
-const listed = process.env.PROBE_LISTED;
-const unlisted = process.env.PROBE_UNLISTED;
 const code = (e) => (e && (e.code || (e.errors && e.errors[0] && e.errors[0].code))) || String(e);
 const statusOf = (text) => Number((/^HTTP\/1\.[01] (\d{3})/.exec(text) || [])[1]);
 const lookup = (host) => new Promise((r) => dns.lookup(host, (e, a) => r(e ? { error: code(e) } : { address: a })));
 
-// CONNECT through the proxy, then TLS and a HEAD request through the tunnel.
-function viaConnect(host, port) {
+// CONNECT through the proxy, then a request through the tunnel.
+function viaConnect(t) {
   return new Promise((resolve) => {
     let done = false;
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const authority = t.host + ':' + t.connect;
     const s = net.connect(Number(proxy.port), proxy.hostname);
-    s.setTimeout(10000, () => { s.destroy(); finish({ error: 'timeout' }); });
+    s.setTimeout(15000, () => { s.destroy(); finish({ error: 'timeout' }); });
     s.on('error', (e) => finish({ error: code(e) }));
-    s.on('connect', () => s.write('CONNECT ' + host + ':' + port + ' HTTP/1.1\r\nHost: ' + host + ':' + port + '\r\n\r\n'));
+    s.on('connect', () => s.write('CONNECT ' + authority + ' HTTP/1.1\r\nHost: ' + authority + '\r\n\r\n'));
     let head = '';
     const onData = (c) => {
       head += c.toString('latin1');
@@ -364,22 +376,24 @@ function viaConnect(host, port) {
       s.removeListener('data', onData);
       const status = statusOf(head);
       if (status !== 200) { s.destroy(); finish({ status }); return; }
-      const t = tls.connect({ socket: s, servername: host });
+      const request = 'HEAD / HTTP/1.1\r\nHost: ' + t.host + '\r\nConnection: close\r\n\r\n';
+      const through = t.tls ? tls.connect({ socket: s, servername: t.host }) : s;
       let body = '';
-      t.on('secureConnect', () => t.write('HEAD / HTTP/1.1\r\nHost: ' + host + '\r\nConnection: close\r\n\r\n'));
-      t.on('data', (d) => { body += d.toString('latin1'); });
-      t.on('close', () => finish({ status, httpStatus: statusOf(body) }));
-      t.on('error', (e) => finish({ status, error: code(e) }));
+      if (t.tls) through.on('secureConnect', () => through.write(request));
+      else through.write(request);
+      through.on('data', (d) => { body += d.toString('latin1'); });
+      through.on('close', () => finish({ status, httpStatus: statusOf(body) }));
+      through.on('error', (e) => finish({ status, error: code(e) }));
     };
     s.on('data', onData);
   });
 }
 
 // Plain HTTP through the proxy: an absolute-form request line.
-function viaHttp(url) {
+function viaHttp(t) {
   return new Promise((resolve) => {
-    const u = new URL(url);
-    const req = http.request({ host: proxy.hostname, port: proxy.port, method: 'GET', path: url, headers: { host: u.host }, timeout: 10000 }, (res) => {
+    const url = 'http://' + t.host + ':' + t.http + '/';
+    const req = http.request({ host: proxy.hostname, port: proxy.port, method: 'GET', path: url, headers: { host: t.host + ':' + t.http }, timeout: 15000 }, (res) => {
       res.resume();
       res.on('end', () => resolve({ status: res.statusCode }));
     });
@@ -401,35 +415,52 @@ function direct(host, port) {
 
 (async () => {
   const out = { proxyEnv: proxyUrl || null, ifaces: fs.readdirSync('/sys/class/net').sort() };
-  const jobs = { directIp: direct('1.1.1.1', 443), directName: direct(listed, 443) };
+  const jobs = {
+    directIp: direct('1.1.1.1', 443),
+    directListed: direct(targets.listed.host, targets.listed.connect),
+  };
   if (proxy) {
     jobs.dns = lookup(proxy.hostname);
-    jobs.listedTls = viaConnect(listed, 443);
-    jobs.listedHttp = viaHttp('http://' + listed + '/');
-    jobs.unlistedTls = viaConnect(unlisted, 443);
-    jobs.unlistedHttp = viaHttp('http://' + unlisted + '/');
+    jobs.listedConnect = viaConnect(targets.listed);
+    jobs.listedHttp = viaHttp(targets.listed);
+    jobs.unlistedConnect = viaConnect(targets.unlisted);
+    jobs.unlistedHttp = viaHttp(targets.unlisted);
   }
   for (const [k, p] of Object.entries(jobs)) out[k] = await p;
   console.log('RESULT ' + JSON.stringify(out));
 })();
 `;
 
+interface Target {
+  host: string;
+  connect: number;
+  http: number;
+  tls: boolean;
+}
+
+interface Reach {
+  status?: number;
+  httpStatus?: number;
+  error?: string;
+}
+
 interface Probe {
   proxyEnv: string | null;
   ifaces: string[];
   directIp: { connected?: boolean; error?: string };
-  directName: { connected?: boolean; error?: string };
+  directListed: { connected?: boolean; error?: string };
   dns?: { address?: string; error?: string };
-  listedTls?: { status?: number; httpStatus?: number; error?: string };
-  listedHttp?: { status?: number; error?: string };
-  unlistedTls?: { status?: number; error?: string };
-  unlistedHttp?: { status?: number; error?: string };
+  listedConnect?: Reach;
+  listedHttp?: Reach;
+  unlistedConnect?: Reach;
+  unlistedHttp?: Reach;
 }
 
 async function probe(
   id: string,
   network: SandboxSpec['network'],
-  wt: string
+  wt: string,
+  targets: { listed: Target; unlisted: Target }
 ): Promise<{ result: ExecResult; probe: Probe; container: string }> {
   let container = '';
   const result = await exec(
@@ -437,7 +468,7 @@ async function probe(
       cwd: wt,
       image: NODE_IMAGE,
       network,
-      env: { PROBE_LISTED: LISTED_HOST, PROBE_UNLISTED: UNLISTED_HOST },
+      env: { PROBE: JSON.stringify(targets) },
     }),
     'node',
     ['-e', NET_PROBE],
@@ -458,6 +489,44 @@ describe.skipIf(!WANTED || process.platform === 'win32')(SUITE, () => {
   /** A file in the real home directory, which no container may see. */
   let marker: string;
   const made: string[] = [];
+  /** The servers the egress tests reach and refuse: containers on the default network, by address. */
+  let allowedUp = '';
+  let refusedUp = '';
+  /** What this run made carries a run label ending in this process's id and a number. */
+  const mine = new RegExp(`^real-.*-${process.pid}-\\d+$`);
+
+  /** A server answering on 8080 and 8081, on the engine's default network. Returns its address. */
+  async function startUpstream(): Promise<string> {
+    const id = runId('upstream');
+    const name = `clerq-${id}`;
+    const r = await runtimeCall(runtime, [
+      'run',
+      '-d',
+      '--name',
+      name,
+      '--label',
+      `clerq.run=${id}`,
+      NODE_IMAGE,
+      'node',
+      '-e',
+      UPSTREAM_SCRIPT,
+    ]);
+    expect(r.code, r.stderr).toBe(0);
+    await waitFor(`${name} to listen`, async () => {
+      const logs = await runtimeCall(runtime, ['logs', name]);
+      return /listening 8080/.test(logs.stdout) && /listening 8081/.test(logs.stdout);
+    });
+    const ip = await runtimeCall(runtime, [
+      'container',
+      'inspect',
+      '--format',
+      '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}',
+      name,
+    ]);
+    const address = ip.stdout.trim().split(/\s+/)[0];
+    expect(address, `no address for ${name}: ${ip.stderr}`).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+    return address;
+  }
 
   beforeAll(async () => {
     const found = resolveRuntime(WANTED);
@@ -478,15 +547,18 @@ describe.skipIf(!WANTED || process.platform === 'win32')(SUITE, () => {
     made.push(root);
     marker = path.join(os.homedir(), `.clerq-real-marker-${process.pid}`);
     fs.writeFileSync(marker, 'a file in the real home directory\n');
+    allowedUp = await startUpstream();
+    refusedUp = await startUpstream();
   }, 15 * 60_000);
 
   afterAll(async () => {
-    // Whatever a test left behind, so a failure cannot pile up on a machine that is kept.
+    // What this run made and a failure left behind, and only that: other containers on a
+    // machine that is kept (a developer's own, another run's) are not ours to remove.
     const left = await listLabelled(runtime, 'clerq.run');
-    for (const c of left.containers.filter((x) => x.value.startsWith('real-'))) {
+    for (const c of left.containers.filter((x) => mine.test(x.value))) {
       await removeContainer(runtime, c.name);
     }
-    for (const n of left.networks.filter((x) => x.value.startsWith('real-'))) {
+    for (const n of left.networks.filter((x) => mine.test(x.value))) {
       await removeContainer(runtime, n.name.replace(/-net$/, ''));
     }
     fs.rmSync(marker, { force: true });
@@ -668,33 +740,56 @@ describe.skipIf(!WANTED || process.platform === 'win32')(SUITE, () => {
   });
 
   describe('egress', () => {
-    real(`reaches ${LISTED_HOST} through the proxy container, and nothing else`, async () => {
+    /** The hermetic targets: a listed upstream and a second one the allowlist does not name. */
+    const hermetic = (listed: string, unlisted: Target) => ({
+      listed: { host: listed, connect: 8080, http: 8080, tls: false },
+      unlisted,
+    });
+    const upstream = (host: string, port: number): Target => ({
+      host,
+      connect: port,
+      http: port,
+      tls: false,
+    });
+
+    real('reaches a listed host through the proxy container, and nothing else', async () => {
       const dir = fs.mkdtempSync(path.join(root, 'egress-'));
       const id = runId('egress');
-      const { result, probe: p, container } = await probe(id, [LISTED_HOST], dir);
+      const {
+        result,
+        probe: p,
+        container,
+      } = await probe(
+        id,
+        [`${allowedUp}:8080`],
+        dir,
+        hermetic(allowedUp, upstream(refusedUp, 8080))
+      );
 
       // The only way out is the proxy, which has a name on the internal network.
       expect(p.proxyEnv).toBe(`http://${container}-egress:${EGRESS_PORT}`);
       expect(p.dns?.address, JSON.stringify(p.dns)).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
       expect(p.ifaces).toEqual(['eth0', 'lo']);
-      expect(p.listedTls?.status, JSON.stringify(p.listedTls)).toBe(200);
-      expect(p.listedTls?.httpStatus, JSON.stringify(p.listedTls)).toBeGreaterThanOrEqual(200);
-      expect(p.listedTls?.httpStatus).toBeLessThan(400);
-      expect(p.listedHttp?.status, JSON.stringify(p.listedHttp)).toBe(200);
-      // An unlisted host is refused by the proxy, with a 403.
-      expect(p.unlistedTls).toEqual({ status: 403 });
+      // Listed: through a CONNECT tunnel, and as a plain request to the proxy.
+      expect(p.listedConnect, JSON.stringify(p.listedConnect)).toEqual({
+        status: 200,
+        httpStatus: 200,
+      });
+      expect(p.listedHttp, JSON.stringify(p.listedHttp)).toEqual({ status: 200 });
+      // A second server on the same network, not on the list: refused by the proxy, with a 403.
+      expect(p.unlistedConnect).toEqual({ status: 403 });
       expect(p.unlistedHttp).toEqual({ status: 403 });
-      // And there is no other route: not by address, not by name.
+      // And there is no other route: the listed server itself, and the internet, by address.
+      expect(p.directListed.connected).toBeUndefined();
+      expect(p.directListed.error).toBeTruthy();
       expect(p.directIp.connected).toBeUndefined();
       expect(p.directIp.error).toBeTruthy();
-      expect(p.directName.connected).toBeUndefined();
-      expect(p.directName.error).toBeTruthy();
 
       // The run's record: what the proxy allowed and what it turned away.
       expect(result.egress?.allowed).toBe(2);
-      expect((result.egress?.denied ?? []).map((d) => `${d.host}:${d.port}`).sort()).toEqual([
-        `${UNLISTED_HOST}:443`,
-        `${UNLISTED_HOST}:80`,
+      expect((result.egress?.denied ?? []).map((d) => `${d.host}:${d.port}`)).toEqual([
+        `${refusedUp}:8080`,
+        `${refusedUp}:8080`,
       ]);
       expect(result.warnings.join(' ')).toMatch(/proxy container/);
       expect(await leftovers(id)).toEqual(NOTHING_LEFT);
@@ -703,25 +798,74 @@ describe.skipIf(!WANTED || process.platform === 'win32')(SUITE, () => {
     real('limits a host to its port when the entry names one', async () => {
       const dir = fs.mkdtempSync(path.join(root, 'egress-port-'));
       const id = runId('egress-port');
-      const { result, probe: p } = await probe(id, [`${LISTED_HOST}:443`], dir);
-      expect(p.listedTls?.status, JSON.stringify(p.listedTls)).toBe(200);
-      expect(p.listedHttp).toEqual({ status: 403 });
-      expect(result.egress?.allowed).toBe(1);
-      expect(result.egress?.denied.map((d) => `${d.host}:${d.port}`)).toContain(
-        `${LISTED_HOST}:80`
+      // The same address, another port: the entry names 8080 only.
+      const { result, probe: p } = await probe(
+        id,
+        [`${allowedUp}:8080`],
+        dir,
+        hermetic(allowedUp, upstream(allowedUp, 8081))
       );
+      expect(p.listedConnect, JSON.stringify(p.listedConnect)).toEqual({
+        status: 200,
+        httpStatus: 200,
+      });
+      expect(p.unlistedConnect).toEqual({ status: 403 });
+      expect(p.unlistedHttp).toEqual({ status: 403 });
+      expect(result.egress?.allowed).toBe(2);
+      expect((result.egress?.denied ?? []).map((d) => `${d.host}:${d.port}`)).toEqual([
+        `${allowedUp}:8081`,
+        `${allowedUp}:8081`,
+      ]);
       expect(await leftovers(id)).toEqual(NOTHING_LEFT);
     });
 
     real('has no network at all with network: none', async () => {
       const dir = fs.mkdtempSync(path.join(root, 'none-'));
       const id = runId('none');
-      const { result, probe: p } = await probe(id, 'none', dir);
+      const { result, probe: p } = await probe(
+        id,
+        'none',
+        dir,
+        hermetic(allowedUp, upstream(refusedUp, 8080))
+      );
       expect(p.proxyEnv).toBeNull();
       expect(p.ifaces).toEqual(['lo']);
+      expect(p.directListed.error).toBeTruthy();
       expect(p.directIp.error).toBeTruthy();
-      expect(p.directName.error).toBeTruthy();
       expect(result.egress).toBeUndefined();
+      expect(await leftovers(id)).toEqual(NOTHING_LEFT);
+    });
+
+    // The one test that needs the internet, so it asks little of it: it needs example.com to
+    // answer at all (any status but the proxy's own 403, a 502 from a broken upstream included),
+    // and it tries twice. What it adds to the tests above is that the proxy container reaches out
+    // by name, through the engine's own DNS and routes.
+    real(`reaches ${INTERNET_HOST} on the internet, by name (needs the internet)`, async () => {
+      const dir = fs.mkdtempSync(path.join(root, 'internet-'));
+      const targets = {
+        listed: { host: INTERNET_HOST, connect: 443, http: 80, tls: true },
+        unlisted: { host: INTERNET_REFUSED, connect: 443, http: 80, tls: true },
+      };
+      const answered = (p: Probe) =>
+        p.listedConnect?.status !== undefined && p.listedHttp?.status !== undefined;
+      let id = runId('internet');
+      let out = await probe(id, [INTERNET_HOST], dir, targets);
+      if (!answered(out.probe)) {
+        // One more try: a runner's network is not ours to promise.
+        expect(await leftovers(id)).toEqual(NOTHING_LEFT);
+        id = runId('internet-again');
+        out = await probe(id, [INTERNET_HOST], dir, targets);
+      }
+      expect(answered(out.probe), JSON.stringify(out.probe)).toBe(true);
+      expect(out.probe.listedConnect?.status).not.toBe(403);
+      expect(out.probe.listedHttp?.status).not.toBe(403);
+      expect(out.probe.unlistedConnect).toEqual({ status: 403 });
+      expect(out.probe.unlistedHttp).toEqual({ status: 403 });
+      expect(out.result.egress?.allowed).toBe(2);
+      expect((out.result.egress?.denied ?? []).map((d) => d.host)).toEqual([
+        INTERNET_REFUSED,
+        INTERNET_REFUSED,
+      ]);
       expect(await leftovers(id)).toEqual(NOTHING_LEFT);
     });
 
@@ -860,6 +1004,50 @@ describe.skipIf(!WANTED || process.platform === 'win32')(SUITE, () => {
       expect(await leftovers(id)).toEqual(NOTHING_LEFT);
     });
 
+    real('is stopped by a cancel that comes while the egress proxy is starting', async () => {
+      const dir = fs.mkdtempSync(path.join(root, 'cancel-start-'));
+      const id = runId('cancel-start');
+      const controller = new AbortController();
+      const asked: string[] = [];
+      const started = Date.now();
+      const r = await exec(
+        base(id, {
+          cwd: dir,
+          network: [LISTED_HOST],
+          limits: { wallMs: 120_000 },
+          // The proxy takes a second or two to start: the cancel lands in the middle of it.
+          onProgress: (m) => {
+            asked.push(m);
+            if (/^Starting the egress proxy/.test(m)) setTimeout(() => controller.abort(), 300);
+          },
+        }),
+        'sh',
+        ['-c', 'sleep 100'],
+        { signal: controller.signal }
+      );
+      expect(r.cancelled).toBe(true);
+      expect(r.timedOut).toBe(false);
+      expect(Date.now() - started).toBeLessThan(30_000);
+      expect(asked[0]).toMatch(/^Starting the egress proxy/);
+      expect(await leftovers(id)).toEqual(NOTHING_LEFT);
+    });
+
+    real('counts the egress proxy start in the time limit', async () => {
+      const dir = fs.mkdtempSync(path.join(root, 'limit-start-'));
+      const id = runId('limit-start');
+      const started = Date.now();
+      // One second is less than the proxy takes to start: nothing is left of it for the command.
+      const r = await exec(
+        base(id, { cwd: dir, network: [LISTED_HOST], limits: { wallMs: 1_000 } }),
+        'sh',
+        ['-c', 'sleep 100']
+      );
+      expect(r.timedOut).toBe(true);
+      expect(r.cancelled).toBe(false);
+      expect(Date.now() - started).toBeLessThan(30_000);
+      expect(await leftovers(id)).toEqual(NOTHING_LEFT);
+    });
+
     real('leaves nothing when the egress proxy cannot start', async () => {
       const dir = fs.mkdtempSync(path.join(root, 'noproxy-'));
       // An image with no node in it: the engine cannot start the proxy's command.
@@ -915,14 +1103,15 @@ describe.skipIf(!WANTED || process.platform === 'win32')(SUITE, () => {
         ]);
         expect(r.code, r.stderr).toBe(0);
       }
-      const other = `clerq-other-${process.pid}-${seq}`;
+      const otherId = runId('someone-else');
+      const other = `clerq-${otherId}`;
       const unlabelled = await runtimeCall(runtime, [
         'run',
         '-d',
         '--name',
         other,
         '--label',
-        'clerq.run=real-someone-else',
+        `clerq.run=${otherId}`,
         COMMAND_IMAGE,
         'sleep',
         '300',
@@ -934,7 +1123,7 @@ describe.skipIf(!WANTED || process.platform === 'win32')(SUITE, () => {
         expect.arrayContaining([
           { name, value: id },
           { name: `${name}-egress`, value: id },
-          { name: other, value: 'real-someone-else' },
+          { name: other, value: otherId },
         ])
       );
       expect(listed.networks).toContainEqual({ name: `${name}-net`, value: id });
