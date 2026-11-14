@@ -578,15 +578,21 @@ describe('container profile, against a fake runtime', () => {
     it('is not lost when the caller cancels while the proxy has not yet started listening', async () => {
       fs.writeFileSync(path.join(bin, 'no-listen'), '');
       const controller = new AbortController();
-      const started = Date.now();
       const pending = exec(spec({ network: ['registry.npmjs.org'] }), 'sh', ['-c', 'echo ran'], {
         signal: controller.signal,
       });
-      await sleep(700);
+      // Cancel once the readiness loop has asked the proxy's log twice. A fixed wait
+      // is not enough: every call of the fake runtime starts a node process, and how
+      // many of them fit in 700 ms depends on the machine and on what else it is running.
+      const waitUntil = Date.now() + 10_000;
+      while (calls().filter((c) => c[0] === 'logs').length < 2 && Date.now() < waitUntil) {
+        await sleep(25);
+      }
+      const abortedAt = Date.now();
       controller.abort();
       const r = await pending;
       expect(r.cancelled).toBe(true);
-      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(Date.now() - abortedAt).toBeLessThan(3_000);
       expect(commandRuns()).toEqual([]);
       expect(calls().filter((c) => c[0] === 'logs').length).toBeGreaterThan(1);
     });
