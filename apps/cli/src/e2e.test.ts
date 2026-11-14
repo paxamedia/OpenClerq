@@ -689,6 +689,30 @@ describe.skipIf(!runnable)('repositories', () => {
     expect(json<Record<string, any>>(r).path.value).toBe(repo);
   });
 
+  it('leaves ~ for the gateway to expand, and says the path is on its computer, unless it is the one on this computer', async () => {
+    const home = await signedIn();
+    // The gateway's account has a repository at ~/code/app; this CLI's account does not.
+    const folder = path.join(gatewayHome, 'code', 'app');
+    fs.mkdirSync(folder, { recursive: true });
+    sh(folder, 'init', '-q', '-b', 'main');
+
+    // A gateway on another port, as an `ssh -L` to a gateway elsewhere would look: not this computer's.
+    const far = await cli(['repo', 'add', '~/code/app', '--json'], { home });
+    expect(far.code, far.stderr).toBe(0);
+    expect(json<Record<string, any>>(far).path.value).toBe(folder);
+    expect(far.stderr).toContain("is a path on the gateway's computer");
+    const relative = await cli(['repo', 'add', 'code/app', '--json'], { home, cwd: gatewayHome });
+    expect(relative.code, relative.stderr).toBe(0);
+    expect(relative.stderr).toContain("is a path on the gateway's computer");
+
+    // The gateway on this computer shares its home: ~ is expanded here, to this account's, with no note.
+    const near = await cli(['repo', 'add', '~/code/app'], { home, localUrl: gatewayUrl });
+    expect(near.code).toBe(1);
+    expect(near.stderr).toContain(path.join(home, 'code', 'app'));
+    expect(near.stderr).toContain('does not exist');
+    expect(near.stdout + near.stderr).not.toContain("gateway's computer");
+  });
+
   it('says why a target cannot be added, and exits 1', async () => {
     const home = await signedIn();
     const plain = path.join(root, 'plain-folder');

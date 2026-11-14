@@ -4,7 +4,7 @@ import path from 'node:path';
 import { GatewayError, gateway, type AddRepoResult, type RepoSummary } from '@clerq/gateway-client';
 import { flag, type Call } from '../args.js';
 import { connect } from '../connect.js';
-import { expandTilde, isLoopbackHost } from '../connection.js';
+import { expandTilde, isLocalGateway } from '../connection.js';
 import type { Context } from '../context.js';
 import { CliError, EXIT, UsageError } from '../errors.js';
 import { dateTime, oneLine, statusWords, table } from '../format.js';
@@ -48,7 +48,9 @@ const repoLine = (r: Pick<AddRepoResult, 'name' | 'kind' | 'id'>) =>
 export async function runAdd(ctx: Context, call: Call): Promise<number> {
   const { out } = ctx;
   const resolved = await connect(ctx);
-  const gatewayIsLocal = isLoopbackHost(new URL(resolved.url).hostname);
+  // The same rule as for the token: only the gateway on this computer shares its folders and its home.
+  // Another loopback port may be an `ssh -L` to a gateway elsewhere.
+  const gatewayIsLocal = isLocalGateway(resolved.url, ctx.localUrl);
   const { target, local } = targetOf(call.args[0], ctx.cwd, ctx.home, gatewayIsLocal);
   const check = flag(call, 'check');
   if (local && !gatewayIsLocal) {
