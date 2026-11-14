@@ -347,7 +347,7 @@ export function connectStream(store: LiveStore, client: GatewayClient): () => vo
   };
 }
 
-const LiveContext = createContext<LiveStore | null>(null);
+export const LiveContext = createContext<LiveStore | null>(null);
 
 /** Holds the cache and the stream for everything inside it. */
 export function LiveProvider({
@@ -363,7 +363,16 @@ export function LiveProvider({
   const store = useMemo(() => given ?? new LiveStore(), [given]);
 
   useEffect(() => connectStream(store, client), [store, client]);
+  useStoreRefresh(store);
 
+  return <LiveContext.Provider value={store}>{children}</LiveContext.Provider>;
+}
+
+/**
+ * Keeps what a store holds fresh when the stream is not doing it: every few seconds while the
+ * stream is down, now and then while it is up, and when the window is focused.
+ */
+export function useStoreRefresh(store: LiveStore): void {
   useEffect(() => {
     const tick = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
@@ -379,8 +388,6 @@ export function LiveProvider({
       window.removeEventListener('focus', onFocus);
     };
   }, [store]);
-
-  return <LiveContext.Provider value={store}>{children}</LiveContext.Provider>;
 }
 
 export function useLive(): LiveStore {

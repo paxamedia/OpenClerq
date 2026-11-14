@@ -46,7 +46,7 @@ import {
   navigate,
   tokens,
   useClient,
-  useLive,
+  useInvalidate,
   useMedia,
   useResource,
   useToast,
@@ -253,7 +253,7 @@ function Conversations({
 
 function Conversation({ id, base }: { id: string; base: string }) {
   const client = useClient();
-  const live = useLive();
+  const invalidate = useInvalidate();
   const toast = useToast();
   const providers = useProviders();
   const session = useResource(`session:${id}`, () => client.session(id), { on: ['sessions'] });
@@ -289,8 +289,8 @@ function Conversation({ id, base }: { id: string; base: string }) {
 
   const reload = useCallback(async () => {
     await session.reload();
-    live.invalidate(['sessions']);
-  }, [session, live]);
+    invalidate(['sessions']);
+  }, [session, invalidate]);
 
   const setMode = async (mode: PipelineMode) => {
     try {
@@ -340,7 +340,7 @@ function Conversation({ id, base }: { id: string; base: string }) {
             );
           } else if (event.type === 'approval') {
             setLiveApprovals((list) => [...list, { approval: event.approval }]);
-            live.invalidate(['approvals']);
+            invalidate(['approvals']);
           } else if (event.type === 'approval_decided') {
             setLiveApprovals((list) =>
               list.map((a) =>
@@ -383,7 +383,7 @@ function Conversation({ id, base }: { id: string; base: string }) {
   const remove = async () => {
     try {
       await client.deleteSession(id);
-      live.invalidate(['sessions']);
+      invalidate(['sessions']);
       navigate(base, { replace: true });
     } catch (e) {
       toast({ message: `Couldn’t delete the conversation. ${errorMessage(e)}`, tone: 'err' });
@@ -624,7 +624,7 @@ export function questionFor(messages: ChatMessage[], answer: ChatMessage | null)
 
 export function ChatScreen({ parts, base }: PluginProps) {
   const client = useClient();
-  const live = useLive();
+  const invalidate = useInvalidate();
   const toast = useToast();
   const sessions = useSessions();
   const phone = useMedia(PHONE_QUERY);
@@ -639,7 +639,7 @@ export function ChatScreen({ parts, base }: PluginProps) {
   const create = async () => {
     try {
       const s = await client.createSession({ mode: 'raw' });
-      live.invalidate(['sessions']);
+      invalidate(['sessions']);
       navigate(`${base}/${encodeURIComponent(s.id)}`);
     } catch (e) {
       toast({ message: `Couldn’t start a conversation. ${errorMessage(e)}`, tone: 'err' });

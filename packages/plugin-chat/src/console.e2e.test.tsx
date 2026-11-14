@@ -12,8 +12,11 @@
  *  - the console's calls carry a module UI token, never the gateway token;
  *  - each is one the manifest declares, and each declared one was made;
  *  - an endpoint it does not declare is refused with 403 (see plugins.console.test.ts in the
- *    gateway for the whole list) and the console says so;
- *  - the token is renewed before it ends, so a session outlives any one token.
+ *    gateway for the whole list); the console itself never asks for one;
+ *  - the token is renewed before it ends, so a session outlives any one token, and one the gateway
+ *    has revoked is replaced on its first refusal;
+ *  - the page's data lives in a store of its own, refreshed through the shell's event stream, and
+ *    its props carry a reduced host: a page that tries to use more finds nothing (the last describe).
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -28,7 +31,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGateway, type Gateway } from '@clerq/gateway';
 import { createGatewayClient } from '@clerq/gateway-client';
-import { OpenClerqApp } from '@clerq/web';
+import { LiveStore, OpenClerqApp, type Host } from '@clerq/web';
+import type { PluginProps, PluginUI } from '@clerq/plugin-sdk/ui';
+import { MessageSquare } from 'lucide-react';
+import { useEffect } from 'react';
+import { useInvalidate, useResource } from '@clerq/web/plugin-ui';
+import * as pluginUi from '@clerq/web/plugin-ui';
 import { chatManifest, chatPlugin } from './index';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -362,7 +370,17 @@ afterAll(async () => {
   }
 });
 
-async function mount(): Promise<void> {
+/** The store the shell holds: kept so a test can look at what is in it. */
+let shellStore = new LiveStore();
+
+async function mount(
+  options: { modules?: PluginUI[]; appHost?: Host; reset?: boolean } = {}
+): Promise<void> {
+  if (options.reset) {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+  shellStore = new LiveStore();
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
@@ -371,8 +389,9 @@ async function mount(): Promise<void> {
     root.render(
       <OpenClerqApp
         client={operator()}
-        host={{ kind: 'web', version: '1.0.0', openUrl: () => undefined }}
-        modules={[chatPlugin]}
+        host={options.appHost ?? { kind: 'web', version: '1.0.0', openUrl: () => undefined }}
+        modules={options.modules ?? [chatPlugin]}
+        store={shellStore}
         // Short, so a long session is a few seconds: the token is renewed at 70% of it.
         pluginTokenSeconds={3}
       />
@@ -413,6 +432,29 @@ describe('the console in the app, with plugin checks on', () => {
       consoleCalls().some((a) => a.method === 'POST' && a.path === `/sessions/${id}/send`)
     ).toBe(true);
     expect(consoleCalls().some((a) => a.method === 'GET' && a.path === '/providers')).toBe(true);
+  });
+
+  it('keeps what it reads in a store of its own, and is refreshed through the shell’s event stream', async () => {
+    // The shell's store holds what the shell read with the app's client, and nothing of the console's.
+    await until(() => shellStore.snapshot('plugins').data, 'the shell to have read the plugins');
+    expect(shellStore.snapshot('sessions').data).toBeUndefined();
+    expect(shellStore.snapshot('providers').data).toBeUndefined();
+    const id = openId() as string;
+    expect(shellStore.snapshot(`session:${id}`).data).toBeUndefined();
+    // A message sent from somewhere else: the shell's stream says something changed in the
+    // conversations, and the console reads them again, with its own token.
+    const res = await realFetch(`${gatewayBase}/v1/sessions/${id}/send`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Sent from elsewhere', stream: false }),
+    });
+    expect(res.status).toBe(200);
+    await until(() => text().includes('Sent from elsewhere'), 'the message from elsewhere');
+    expect(
+      consoleCalls()
+        .filter((a) => a.path === `/sessions/${id}`)
+        .at(-1)?.token
+    ).toMatch(/^clqm_/);
   });
 
   it('runs a managed turn in a folder, asks before it writes, and does as it is answered', async () => {
@@ -623,6 +665,55 @@ describe('the console over a long session', () => {
   });
 });
 
+describe('a token the gateway has revoked', () => {
+  it('is replaced on its first refusal and the request is sent again, and the person sees nothing', async () => {
+    await go('#/m/chat');
+    await until(() => named('New conversation'), 'the console');
+    const mints = asked.filter((a) => a.path === '/modules/chat/token').length;
+    // Every token of the plugin, revoked, while the plugin keeps running: nothing tells the app.
+    expect((await operator().revokeModuleTokens('chat')).revoked).toBeGreaterThan(0);
+    const from = asked.length;
+    await click(named('New conversation'), 'New conversation');
+    await until(
+      () =>
+        asked
+          .slice(from)
+          .some((a) => a.method === 'POST' && a.path === '/sessions' && a.status === 201),
+      'a conversation to be made'
+    );
+    const posts = asked.slice(from).filter((a) => a.method === 'POST' && a.path === '/sessions');
+    expect(posts.map((a) => a.status)).toEqual([401, 201]);
+    expect(posts[1].token).not.toBe(posts[0].token);
+    expect(posts.every((a) => a.token.startsWith('clqm_'))).toBe(true);
+    // One new token, asked for with the app's own, and no word of it on the page.
+    const minted = asked.filter((a) => a.path === '/modules/chat/token').slice(mints);
+    expect(minted.length).toBeGreaterThanOrEqual(1);
+    expect(minted.every((a) => a.token === 'gateway')).toBe(true);
+    expect(text()).not.toContain('Couldn’t start a conversation');
+    expect(text()).not.toContain('token');
+  });
+
+  it('is replaced once for every request that was refused, and a switch off and on in between is no different', async () => {
+    await go('#/m/chat');
+    await until(() => named('New conversation'), 'the console');
+    const mints = asked.filter((a) => a.path === '/modules/chat/token').length;
+    // Off and on again quickly, as a person might: the old tokens are revoked at the stop.
+    await operator().disablePlugin('chat');
+    await operator().enablePlugin('chat');
+    const from = asked.length;
+    await click(named('New conversation'), 'New conversation');
+    await until(
+      () =>
+        asked
+          .slice(from)
+          .some((a) => a.method === 'POST' && a.path === '/sessions' && a.status === 201),
+      'a conversation to be made after the switch'
+    );
+    expect(asked.filter((a) => a.path === '/modules/chat/token').length).toBeGreaterThan(mints);
+    expect(text()).not.toContain('is not running');
+  });
+});
+
 describe('what the console is allowed and what it did', () => {
   it('made only calls the manifest declares, with a module token and never the gateway token, and every declared call', () => {
     // Relies on the tests above, in this file's order.
@@ -705,5 +796,130 @@ describe('when what the gateway says about the plugin changes', () => {
     await click(named('New conversation'), 'New conversation');
     await until(() => postedTo('/sessions', again).length > 0, 'a conversation to be made');
     expect(postedTo('/sessions', again)[0].token).toMatch(/^clqm_/);
+  });
+});
+
+describe('a page that tries to use more than it was given', () => {
+  /** What the hostile page did and saw, for the test to read. */
+  const seen = {
+    clients: [] as unknown[],
+    hostKeys: [] as string[],
+    poisoned: false,
+    liveStoreExported: true,
+    ranOnce: false,
+  };
+
+  /** A page written to reach for what a plugin should not have, using only what its props and `@clerq/web/plugin-ui` give it. */
+  function Hostile(props: PluginProps) {
+    seen.clients.push(props.client);
+    // The shell decides whether checks are on from its `plugins` entry: take that key over, in whatever
+    // store this reaches, with an answer that says checks are off and the plugin may have the app's client.
+    useResource(
+      'plugins',
+      async () => ({
+        enforce: false,
+        plugins: [{ id: 'chat', state: 'enabled', name: 'Chat', approval: { status: 'approved' } }],
+      }),
+      { on: ['modules'] }
+    );
+    const invalidate = useInvalidate();
+    useEffect(() => {
+      seen.hostKeys = Object.keys(props.host).sort();
+      seen.liveStoreExported = 'useLive' in pluginUi;
+      const bridge = props.host as unknown as Record<
+        string,
+        ((...a: unknown[]) => unknown) | undefined
+      >;
+      // Every power of the app's host, tried by name.
+      for (const name of [
+        'setGatewayUrl',
+        'writeConfig',
+        'readConfig',
+        'saveApiKey',
+        'openForm',
+        'notify',
+      ]) {
+        void bridge[name]?.('https://attacker.invalid', { token: 'x' });
+      }
+      // Addresses that are not https, and one that is.
+      for (const url of ['javascript:alert(1)', 'http://attacker.invalid', 'file:///etc/passwd']) {
+        props.host.openUrl(url);
+      }
+      props.host.openUrl('https://example.com/ok');
+      // Ask for everything to be read again, in the one store it can reach.
+      invalidate();
+      seen.poisoned = true;
+      seen.ranOnce = true;
+    }, [invalidate, props.host]);
+    return <p>a page with its own ideas</p>;
+  }
+
+  const hostile: PluginUI = {
+    id: 'chat',
+    name: 'Chat',
+    icon: MessageSquare,
+    rail: [{ id: 'chat', label: 'Chat', icon: MessageSquare, path: '/m/chat', order: 40 }],
+    component: Hostile,
+    api: DECLARED,
+  };
+
+  it('finds the shell’s store out of reach, the app’s host reduced, and keeps the client it had', async () => {
+    const calls = {
+      setGatewayUrl: vi.fn(),
+      writeConfig: vi.fn(async () => undefined),
+      readConfig: vi.fn(async () => ({})),
+      saveApiKey: vi.fn(async () => undefined),
+      openForm: vi.fn(async () => undefined),
+      notify: vi.fn(),
+      openUrl: vi.fn(),
+    };
+    const from = asked.length;
+    await mount({
+      reset: true,
+      modules: [hostile],
+      appHost: { kind: 'desktop', version: '1.0.0', ...calls },
+    });
+    await until(() => seen.ranOnce, 'the page to run');
+    // Time for its fetcher to run, for the shell to read the plugin list, and for events to arrive.
+    await act(async () => {
+      await sleep(1500);
+    });
+
+    // The host it was handed: three members, none of them the app's own powers.
+    expect(seen.hostKeys).toEqual(['kind', 'openUrl', 'version']);
+    for (const name of ['setGatewayUrl', 'writeConfig', 'saveApiKey', 'openForm'] as const) {
+      expect(calls[name], name).not.toHaveBeenCalled();
+    }
+    // The app reads its own settings and posts its own notifications; what the page passed is not in them.
+    for (const name of ['readConfig', 'notify'] as const) {
+      expect(JSON.stringify(calls[name].mock.calls), name).not.toContain('attacker.invalid');
+    }
+    expect(calls.openUrl.mock.calls).toEqual([['https://example.com/ok']]);
+
+    // `useLive`, which would be the shell's whole store and every event, is not on offer.
+    expect(seen.liveStoreExported).toBe(false);
+
+    // What the shell holds, and decides from, is what the gateway said, not what the page wrote.
+    const held = shellStore.snapshot('plugins').data as {
+      enforce: boolean;
+      plugins: Array<{ id: string; checksum?: string }>;
+    };
+    expect(held.enforce).toBe(true);
+    expect(held.plugins.find((p) => p.id === 'chat')?.checksum).toBeDefined();
+
+    // And so it is still given a client that is held to what it declared, which is a different
+    // one from the app's: it cannot ask for what the manifest does not name.
+    expect(text()).toContain('a page with its own ideas');
+    const latest = seen.clients.at(-1) as ReturnType<typeof operator>;
+    expect(seen.clients.every((c) => c !== undefined)).toBe(true);
+    await expect(latest.runs()).rejects.toMatchObject({ status: 403 });
+    await expect(latest.plugins()).rejects.toMatchObject({ status: 403 });
+    await expect(latest.sessions()).resolves.toBeDefined();
+    // Nothing it did gave it a request with the gateway's token.
+    expect(
+      asked
+        .slice(from)
+        .filter((a) => DECLARED.some((d) => admits(d, a.method, a.path)) && a.token === 'gateway')
+    ).toEqual([]);
   });
 });

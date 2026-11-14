@@ -9,9 +9,11 @@
  * `react` and `lucide-react`, and from nothing else in the app. A third-party plugin
  * can use exactly the same.
  *
- * Nothing here gives a plugin more than the client it is handed. `useClient()` is the
- * client the shell gave the plugin (a client limited to its declared endpoints when
- * enforcement is on), not the app's own.
+ * Nothing here gives a plugin more than it was handed. `useClient()` is the client the shell
+ * gave the plugin (a client limited to its declared endpoints when enforcement is on), not
+ * the app's own. `useResource` reads and writes a live store that belongs to the plugin, and
+ * `useInvalidate()` refetches that store's data: the shell's own store, and the events the
+ * gateway sends, are not reachable from here. A plugin's props carry a reduced host.
  *
  * The plugin's CSS is its own. It may use the app's design tokens (`var(--space-3)`,
  * `var(--line)`, …) and these shared text classes: `page-hint`, `page-link`,
@@ -42,9 +44,10 @@ export {
 } from './shell/layout';
 export { When } from './screens/common';
 
-// The client the plugin was given, live data, and the router
+// The client the plugin was given, live data of its own, and the router
 export { useClient } from './app/client';
-export { useLive, useResource, type Resource } from './app/live';
+export { useResource, type Resource } from './app/live';
+export { useInvalidate } from './app/plugin-surface';
 export { navigate } from './app/router';
 
 // Words and numbers, formatted as the app does

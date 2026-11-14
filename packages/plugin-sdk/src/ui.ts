@@ -109,6 +109,11 @@ export interface PluginProps {
   /** "/m/<id>", for building links to the plugin's own pages. */
   base: string;
   client: GatewayClient;
+  /**
+   * What the shell lets a plugin's page do with the app: `kind`, `version` and an `openUrl` that
+   * opens only `https:` addresses. The app's own host (its settings, key, gateway address, forms,
+   * notifications) is not handed to a plugin.
+   */
   host: Host;
   config: AppConfig | null;
   navigate: (to: string) => void;

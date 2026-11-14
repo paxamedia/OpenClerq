@@ -41,7 +41,7 @@ const SURFACE = [
   'navigate',
   'tokens',
   'useClient',
-  'useLive',
+  'useInvalidate',
   'useMedia',
   'useResource',
   'useToast',
@@ -53,8 +53,17 @@ describe('the plugin UI surface', () => {
   });
 
   it('gives a plugin nothing that reaches past the client it was handed', () => {
-    // No host (so no config, no updater, no notifications), no app-wide client and no live-store constructor.
-    for (const name of ['useHost', 'LiveStore', 'LiveProvider', 'EnvironmentContext', 'gateway']) {
+    // No host (so no config, no updater, no notifications), no app-wide client, and no way to the shell's
+    // live store: `useLive` would hand a plugin the store the shell decides things from.
+    for (const name of [
+      'useHost',
+      'useLive',
+      'LiveStore',
+      'LiveProvider',
+      'LiveContext',
+      'EnvironmentContext',
+      'gateway',
+    ]) {
       expect(name in pluginUi, name).toBe(false);
     }
   });

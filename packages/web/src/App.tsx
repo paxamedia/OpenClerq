@@ -7,7 +7,7 @@
  * contract: bundled ones passed in, and every module the gateway runs.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Code,
   Contact,
@@ -32,7 +32,8 @@ import {
 import { hitRoute, moduleRoute, useExtensions, useGatewayModules } from './app/extensions';
 import { usePluginAccess, type ScopedClientFactory } from './app/plugin-access';
 import { visit } from './app/history';
-import { LiveProvider, useLive, type LiveStore } from './app/live';
+import { LiveProvider, LiveStore, useLive } from './app/live';
+import { PluginSurface, reducedHost } from './app/plugin-surface';
 import {
   moduleBase,
   renderBundled,
@@ -233,6 +234,15 @@ function AppFrame({
   const modules = useAllModules(bundled);
   // What client each plugin is given, or why it cannot run: see app/plugin-access.
   const accessOf = usePluginAccess(modules);
+  // What else a plugin's page is given: a live store of its own (kept while the app runs, so a page
+  // that was left comes back warm) and a host with nothing that changes the app. See app/plugin-surface.
+  const pluginStores = useRef(new Map<string, LiveStore>());
+  const storeOf = (id: string) => {
+    let store = pluginStores.current.get(id);
+    if (!store) pluginStores.current.set(id, (store = new LiveStore()));
+    return store;
+  };
+  const pluginHost = useMemo(() => reducedHost(host), [host]);
   // Until the user pins or unpins, every module is pinned, including ones added later.
   const [pinned, setPinned] = useState<string[] | null>(storedPins);
   const pins = useMemo(() => pinned ?? modules.map((m) => m.id), [pinned, modules]);
@@ -417,15 +427,17 @@ function AppFrame({
     page =
       mod && access ? (
         access.status === 'ready' ? (
-          renderModule(mod, {
-            route,
-            parts: segments.slice(2),
-            base: moduleBase(mod.id),
-            client: access.client,
-            host,
-            config,
-            navigate,
-          })
+          <PluginSurface store={storeOf(mod.id)} client={access.client} host={pluginHost}>
+            {renderModule(mod, {
+              route,
+              parts: segments.slice(2),
+              base: moduleBase(mod.id),
+              client: access.client,
+              host: pluginHost,
+              config,
+              navigate,
+            })}
+          </PluginSurface>
         ) : (
           <PluginNotice name={mod.name} access={access} />
         )
