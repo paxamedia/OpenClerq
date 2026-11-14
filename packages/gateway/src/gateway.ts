@@ -298,6 +298,8 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     driverFor: config.automations?.driverFor,
     fetcher: config.automations?.fetcher,
     workspaceCacheDir: config.automations?.workspaceCacheDir,
+    // Where a GitHub App's installation tokens plug in; the vault's secret when none is given.
+    forgeCredentials: config.automations?.forgeCredentials,
     maxConcurrent:
       config.automations?.maxConcurrent ?? (Number(process.env.CLERQ_MAX_CONCURRENT_RUNS) || 2),
   };

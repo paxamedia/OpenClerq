@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseRegistry } from '@clerq/providers';
-import { parseSpec, parseDuration, SpecError, SPEC_VERSION } from './spec.js';
+import { parseSpec, parseDuration, parseRepoTarget, SpecError, SPEC_VERSION } from './spec.js';
 import { nextRunOf } from './scheduler.js';
 
 /** MINIMAL with a vault key for the agent, which a CLI needs under a sandbox profile. */
@@ -619,5 +619,47 @@ describe('nextRunOf', () => {
 
   it('answers null for an invalid expression', () => {
     expect(nextRunOf('not cron')).toBeNull();
+  });
+});
+
+describe('parseRepoTarget', () => {
+  it('reads each way a spec names a repository, with its branch', () => {
+    expect(parseRepoTarget('local:~/code/app')).toEqual({
+      ok: true,
+      repo: { kind: 'local', path: '~/code/app', target: 'local:~/code/app' },
+    });
+    expect(parseRepoTarget(' github:acme/app#develop ')).toEqual({
+      ok: true,
+      repo: {
+        kind: 'github',
+        project: 'acme/app',
+        url: 'https://github.com/acme/app.git',
+        target: 'github:acme/app#develop',
+        ref: 'develop',
+      },
+    });
+    expect(parseRepoTarget('https://gitlab.com/g/sub/app')).toMatchObject({
+      ok: true,
+      repo: { kind: 'gitlab', project: 'g/sub/app', url: 'https://gitlab.com/g/sub/app.git' },
+    });
+  });
+
+  it('says what is wrong in the words the spec gives a line', () => {
+    const message = (v: unknown) => {
+      const r = parseRepoTarget(v);
+      return r.ok ? '' : r.message;
+    };
+    expect(message(undefined)).toMatch(/is a string such as local:~\/code\/app/);
+    expect(message('local:')).toMatch(/local: needs a path/);
+    expect(message('github:acme')).toMatch(/is not a repository this release can work on/);
+    expect(message('a#b#c')).toBe('A repository takes at most one #branch.');
+    expect(message('github:acme/app#-x')).toBe('"-x" is not a branch name.');
+    // The spec reports the very same sentence at the target's line.
+    try {
+      parseSpec(MINIMAL.replace('local:~/code/app', 'github:acme'));
+      expect.unreachable();
+    } catch (e) {
+      expect((e as SpecError).message).toBe(`Line 4, column 11: ${message('github:acme')}`);
+    }
   });
 });

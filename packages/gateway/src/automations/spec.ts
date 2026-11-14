@@ -346,6 +346,53 @@ class Reader {
   }
 }
 
+/** What a repository target says, or why it cannot be read. */
+export type RepoTargetResult = { ok: true; repo: RepoTarget } | { ok: false; message: string };
+
+/**
+ * Read one repository as `targets.repos` writes it: `local:<path>`,
+ * `github:owner/name`, `gitlab:group/name` or an https URL on github.com or
+ * gitlab.com, each with an optional `#branch`. The message is the one the
+ * spec's line gets, so anything else that takes a target (`POST /repos`)
+ * says the same words.
+ */
+export function parseRepoTarget(value: unknown): RepoTargetResult {
+  if (typeof value !== 'string' || !value.trim()) {
+    return {
+      ok: false,
+      message: 'A repository is a string such as local:~/code/app or github:owner/name.',
+    };
+  }
+  const target = value.trim();
+  const parts = target.split('#');
+  if (parts.length > 2) return { ok: false, message: 'A repository takes at most one #branch.' };
+  const [where, ref] = parts;
+  let repo: RepoTarget;
+  if (where.startsWith('local:')) {
+    const repoPath = where.slice(6).trim();
+    if (!repoPath) return { ok: false, message: 'local: needs a path, e.g. local:~/code/app.' };
+    repo = { kind: 'local', path: repoPath, target };
+  } else {
+    const remote = parseRemote(where);
+    if (!remote) {
+      return {
+        ok: false,
+        message:
+          `"${where}" is not a repository this release can work on. Use local:<path>, github:owner/name, ` +
+          'gitlab:group/name, or an https URL on github.com or gitlab.com.',
+      };
+    }
+    repo = { kind: remote.forge, project: remote.project, url: remote.url, target };
+  }
+  if (ref !== undefined) {
+    if (!/^[A-Za-z0-9._/-]+$/.test(ref) || ref.startsWith('-') || ref.includes('..')) {
+      return { ok: false, message: `"${ref}" is not a branch name.` };
+    }
+    repo.ref = ref;
+  }
+  return { ok: true, repo };
+}
+
 export interface ParseOptions {
   /**
    * The model registry. With it, a builtin agent's models are checked against
@@ -437,45 +484,9 @@ export function parseSpec(source: string, options: ParseOptions = {}): Automatio
   if (repos.length > 1) {
     r.fail(['targets', 'repos', 1], 'This release runs one repository per automation.');
   }
-  const target = repos[0];
-  if (typeof target !== 'string' || !target.trim()) {
-    r.fail(
-      ['targets', 'repos', 0],
-      'A repository is a string such as local:~/code/app or github:owner/name.'
-    );
-  }
-  const parts = target.trim().split('#');
-  if (parts.length > 2) {
-    r.fail(['targets', 'repos', 0], 'A repository takes at most one #branch.');
-  }
-  const [where, ref] = parts;
-  let repo: RepoTarget;
-  if (where.startsWith('local:')) {
-    const repoPath = where.slice(6).trim();
-    if (!repoPath) r.fail(['targets', 'repos', 0], 'local: needs a path, e.g. local:~/code/app.');
-    repo = { kind: 'local', path: repoPath, target: target.trim() };
-  } else {
-    const remote = parseRemote(where);
-    if (!remote) {
-      r.fail(
-        ['targets', 'repos', 0],
-        `"${where}" is not a repository this release can work on. Use local:<path>, github:owner/name, ` +
-          'gitlab:group/name, or an https URL on github.com or gitlab.com.'
-      );
-    }
-    repo = {
-      kind: remote.forge,
-      project: remote.project,
-      url: remote.url,
-      target: target.trim(),
-    };
-  }
-  if (ref !== undefined) {
-    if (!/^[A-Za-z0-9._/-]+$/.test(ref) || ref.startsWith('-') || ref.includes('..')) {
-      r.fail(['targets', 'repos', 0], `"${ref}" is not a branch name.`);
-    }
-    repo.ref = ref;
-  }
+  const parsedTarget = parseRepoTarget(repos[0]);
+  if (!parsedTarget.ok) r.fail(['targets', 'repos', 0], parsedTarget.message);
+  const repo = parsedTarget.repo;
 
   r.keys(
     ['agent'],

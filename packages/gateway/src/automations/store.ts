@@ -287,40 +287,59 @@ export function expandHome(p: string): string {
 
 /** The repos row for a local path, created on first use. */
 export function ensureLocalRepo(localPath: string): string {
+  return ensureLocalRepoRow(localPath).id;
+}
+
+/** `ensureLocalRepo`, saying whether this call made the row. */
+export function ensureLocalRepoRow(localPath: string): { id: string; created: boolean } {
   const resolved = expandHome(localPath);
   const db = getStore();
   const found = db.prepare('SELECT id FROM repos WHERE local_path = ?').get(resolved);
-  if (found) return String(found.id);
+  if (found) return { id: String(found.id), created: false };
   const id = `repo_${crypto.randomUUID()}`;
   const hash = crypto.createHash('sha256').update(resolved).digest('hex').slice(0, 8);
   db.prepare(
     `INSERT INTO repos (id, name, kind, local_path, created_at) VALUES (?, ?, 'local', ?, ?)`
   ).run(id, `${path.basename(resolved)}-${hash}`, resolved, new Date().toISOString());
-  return id;
+  return { id, created: true };
+}
+
+/** A remote repository as the spec's target parser reads it. */
+export interface RemoteRepo {
+  kind: 'github' | 'gitlab';
+  /** "owner/name" or "group/name". */
+  project: string;
+  url: string;
 }
 
 /**
- * The repos row for an automation's repository, created on first use: a local
- * path, or a remote by its URL, with the clone in the workspace cache (once
- * the run knows where that is) and the vault secret it is reached with.
+ * The repos row for a remote, created on first use, by its URL. `tokenSecret`
+ * is the vault secret it is reached with; `clonePath` is where the workspace
+ * cache keeps its clone, once a run knows it. `keepCredential` leaves an
+ * existing row's secret alone (adding a repository by hand must not undo what
+ * an automation's spec chose); a run passes false, so the last one queued wins.
  */
-export function ensureRepoRow(spec: AutomationSpec, clonePath?: string): string {
-  if (spec.repo.kind === 'local') return ensureLocalRepo(spec.repo.path);
+export function ensureRemoteRepo(
+  remote: RemoteRepo,
+  tokenSecret: string,
+  clonePath?: string,
+  opts: { keepCredential?: boolean } = {}
+): { id: string; created: boolean } {
   const db = getStore();
-  const { url, project, kind } = spec.repo;
+  const { url, project, kind } = remote;
   const found = db
     .prepare('SELECT id, local_path, credential_ref FROM repos WHERE url = ?')
     .get(url);
   if (found) {
     if (
-      (clonePath && found.local_path !== clonePath) ||
-      found.credential_ref !== spec.publish.tokenSecret
+      !opts.keepCredential &&
+      ((clonePath && found.local_path !== clonePath) || found.credential_ref !== tokenSecret)
     ) {
       db.prepare(
         'UPDATE repos SET local_path = COALESCE(?, local_path), credential_ref = ? WHERE id = ?'
-      ).run(clonePath ?? null, spec.publish.tokenSecret, String(found.id));
+      ).run(clonePath ?? null, tokenSecret, String(found.id));
     }
-    return String(found.id);
+    return { id: String(found.id), created: false };
   }
   const id = `repo_${crypto.randomUUID()}`;
   const hash = crypto.createHash('sha256').update(url).digest('hex').slice(0, 8);
@@ -333,8 +352,18 @@ export function ensureRepoRow(spec: AutomationSpec, clonePath?: string): string 
     kind,
     url,
     clonePath ?? null,
-    spec.publish.tokenSecret,
+    tokenSecret,
     new Date().toISOString()
   );
-  return id;
+  return { id, created: true };
+}
+
+/**
+ * The repos row for an automation's repository, created on first use: a local
+ * path, or a remote by its URL, with the clone in the workspace cache (once
+ * the run knows where that is) and the vault secret it is reached with.
+ */
+export function ensureRepoRow(spec: AutomationSpec, clonePath?: string): string {
+  if (spec.repo.kind === 'local') return ensureLocalRepo(spec.repo.path);
+  return ensureRemoteRepo(spec.repo, spec.publish.tokenSecret, clonePath).id;
 }

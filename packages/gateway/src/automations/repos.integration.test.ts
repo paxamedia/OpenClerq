@@ -1,7 +1,7 @@
 /**
  * GET /repos and GET /repos/:id through the gateway's HTTP API: behind the
  * token, a local and a remote repository, a folder that has gone, and no
- * secret value anywhere in an answer.
+ * secret value anywhere in an answer. (POST /repos is in repos-add.integration.test.ts.)
  */
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
@@ -139,9 +139,13 @@ describe('who may read the repositories', () => {
     }
   });
 
-  it('only reads: a write to /repos is not a route', async () => {
-    for (const method of ['POST', 'PUT', 'DELETE']) {
+  it('has no route to change or remove a repository', async () => {
+    for (const method of ['PUT', 'DELETE']) {
       const res = await api('/repos', { method, body: '{}' });
+      expect(res.status, method).toBe(404);
+    }
+    for (const method of ['PUT', 'POST', 'DELETE']) {
+      const res = await api('/repos/repo_x', { method, body: '{}' });
       expect(res.status, method).toBe(404);
     }
   });

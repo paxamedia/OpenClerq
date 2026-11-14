@@ -92,6 +92,7 @@
     "POST /records/:id/merge",
     "POST /records/links",
     "POST /records/resolve",
+    "POST /repos",
     "POST /resume",
     "POST /runs/:id/cancel",
     "POST /secrets",
