@@ -17,8 +17,15 @@ If the database was written by an older version, OpenClerq first writes a copy, 
 - A copy holds everything the database does (conversations, run prompts, memory), so keep it as
   private as the database; delete the files in `backups/` if you do not want them.
 - A new database has nothing to copy, and none is made.
+- Only one OpenClerq upgrades a database at a time. A second one started meanwhile (another window,
+  a gateway run from a terminal) waits for the first, up to two minutes, finds nothing left to do and
+  carries on without a copy of its own. If the first has not finished by then, the second stops and
+  names the lock file, `clerq.db.upgrade-lock`; delete it only when no OpenClerq is running. A lock
+  left by a process that is gone, or older than a quarter of an hour, is taken over.
 - The log says which migrations ran and where the copy is (`Store upgraded`). The desktop app
-  passes the background service's output on to its own log.
+  passes the background service's output on to its own stderr (see
+  [SECURITY.md](SECURITY.md#2-what-is-protected-today)), so a refusal to start shows there when the app is
+  started from a terminal.
 
 ## Downgrades are refused
 
