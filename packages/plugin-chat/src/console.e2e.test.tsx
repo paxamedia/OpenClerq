@@ -621,14 +621,27 @@ describe('the console in the app, with plugin checks on', () => {
 
 describe('the console over a long session', () => {
   it('goes on working on a renewed token after the one it began with has ended', async () => {
-    // A token lives 3 seconds here and is renewed at 70% of that.
+    // A token lives 3 seconds here and is renewed at 70% of that. The tests before this one
+    // have taken a few seconds between them, so on a slow machine the app has already renewed
+    // once and used a second token: how many it has used so far is not what this test is about.
+    // What matters is that every token used so far has ended by the time the wait is over.
     const first = new Set(consoleCalls().map((a) => a.token));
-    expect(first.size).toBe(1);
-    const [oldest] = [...first];
-    // Idle for longer than a token lives. Nothing asks for the old one again; the app has been renewing.
+    expect(first.size).toBeGreaterThan(0);
+    const oldest = consoleCalls()[0].token;
+    // Idle for longer than a token lives (so the newest of those has ended too). Nothing asks
+    // for an old one again; the app has been renewing.
+    const askedBefore = asked.length;
     await act(async () => {
       await sleep(3600);
     });
+    // The renewal is a timer that asks the gateway for a token; on a busy machine its answer can
+    // still be on its way when the wait ends. Wait for it, so the next request is the first to
+    // find out that a token is gone only if the app really failed to renew.
+    await until(
+      () =>
+        asked.slice(askedBefore).some((a) => a.path === '/modules/chat/token' && a.status === 201),
+      'the app to renew its token while idle'
+    );
     const before = consoleCalls().length;
     await newConversation();
     await send('Still here?');
