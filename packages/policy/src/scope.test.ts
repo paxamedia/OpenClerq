@@ -49,6 +49,14 @@ describe('path scope', () => {
     expect(folderScope(['~/Notes', ' src/ ', '~'])).toEqual(['src/']);
   });
 
+  it('covers a name with a newline in it as any other', () => {
+    expect(pathInScope(['src/**'], 'src/a\nb.ts')).toBe(true);
+    expect(pathInScope(['src'], 'src/a\nb/c')).toBe(true);
+    expect(pathInScope(['src'], 'src\n/x')).toBe(false);
+    expect(pathInScope(['*.md'], 'a\nb.md')).toBe(true);
+    expect(pathInScope(['*.md'], 'a/b\n.md')).toBe(false);
+  });
+
   it('does not let regular-expression characters in a name mean anything', () => {
     expect(pathInScope(['a.b'], 'axb')).toBe(false);
     expect(pathInScope(['a.b'], 'a.b')).toBe(true);

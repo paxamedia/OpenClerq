@@ -1084,6 +1084,32 @@ describe('builtin driver: a file scope', () => {
     expect(results[2].isError).toBe(true);
   });
 
+  it('judges a match by the whole name of its file, not by what looks like a path in the output', async () => {
+    if (isWindows) return;
+    // A file named like the start of a match line: `src:1:x`, which "src" must not cover.
+    fs.writeFileSync(path.join(repo, 'src:1:x'), 'planted-needle\n');
+    fs.writeFileSync(path.join(repo, 'src', 'ok.ts'), 'planted-needle in scope\n');
+    fs.writeFileSync(path.join(repo, 'new\nline.txt'), 'planted-needle with a newline\n');
+    fs.writeFileSync(path.join(repo, 'src', 'n\nl.ts'), 'planted-needle odd name in scope\n');
+    const { results } = await calls(
+      ['src'],
+      [
+        ['search_files', { pattern: 'planted-needle' }],
+        ['search_files', { pattern: 'planted-needle', path: 'src' }],
+      ]
+    );
+    for (const r of results) {
+      expect(r.isError).toBe(false);
+      expect(r.output).not.toContain('src:1:x');
+      expect(r.output).not.toContain('new');
+    }
+    expect(results[0].output).toContain('src/ok.ts:1:planted-needle in scope');
+    expect(results[0].output).toContain('"src/n\\nl.ts":1:planted-needle odd name in scope');
+    // Unscoped, the tool is as it was: every match.
+    const all = await calls(undefined, [['search_files', { pattern: 'planted-needle' }]]);
+    expect(all.results[0].output).toContain('src:1:x:1:planted-needle');
+  });
+
   it('shows git_diff only for the files in scope, whatever path it is asked about', async () => {
     fs.mkdirSync(path.join(repo, 'src', 'app'), { recursive: true });
     fs.mkdirSync(path.join(repo, 'src', 'other'), { recursive: true });

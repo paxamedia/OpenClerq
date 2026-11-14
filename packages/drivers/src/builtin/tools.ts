@@ -551,6 +551,35 @@ const listFiles: BuiltinTool = {
   },
 };
 
+/**
+ * The lines of `git grep -n -z` output (`path NUL line NUL text`, a newline after each) whose file
+ * the scope covers, as `path:line:text`. The path is what is before the first NUL, however many
+ * colons, digits or newlines it holds, so a file named `src:1:x` is judged as that name. Anything
+ * after the matches (the sandbox's `[stderr]` note) or not in the shape is dropped.
+ */
+function scopedMatches(out: string, scope: readonly string[]): string {
+  const lines: string[] = [];
+  let at = 0;
+  while (at < out.length) {
+    const pathEnd = out.indexOf('\0', at);
+    if (pathEnd === -1) break;
+    const lineEnd = out.indexOf('\0', pathEnd + 1);
+    if (lineEnd === -1) break;
+    const number = out.slice(pathEnd + 1, lineEnd);
+    const textEnd = out.indexOf('\n', lineEnd + 1);
+    const end = textEnd === -1 ? out.length : textEnd;
+    const file = out.slice(at, pathEnd);
+    if (/^\d+$/.test(number) && pathInScope(scope, file)) {
+      // A path with a control character in it is shown as the JSON string it is.
+      // eslint-disable-next-line no-control-regex
+      const shown = /[\u0000-\u001f]/.test(file) ? JSON.stringify(file) : file;
+      lines.push(`${shown}:${number}:${out.slice(lineEnd + 1, end)}`);
+    }
+    at = end + 1;
+  }
+  return lines.join('\n');
+}
+
 const searchFiles: BuiltinTool = {
   name: 'fs.search',
   risk: 'read',
@@ -582,7 +611,8 @@ const searchFiles: BuiltinTool = {
       '-I',
       '--untracked',
       '-E',
-      ...(ctx.fileScope ? [] : ['--full-name']),
+      // Scoped: NUL after the path and the line number, so what is a path is not a guess.
+      ...(ctx.fileScope ? ['-z'] : ['--full-name']),
     ];
     if (input.ignore_case === true) args.push('-i');
     args.push('-e', pattern, '--', rel);
@@ -591,15 +621,8 @@ const searchFiles: BuiltinTool = {
     if (r.code !== 0) return { output: r.out || `git grep exited with ${r.code}.`, isError: true };
     let found = r.out;
     if (ctx.fileScope) {
-      // Only matches in files the scope covers; a line that cannot be read as one is dropped.
-      const scope = ctx.fileScope;
-      found = r.out
-        .split('\n')
-        .filter((line) => {
-          const m = /^(.*?):\d+:/.exec(line);
-          return m !== null && pathInScope(scope, m[1]);
-        })
-        .join('\n');
+      // Only matches in files the scope covers; what does not read as a match is dropped.
+      found = scopedMatches(r.out, ctx.fileScope);
       if (!found) return { output: 'No matches in the paths this task may use.', isError: false };
     }
     return {

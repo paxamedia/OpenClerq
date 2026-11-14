@@ -43,7 +43,7 @@ export function scopeToRegExp(entry: string): RegExp {
             out += '(?:[^/]*/)*';
             i++;
           } else {
-            out += '.*';
+            out += '[\\s\\S]*';
           }
           continue;
         }
@@ -57,7 +57,7 @@ export function scopeToRegExp(entry: string): RegExp {
       out += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
     }
   }
-  const re = new RegExp(`^${out}${andBelow ? '(?:/.*)?' : ''}$`);
+  const re = new RegExp(`^${out}${andBelow ? '(?:/[\\s\\S]*)?' : ''}$`);
   if (cache.size > 500) cache.clear();
   cache.set(entry, re);
   return re;
