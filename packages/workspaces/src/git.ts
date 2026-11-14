@@ -25,6 +25,8 @@ export interface GitResult {
   stdout: string;
   stderr: string;
   code: number | null;
+  /** True when `timeoutMs` ran out and git (with every helper it started) was killed. */
+  timedOut?: boolean;
 }
 
 /**
@@ -69,15 +71,66 @@ export interface GitOptions {
   /** Extra environment. Credentials belong here, never in the argv. */
   env?: Record<string, string>;
   timeoutMs?: number;
+  /** Ends the command like a timeout does, without `timedOut`. */
+  signal?: AbortSignal;
   /** Resolve instead of throwing on a non-zero exit. */
   allowFailure?: boolean;
 }
 
 const DEFAULT_TIMEOUT = 120_000;
 
+/** Subcommands that talk to a remote, and so can stall on a server that never answers. */
+const REMOTE_COMMANDS = new Set(['clone', 'fetch', 'pull', 'push', 'ls-remote']);
+
+/**
+ * How long git waits for output that has stopped, once it exits: stdout and
+ * stderr are normally closed the instant it does, so this is only for a
+ * helper that was left holding them.
+ */
+const DRAIN_MS = 500;
+
+/**
+ * Run git, to its end or to `timeoutMs`.
+ *
+ * git runs in a process group of its own, and the timeout (or an abort) kills
+ * the whole group: `git remote-http` and the other helpers git starts are not
+ * git's own children to stop, and one that is left running holds the output
+ * open, which used to keep a stalled check pending, and alive, for good. The
+ * call settles when git exits, not when every helper has let go of its output.
+ * A command that talks to a remote also gets curl's low-speed limit for the
+ * length of the timeout, so a server that goes silent ends the transfer itself.
+ */
+/** The subcommand in `args`: the first word that is not an option or an option's value (`-c x=y`, `-C dir`). */
+function subcommand(args: string[]): string {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-c' || args[i] === '-C') i++;
+    else if (!args[i].startsWith('-')) return args[i];
+  }
+  return args[0] ?? '';
+}
+
+/** What git is started with: the hardening, the low-speed limit for a remote command, then `args`. */
+export function gitArgv(args: string[], opts: Pick<GitOptions, 'harden' | 'timeoutMs'>): string[] {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+  return [
+    ...(opts.harden ? HARDENED_GIT : []),
+    ...(REMOTE_COMMANDS.has(subcommand(args))
+      ? [
+          '-c',
+          'http.lowSpeedLimit=1',
+          '-c',
+          `http.lowSpeedTime=${Math.max(1, Math.ceil(timeoutMs / 1000))}`,
+        ]
+      : []),
+    ...args,
+  ];
+}
+
 export function git(args: string[], opts: GitOptions): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    const argv = opts.harden ? [...HARDENED_GIT, ...args] : args;
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+    const argv = gitArgv(args, opts);
+    const windows = process.platform === 'win32';
     const child = spawn('git', argv, {
       cwd: opts.cwd,
       env: {
@@ -90,36 +143,97 @@ export function git(args: string[], opts: GitOptions): Promise<GitResult> {
         ...opts.env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Its own group (not on Windows, which has none), so the kill reaches the helpers.
+      detached: !windows,
     });
 
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    let stopped = false;
+    let settled = false;
+    let exitCode: number | null = null;
+    let drain: NodeJS.Timeout | undefined;
     child.stdout.on('data', (c) => (stdout += c.toString()));
     child.stderr.on('data', (c) => (stderr += c.toString()));
 
+    /** Kill git and everything it started. */
+    const killTree = () => {
+      if (child.pid === undefined) return;
+      try {
+        if (windows) {
+          spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on(
+            'error',
+            () => undefined
+          );
+        } else {
+          // A negative pid is the process group.
+          process.kill(-child.pid, 'SIGKILL');
+        }
+      } catch {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+    };
+
+    const stop = () => {
+      stopped = true;
+      killTree();
+    };
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-    }, opts.timeoutMs ?? DEFAULT_TIMEOUT);
+      timedOut = true;
+      stop();
+    }, timeoutMs);
+    const onAbort = () => stop();
+    if (opts.signal?.aborted) onAbort();
+    else opts.signal?.addEventListener('abort', onAbort, { once: true });
+
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(drain);
+      opts.signal?.removeEventListener('abort', onAbort);
+      // Whatever still holds the pipes no longer matters: this call is over.
+      child.stdout.destroy();
+      child.stderr.destroy();
+      if (code !== 0 && !opts.allowFailure) {
+        const why = timedOut
+          ? `git ${subcommand(args)} timed out after ${Math.round(timeoutMs / 1000)} s`
+          : stopped
+            ? `git ${subcommand(args)} was stopped`
+            : `git ${subcommand(args)} failed (exit ${code}): ${stderr.trim() || stdout.trim()}`;
+        reject(new GitError(why, code, stderr));
+        return;
+      }
+      resolve({ stdout, stderr, code, ...(timedOut ? { timedOut: true } : {}) });
+    };
 
     child.on('error', (e) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(drain);
+      opts.signal?.removeEventListener('abort', onAbort);
       reject(new GitError(`Could not run git: ${e.message}`, null, ''));
     });
 
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code !== 0 && !opts.allowFailure) {
-        reject(
-          new GitError(
-            `git ${args[0]} failed (exit ${code}): ${stderr.trim() || stdout.trim()}`,
-            code,
-            stderr
-          )
-        );
+    child.on('exit', (code) => {
+      exitCode = code;
+      // A group that was stopped may still have members: stop them too, and do not wait on them.
+      if (stopped) {
+        killTree();
+        finish(code);
         return;
       }
-      resolve({ stdout, stderr, code });
+      // Normally 'close' comes in the same instant, with all of the output.
+      drain = setTimeout(() => finish(code), DRAIN_MS);
     });
+
+    child.on('close', (code) => finish(code ?? exitCode));
   });
 }
 

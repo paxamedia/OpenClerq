@@ -276,7 +276,7 @@ export function getRepoDetail(
 }
 
 /** How long `git ls-remote` may take before the answer is "no". */
-const CHECK_TIMEOUT_MS = 20_000;
+export const CHECK_TIMEOUT_MS = 20_000;
 
 /** What `check: true` found out about a remote. Nothing in it is a token. */
 export interface RepoCheck {
@@ -336,6 +336,7 @@ async function checkRemote(
       ]
     : [];
 
+  const timeoutMs = deps.repoCheckTimeoutMs ?? CHECK_TIMEOUT_MS;
   const cwd = cacheDirOf(deps);
   try {
     fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
@@ -343,7 +344,7 @@ async function checkRemote(
       cwd,
       harden: true,
       env,
-      timeoutMs: CHECK_TIMEOUT_MS,
+      timeoutMs,
       allowFailure: true,
     });
     if (r.code === 0) {
@@ -360,8 +361,9 @@ async function checkRemote(
       hidden
     );
     let why: string;
-    if (r.code === null) {
-      why = `${where} did not answer within ${CHECK_TIMEOUT_MS / 1000} seconds.`;
+    // The timeout killed git, or git's own low-speed limit ended a transfer that had stopped.
+    if (r.timedOut || /Operation too slow|timed out/i.test(r.stderr)) {
+      why = `${where} did not answer within ${+(timeoutMs / 1000).toFixed(1)} seconds.`;
     } else if (
       /could not read Username|Authentication failed|terminal prompts disabled/i.test(r.stderr)
     ) {

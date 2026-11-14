@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { createGateway } from '../gateway.js';
@@ -37,6 +37,10 @@ let server: {
 };
 let authServer: http.Server;
 let authPort: number;
+/** Accepts a connection and never answers, as a forge that has stalled. */
+let silentServer: net.Server;
+let silentPort: number;
+const silentSockets: net.Socket[] = [];
 const savedEnv: Record<string, string | undefined> = {};
 
 /** What the hook was asked, and what it answers. */
@@ -114,6 +118,13 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => authServer.listen(0, '127.0.0.1', resolve));
   authPort = (authServer.address() as AddressInfo).port;
 
+  silentServer = net.createServer((socket) => {
+    silentSockets.push(socket);
+    socket.on('error', () => undefined);
+  });
+  await new Promise<void>((resolve) => silentServer.listen(0, '127.0.0.1', resolve));
+  silentPort = (silentServer.address() as AddressInfo).port;
+
   // A bare repository with a commit on main, standing in for acme/app.
   const seed = makeRepo(path.join(root, 'seed'));
   const bare = path.join(root, 'acme-app.git');
@@ -132,6 +143,8 @@ beforeAll(async () => {
       '\tinsteadOf = https://github.com/acme/gone.git',
       `[url "http://127.0.0.1:${authPort}/private.git"]`,
       '\tinsteadOf = https://github.com/acme/private.git',
+      `[url "http://127.0.0.1:${silentPort}/stalled.git"]`,
+      '\tinsteadOf = https://github.com/acme/stalled.git',
       '',
     ].join('\n')
   );
@@ -153,6 +166,8 @@ beforeAll(async () => {
       },
       workspaceCacheDir: path.join(root, 'cache'),
       path: () => process.env.PATH ?? '',
+      // A stalled forge must not hold a request for the real 20 s.
+      repoCheckTimeoutMs: 1500,
     },
   });
   server = s as typeof server;
@@ -172,6 +187,8 @@ afterAll(async () => {
   }
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await new Promise<void>((resolve) => authServer.close(() => resolve()));
+  silentSockets.forEach((s) => s.destroy());
+  await new Promise<void>((resolve) => silentServer.close(() => resolve()));
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -523,6 +540,35 @@ describe('check: true on a remote', () => {
     const body = (await res.json()) as Added;
     expect(body).toMatchObject({ id, created: false });
     expect(body.check?.reachable).toBe(false);
+  });
+
+  it('answers a forge that never answers within the timeout, and leaves no git process behind', async () => {
+    const before = rows().length;
+    const started = Date.now();
+    const res = await add({ target: 'github:acme/stalled', check: true });
+    expect(Date.now() - started).toBeLessThan(1500 + 2000);
+    expect(res.status).toBe(422);
+    const text = await res.text();
+    expect(text).not.toContain(FORGE_TOKEN);
+    const body = JSON.parse(text) as {
+      error: string;
+      message: string;
+      check: { reachable: boolean };
+    };
+    expect(body.error).toBe('repo_unreachable');
+    expect(body.message).toContain('github.com/acme/stalled did not answer within 1.5 seconds.');
+    expect(body.check.reachable).toBe(false);
+    expect(rows()).toHaveLength(before);
+    // git-remote-http was started for it, with the stalled listener's port on its command line.
+    if (process.platform !== 'win32') {
+      for (let i = 0; i < 40; i++) {
+        const ps = execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8' });
+        if (!ps.includes(`127.0.0.1:${silentPort}`)) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const ps = execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8' });
+      expect(ps.split('\n').filter((l) => l.includes(`127.0.0.1:${silentPort}`))).toEqual([]);
+    }
   });
 
   it('reports a credential hook that throws as unreachable, never as a 500, and with no token', async () => {

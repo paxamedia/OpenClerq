@@ -300,6 +300,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     workspaceCacheDir: config.automations?.workspaceCacheDir,
     // Where a GitHub App's installation tokens plug in; the vault's secret when none is given.
     forgeCredentials: config.automations?.forgeCredentials,
+    repoCheckTimeoutMs: config.automations?.repoCheckTimeoutMs,
     maxConcurrent:
       config.automations?.maxConcurrent ?? (Number(process.env.CLERQ_MAX_CONCURRENT_RUNS) || 2),
   };

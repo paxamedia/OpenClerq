@@ -124,6 +124,8 @@ export interface RunnerDeps {
    * the vault secret the spec names (`publish.token_secret`).
    */
   forgeCredentials?: ForgeCredentials;
+  /** How long `POST /repos` with `check` waits for a forge to answer. Default 20 s; tests shorten it. */
+  repoCheckTimeoutMs?: number;
   /** Automation runs allowed at once, across all automations. Default 2. */
   maxConcurrent?: number;
   /** How long a run's lease lasts before it must be renewed. Default 60s; tests shorten it. */
