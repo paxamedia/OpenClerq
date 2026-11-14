@@ -29,18 +29,22 @@ import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { RUNTIME_ENV, runtimeEnv } from './env.js';
 import type { DeniedAttempt, EgressRule } from './egress.js';
-import { SandboxError } from './errors.js';
+import { SandboxError, SetupInterrupted } from './errors.js';
 
 /** Default egress proxy image. It needs `node` and nothing else. */
 export const DEFAULT_EGRESS_IMAGE = 'docker.io/library/node:24-alpine';
 /** The port the egress proxy listens on inside its container. */
 export const EGRESS_PORT = 3128;
-/** How long starting the egress proxy may take, a first pull of its image included. */
-const START_MS = 300_000;
+/** How long pulling the egress proxy's image may take, when the engine does not have it. */
+const PULL_MS = 300_000;
+/** How long starting the egress proxy container may take, once its image is there. */
+const START_MS = 60_000;
 
 /** Environment variables of the host that mean nothing inside a container. */
 const HOST_ONLY_ENV = new Set([
+  ...RUNTIME_ENV,
   'PATH',
   'HOME',
   'TMPDIR',
@@ -188,17 +192,29 @@ function isExecutable(file: string): boolean {
   }
 }
 
-/** Run the runtime CLI for a management call (create, remove, logs). Never rejects. */
+/**
+ * Run the runtime CLI for a management call (create, remove, logs, pull).
+ * Never rejects. It gets the same environment as the command's own `run`
+ * (`runtimeEnv`), so every call reaches the same engine. `signal` stops it
+ * (its `code` is then null).
+ */
 export function runtimeCall(
   runtime: string,
   args: string[],
-  timeoutMs = 30_000
+  timeoutMs = 30_000,
+  signal?: AbortSignal
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     execFile(
       runtime,
       args,
-      { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' },
+      {
+        timeout: timeoutMs,
+        maxBuffer: 16 * 1024 * 1024,
+        encoding: 'utf8',
+        env: runtimeEnv(),
+        ...(signal ? { signal } : {}),
+      },
       (error, stdout, stderr) => {
         const code =
           error === null
@@ -312,16 +328,60 @@ export interface EgressSidecar {
  * Start the egress proxy for container `name`: an internal network, and the
  * proxy on it and on the default network. Throws when it cannot be set up;
  * whatever was created by then is removed.
+ *
+ * It can take a while (the first time it pulls the proxy's image), so it
+ * answers to the caller: `signal` and `deadline` (epoch ms) stop it between and
+ * during its calls, with what it made removed, and the throw is a
+ * `SetupInterrupted`. `onProgress` is told what it is doing.
  */
 export async function startEgressSidecar(
   runtime: string,
   name: string,
   rules: EgressRule[],
-  options: { image?: string; labels?: Record<string, string>; readyMs?: number } = {}
+  options: {
+    image?: string;
+    labels?: Record<string, string>;
+    readyMs?: number;
+    signal?: AbortSignal;
+    deadline?: number;
+    onProgress?: (message: string) => void;
+  } = {}
 ): Promise<EgressSidecar> {
   const network = `${name}-net`;
   const proxy = `${name}-egress`;
+  const image = options.image ?? process.env.CLERQ_EGRESS_IMAGE ?? DEFAULT_EGRESS_IMAGE;
   const labels = Object.entries(options.labels ?? {}).flatMap(([k, v]) => ['--label', `${k}=${v}`]);
+  const progress = (message: string) => {
+    try {
+      options.onProgress?.(message);
+    } catch {
+      /* a progress line must not stop the setup */
+    }
+  };
+  const stopped = (): 'cancelled' | 'timedOut' | undefined =>
+    options.signal?.aborted
+      ? 'cancelled'
+      : options.deadline !== undefined && Date.now() >= options.deadline
+        ? 'timedOut'
+        : undefined;
+  /** One call to the runtime, no longer than `ms` and the time that is left. */
+  const call = (args: string[], ms: number) =>
+    runtimeCall(
+      runtime,
+      args,
+      options.deadline === undefined
+        ? ms
+        : Math.max(1, Math.min(ms, options.deadline - Date.now())),
+      options.signal
+    );
+  /** Stop here if the caller has: nothing this made is left. */
+  const checkpoint = async (): Promise<void> => {
+    const why = stopped();
+    if (why) {
+      await removeContainer(runtime, name);
+      throw new SetupInterrupted(why);
+    }
+  };
   const fail = async (what: string, r: { stderr: string; stdout: string }): Promise<never> => {
     await removeContainer(runtime, name);
     throw new SandboxError(
@@ -329,17 +389,25 @@ export async function startEgressSidecar(
     );
   };
 
-  const created = await runtimeCall(runtime, [
-    'network',
-    'create',
-    '--internal',
-    ...labels,
-    network,
-  ]);
+  await checkpoint();
+  progress(`Starting the egress proxy (${image}).`);
+  const startedAt = Date.now();
+
+  // Pulled apart from `run`, so that a long first pull can be said, and stopped.
+  const present = await call(['image', 'inspect', image], 30_000);
+  await checkpoint();
+  if (present.code !== 0) {
+    progress(`Pulling ${image}, the egress proxy's image; this can take minutes the first time.`);
+    const pulled = await call(['pull', image], PULL_MS);
+    await checkpoint();
+    if (pulled.code !== 0) await fail(`pull ${image}`, pulled);
+  }
+
+  const created = await call(['network', 'create', '--internal', ...labels, network], 30_000);
+  await checkpoint();
   if (created.code !== 0) await fail('create the internal network', created);
 
-  const started = await runtimeCall(
-    runtime,
+  const started = await call(
     [
       'run',
       '-d',
@@ -353,30 +421,32 @@ export async function startEgressSidecar(
       '--read-only',
       '--user',
       '65534:65534',
-      options.image ?? process.env.CLERQ_EGRESS_IMAGE ?? DEFAULT_EGRESS_IMAGE,
+      image,
       'node',
       '-e',
       EGRESS_SIDECAR_SCRIPT,
       JSON.stringify({ rules, port: EGRESS_PORT }),
     ],
-    // `run` pulls the image first when the engine does not have it, and 30 seconds is not enough
-    // for a first pull over a slow connection.
     START_MS
   );
+  await checkpoint();
   if (started.code !== 0) await fail('start the egress proxy', started);
 
-  const joined = await runtimeCall(runtime, ['network', 'connect', network, proxy]);
+  const joined = await call(['network', 'connect', network, proxy], 30_000);
+  await checkpoint();
   if (joined.code !== 0) await fail('connect the egress proxy', joined);
 
   // The command must not start before the proxy listens, or its first
   // connection is refused for no reason it could tell.
   const until = Date.now() + (options.readyMs ?? 15_000);
   for (;;) {
-    const logs = await runtimeCall(runtime, ['logs', proxy]);
+    const logs = await call(['logs', proxy], 30_000);
+    await checkpoint();
     if (/"event":"listening"/.test(logs.stdout)) break;
     if (Date.now() > until) await fail('see the egress proxy start', logs);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  progress(`The egress proxy is listening (${((Date.now() - startedAt) / 1000).toFixed(1)} s).`);
 
   const url = `http://${proxy}:${EGRESS_PORT}`;
   return {

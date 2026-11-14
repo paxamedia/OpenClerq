@@ -6,7 +6,7 @@
  * arguments is not exercised here.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -19,6 +19,7 @@ import {
   buildContainerArgs,
   removeContainer,
   parseEgressLog,
+  listLabelled,
   EGRESS_SIDECAR_SCRIPT,
   findStragglers,
   stopStragglers,
@@ -331,6 +332,14 @@ const { spawn } = require('node:child_process');
 const dir = __dirname;
 const args = process.argv.slice(2);
 fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify(args) + '\n');
+// The variables a real CLI would use to find its engine, and one it should never be given.
+fs.appendFileSync(path.join(dir, 'env.jsonl'), JSON.stringify({
+  call: args.slice(0, 2).join(' '),
+  DOCKER_HOST: process.env.DOCKER_HOST ?? null,
+  DOCKER_CONTEXT: process.env.DOCKER_CONTEXT ?? null,
+  XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? null,
+  UNRELATED: process.env.CLERQ_FAKE_UNRELATED ?? null,
+}) + '\n');
 const file = (n) => path.join(dir, 'state-' + n.replace(/[^\w.-]/g, '_'));
 const fail = (what) => fs.existsSync(path.join(dir, 'fail-' + what));
 const cmd = args[0];
@@ -338,11 +347,17 @@ if (cmd === 'run') {
   const name = args[args.indexOf('--name') + 1];
   if (args[1] === '-d') {
     if (fail('sidecar')) { process.stderr.write('no such image\n'); process.exit(125); }
-    fs.writeFileSync(file(name + '.log'),
-      '{"event":"listening","port":3128}\n{"event":"allowed","host":"registry.npmjs.org","port":443}\n' +
-      '{"event":"denied","host":"evil.example","port":443,"at":"2026-01-01T00:00:00.000Z"}\n');
-    process.stdout.write('0123abcd\n');
-    process.exit(0);
+    // A pull or a start that takes its time: the caller may stop it meanwhile.
+    const wait = fs.existsSync(path.join(dir, 'slow-sidecar')) ? 5000 : 0;
+    setTimeout(() => {
+      fs.writeFileSync(file(name + '.log'),
+        (fs.existsSync(path.join(dir, 'no-listen')) ? '' : '{"event":"listening","port":3128}\n') +
+        '{"event":"allowed","host":"registry.npmjs.org","port":443}\n' +
+        '{"event":"denied","host":"evil.example","port":443,"at":"2026-01-01T00:00:00.000Z"}\n');
+      process.stdout.write('0123abcd\n');
+      process.exit(0);
+    }, wait);
+    return;
   }
   const at = args.indexOf('fake-image');
   const w = args[args.indexOf('-w') + 1];
@@ -354,6 +369,12 @@ if (cmd === 'run') {
   for (const n of args.slice(1).filter((a) => !a.startsWith('-'))) {
     try { process.kill(-Number(fs.readFileSync(file(n + '.pid'), 'utf8')), 'SIGKILL'); } catch {}
   }
+} else if (cmd === 'image') {
+  // An image the engine does not have yet, until it has been pulled.
+  if (fs.existsSync(path.join(dir, 'no-image')) && !fs.existsSync(path.join(dir, 'pulled'))) process.exit(1);
+} else if (cmd === 'pull') {
+  if (fail('pull')) { process.stderr.write('pull access denied\n'); process.exit(1); }
+  fs.writeFileSync(path.join(dir, 'pulled'), '');
 } else if (cmd === 'logs') {
   try { process.stdout.write(fs.readFileSync(file(args[1] + '.log'), 'utf8')); } catch {}
 } else if (cmd === 'network') {
@@ -525,6 +546,203 @@ describe('container profile, against a fake runtime', () => {
     expect(all.some((c) => c[0] === 'run' && c[1] !== '-d')).toBe(false);
     expect(all.some((c) => c[0] === 'rm')).toBe(true);
     expect(all.some((c) => c[0] === 'network' && c[1] === 'rm')).toBe(true);
+  });
+
+  describe('stopping while the egress proxy starts', () => {
+    /** Calls that started the command itself, not the proxy. */
+    const commandRuns = () => calls().filter((c) => c[0] === 'run' && c[1] !== '-d');
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    it('is not lost when the caller cancels during a slow start: the command never runs', async () => {
+      fs.writeFileSync(path.join(bin, 'slow-sidecar'), '');
+      const controller = new AbortController();
+      const started = Date.now();
+      const pending = exec(spec({ network: ['registry.npmjs.org'] }), 'sh', ['-c', 'echo ran'], {
+        signal: controller.signal,
+      });
+      await sleep(400);
+      controller.abort();
+      const r = await pending;
+      expect(r.cancelled).toBe(true);
+      expect(r.timedOut).toBe(false);
+      expect(r.code).toBeNull();
+      expect(r.stdout).toBe('');
+      // Not the five seconds the fake start takes.
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(commandRuns()).toEqual([]);
+      const all = calls();
+      expect(all.some((c) => c[0] === 'rm')).toBe(true);
+      expect(all.some((c) => c[0] === 'network' && c[1] === 'rm')).toBe(true);
+    });
+
+    it('is not lost when the caller cancels while the proxy has not yet started listening', async () => {
+      fs.writeFileSync(path.join(bin, 'no-listen'), '');
+      const controller = new AbortController();
+      const started = Date.now();
+      const pending = exec(spec({ network: ['registry.npmjs.org'] }), 'sh', ['-c', 'echo ran'], {
+        signal: controller.signal,
+      });
+      await sleep(700);
+      controller.abort();
+      const r = await pending;
+      expect(r.cancelled).toBe(true);
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(commandRuns()).toEqual([]);
+      expect(calls().filter((c) => c[0] === 'logs').length).toBeGreaterThan(1);
+    });
+
+    it('is not lost when it comes as the proxy becomes ready, before the command is spawned', async () => {
+      const controller = new AbortController();
+      const r = await exec(
+        spec({
+          network: ['registry.npmjs.org'],
+          // The last thing the setup says before the command is spawned.
+          onProgress: (m) => {
+            if (/listening/.test(m)) controller.abort();
+          },
+        }),
+        'sh',
+        ['-c', 'echo ran'],
+        { signal: controller.signal }
+      );
+      expect(r.cancelled).toBe(true);
+      expect(r.stdout).toBe('');
+      expect(commandRuns()).toEqual([]);
+      const all = calls();
+      expect(all.some((c) => c[0] === 'rm')).toBe(true);
+      expect(all.some((c) => c[0] === 'network' && c[1] === 'rm')).toBe(true);
+      // What the proxy saw is still reported.
+      expect(r.egress?.denied).toHaveLength(1);
+    });
+
+    it('counts the proxy start in the time limit, and then runs no command', async () => {
+      fs.writeFileSync(path.join(bin, 'slow-sidecar'), '');
+      const started = Date.now();
+      const r = await exec(
+        spec({ network: ['registry.npmjs.org'], limits: { wallMs: 600 } }),
+        'sh',
+        ['-c', 'echo ran']
+      );
+      expect(r.timedOut).toBe(true);
+      expect(r.cancelled).toBe(false);
+      expect(r.stdout).toBe('');
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(commandRuns()).toEqual([]);
+    });
+
+    it('says what it is doing, and pulls the proxy image first when the engine has none', async () => {
+      fs.writeFileSync(path.join(bin, 'no-image'), '');
+      const said: string[] = [];
+      const r = await exec(
+        spec({ network: ['registry.npmjs.org'], onProgress: (m) => said.push(m) }),
+        'sh',
+        ['-c', 'true']
+      );
+      expect(r.code).toBe(0);
+      expect(said).toEqual([
+        expect.stringMatching(/^Starting the egress proxy \(.*node:24-alpine\)\.$/),
+        expect.stringMatching(/^Pulling .*node:24-alpine, the egress proxy's image/),
+        expect.stringMatching(/^The egress proxy is listening \(\d+\.\d s\)\.$/),
+      ]);
+      const all = calls();
+      const names = all.map((c) => c.slice(0, 2).join(' '));
+      expect(names.indexOf('image inspect')).toBeLessThan(
+        names.indexOf('pull docker.io/library/node:24-alpine')
+      );
+      expect(names.indexOf('pull docker.io/library/node:24-alpine')).toBeLessThan(
+        names.indexOf('network create')
+      );
+    });
+
+    it('says why, and removes what it made, when the proxy image cannot be pulled', async () => {
+      fs.writeFileSync(path.join(bin, 'no-image'), '');
+      fs.writeFileSync(path.join(bin, 'fail-pull'), '');
+      await expect(
+        exec(spec({ network: ['registry.npmjs.org'] }), 'sh', ['-c', 'true'])
+      ).rejects.toThrow(
+        /pull .*node:24-alpine, which the egress allowlist needs: pull access denied/
+      );
+      expect(commandRuns()).toEqual([]);
+      expect(calls().some((c) => c[0] === 'rm')).toBe(true);
+    });
+  });
+
+  describe('one engine for every call', () => {
+    const KEYS = ['DOCKER_HOST', 'DOCKER_CONTEXT', 'XDG_RUNTIME_DIR', 'CLERQ_FAKE_UNRELATED'];
+    const saved: Record<string, string | undefined> = {};
+    beforeEach(() => {
+      for (const k of KEYS) saved[k] = process.env[k];
+      process.env.DOCKER_HOST = 'tcp://engine.invalid:2375';
+      process.env.DOCKER_CONTEXT = 'elsewhere';
+      process.env.XDG_RUNTIME_DIR = '/run/user/4242';
+      process.env.CLERQ_FAKE_UNRELATED = 'not-for-the-runtime';
+    });
+    afterEach(() => {
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    });
+    const seen = () =>
+      fs
+        .readFileSync(path.join(bin, 'env.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l) as Record<string, string | null>);
+
+    it('gives the engine variables to run, kill, rm, logs, network and image calls alike, and nothing else', async () => {
+      const controller = new AbortController();
+      let name = '';
+      const pending = exec(
+        spec({
+          network: ['registry.npmjs.org'],
+          // The command's own variables cannot send the runtime CLI to another engine.
+          env: { DOCKER_HOST: 'tcp://the-command-asked-for-this:1', KEEP: 'yes' },
+        }),
+        'sh',
+        ['-c', 'sleep 30'],
+        { signal: controller.signal, onSpawn: (p) => (name = p.container?.name ?? '') }
+      );
+      const pidFile = () => path.join(bin, `state-${name}.pid`);
+      for (let i = 0; i < 500 && !(name && fs.existsSync(pidFile())); i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      controller.abort();
+      await pending;
+
+      const all = seen();
+      const kinds = new Set(all.map((e) => e.call?.split(' ')[0]));
+      for (const k of ['image', 'network', 'run', 'logs', 'kill', 'rm']) expect(kinds).toContain(k);
+      for (const e of all) {
+        expect(e, e.call as string).toMatchObject({
+          DOCKER_HOST: 'tcp://engine.invalid:2375',
+          DOCKER_CONTEXT: 'elsewhere',
+          XDG_RUNTIME_DIR: '/run/user/4242',
+          UNRELATED: null,
+        });
+      }
+      // By name only, and not these: none of the engine's variables goes into the container.
+      const run = calls().find((c) => c[0] === 'run' && c[1] !== '-d') as string[];
+      expect(run).toContain('KEEP');
+      for (const k of ['DOCKER_HOST', 'DOCKER_CONTEXT', 'XDG_RUNTIME_DIR']) {
+        expect(run).not.toContain(k);
+      }
+      expect(run.join(' ')).not.toContain('engine.invalid');
+      expect(run.join(' ')).not.toContain('the-command-asked-for-this');
+    });
+
+    it('does the same for removing, listing and sweeping by hand', async () => {
+      await removeContainer(path.join(bin, 'docker'), 'clerq-x-1');
+      await listLabelled(path.join(bin, 'docker'), 'clerq.run');
+      const all = seen();
+      expect(all.map((e) => e.call)).toEqual(
+        expect.arrayContaining(['rm -f', 'network rm', 'ps -a', 'network ls'])
+      );
+      for (const e of all) {
+        expect(e.DOCKER_HOST).toBe('tcp://engine.invalid:2375');
+        expect(e.UNRELATED).toBeNull();
+      }
+    });
   });
 
   it('refuses a runtime it was told to use that does not exist', async () => {

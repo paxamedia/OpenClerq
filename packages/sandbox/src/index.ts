@@ -47,7 +47,8 @@ import {
   startEgressSidecar,
   type EgressSidecar,
 } from './container.js';
-import { SandboxError } from './errors.js';
+import { SandboxError, SetupInterrupted } from './errors.js';
+import { baseEnv, engineEnv } from './env.js';
 export { findStragglers, stopStragglers, type Straggler } from './stragglers.js';
 export { resolveWithinRoot, PathContainmentError } from './paths.js';
 export { SandboxError } from './errors.js';
@@ -167,6 +168,12 @@ export interface SandboxSpec {
   /** Container: the egress proxy's image, which needs `node`. Default node:24-alpine. */
   egressImage?: string;
   /**
+   * Told what the setup is doing when it can take a while: the container
+   * profile's egress proxy starting, and pulling its image the first time. The
+   * time it takes counts against `limits.wallMs`, and an abort stops it.
+   */
+  onProgress?: (message: string) => void;
+  /**
    * A file handed to the command, open, as descriptor 3, so that what it
    * leaves running (and inherits the descriptor) can be found afterwards with
    * `findStragglers`. The caller creates it, outside anything writable.
@@ -230,46 +237,6 @@ export interface ExecOptions {
   reapGroup?: boolean;
   /** Written to the command's standard input, which is closed after it. Default: none. */
   input?: string;
-}
-
-/** Variables a process needs to start and find its tools, and nothing else. */
-const BASE_ENV = [
-  'PATH',
-  'HOME',
-  'USER',
-  'LOGNAME',
-  'SHELL',
-  'LANG',
-  'LC_ALL',
-  'LC_CTYPE',
-  'TERM',
-  'TZ',
-  'TMPDIR',
-  // Windows
-  'SYSTEMROOT',
-  'SystemRoot',
-  'WINDIR',
-  'COMSPEC',
-  'PATHEXT',
-  'USERPROFILE',
-  'APPDATA',
-  'LOCALAPPDATA',
-  'HOMEDRIVE',
-  'HOMEPATH',
-  'TEMP',
-  'TMP',
-  'ProgramData',
-  'ProgramFiles',
-];
-
-function baseEnv(inherit: boolean | undefined): Record<string, string> {
-  if (inherit) return { ...(process.env as Record<string, string>) };
-  const out: Record<string, string> = {};
-  for (const name of BASE_ENV) {
-    const value = process.env[name];
-    if (value !== undefined) out[name] = value;
-  }
-  return out;
 }
 
 const DEFAULTS = {
@@ -549,21 +516,26 @@ export async function exec(
   const wallMs = limits.wallMs ?? DEFAULTS.wallMs;
   const maxBytes = limits.maxOutputBytes ?? DEFAULTS.maxOutputBytes;
   const warnings: string[] = [];
+  // The time limit covers setting the command up too: a slow first pull of the
+  // egress proxy's image is time the command does not get.
+  const started = Date.now();
+  const deadline = started + wallMs;
+  /** The result of a command that was stopped before it started. */
+  const notRun = (why: 'cancelled' | 'timedOut', egress?: ExecResult['egress']): ExecResult => ({
+    code: null,
+    signal: null,
+    stdout: '',
+    stderr: '',
+    timedOut: why === 'timedOut',
+    cancelled: why === 'cancelled',
+    truncated: false,
+    durationMs: Date.now() - started,
+    profile: spec.profile,
+    warnings,
+    ...(egress ? { egress } : {}),
+  });
 
-  if (options.signal?.aborted) {
-    return {
-      code: null,
-      signal: null,
-      stdout: '',
-      stderr: '',
-      timedOut: false,
-      cancelled: true,
-      truncated: false,
-      durationMs: 0,
-      profile: spec.profile,
-      warnings,
-    };
-  }
+  if (options.signal?.aborted) return notRun('cancelled');
 
   let file = command;
   let argv = args;
@@ -656,6 +628,9 @@ export async function exec(
         sidecar = await startEgressSidecar(runtime, container.name, parseAllowlist(allowlist), {
           image: spec.egressImage,
           labels: spec.labels,
+          signal: options.signal,
+          deadline,
+          onProgress: spec.onProgress,
         });
         proxyEnv = sidecar.proxyEnv;
         warnings.push(
@@ -682,10 +657,10 @@ export async function exec(
     cleanup?.();
     await proxy?.close();
     if (container) await removeContainer(container.runtime, container.name);
+    // Stopped while it was being set up: the command never ran.
+    if (e instanceof SetupInterrupted) return notRun(e.reason);
     throw e;
   }
-
-  const started = Date.now();
 
   /**
    * Remove what the profile created for this command: the container (which
@@ -705,6 +680,20 @@ export async function exec(
     }
     if (container) await removeContainer(container.runtime, container.name);
   };
+
+  // Whatever happened while the command was being set up (a slow pull of the
+  // egress proxy's image, say), a stop that came then is not lost: a listener
+  // added to a signal that has already fired never hears it.
+  const early = options.signal?.aborted
+    ? 'cancelled'
+    : Date.now() >= deadline
+      ? 'timedOut'
+      : undefined;
+  if (early) {
+    void proxy?.close();
+    await teardown();
+    return notRun(early, egressSeen);
+  }
 
   // Opened for the spawn only: the child keeps its own copy.
   let tagFd: number | undefined;
@@ -738,6 +727,8 @@ export async function exec(
           ...proxyEnv,
           ...spec.env,
           ...spec.secrets,
+          // Last, so the command's own variables cannot send the runtime CLI to another engine.
+          ...(container ? engineEnv() : {}),
         },
         // Own process group, so the timeout can kill descendants too rather
         // than orphaning them.
@@ -860,16 +851,21 @@ export async function exec(
       });
     }
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, wallMs);
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        stop();
+      },
+      Math.max(1, deadline - Date.now())
+    );
 
     const onAbort = () => {
       cancelled = true;
       stop();
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
+    // Fired between the check above and here: nothing would call it.
+    if (options.signal?.aborted) onAbort();
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
