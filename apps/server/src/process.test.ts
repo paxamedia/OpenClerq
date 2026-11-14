@@ -201,7 +201,8 @@ describe.skipIf(!runnable || isWindows)('clerq-server running', () => {
     const { code, signal } = await server.exit;
     expect(await streamEnded).toBe(true);
     expect({ code, signal }).toEqual({ code: 0, signal: null });
-    expect(Date.now() - began).toBeLessThan(10_000);
+    // The open event stream ends at once; it does not hold the stop up.
+    expect(Date.now() - began).toBeLessThan(5_000);
     expect(server.output()).toContain('Received SIGTERM');
     expect(server.output()).toContain('] Stopped');
     expect(server.output()).not.toContain(token);

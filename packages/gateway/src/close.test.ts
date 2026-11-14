@@ -7,12 +7,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '@clerq/store';
 import { createGateway, type Gateway } from './gateway.js';
 import { closeStore, getStore, isStoreOpen } from './store.js';
+import { emit } from './events.js';
 import { createRun, getRun, INTERRUPTED } from './runs.js';
 import { createAutomation, ensureRepoRow, setAutomationEnabled } from './automations/store.js';
 
@@ -60,6 +62,34 @@ async function deadPid(): Promise<number> {
   const pid = child.pid as number;
   await new Promise((resolve) => child.once('exit', resolve));
   return pid;
+}
+
+/**
+ * A request that is in flight: its head has been sent and its body is still
+ * arriving, so the server has it under way and waits for it. `finish()` sends
+ * the rest, and the answer is in `answer()` once the socket has closed.
+ */
+async function holdRequest(g: Gateway) {
+  const socket = net.connect(portOf(g), '127.0.0.1');
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+  let received = '';
+  socket.on('data', (chunk) => {
+    received += String(chunk);
+  });
+  const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  socket.write(
+    'POST /v1/nothing HTTP/1.1\r\nHost: x\r\n' +
+      `Authorization: Bearer ${TOKEN}\r\nContent-Type: application/json\r\n` +
+      'Content-Length: 7\r\nConnection: close\r\n\r\n{"a"'
+  );
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  return {
+    finish: () => socket.write(':1}'),
+    answer: async () => {
+      await closed;
+      return received;
+    },
+  };
 }
 
 let counter = 0;
@@ -115,24 +145,96 @@ describe('close()', () => {
     expect(isStoreOpen()).toBe(false);
   });
 
-  it('drops an event stream that would never end by itself, after the grace period', async () => {
+  it('ends an event stream at once, without waiting for the grace period', async () => {
     const g = start(path.join(root, 'sse', 'clerq.db'));
     await g.ready;
+    // A request under way keeps the grace period running.
+    const held = await holdRequest(g);
     const res = await get(g, '/v1/events/stream');
     expect(res.status).toBe(200);
     const reader = (res.body as ReadableStream<Uint8Array>).getReader();
     await reader.read();
 
     const began = Date.now();
-    const closing = g.close({ graceMs: 150 });
-    const ended = reader.read().then(
+    const closing = g.close({ graceMs: 5_000 });
+    let closed = false;
+    void closing.then(() => {
+      closed = true;
+    });
+    const ended = await reader.read().then(
       (r) => r.done,
       () => true
     );
+    expect(ended).toBe(true);
+    expect(Date.now() - began).toBeLessThan(2_000);
+    // The close itself still waits for the request under way.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(closed).toBe(false);
+    held.finish();
     await closing;
-    expect(await ended).toBe(true);
-    expect(Date.now() - began).toBeLessThan(3_000);
+    expect(await held.answer()).toMatch(/^HTTP\/1\.1 404 /);
     expect(g.server.listening).toBe(false);
+  });
+
+  it('refuses a request that arrives once close has begun', async () => {
+    const g = start(path.join(root, 'refuse', 'clerq.db'));
+    await g.ready;
+    const held = await holdRequest(g);
+    const closing = g.close({ graceMs: 5_000 });
+    // The same app on another listener stands for a request on a connection that was already open.
+    const side = http.createServer(g.app);
+    await new Promise<void>((resolve) => side.listen(0, '127.0.0.1', resolve));
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:${(side.address() as net.AddressInfo).port}/v1/runs`,
+        {
+          headers: { Authorization: `Bearer ${TOKEN}` },
+        }
+      );
+      expect(res.status).toBe(503);
+      expect(res.headers.get('retry-after')).toBe('5');
+      expect(res.headers.get('connection')).toBe('close');
+      expect(await res.json()).toMatchObject({ error: 'server_stopping' });
+    } finally {
+      await new Promise((resolve) => side.close(resolve));
+      held.finish();
+      await closing;
+    }
+  });
+
+  it('does not start a queued run while it waits for a request in flight', async () => {
+    const file = path.join(root, 'waiting', 'clerq.db');
+    const g = start(file);
+    await g.ready;
+    const a = automationFor();
+    // A run waiting for a slot that comes due 300 ms from now...
+    const queued = createRun({
+      trigger: 'schedule',
+      automationId: a.id,
+      status: 'queued',
+      repoId: ensureRepoRow(a.spec!),
+    });
+    getStore()
+      .prepare('UPDATE runs SET not_before = ? WHERE id = ?')
+      .run(new Date(Date.now() + 300).toISOString(), queued);
+    // ...which the queue is told about, so it will look again when it is due.
+    emit('run.queued', {}, { runId: queued });
+
+    // The close is held open by a request under way, well past that moment.
+    const held = await holdRequest(g);
+    const closing = g.close({ graceMs: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(getStore().prepare('SELECT status FROM runs WHERE id = ?').get(queued)).toEqual({
+      status: 'queued',
+    });
+    held.finish();
+    await closing;
+
+    const seen = await openDatabase(file);
+    expect(seen.prepare('SELECT status FROM runs WHERE id = ?').get(queued)).toEqual({
+      status: 'queued',
+    });
+    seen.close();
   });
 
   it('lets a request that is in flight finish within the grace period', async () => {

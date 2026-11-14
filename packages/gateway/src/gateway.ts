@@ -179,8 +179,11 @@ function disconnectSignal(res: Response, continueOnDisconnect: unknown): AbortSi
   return controller.signal;
 }
 
-/** How long `close()` lets requests in flight finish before it drops their connections. */
-export const CLOSE_GRACE_MS = 2_000;
+/**
+ * How long `close()` lets requests in flight finish before it ends them. The
+ * server app's own stop deadline is 10 s; this leaves it the rest.
+ */
+export const CLOSE_GRACE_MS = 8_000;
 
 export interface Gateway {
   app: express.Express;
@@ -194,10 +197,18 @@ export interface Gateway {
    */
   ready: Promise<void>;
   /**
-   * Stop for good, for a process that is about to exit: stop accepting
-   * connections, give requests in flight `graceMs` (default 2 s) and then drop
-   * what is left (event streams never end by themselves), stop the schedules,
-   * the queue, the triggers and the push publisher, and close the store.
+   * Stop for good, for a process that is about to exit. At once: stop
+   * accepting connections and answer any new request 503, stop the schedules,
+   * the queue, the triggers and the push publisher (so nothing waiting is
+   * started from here on), and end the event streams (`GET /events`,
+   * `/events/stream`, `/logs/stream`), which never end by themselves. Then let
+   * requests already in flight finish, for up to `graceMs` (default 8 s);
+   * those still open after that are ended (an event stream is finished, an
+   * unanswered request gets a 503, anything else is cut). Then close the store.
+   *
+   * A chat reply still being generated when the grace is over is lost: the
+   * message that was sent is kept, the reply is not stored, and the run is
+   * settled as interrupted by the next start.
    *
    * Runs in flight are not cancelled and not waited for. Nothing is written
    * to them: their leases stop being renewed when the process exits, and the
@@ -212,17 +223,36 @@ export interface Gateway {
   close(options?: { graceMs?: number }): Promise<void>;
 }
 
+const isEventStream = (res: Response): boolean =>
+  String(res.getHeader('content-type') ?? '').startsWith('text/event-stream');
+
+/**
+ * Finish the open event streams (`GET /events`, `/events/stream`,
+ * `/logs/stream`): they are open for as long as a client wants, never work in
+ * progress, and a client reconnects (or not). A chat reply is also
+ * `text/event-stream`, but it is a POST and is work in progress: not touched.
+ */
+function endEventStreams(live: ReadonlySet<Response>): void {
+  for (const res of [...live]) {
+    try {
+      if (res.req?.method === 'GET' && isEventStream(res) && !res.writableEnded) res.end();
+    } catch {
+      /* the connection is already gone */
+    }
+  }
+}
+
 /**
  * End what is still open when the grace period is over, in the way each kind
- * can be ended well: an event stream is finished (a client reconnects, or
- * not), a request that has not been answered gets a 503, and anything else
- * is cut. Works the same under Node and Bun.
+ * can be ended well: an event stream is finished, a request that has not been
+ * answered gets a 503, and anything else is cut. Works the same under Node and
+ * Bun.
  */
 function endLiveResponses(live: ReadonlySet<Response>): void {
   for (const res of [...live]) {
     try {
       if (res.writableEnded) continue;
-      if (String(res.getHeader('content-type') ?? '').startsWith('text/event-stream')) {
+      if (isEventStream(res)) {
         res.end();
       } else if (!res.headersSent) {
         res.status(503).set('Retry-After', '5').json({
@@ -287,6 +317,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   // `closeAllConnections()` does not end an event stream (verified on 1.3.10),
   // and the server would never finish closing.
   const live = new Set<Response>();
+  let closeRequested = false;
   app.use((_req, res, next) => {
     live.add(res);
     const done = () => live.delete(res);
@@ -296,6 +327,15 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   });
   // First of all, so every response carries the API version: a preflight, a 401, a 404.
   app.use(stampApiVersion);
+  // Once `close()` has begun, a request that arrives (on a connection that was
+  // already open) is refused; the ones already under way carry on.
+  app.use((_req, res, next) => {
+    if (!closeRequested) return next();
+    res
+      .status(503)
+      .set({ 'Retry-After': '5', Connection: 'close' })
+      .json({ error: 'server_stopping', message: 'The server is stopping. Try again shortly.' });
+  });
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (typeof origin === 'string' && corsOrigins.has(origin)) {
@@ -1452,7 +1492,6 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   // A host that never looks at `ready` is not crashed by it rejecting; the
   // reason is logged, and a host that does look still sees the rejection.
   ready.catch(() => undefined);
-  let closeRequested = false;
   let stopPush: (() => void) | undefined;
   /** What the listen callback is doing, so `close()` can wait for it before closing the store. */
   let startup: Promise<void> = Promise.resolve();
@@ -1566,13 +1605,23 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
     closing ??= (async () => {
       closeRequested = true;
       await bound;
-      // No new connections. Requests in flight get a moment, then go: an event
-      // stream or a long model call would otherwise hold the server open.
+      // First, before any waiting: nothing new starts from here. A run waiting
+      // for a slot stays queued, for the next start; one dispatched now would
+      // have its agent killed with the process.
+      stopAutomationSchedules();
+      stopAutomationQueue();
+      stopTriggers();
+      modules.triggers.pause();
+      stopPush?.();
+      stopPush = undefined;
+      // No new connections, and the event streams, which are not work, end now.
       const ended = new Promise<void>((resolve) => {
         if (!server.listening) resolve();
         else server.close(() => resolve());
       });
       server.closeIdleConnections?.();
+      endEventStreams(live);
+      // Requests already under way get until the grace is over, then go.
       const drop = setTimeout(
         () => {
           endLiveResponses(live);
@@ -1582,13 +1631,6 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       );
       await ended;
       clearTimeout(drop);
-      // Nothing new starts. A run already going is left to the next start.
-      stopAutomationSchedules();
-      stopAutomationQueue();
-      stopTriggers();
-      modules.triggers.pause();
-      stopPush?.();
-      stopPush = undefined;
       // Whatever start-up was in the middle of finishes (or notices `closeRequested`)
       // before the store is closed under it.
       await startup;

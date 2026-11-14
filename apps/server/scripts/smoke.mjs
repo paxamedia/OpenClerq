@@ -187,6 +187,11 @@ check(
   code === 0 && signal === null && took < STOP_WITHIN_MS,
   `exit ${code} signal ${signal}\n${log}`
 );
+check(
+  'an open event stream does not hold the stop up (under 5 s)',
+  took < 5_000,
+  `took ${took} ms`
+);
 check('the open event stream was ended by the stop', await streamEnded);
 const wal = path.join(home, '.clerq', 'clerq.db-wal');
 check(

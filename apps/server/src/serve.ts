@@ -5,8 +5,9 @@
  * directory made private, the token resolved (never printed), the gateway
  * started, and one block of lines saying what is running and where.
  *
- * Shutdown, on SIGTERM or SIGINT: `gateway.close()` (stop accepting
- * connections, stop the schedules and the queue, close the store; runs in
+ * Shutdown, on SIGTERM or SIGINT: `gateway.close()` (stop the schedules and
+ * the queue and refuse new connections at once, end the event streams, give
+ * requests under way until 2 s before the deadline, close the store; runs in
  * flight are left for the next start to reclaim, see its documentation), then
  * exit 0. If that takes longer than 10 s the process exits 1. A second signal
  * while stopping exits 1 at once.
@@ -110,7 +111,9 @@ export async function serve(env: Env = process.env, log: Log = makeLog(env)): Pr
     }, STOP_DEADLINE_MS);
     let code = exitCode;
     try {
-      await gateway.close(graceMs === undefined ? {} : { graceMs });
+      // Requests under way get all but the last 2 s of the deadline; the store
+      // closes in what is left.
+      await gateway.close({ graceMs: graceMs ?? STOP_DEADLINE_MS - 2_000 });
     } catch (e) {
       log('ERROR', `Stopping failed: ${e instanceof Error ? e.message : String(e)}`);
       code = 1;
