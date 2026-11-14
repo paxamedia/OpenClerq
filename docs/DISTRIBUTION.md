@@ -97,7 +97,7 @@ that does not have WebKitGTK 4.1 cannot install them. An AppImage brings its own
 libraries, so it depends less on the distribution; it still uses the system's glibc and graphics
 drivers. All three are built on Ubuntu 22.04 (glibc 2.35), so a distribution with an older glibc will
 not run them. That is reasoning from how they are built, not a list of distributions anyone has
-tried: CI builds the packages on every push and looks inside them (`build.yml`, `build-linux`), but
+tried: CI builds the packages on every push, unpacks the `.deb` and the AppImage and runs the gateway from them (`build.yml`, `build-linux`, `scripts/check-linux-packages.sh`), but
 they have not been run on a range of Linux desktops.
 
 **In-app updates work for the AppImage only.** The updater replaces the AppImage file with the new
@@ -116,7 +116,7 @@ build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-de
 then Rust, Node 24 and pnpm, and `pnpm run build:installers`. `bundle.targets` is `all`, so Tauri writes
 the three forms into `apps/desktop/src-tauri/target/release/bundle/{deb,rpm,appimage}/`. The AppImage
 step downloads its tools (linuxdeploy) from GitHub, so it needs network access. The gateway sidecar is
-Bun's baseline x64 build (see below), so the app runs on a CPU without AVX2. Fedora and others have
+Bun's baseline x64 build (see below), so the app runs on a CPU without AVX2. `build-desktop.js` makes the Linux build verbose (Tauri hides linuxdeploy's own output unless asked: a failed AppImage says only `failed to run linuxdeploy`) and sets `NO_STRIP=true` (linuxdeploy's `strip` cannot read binaries from newer toolchains, and would cut off the code a Bun-compiled sidecar keeps appended to its file) and `APPIMAGE_EXTRACT_AND_RUN=1` (no FUSE needed to run linuxdeploy). Fedora and others have
 their own package names for the same libraries.
 
 The arm64 build uses GitHub's `ubuntu-22.04-arm` runner, which GitHub lists as generally available.
@@ -222,7 +222,7 @@ signed in to GitHub: `docker logout ghcr.io; docker pull ghcr.io/paxamedia/openc
   [SECURITY.md](SECURITY.md)).
 - **On every push to `main`, every pull request** (`build.yml`): the desktop app, unsigned, for macOS,
   Windows and Linux (`build-linux` on x64 and arm64, which also stages the release files from the real
-  bundle folders and looks inside the `.deb` and the AppImage for the sidecars and the bundled plugin).
+  bundle folders, unpacks the `.deb` and the AppImage, checks the sidecars and the bundled plugin are in them and runs the gateway from the unpacked tree).
   On a **push to `main` only**, `updater-key` signs a file with the repository's signing secrets and
   checks it against the public key in `tauri.conf.json` ([RELEASING.md](RELEASING.md)).
 - **On a `v*` tag** (`release.yml`):

@@ -109,6 +109,11 @@ jobs:
         run: pnpm run build:installers
         env:
           CI: true
+          # For linuxdeploy, which makes the Linux AppImage; nothing reads them on macOS or Windows.
+          # Its own `strip` fails on binaries from newer toolchains and would cut off the code a
+          # Bun-compiled sidecar keeps appended to its file (build-desktop.js sets both on Linux too).
+          NO_STRIP: true
+          APPIMAGE_EXTRACT_AND_RUN: 1
           # Leave unset for unsigned builds: build-desktop.js treats the empty
           # string GitHub passes for a missing secret as unset. Setting it alone
           # cannot sign — this job imports no certificate; see
@@ -122,6 +127,12 @@ jobs:
       # were what reached the release step, which then found nothing to attach.
       - name: Stage release files
         run: node scripts/stage-release-files.js release-files
+
+      # What build.yml checks on every push, on the files that are about to be released: the .deb and
+      # the AppImage hold the sidecars and the chat plugin, and the gateway runs from them.
+      - name: Check the Linux packages
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: scripts/check-linux-packages.sh release-files
 
       - name: Upload release files
         uses: actions/upload-artifact@v7

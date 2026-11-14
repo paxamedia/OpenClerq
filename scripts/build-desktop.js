@@ -30,6 +30,18 @@ for (const name of [
   if (typeof env[name] === 'string' && env[name].trim() === '') delete env[name];
 }
 
+// Linux: the AppImage is made by linuxdeploy, which Tauri runs and whose own output it hides unless
+// asked for (`failed to run linuxdeploy` and nothing else), so the Linux build is verbose.
+// NO_STRIP: linuxdeploy's bundled `strip` cannot read binaries made by newer toolchains (.relr.dyn
+// sections), which broke the AppImage of the first Linux builds, and a strip would also cut off the
+// code a Bun-compiled sidecar keeps appended to its file. APPIMAGE_EXTRACT_AND_RUN: run linuxdeploy's
+// own AppImages unpacked, with no FUSE (a build machine often has none). Set already, they are kept.
+const linuxArgs = process.platform === 'linux' ? ['--verbose'] : [];
+if (process.platform === 'linux') {
+  env.NO_STRIP ??= 'true';
+  env.APPIMAGE_EXTRACT_AND_RUN ??= '1';
+}
+
 if (process.env.UNSET_CI === '1') {
   delete env.CI;
   env.TAURI_CI = 'false';
@@ -57,11 +69,11 @@ execSync('pnpm --filter @clerq/module-schema build', execOpts);
 // Skip updater artifacts (.sig) when private key is not available (build workflow, local test)
 // Use a temp config file to avoid CLI encoding issues on Windows
 const skipUpdater = !env.TAURI_SIGNING_PRIVATE_KEY;
-let tauriArgs = ['exec', 'tauri', 'build'];
+let tauriArgs = ['exec', 'tauri', 'build', ...linuxArgs];
 if (skipUpdater) {
   const overridePath = path.join(os.tmpdir(), `tauri-override-${Date.now()}.json`);
   fs.writeFileSync(overridePath, JSON.stringify({ bundle: { createUpdaterArtifacts: false } }), 'utf8');
-  tauriArgs = ['exec', 'tauri', 'build', '-c', overridePath];
+  tauriArgs = ['exec', 'tauri', 'build', '-c', overridePath, ...linuxArgs];
   const spawnOpts = { cwd: desktopDir, stdio: 'inherit', env };
   if (process.platform === 'win32') spawnOpts.shell = true;
   try {

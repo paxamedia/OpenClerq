@@ -119,35 +119,26 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # NO_STRIP and APPIMAGE_EXTRACT_AND_RUN are for linuxdeploy, which makes the AppImage:
+      # its own `strip` fails on binaries from newer toolchains (and would cut off the code a
+      # Bun-compiled sidecar keeps appended to its file), and it needs no FUSE this way.
+      # build-desktop.js sets both and makes the Linux build verbose, which is what shows
+      # linuxdeploy's own output when it fails; they are named here too, so they are seen.
       - name: Build sidecars and desktop (unsigned)
         run: pnpm run build:installers
         env:
           CI: true
+          NO_STRIP: true
+          APPIMAGE_EXTRACT_AND_RUN: 1
 
       - name: Stage the release files
         run: node scripts/stage-release-files.js release-files
 
-      - name: Look inside the packages
-        run: |
-          set -eu
-          deb=$(ls release-files/*.deb)
-          dpkg-deb --field "$deb" Package Version Architecture Depends
-          dpkg-deb --contents "$deb" | tee deb-contents.txt
-          grep -q '/usr/bin/clerq-gateway$' deb-contents.txt
-          grep -q '/usr/bin/clerq-calc$' deb-contents.txt
-          grep -q 'bundled-plugins/chat/manifest.json$' deb-contents.txt
-          appimage=$(ls release-files/*.AppImage)
-          chmod +x "$appimage"
-          mkdir extracted && cd extracted
-          "../$appimage" --appimage-extract > /dev/null
-          for name in clerq-gateway clerq-calc; do
-            found=$(find squashfs-root -name "$name" -type f | head -n 1)
-            test -n "$found" || { echo "::error::$name is not in the AppImage"; exit 1; }
-            echo "AppImage has $found"
-          done
-          found=$(find squashfs-root -path '*bundled-plugins/chat/manifest.json' | head -n 1)
-          test -n "$found" || { echo "::error::the bundled chat plugin is not in the AppImage"; exit 1; }
-          echo "AppImage has $found"
+      # The .deb and the AppImage are unpacked: the gateway, the calculation engine and the bundled
+      # chat plugin must be in them, and the gateway must RUN from the unpacked tree (a Bun-compiled
+      # program keeps its code appended to its file, which stripping or patching can cut off).
+      - name: Look inside the packages and run the gateway from them
+        run: scripts/check-linux-packages.sh release-files
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
