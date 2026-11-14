@@ -4,10 +4,15 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::thread::JoinHandle;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
 const GATEWAY_PORT: u16 = 18790;
+
+/// How many lines of the gateway's output may wait to be written to this app's stderr.
+const GATEWAY_LOG_QUEUE: usize = 256;
 
 fn clerq_dir() -> Result<PathBuf, String> {
     let home = std::env::var("HOME")
@@ -183,6 +188,38 @@ fn gateway_running() -> bool {
     std::net::TcpStream::connect(std::net::SocketAddr::from(([127, 0, 0, 1], GATEWAY_PORT))).is_ok()
 }
 
+/// The line to log for something the gateway sidecar did, if there is one.
+fn gateway_line(event: CommandEvent) -> Option<String> {
+    match event {
+        CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
+            Some(String::from_utf8_lossy(&line).trim_end().to_string())
+        }
+        CommandEvent::Error(e) => Some(e),
+        CommandEvent::Terminated(end) => Some(format!("stopped (exit code {:?})", end.code)),
+        _ => None,
+    }
+}
+
+/// Writes each line it is sent to `out`, prefixed `[gateway]`, from a thread of its own.
+///
+/// The queue holds `capacity` lines and is fed with `try_send`, so when `out` stops
+/// taking them (stderr is a pipe nobody reads) the lines are dropped instead of the
+/// sender waiting: a sender that waited would stop the shell plugin reading the
+/// gateway's output, and the gateway would block on a full pipe of its own. A write
+/// that fails is not worth a panic either. Dropping the sender ends the thread.
+fn log_writer<W: Write + Send + 'static>(
+    mut out: W,
+    capacity: usize,
+) -> (SyncSender<String>, JoinHandle<()>) {
+    let (tx, rx) = sync_channel::<String>(capacity);
+    let thread = std::thread::spawn(move || {
+        for line in rx {
+            let _ = writeln!(out, "[gateway] {}", line);
+        }
+    });
+    (tx, thread)
+}
+
 /// Starts the bundled gateway sidecar, pointed at the bundled calculation engine.
 fn spawn_gateway(app: &tauri::App) {
     if let Ok(shell) = app.shell().sidecar("clerq-gateway") {
@@ -200,22 +237,17 @@ fn spawn_gateway(app: &tauri::App) {
             match cmd.spawn() {
                 Ok((mut rx, _child)) => {
                     // What the gateway prints, and why it stopped, goes to this app's
-                    // own log. Left unread it is dropped, and a gateway that refuses to
-                    // start (a database from a newer OpenClerq, say) would say nothing.
+                    // own stderr. Left unread it is dropped, and a gateway that refuses
+                    // to start (a database from a newer OpenClerq, say) would say nothing.
+                    // The writing is another thread's job, and never waited for.
+                    let (log, _writer) = log_writer(std::io::stderr(), GATEWAY_LOG_QUEUE);
                     tauri::async_runtime::spawn(async move {
                         while let Some(event) = rx.recv().await {
-                            match event {
-                                CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
-                                    eprintln!(
-                                        "[gateway] {}",
-                                        String::from_utf8_lossy(&line).trim_end()
-                                    );
+                            if let Some(line) = gateway_line(event) {
+                                match log.try_send(line) {
+                                    Ok(()) | Err(TrySendError::Full(_)) => {}
+                                    Err(TrySendError::Disconnected(_)) => break,
                                 }
-                                CommandEvent::Error(e) => eprintln!("[gateway] {}", e),
-                                CommandEvent::Terminated(end) => {
-                                    eprintln!("[gateway] stopped (exit code {:?})", end.code);
-                                }
-                                _ => {}
                             }
                         }
                     });
@@ -258,7 +290,125 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::upsert_env_line;
+    use super::{gateway_line, log_writer, upsert_env_line};
+    use std::io::Write;
+    use std::sync::mpsc::TrySendError;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::{Duration, Instant};
+    use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
+
+    /// A writer whose bytes can be read back.
+    #[derive(Clone, Default)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A writer that waits, as a full pipe does, until it is let go.
+    struct Stuck(Arc<(Mutex<bool>, Condvar)>);
+
+    impl Write for Stuck {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let (open, wake) = &*self.0;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = wake.wait(open).unwrap();
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn logs_what_the_gateway_prints_and_how_it_stopped() {
+        let said = |bytes: &str| gateway_line(CommandEvent::Stderr(bytes.as_bytes().to_vec()));
+        assert_eq!(
+            said("[Clerq] Not started: This database was written by a newer OpenClerq\n"),
+            Some("[Clerq] Not started: This database was written by a newer OpenClerq".to_string())
+        );
+        assert_eq!(
+            gateway_line(CommandEvent::Stdout(b"listening  \r\n".to_vec())),
+            Some("listening".to_string())
+        );
+        assert_eq!(
+            gateway_line(CommandEvent::Terminated(TerminatedPayload {
+                code: Some(1),
+                signal: None
+            })),
+            Some("stopped (exit code Some(1))".to_string())
+        );
+        assert_eq!(
+            gateway_line(CommandEvent::Error("spawn failed".to_string())),
+            Some("spawn failed".to_string())
+        );
+    }
+
+    #[test]
+    fn writes_each_line_in_order_with_its_prefix() {
+        let sink = Sink::default();
+        let (tx, thread) = log_writer(sink.clone(), 8);
+        for line in ["one", "two", "three"] {
+            tx.try_send(line.to_string()).unwrap();
+        }
+        drop(tx);
+        thread.join().unwrap();
+        let text = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(text, "[gateway] one\n[gateway] two\n[gateway] three\n");
+    }
+
+    #[test]
+    fn never_waits_for_a_stderr_nobody_reads() {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (tx, thread) = log_writer(Stuck(gate.clone()), 4);
+        let started = Instant::now();
+        let mut kept = 0;
+        let mut dropped = 0;
+        for i in 0..10_000 {
+            match tx.try_send(format!("line {i}")) {
+                Ok(()) => kept += 1,
+                Err(TrySendError::Full(_)) => dropped += 1,
+                Err(TrySendError::Disconnected(_)) => panic!("the writer went away"),
+            }
+        }
+        // Ten thousand lines into a stuck writer took no time at all, and all but a few were dropped.
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(kept <= 4 + 1, "kept {kept}");
+        assert!(dropped >= 10_000 - 5, "dropped {dropped}");
+        // Let it go: what was kept is written, and the thread ends.
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        drop(tx);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn survives_a_stderr_that_has_closed() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "closed",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (tx, thread) = log_writer(Broken, 4);
+        tx.send("lost".to_string()).unwrap();
+        drop(tx);
+        thread.join().unwrap();
+    }
 
     #[test]
     fn replaces_the_key_and_keeps_every_other_line() {
