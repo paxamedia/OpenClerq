@@ -87,8 +87,13 @@ GitHub can create an app from a description of it (a manifest) and hand the key 
 
 The callback refuses, and stores nothing, if the state is unknown, was used, is older than ten
 minutes, or arrives at another address than the one the manifest named (so behind a proxy, pass the
-`Host` header on: the nginx example in [SERVER.md](SERVER.md) does). It also refuses an app created
-under another account than the one asked for, or with a permission the manifest did not ask for.
+`Host` header on: the nginx example in [SERVER.md](SERVER.md) does). It also refuses an app with a
+permission the manifest did not ask for, and, **when you asked for an organisation** (`owner`), an app
+that GitHub created under another one. For your own account there is no such check: GitHub creates the
+app under whoever is signed in to it in the browser, and OpenClerq cannot know who that is, so look at
+the name on GitHub's confirmation page. If two manifests are in flight, the first callback to finish is
+the connection; the other stores nothing and its page links to its app's settings page, so you can
+delete it.
 
 ### Import an app you made
 
@@ -231,15 +236,23 @@ From the smallest to the largest:
 2. **Uninstall the app from a repository or an account** (the installation's page on GitHub). New
    tokens cannot be made for it, and `auto` falls back to the vault secret (or `app` fails). OpenClerq
    believes an "installed" answer for five minutes; `GET /v1/github/app?refresh=1` makes it ask again.
-3. **Delete the private key** on the app's settings page. OpenClerq can no longer make tokens
-   (`GET /v1/github/app` still lists the app; runs say the key was refused). Import a new one to carry on.
+3. **Delete a private key** on the app's settings page. GitHub will not delete an app's last key, so
+   this is how an old key is retired after a new one has been imported (rotation, above); to cut
+   OpenClerq off entirely use step 2, 4 or 5. Once the key OpenClerq holds is deleted, it can no
+   longer make tokens (`GET /v1/github/app` still lists the app; runs say the key was refused).
 4. **`DELETE /v1/github/app`** makes OpenClerq forget the app and delete its key from the vault.
 5. **Delete the app on GitHub** (its settings page, the link in the answer of step 4). Only this removes
    the app itself and every installation of it.
 
 The private key in the vault is a **long-lived credential that can make tokens for every repository
-the app is installed on.** Protect the vault: see [SECURITY.md](SECURITY.md). If you think it leaked,
-delete the key on GitHub (step 3) first, then import a new one.
+the app is installed on.** Protect the vault: see [SECURITY.md](SECURITY.md).
+
+**If you think the key leaked**, in this order: generate a new private key on the app's settings page
+(GitHub will not delete an app's last key, so the new one has to exist first), import it
+(`POST /v1/github/app/import`, with the same App ID), then delete the leaked key on GitHub. Tokens
+already made with the leaked key stay valid until they expire, **up to an hour**, whatever you do to
+the key; to cut the repositories off sooner, uninstall the app (step 2) or delete it (step 5), and
+check the installations' activity on GitHub.
 
 ## What is stored where
 

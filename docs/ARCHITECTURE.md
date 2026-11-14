@@ -702,7 +702,7 @@ Each user brings their own GitHub App ([GITHUB.md](GITHUB.md) says why and how).
 - `credentials.ts`: `githubAppCredentials()` is the decision, by `publish.auth`; `dryRun` answers with
   the source and makes nothing (the spec preview).
 - `manifest.ts`, `connect.ts`, `routes.ts`: the manifest flow (single-use random state held in memory for
-  ten minutes, bound to the callback's host, the account and the permissions asked for), import,
+  ten minutes, bound to the callback's host, the organisation (when one was asked for) and the permissions asked for; checked again at store time so two callbacks cannot both connect), import,
   status and disconnect. The key and secret are written to the vault and the settings row together, or
   put back.
 - `fake-github.ts`: the fake GitHub API the tests run against (it checks the JWT, the token's

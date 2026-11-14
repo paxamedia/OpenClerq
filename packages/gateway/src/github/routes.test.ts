@@ -362,7 +362,7 @@ describe('the callback', () => {
     expect(readAppConfig()).toBeNull();
   });
 
-  it('refuses an app created under another account than the one asked for', async () => {
+  it('refuses an app created under another organisation than the one asked for', async () => {
     const { state, code } = await startFlow({ owner: 'acme-org' });
     fake.conversions.set(code, fake.conversion({ owner: { login: 'someone-else', type: 'User' } }));
     const res = await callback(state, code);

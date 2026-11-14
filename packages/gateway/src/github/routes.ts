@@ -246,7 +246,7 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
     const conflict = (text: string) => mismatch('Another app was connected first', text, 409);
     if (flow.org && converted.owner?.login.toLowerCase() !== flow.org.toLowerCase()) {
       return mismatch(
-        'The app is under another account',
+        'The app is under another organisation',
         `The app was asked for under ${flow.org}.`
       );
     }

@@ -165,7 +165,7 @@ The state is 32 random bytes, kept in memory, valid ten minutes, once.
 `GET /github/app/callback?code=…&state=…` is GitHub's redirect: an HTML page, no token, `GET` only (the
 exemption is this exact path, in both the `/v1` and bare forms). It spends the state whatever happens.
 `200` "Connected…" with the install link; `400` for an unknown, used or expired state, the wrong
-`Host`, a bad code, an app under another account than asked or with a wider permission than asked, or
+`Host`, a bad code, an app under another organisation than the one asked for or with a wider permission than asked, or
 a key that cannot be read or that the vault refuses; `409` when an app is connected already, or another callback connected one first (this one's app is left on GitHub: the page links its settings page so you can delete it); `502` when GitHub refuses the code;
 `503` when the vault has no key. Nothing is stored on any of them.
 
