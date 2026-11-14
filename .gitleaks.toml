@@ -1,0 +1,16 @@
+# gitleaks' own rules, plus one exception.
+title = "OpenClerq"
+
+[extend]
+useDefault = true
+
+# apps/server/install.sh carries the release public key (the one in tauri.conf.json, the
+# key installers check SHA256SUMS with). A public key is meant to be read by everyone; the
+# generic-api-key rule flags it because the variable's name has "key" in it. Only a value of that
+# form (RW plus 54 characters: a minisign public key) in that one file is exempt, whatever the key
+# is, so a rotation needs no change here.
+[[allowlists]]
+description = "The release public key in install.sh"
+condition = "AND"
+paths = ['''^apps/server/install\.sh$''']
+regexes = ['''^RW[A-Za-z0-9+/]{54}$''']
