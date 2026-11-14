@@ -30,6 +30,9 @@ importers:
       '@clerq/gateway-client':
         specifier: workspace:^
         version: link:../../packages/gateway-client
+      '@clerq/plugin-sdk':
+        specifier: workspace:^
+        version: link:../../packages/plugin-sdk
     devDependencies:
       '@clerq/drivers':
         specifier: workspace:^

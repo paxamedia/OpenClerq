@@ -109,6 +109,18 @@ function toolStep(name: string, input: Fields, output: Fields): StepWords | null
           .join(' '),
       };
     }
+    case 'skill.select': {
+      const skill = text(input.skill);
+      const trust = text(input.trust);
+      const notes = Array.isArray(output.notes) ? output.notes.map(String) : [];
+      const skipped = Array.isArray(output.skipped) ? output.skipped.length : 0;
+      return {
+        label: skill
+          ? `Used the skill ${skill}${trust && trust !== 'trusted' ? ` (${trust})` : ''}${skipped ? `, passed over ${plural(skipped, 'other')}` : ''}`
+          : `Passed over ${plural(skipped, 'skill')} that matched`,
+        note: notes.join(' ') || undefined,
+      };
+    }
     case 'sandbox': {
       const profile = text(input.profile) ?? 'native';
       return {

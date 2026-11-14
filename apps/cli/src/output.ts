@@ -99,6 +99,14 @@ export class Output {
     (this.json ? this.io.stderr : this.io.stdout).write(`${this.clean(text)}\n`);
   }
 
+  /**
+   * A line of information on stderr in either mode, for a command whose stdout is one value a
+   * script reads (`clerq skill checksum`).
+   */
+  aside(text: string): void {
+    this.io.stderr.write(`${this.clean(text)}\n`);
+  }
+
   warn(text: string): void {
     this.io.stderr.write(
       `${this.paint(this.colorErr, 'yellow', 'Warning:')} ${this.clean(text)}\n`

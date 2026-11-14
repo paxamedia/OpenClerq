@@ -14,7 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@clerq/gateway-client": "workspace:^"
+    "@clerq/gateway-client": "workspace:^",
+    "@clerq/plugin-sdk": "workspace:^"
   },
   "devDependencies": {
     "@clerq/drivers": "workspace:^",

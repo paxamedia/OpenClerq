@@ -814,6 +814,8 @@ export interface ModeDiff {
     system: string;
     messages: Array<{ role: 'user' | 'assistant'; content: string }>;
     skill: { slug?: string; name?: string; instructions?: string } | null;
+    /** What the skill did to this message: its trust state, what was passed over, what was narrowed or limited. */
+    skillPolicy: SkillPolicyInfo;
     memory: { text: string; count: number } | null;
     tools: Array<{
       name: string;
@@ -1168,9 +1170,88 @@ export interface SkillMeta {
   dependsOn?: string[];
 }
 
+/** Where a skill stands with you. `modified` is a skill whose files are not the ones you trusted, or not what its author published. */
+export type SkillTrust = 'untrusted' | 'trusted' | 'modified' | 'blocked';
+
+/** What a skill's SKILL.md declares its instructions need. An empty list declares nothing. */
+export interface SkillDeclared {
+  /** Policy tool names or rules: `fs.read`, `group:fs`. */
+  tools: string[];
+  /** Hosts: `api.example.com`, `*.example.com`. */
+  domains: string[];
+  /** Paths: relative to the folder, or `~/…`. */
+  paths: string[];
+}
+
+/** What differs from what you trusted. */
+export interface SkillChanges {
+  files: { added: string[]; removed: string[]; changed: string[] };
+  needs: Array<{
+    change: 'added' | 'removed';
+    key: 'tools' | 'domains' | 'paths';
+    item: string;
+    text: string;
+  }>;
+  version: { from: string | null; to: string | null } | null;
+}
+
+/** A skill as GET /skills lists it: its manifest and where it stands. */
+export interface SkillInfo extends SkillMeta {
+  triggers?: string[];
+  /** `directory` (the skills folder), `module:<id>` (a legacy module's) or `plugin:<id>` (approved with its plugin). */
+  origin: string;
+  trust: SkillTrust;
+  /** The state in a sentence. */
+  trustReason: string;
+  /** Who vouches for it when it is trusted: you, OpenClerq (it ships with it) or its plugin. */
+  trustedBy: 'user' | 'bundled' | 'plugin' | null;
+  trustedAt: string | null;
+  declared: SkillDeclared;
+  /** The checksum its author wrote in SKILL.md; null when there is none. */
+  checksum: string | null;
+  /** The checksum of its files as they are now: the value to send to `trustSkill`. Null when they could not be hashed. */
+  computedChecksum: string | null;
+  /** Whether those are the same; null when either is missing. */
+  checksumMatches: boolean | null;
+  warnings: string[];
+  changes: SkillChanges | null;
+  files: Array<{ path: string; sha256: string; size: number }>;
+  /** Why its files could not be hashed (a link in its folder), when they could not. */
+  problem: string | null;
+}
+
 export interface SkillsResponse {
-  skills: SkillMeta[];
+  skills: SkillInfo[];
   source: string;
+  /** Whether enforcement is on (the same switch as plugins'). */
+  enforce: boolean;
+}
+
+/** One skill in the answer to a mode diff or a context preview: used, or passed over and why. */
+export interface SkillUseInfo {
+  slug: string;
+  name: string;
+  source: string;
+  trust: SkillTrust;
+  checksum: string | null;
+  used: boolean;
+  note: string | null;
+  needs: SkillDeclared;
+}
+
+/** What the chosen skill did to a managed message. Nothing changes unless enforcement is on and the skill is trusted. */
+export interface SkillPolicyInfo {
+  used: SkillUseInfo | null;
+  skipped: SkillUseInfo[];
+  /** The tools offered after narrowing; null when nothing was narrowed. */
+  narrowedTo: string[] | null;
+  removed: string[];
+  /** Paths the file tools were limited to; null when not limited. */
+  fileScope: string[] | null;
+  /** Hosts a Sandboxed chat's commands may reach; null when that is not changed. */
+  network: string[] | null;
+  /** What happened, in plain words. */
+  notes: string[];
 }
 
 export interface ExplainResponse {
@@ -1185,6 +1266,9 @@ export interface ContextPreview {
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
   userContent: string;
   estimatedInputTokens?: number;
+  /** The skill the preview asked for, as it would be used; null when it would not be (it is in `skillsSkipped`). */
+  skill?: SkillUseInfo | null;
+  skillsSkipped?: SkillUseInfo[];
 }
 
 export interface EvalCalcResponse {
@@ -2169,8 +2253,29 @@ export const gateway = {
     return fetchJson<SkillsResponse>('/skills');
   },
 
-  skill(slug: string): Promise<{ meta: SkillMeta; body: string }> {
-    return fetchJson<{ meta: SkillMeta; body: string }>(`/skills/${encodeURIComponent(slug)}`);
+  skill(slug: string): Promise<{ meta: SkillMeta; body: string; skill: SkillInfo }> {
+    return fetchJson(`/skills/${encodeURIComponent(slug)}`);
+  },
+
+  /**
+   * Trust a skill as it is now. `checksum` is the `computedChecksum` you were shown: if the files
+   * are not those any more, the answer is 409 `trust_stale` and nothing is trusted.
+   */
+  trustSkill(slug: string, checksum: string): Promise<{ skill: SkillInfo }> {
+    return fetchJson(`/skills/${encodeURIComponent(slug)}/trust`, {
+      method: 'POST',
+      body: JSON.stringify({ checksum }),
+    });
+  },
+
+  /** Never use this skill, with enforcement on or off. */
+  blockSkill(slug: string): Promise<{ skill: SkillInfo }> {
+    return fetchJson(`/skills/${encodeURIComponent(slug)}/block`, { method: 'POST', body: '{}' });
+  },
+
+  /** Forget what you decided about this skill: it is `untrusted` again. */
+  untrustSkill(slug: string): Promise<{ skill: SkillInfo }> {
+    return fetchJson(`/skills/${encodeURIComponent(slug)}/untrust`, { method: 'POST', body: '{}' });
   },
 
   /** Every record in use. A key may appear more than once; each record has its own id. */
