@@ -20,7 +20,7 @@ import {
 import { parseAllowlist } from '@clerq/sandbox';
 import { parseRemote, type Forge } from '@clerq/workspaces';
 import { LineCounter, parseDocument, isMap, isScalar, isCollection, type Document } from 'yaml';
-import { isReservedSecret } from '../github/names.js';
+import { isReservedSecret, reservedInSpec } from '../github/names.js';
 import type { PublishAuth } from './credentials.js';
 import { AssertionSyntaxError, parseAssertion, type DiffAssertion } from './diff-assert.js';
 
@@ -354,8 +354,7 @@ class Reader {
     if (v !== undefined && isReservedSecret(v)) {
       this.fail(
         path,
-        `"${v}" is where the GitHub App connection keeps its private key; a spec cannot use it. ` +
-          'To use the app, leave "publish.token_secret" out (or set "publish.auth: app").'
+        reservedInSpec(v, path[path.length - 1] === 'api_key_secret' ? 'key' : 'token')
       );
     }
     return v;

@@ -257,6 +257,9 @@ describe('the callback', () => {
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('text/html');
     expect(res.text).toContain('Connected. Now install the app on the repositories it may use:');
+    // And the one click GitHub needs before this person can sign in as themselves.
+    expect(res.text).toContain('Enable Device Flow');
+    expect(res.text).toContain(`${WEB}/settings/apps/${fake.app.slug}`);
     expect(res.text).toContain(`${WEB}/apps/${fake.app.slug}/installations/new`);
     // Nothing in the page is the key or the secret.
     expect(res.text).not.toContain('BEGIN');

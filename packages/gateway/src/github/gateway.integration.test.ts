@@ -90,6 +90,12 @@ describe('who may reach /github', () => {
     ['DELETE', '/github/app'],
     ['POST', '/github/app/manifest', { baseUrl: 'http://127.0.0.1:1' }],
     ['POST', '/github/app/import', {}],
+    ['POST', '/github/login'],
+    ['GET', '/github/login/0123456789abcdef0123456789abcdef'],
+    ['DELETE', '/github/login/0123456789abcdef0123456789abcdef'],
+    ['GET', '/github/user'],
+    ['DELETE', '/github/user'],
+    ['GET', '/github/user/repositories'],
   ];
 
   it('needs the gateway token, with and without /v1', async () => {

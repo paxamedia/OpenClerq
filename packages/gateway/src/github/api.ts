@@ -36,6 +36,8 @@ export interface ApiRequest {
   path: string;
   /** Sent as `Authorization: Bearer …`. None for the manifest conversion. */
   bearer?: string;
+  /** Sent as `Authorization: Basic …` instead (an app's client id and secret). */
+  basic?: { user: string; password: string };
   body?: unknown;
   /** Statuses that are an answer, not an error (404 for "not installed"). */
   accept?: number[];
@@ -72,6 +74,9 @@ export async function githubRequest(
     'User-Agent': 'OpenClerq',
   };
   if (request.bearer) headers.Authorization = `Bearer ${request.bearer}`;
+  else if (request.basic) {
+    headers.Authorization = `Basic ${Buffer.from(`${request.basic.user}:${request.basic.password}`).toString('base64')}`;
+  }
   if (request.body !== undefined) headers['Content-Type'] = 'application/json';
 
   let res: Response;

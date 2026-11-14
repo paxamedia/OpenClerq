@@ -106,9 +106,12 @@ import { resolveTarget } from './agent/llm-provider.js';
 import { mountAutomationRoutes, recoverAfterRestart } from './automations/routes.js';
 import {
   GithubApp,
+  GithubSignIn,
   githubAppCredentials,
   isReservedSecret,
   mountGithubRoutes,
+  realVault,
+  reservedInVault,
 } from './github/index.js';
 import { mountRoutingRoutes } from './routing-routes.js';
 import { apiErrors } from './error-handler.js';
@@ -296,6 +299,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   // The user's own GitHub App, when one is connected: installation tokens for runs.
   // Its key is always read from the vault itself, whatever `getSecret` a caller gave the automations.
   const githubApp = new GithubApp({ getSecret });
+  const githubSignIn = new GithubSignIn({ vault: realVault });
   const automationDeps: RunnerDeps = {
     getSecret: vaultGet,
     secretNames:
@@ -450,9 +454,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       return res.status(400).json({ error: 'name is required' });
     }
     if (isReservedSecret(name)) {
-      return res.status(400).json({
-        error: `${name} belongs to the GitHub App connection. Import the app's key again with POST /github/app/import.`,
-      });
+      return res.status(400).json({ error: reservedInVault(name, 'set') });
     }
     const out = setSecret(name, value);
     if (out.ok) {
@@ -547,9 +549,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   app.delete('/secrets/:name', (req: Request, res: Response) => {
     const name = (typeof req.params?.name === 'string' ? req.params.name : '') || '';
     if (isReservedSecret(name)) {
-      return res.status(400).json({
-        error: `${name} belongs to the GitHub App connection. Forget it with DELETE /github/app.`,
-      });
+      return res.status(400).json({ error: reservedInVault(name, 'delete') });
     }
     const out = deleteSecret(name);
     if (out.ok) {
@@ -1174,7 +1174,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
   // Their schedules pause with the triggers under the kill switch.
   mountAutomationRoutes(app, automationDeps, () => triggersPausedAt === null);
   mountRoutingRoutes(app);
-  mountGithubRoutes(app, { app: githubApp });
+  mountGithubRoutes(app, { app: githubApp, signin: githubSignIn });
 
   app.post('/calculate/eval', async (req: Request, res: Response) => {
     if (!fssync.existsSync(calcPath)) {
@@ -1644,6 +1644,7 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       stopAutomationSchedules();
       stopAutomationQueue();
       stopTriggers();
+      githubSignIn.close();
       modules.triggers.pause();
       stopPush?.();
       stopPush = undefined;

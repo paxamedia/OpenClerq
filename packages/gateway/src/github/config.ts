@@ -44,8 +44,11 @@ export function githubWebBase(): string {
 export {
   APP_CLIENT_SECRET_SECRET,
   APP_PRIVATE_KEY_SECRET,
+  USER_TOKENS_SECRET,
   RESERVED_SECRETS,
   isReservedSecret,
+  reservedInSpec,
+  reservedInVault,
 } from './names.js';
 
 /** What is known about the connected app. Nothing in it is secret. */
@@ -54,7 +57,7 @@ export interface GithubAppConfig {
   appId: number;
   slug: string;
   name: string;
-  /** The app's client id (what device flow starts from, in 1.0's next step). */
+  /** The app's client id: what the device flow signs a user in with. */
   clientId: string;
   /** Who owns the app on GitHub, when GitHub said. */
   owner: { login: string; type: string } | null;

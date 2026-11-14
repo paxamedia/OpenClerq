@@ -10,7 +10,19 @@
  *   - `POST /app/installations/{id}/access_tokens` takes `repositories` and
  *     `permissions` together and refuses ones the installation does not have;
  *   - `DELETE /installation/token` revokes the token that authenticates it;
- *   - a manifest's code converts once.
+ *   - a manifest's code converts once;
+ *   - the manifest form (`POST /settings/apps/new`) answers with the redirect a
+ *     browser would follow, so a test can play the person's browser;
+ *   - the device flow (`/login/device/code`, `/login/oauth/access_token`): a
+ *     test plays the person with `approve()`, `deny()` and `expire()`, and can
+ *     script the next answers (`deviceScript`); user tokens expire, are
+ *     refreshed once each with the client secret, and a grant can be revoked;
+ *   - `GET /user`, `/user/installations`, `/user/installations/{id}/repositories`
+ *     and `DELETE /applications/{client_id}/grant` for a user token.
+ *
+ * The website's endpoints (`/login/...`, the manifest form) are served by the
+ * same server as the API: a test points both `CLERQ_GITHUB_API` and
+ * `CLERQ_GITHUB_WEB` at it.
  *
  * Used only by tests; nothing that ships imports it.
  */
@@ -45,8 +57,8 @@ export interface Seen {
   method: string;
   path: string;
   /** How the call proved itself: an app's JWT, an installation token, a personal token, or not at all. */
-  auth: 'jwt' | 'token' | 'pat' | 'none';
-  /** The installation token used, when `auth` is `token`. */
+  auth: 'jwt' | 'token' | 'pat' | 'user' | 'none';
+  /** The token used, when `auth` is `token`, `pat` or `user`. */
   token?: string;
   body?: unknown;
   /** The JWT's claims, when `auth` is `jwt`. */
@@ -70,6 +82,42 @@ export interface FakeApp {
   clientId: string;
   owner: { login: string; type: 'User' | 'Organization' };
 }
+
+/** A person at the other end of the device flow. */
+export interface FakeUser {
+  login: string;
+  id: number;
+  name: string | null;
+}
+
+/** A user access token, as an app with expiring tokens gets it. */
+export interface FakeUserToken {
+  token: string;
+  login: string;
+  /** Absent: the app does not expire user tokens. */
+  expiresAt?: number;
+  refreshToken?: string;
+  refreshExpiresAt?: number;
+  /** The refresh token was used (each works once). */
+  refreshUsed: boolean;
+  revoked: boolean;
+  /** The person's authorization was revoked (a deleted grant): the refresh token is dead too. */
+  grantRevoked: boolean;
+}
+
+/** One `POST /login/device/code`. */
+export interface FakeDevice {
+  deviceCode: string;
+  userCode: string;
+  clientId: string;
+  state: 'pending' | 'approved' | 'denied' | 'expired';
+  approvedBy?: FakeUser;
+  /** The seconds the server asked to wait. */
+  interval: number;
+}
+
+/** What the next device-flow poll answers, ahead of the real state. */
+export type DeviceScript = 'pending' | 'slow_down' | 'denied' | 'expired' | 'disabled';
 
 export class FakeGithub {
   readonly app: FakeApp;
@@ -112,6 +160,41 @@ export class FakeGithub {
   prHtmlUrl: string | undefined;
   /** Page size for `GET /app/installations`. */
   pageSize = 100;
+  /** Page sizes for the user's installations and an installation's repositories. */
+  userPageSize = 100;
+  userRepoPageSize = 100;
+
+  // ---- the person: device flow, user tokens ----
+  /** The client secret the app was given (what a conversion returns). */
+  clientSecret = 'client-secret-from-the-fake-conversion';
+  /** Whether the app has device flow switched on (the checkbox on its settings page). */
+  deviceFlowEnabled = true;
+  /** Whether the app expires user tokens (8 hours, with a refresh token). */
+  expiringUserTokens = true;
+  userTokenLifetimeMs = 8 * 3_600_000;
+  refreshTokenLifetimeMs = 182 * 86_400_000;
+  deviceInterval = 5;
+  deviceExpiresIn = 900;
+  /** The address to send the person to, instead of GitHub's `/login/device`. */
+  deviceVerificationUri: string | undefined;
+  /** The status the login endpoints answer errors with: GitHub puts them in a 200's body. */
+  loginErrorStatus = 200;
+  readonly devices = new Map<string, FakeDevice>();
+  /** The answers the next polls give, in order, before the real state. */
+  deviceScript: DeviceScript[] = [];
+  readonly userTokens = new Map<string, FakeUserToken>();
+  /** Logins whose grant was revoked with `DELETE /applications/{client_id}/grant`. */
+  readonly grantsRevoked: string[] = [];
+  /** The ids of the installations a user can see; undefined, all of them. */
+  userInstallationIds: number[] | undefined;
+  /** `owner/name` in lower case to the name as GitHub spells it. */
+  readonly repoCase = new Map<string, string>();
+  /** What `GET /user` says. */
+  userAvatarUrl: string | undefined;
+  userHtmlUrl: string | undefined;
+  /** What the browser posted to the manifest form. */
+  readonly manifestPosts: Array<{ path: string; state: string; manifest: Record<string, any> }> =
+    [];
   private counter = 0;
   private server: http.Server | undefined;
   url = '';
@@ -184,6 +267,106 @@ export class FakeGithub {
     this.pats.clear();
     this.predictable = false;
     this.tokenLifetimeMs = 3_600_000;
+    this.clientSecret = 'client-secret-from-the-fake-conversion';
+    this.deviceFlowEnabled = true;
+    this.expiringUserTokens = true;
+    this.userTokenLifetimeMs = 8 * 3_600_000;
+    this.refreshTokenLifetimeMs = 182 * 86_400_000;
+    this.deviceInterval = 5;
+    this.deviceExpiresIn = 900;
+    this.deviceVerificationUri = undefined;
+    this.loginErrorStatus = 200;
+    this.devices.clear();
+    this.deviceScript = [];
+    this.userTokens.clear();
+    this.grantsRevoked.length = 0;
+    this.userInstallationIds = undefined;
+    this.repoCase.clear();
+    this.userAvatarUrl = undefined;
+    this.userHtmlUrl = undefined;
+    this.manifestPosts.length = 0;
+    this.userPageSize = 100;
+    this.userRepoPageSize = 100;
+  }
+
+  /** The person approves the code on GitHub's page. */
+  approve(userCode: string, user: Partial<FakeUser> = {}): void {
+    const device = [...this.devices.values()].find((d) => d.userCode === userCode);
+    if (!device) throw new Error(`No device with the code ${userCode}`);
+    device.state = 'approved';
+    device.approvedBy = { login: 'octocat', id: 583231, name: 'The Octocat', ...user };
+  }
+
+  deny(userCode: string): void {
+    const device = [...this.devices.values()].find((d) => d.userCode === userCode);
+    if (!device) throw new Error(`No device with the code ${userCode}`);
+    device.state = 'denied';
+  }
+
+  expire(userCode: string): void {
+    const device = [...this.devices.values()].find((d) => d.userCode === userCode);
+    if (!device) throw new Error(`No device with the code ${userCode}`);
+    device.state = 'expired';
+  }
+
+  /** Every device-flow poll made so far, as it was seen. */
+  polls(): Seen[] {
+    return this.seen.filter(
+      (s) =>
+        s.method === 'POST' &&
+        s.path === '/login/oauth/access_token' &&
+        (s.body as { grant_type?: string } | undefined)?.grant_type?.includes('device_code')
+    );
+  }
+
+  /** Every refresh made so far. */
+  refreshes(): Seen[] {
+    return this.seen.filter(
+      (s) =>
+        s.method === 'POST' &&
+        s.path === '/login/oauth/access_token' &&
+        (s.body as { grant_type?: string } | undefined)?.grant_type === 'refresh_token'
+    );
+  }
+
+  /** Make a user token for `login`, as GitHub does after a device flow or a refresh. */
+  issueUserToken(login: string): FakeUserToken {
+    const id = crypto.randomBytes(12).toString('hex');
+    const expiring = this.expiringUserTokens;
+    const made: FakeUserToken = {
+      token: `ghu_fake${id}`,
+      login,
+      expiresAt: expiring ? this.clock() + this.userTokenLifetimeMs : undefined,
+      refreshToken: expiring ? `ghr_fake${id}` : undefined,
+      refreshExpiresAt: expiring ? this.clock() + this.refreshTokenLifetimeMs : undefined,
+      refreshUsed: false,
+      revoked: false,
+      grantRevoked: false,
+    };
+    this.userTokens.set(made.token, made);
+    return made;
+  }
+
+  private tokenAnswer(t: FakeUserToken): Record<string, unknown> {
+    return {
+      access_token: t.token,
+      token_type: 'bearer',
+      scope: '',
+      ...(t.expiresAt !== undefined
+        ? {
+            expires_in: Math.round((t.expiresAt - this.clock()) / 1000),
+            refresh_token: t.refreshToken,
+            refresh_token_expires_in: Math.round(
+              ((t.refreshExpiresAt ?? this.clock()) - this.clock()) / 1000
+            ),
+          }
+        : {}),
+    };
+  }
+
+  private userOf(login: string): FakeUser {
+    const done = [...this.devices.values()].find((d) => d.approvedBy?.login === login);
+    return done?.approvedBy ?? { login, id: 583231, name: 'The Octocat' };
   }
 
   install(installation: Partial<FakeInstallation> & { repos: string[] }): FakeInstallation {
@@ -293,6 +476,10 @@ export class FakeGithub {
     } catch {
       body = undefined;
     }
+    // A browser's form post (the manifest) is urlencoded.
+    if (String(req.headers['content-type'] ?? '').includes('x-www-form-urlencoded')) {
+      body = Object.fromEntries(new URLSearchParams(raw));
+    }
     const url = new URL(req.url ?? '/', 'http://fake');
     const path = url.pathname;
     const method = req.method ?? 'GET';
@@ -317,9 +504,15 @@ export class FakeGithub {
     for (const [needle, failure] of this.failNext) {
       if (path.includes(needle)) {
         this.failNext.delete(needle);
-        // `{token}` becomes the credential that was sent: an error that echoes it.
+        // `{token}` becomes the credential that was sent (a bearer, a device code or a refresh token): an error that echoes it.
+        const sent = (body ?? {}) as {
+          device_code?: string;
+          refresh_token?: string;
+          access_token?: string;
+        };
+        const echoed = bearer ?? sent.device_code ?? sent.refresh_token ?? sent.access_token ?? '';
         return reply(failure.status, {
-          message: failure.message.replace('{token}', bearer ?? ''),
+          message: failure.message.replace('{token}', echoed),
         });
       }
     }
@@ -333,9 +526,40 @@ export class FakeGithub {
       return reply(201, found);
     }
 
+    if (this.handleWeb(method, path, url, body, reply, entry, res)) return;
+
+    // An app's authorization of one person, revoked with the app's own client id and secret.
+    const grant = /^\/applications\/([^/]+)\/grant$/.exec(path);
+    if (method === 'DELETE' && grant) {
+      const basic = /^Basic (.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+      const [id, secret] = basic ? Buffer.from(basic, 'base64').toString().split(':') : [];
+      if (
+        decodeURIComponent(grant[1]) !== this.app.clientId ||
+        id !== this.app.clientId ||
+        secret !== this.clientSecret
+      ) {
+        return reply(401, { message: 'Bad credentials' });
+      }
+      const given = String((body as { access_token?: unknown } | undefined)?.access_token ?? '');
+      const held = this.userTokens.get(given);
+      if (!held) return reply(404, { message: 'Not Found' });
+      if (held.revoked || (held.expiresAt !== undefined && held.expiresAt <= this.clock())) {
+        return reply(422, { message: 'Validation Failed' });
+      }
+      for (const t of this.userTokens.values()) {
+        if (t.login === held.login) {
+          t.revoked = true;
+          t.grantRevoked = true;
+        }
+      }
+      this.grantsRevoked.push(held.login);
+      return reply(204);
+    }
+
     // Who is calling.
     let jwtOk = false;
     let token: FakeToken | undefined;
+    let userToken: FakeUserToken | undefined;
     if (bearer) {
       if (bearer.split('.').length === 3) {
         const verdict = this.verifyJwt(bearer);
@@ -346,6 +570,17 @@ export class FakeGithub {
       } else if (this.pats.has(bearer)) {
         entry.auth = 'pat';
         entry.token = bearer;
+      } else if (this.userTokens.has(bearer)) {
+        userToken = this.userTokens.get(bearer);
+        entry.auth = 'user';
+        entry.token = bearer;
+        if (
+          !userToken ||
+          userToken.revoked ||
+          (userToken.expiresAt !== undefined && userToken.expiresAt <= this.clock())
+        ) {
+          return reply(401, { message: 'Bad credentials' });
+        }
       } else {
         token = this.tokens.get(bearer);
         entry.auth = 'token';
@@ -497,7 +732,239 @@ export class FakeGithub {
       });
     }
 
+    if (userToken) {
+      if (method === 'GET' && path === '/user') {
+        const person = this.userOf(userToken.login);
+        return reply(200, {
+          login: person.login,
+          id: person.id,
+          name: person.name,
+          avatar_url:
+            this.userAvatarUrl ?? `https://avatars.githubusercontent.com/u/${person.id}?v=4`,
+          html_url: this.userHtmlUrl ?? `${githubWebBase()}/${person.login}`,
+        });
+      }
+      if (method === 'GET' && path === '/user/installations') {
+        const visible = this.installations.filter(
+          (i) => !this.userInstallationIds || this.userInstallationIds.includes(i.id)
+        );
+        const page = Number(url.searchParams.get('page') ?? 1);
+        const size = Math.min(this.userPageSize, Number(url.searchParams.get('per_page') ?? 100));
+        const slice = visible.slice((page - 1) * size, page * size);
+        return reply(
+          200,
+          {
+            total_count: visible.length,
+            installations: slice.map((i) => this.publicInstallation(i)),
+          },
+          page * size < visible.length
+            ? {
+                Link: `<${this.url}/user/installations?per_page=${size}&page=${page + 1}>; rel="next"`,
+              }
+            : {}
+        );
+      }
+      const listed = /^\/user\/installations\/(\d+)\/repositories$/.exec(path);
+      if (method === 'GET' && listed) {
+        const found = this.installations.find((i) => i.id === Number(listed[1]));
+        if (!found || (this.userInstallationIds && !this.userInstallationIds.includes(found.id))) {
+          return reply(404, { message: 'Not Found' });
+        }
+        if (found.suspended) return reply(403, { message: 'This installation has been suspended' });
+        const page = Number(url.searchParams.get('page') ?? 1);
+        const size = Math.min(
+          this.userRepoPageSize,
+          Number(url.searchParams.get('per_page') ?? 100)
+        );
+        const slice = found.repos.slice((page - 1) * size, page * size);
+        return reply(
+          200,
+          {
+            total_count: found.repos.length,
+            repository_selection: found.selection,
+            repositories: slice.map((full, i) => {
+              const shown = this.repoCase.get(full) ?? full;
+              return {
+                id: 9000 + (page - 1) * size + i,
+                name: shown.split('/')[1],
+                full_name: shown,
+                private: !full.endsWith('-public'),
+                html_url: `${githubWebBase()}/${shown}`,
+                owner: { login: shown.split('/')[0] },
+              };
+            }),
+          },
+          page * size < found.repos.length
+            ? {
+                Link: `<${this.url}/user/installations/${found.id}/repositories?per_page=${size}&page=${page + 1}>; rel="next"`,
+              }
+            : {}
+        );
+      }
+    }
+
     reply(404, { message: 'Not Found' });
+  }
+
+  /**
+   * GitHub's website: the device flow and the manifest form. True when it
+   * answered; the API's routes follow it.
+   */
+  private handleWeb(
+    method: string,
+    path: string,
+    url: URL,
+    body: unknown,
+    reply: (status: number, payload?: unknown, headers?: Record<string, string>) => void,
+    entry: Seen,
+    res: http.ServerResponse
+  ): boolean {
+    const b = (body ?? {}) as Record<string, unknown>;
+    const failed = (error: string, description: string, extra: Record<string, unknown> = {}) =>
+      reply(this.loginErrorStatus, { error, error_description: description, ...extra });
+
+    if (method === 'POST' && path === '/login/device/code') {
+      if (b.client_id !== this.app.clientId) {
+        failed(
+          'incorrect_client_credentials',
+          'The client_id and/or client_secret passed are incorrect.'
+        );
+        return true;
+      }
+      if (!this.deviceFlowEnabled) {
+        failed('device_flow_disabled', 'Device Flow must be explicitly enabled for this App');
+        return true;
+      }
+      const id = crypto.randomBytes(8).toString('hex');
+      const userCode = `${id.slice(0, 4)}-${id.slice(4, 8)}`.toUpperCase();
+      const device: FakeDevice = {
+        deviceCode: `device_${id}${crypto.randomBytes(12).toString('hex')}`,
+        userCode,
+        clientId: b.client_id,
+        state: 'pending',
+        interval: this.deviceInterval,
+      };
+      this.devices.set(device.deviceCode, device);
+      reply(200, {
+        device_code: device.deviceCode,
+        user_code: userCode,
+        verification_uri: this.deviceVerificationUri ?? `${githubWebBase()}/login/device`,
+        expires_in: this.deviceExpiresIn,
+        interval: this.deviceInterval,
+      });
+      return true;
+    }
+
+    if (method === 'POST' && path === '/login/oauth/access_token') {
+      if (b.grant_type === 'refresh_token') {
+        if (b.client_id !== this.app.clientId || b.client_secret !== this.clientSecret) {
+          failed(
+            'incorrect_client_credentials',
+            'The client_id and/or client_secret passed are incorrect.'
+          );
+          return true;
+        }
+        const old = [...this.userTokens.values()].find((t) => t.refreshToken === b.refresh_token);
+        if (
+          !old ||
+          old.refreshUsed ||
+          old.grantRevoked ||
+          (old.refreshExpiresAt !== undefined && old.refreshExpiresAt <= this.clock())
+        ) {
+          failed('bad_refresh_token', 'The refresh token passed is incorrect or expired.');
+          return true;
+        }
+        old.refreshUsed = true;
+        old.revoked = true;
+        reply(200, this.tokenAnswer(this.issueUserToken(old.login)));
+        return true;
+      }
+
+      const scripted = this.deviceScript.shift();
+      if (scripted) {
+        const device = this.devices.get(String(b.device_code));
+        switch (scripted) {
+          case 'pending':
+            failed('authorization_pending', 'The authorization request is still pending.');
+            break;
+          case 'slow_down':
+            if (device) device.interval += 5;
+            failed('slow_down', 'Too many requests have been made in the same timeframe.', {
+              interval: (device?.interval ?? this.deviceInterval) + 0,
+            });
+            break;
+          case 'denied':
+            failed('access_denied', 'The user has denied the request.');
+            break;
+          case 'expired':
+            failed('expired_token', 'The device_code has expired.');
+            break;
+          case 'disabled':
+            failed('device_flow_disabled', 'Device Flow must be explicitly enabled for this App');
+            break;
+        }
+        return true;
+      }
+      if (b.client_id !== this.app.clientId) {
+        failed(
+          'incorrect_client_credentials',
+          'The client_id and/or client_secret passed are incorrect.'
+        );
+        return true;
+      }
+      if (!this.deviceFlowEnabled) {
+        failed('device_flow_disabled', 'Device Flow must be explicitly enabled for this App');
+        return true;
+      }
+      const device = this.devices.get(String(b.device_code));
+      if (!device) {
+        failed('incorrect_device_code', 'The device_code provided is not valid.');
+        return true;
+      }
+      switch (device.state) {
+        case 'pending':
+          failed('authorization_pending', 'The authorization request is still pending.');
+          return true;
+        case 'denied':
+          failed('access_denied', 'The user has denied the request.');
+          return true;
+        case 'expired':
+          failed('expired_token', 'The device_code has expired.');
+          return true;
+        case 'approved':
+          this.devices.delete(device.deviceCode);
+          reply(200, this.tokenAnswer(this.issueUserToken((device.approvedBy as FakeUser).login)));
+          return true;
+      }
+    }
+
+    // The manifest form a browser posts: GitHub asks the person to confirm, then redirects back.
+    const form =
+      method === 'POST' ? /^\/(?:organizations\/([^/]+)\/)?settings\/apps\/new$/.exec(path) : null;
+    if (form) {
+      const state = url.searchParams.get('state') ?? '';
+      let manifest: Record<string, any>;
+      try {
+        manifest = JSON.parse(String(b.manifest ?? ''));
+      } catch {
+        reply(422, { message: 'The manifest could not be read.' });
+        return true;
+      }
+      this.manifestPosts.push({ path, state, manifest });
+      const org = form[1] ? decodeURIComponent(form[1]) : undefined;
+      const code = `code${crypto.randomBytes(8).toString('hex')}`;
+      this.conversions.set(
+        code,
+        this.conversion(org ? { owner: { login: org, type: 'Organization' } } : {})
+      );
+      entry.status = 302;
+      res.writeHead(302, {
+        Location: `${String(manifest.redirect_url)}?code=${code}&state=${encodeURIComponent(state)}`,
+      });
+      res.end();
+      return true;
+    }
+    return false;
   }
 
   private publicInstallation(i: FakeInstallation) {

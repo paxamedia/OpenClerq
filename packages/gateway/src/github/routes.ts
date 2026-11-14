@@ -6,7 +6,16 @@
  *                                 browser lands on it; it needs the state)
  *   POST   /github/app/import     use an app that already exists (its id, client id, key)
  *   GET    /github/app            the connection and where the app is installed
- *   DELETE /github/app            forget the connection and the stored key
+ *   DELETE /github/app            forget the connection and the stored key (and sign out)
+ *
+ * and the person's own sign-in (the app's device flow, see `signin.ts`):
+ *
+ *   POST   /github/login               start: answers the code to type on GitHub
+ *   GET    /github/login/:flowId       pending, approved, denied, expired, disabled, error
+ *   DELETE /github/login/:flowId       cancel
+ *   GET    /github/user                who is signed in
+ *   DELETE /github/user                sign out, and revoke on GitHub when possible
+ *   GET    /github/user/repositories   what they reach through the app's installations
  *
  * Every route but the callback is for the gateway's own token: a scoped token
  * (a module's, a phone's) never reaches `/github` (see `OPERATOR_ONLY`). The
@@ -14,7 +23,10 @@
  */
 
 import type { Express, Request, Response } from 'express';
+import { parseRemote } from '@clerq/workspaces';
+import { audit } from '@clerq/store';
 import { logger } from '../logger.js';
+import { getStore } from '../store.js';
 import { GithubApiError } from './api.js';
 import { GithubApp, type AppInfo, type Installation } from './app.js';
 import {
@@ -38,9 +50,12 @@ import {
 } from './connect.js';
 import { InvalidKeyError, parsePrivateKey } from './jwt.js';
 import { MANIFEST_PERMISSIONS, ManifestFlows, ManifestRequestError, hostOf } from './manifest.js';
+import { GithubSignIn, SignInError } from './signin.js';
 
 export interface GithubRouteDeps {
   app: GithubApp;
+  /** The person's sign-in. Default: one on the vault. */
+  signin?: GithubSignIn;
   flows?: ManifestFlows;
   vault?: Vault;
   now?: () => number;
@@ -105,6 +120,11 @@ function cleanPem(text: string): string {
   return pem;
 }
 
+/** A repository's address as `repos.url` keeps it, for comparing: no case, no `.git`. */
+function urlKey(url: string): string {
+  return url.toLowerCase().replace(/\.git$/, '');
+}
+
 function withinRequested(permissions: Record<string, string>): string | null {
   const asked: Record<string, string> = MANIFEST_PERMISSIONS;
   for (const [name, level] of Object.entries(permissions)) {
@@ -121,6 +141,7 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
   const github = deps.app;
   const vault = deps.vault ?? realVault;
   const flows = deps.flows ?? new ManifestFlows(now, githubWebBase);
+  const signin = deps.signin ?? new GithubSignIn({ vault, now });
 
   const status = async (refresh: boolean) => {
     const config = readAppConfig();
@@ -326,7 +347,10 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
       `<p>Connected. Now install the app on the repositories it may use: ` +
         `<a href="${esc(link)}">${esc(link)}</a></p>` +
         `<p>The app is <strong>${esc(config.name)}</strong>. Only the repositories you pick there will be reachable, ` +
-        `and you can change them later on GitHub. You can close this page and go back to OpenClerq.</p>`
+        `and you can change them later on GitHub.</p>` +
+        `<p>To sign in as yourself from OpenClerq (to see your repositories there), switch on ` +
+        `<strong>Enable Device Flow</strong> in the app's settings: <a href="${esc(settingsUrl(config))}">${esc(settingsUrl(config))}</a>. ` +
+        `You can close this page and go back to OpenClerq.</p>`
     );
   });
 
@@ -467,8 +491,16 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
     }
   });
 
-  app.delete('/github/app', (_req: Request, res: Response) => {
+  app.delete('/github/app', async (_req: Request, res: Response) => {
     try {
+      if (!readAppConfig()) {
+        return res
+          .status(404)
+          .json({ error: 'app_not_connected', message: 'No GitHub App is connected.' });
+      }
+      // The person's sign-in belongs to this app, and revoking it needs the app's client secret:
+      // before the secret is deleted.
+      const signedOut = await signin.signOut().catch(() => null);
       const config = forgetConnection(vault, 'operator');
       if (!config) {
         return res
@@ -482,16 +514,116 @@ export function mountGithubRoutes(app: Express, deps: GithubRouteDeps): void {
         slug: config.slug,
         appDeletedOnGitHub: false,
         settingsUrl: settings,
+        ...(signedOut ? { user: signedOut } : {}),
         message:
           `OpenClerq forgot the app ${config.slug} and deleted its key from the vault. ` +
           `The app itself still exists on GitHub, and so do its installations: uninstall it or delete the app at ${settings}. ` +
-          'Installation tokens a run is using stay valid until that run ends (at most an hour).',
+          'Installation tokens a run is using stay valid until that run ends (at most an hour).' +
+          (signedOut ? ` ${signedOut.message}` : ''),
       });
     } catch (e) {
       const message =
         e instanceof ConnectError ? e.message : 'The connection could not be removed.';
       logger.error('github disconnect error', { err: e instanceof Error ? e.message : String(e) });
       res.status(500).json({ error: 'github_disconnect_failed', message });
+    }
+  });
+
+  // ---- the person's sign-in -------------------------------------------------------------
+
+  const refuse = (res: Response, e: unknown, what: string) => {
+    if (e instanceof SignInError) {
+      return res.status(e.status).json({ error: e.code, message: e.message, ...e.extra });
+    }
+    logger.error(`github ${what} error`, { err: e instanceof Error ? e.name : 'unknown' });
+    res.status(500).json({ error: `github_${what}_failed` });
+  };
+
+  // Start a device flow: the answer is what the person types on GitHub. Polling is in the background.
+  app.post('/github/login', async (_req: Request, res: Response) => {
+    try {
+      res.json(await signin.start());
+    } catch (e) {
+      refuse(res, e, 'login');
+    }
+  });
+
+  app.get('/github/login/:flowId', (req: Request, res: Response) => {
+    const view = signin.status(String(req.params.flowId));
+    if (!view) {
+      return res.status(404).json({
+        error: 'flow_not_found',
+        message:
+          'There is no such sign-in. It may have finished long ago, or been cancelled. Start again.',
+      });
+    }
+    res.json(view);
+  });
+
+  app.delete('/github/login/:flowId', (req: Request, res: Response) => {
+    if (!signin.cancel(String(req.params.flowId))) {
+      return res
+        .status(404)
+        .json({ error: 'flow_not_found', message: 'There is no such sign-in.' });
+    }
+    res.json({ cancelled: true });
+  });
+
+  app.get('/github/user', async (_req: Request, res: Response) => {
+    try {
+      res.json(await signin.user());
+    } catch (e) {
+      refuse(res, e, 'user');
+    }
+  });
+
+  app.delete('/github/user', async (_req: Request, res: Response) => {
+    try {
+      const out = await signin.signOut();
+      if (!out) {
+        return res
+          .status(404)
+          .json({ error: 'not_signed_in', message: 'Nobody is signed in to GitHub.' });
+      }
+      audit(getStore(), {
+        actor: 'operator',
+        action: 'github.user.signed_out',
+        subject: 'github',
+        detail: { revoked: out.revoked },
+      });
+      res.json(out);
+    } catch (e) {
+      refuse(res, e, 'signout');
+    }
+  });
+
+  // What the signed-in person reaches through the app: each repository says whether OpenClerq lists it already.
+  app.get('/github/user/repositories', async (_req: Request, res: Response) => {
+    try {
+      const list = await signin.repositories();
+      const known = new Map<string, string>();
+      for (const row of getStore()
+        .prepare("SELECT id, url FROM repos WHERE kind = 'github' AND url IS NOT NULL")
+        .all()) {
+        known.set(urlKey(String(row.url)), String(row.id));
+      }
+      res.json({
+        repositories: list.repositories.map((r) => {
+          const url = parseRemote(`github:${r.fullName}`)?.url;
+          const repoId = url ? known.get(urlKey(url)) : undefined;
+          return { ...r, added: repoId !== undefined, ...(repoId ? { repoId } : {}) };
+        }),
+        truncated: list.truncated,
+        limit: list.limit,
+        ...(list.truncated
+          ? {
+              message: `Only the first ${list.limit} repositories are listed. To add another, name it: clerq repo add github:owner/name.`,
+            }
+          : {}),
+        ...(list.warnings.length > 0 ? { warnings: list.warnings } : {}),
+      });
+    } catch (e) {
+      refuse(res, e, 'repositories');
     }
   });
 }
