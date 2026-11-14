@@ -16,15 +16,20 @@
 import os from 'node:os';
 import path from 'node:path';
 import { audit } from '@clerq/store';
-import { PluginPermissionError, type PluginPermissions } from '@clerq/plugin-sdk';
+import { PluginPermissionError, tablePrefix, type PluginPermissions } from '@clerq/plugin-sdk';
 import { isAllowed, parseAllowlist, resolveWithinRoot, type EgressRule } from '@clerq/sandbox';
 import { getStore } from '../store.js';
+import { BANNED_SQL, changesData, scanSql } from './plugin-sql.js';
 import { logger } from '../logger.js';
 
 /** The same refusal or undeclared use is written to the audit log once a minute, with a count of the repeats. */
 export const AUDIT_REPEAT_MS = 60_000;
 
-export type Permission = 'secrets' | 'services' | 'exec' | 'net' | 'fs.read' | 'fs.write';
+/** Variables that decide which program or library a command runs, matched whatever their case. */
+const BLOCKED_ENV =
+  /^(PATH|DYLD_.*|LD_.*|NODE_OPTIONS|NODE_PATH|GIT_EXEC_PATH|GIT_CONFIG.*|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|BASH_ENV|ENV|PYTHONPATH|PYTHONSTARTUP|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB)$/i;
+
+export type Permission = 'secrets' | 'services' | 'exec' | 'net' | 'fs.read' | 'fs.write' | 'store';
 
 export interface GuardDeps {
   id: string;
@@ -108,6 +113,73 @@ export class PluginGuard {
 
   visibleServices<T extends { label: string }>(items: T[]): T[] {
     return this.enforcing ? items.filter((s) => this.declared.services.includes(s.label)) : items;
+  }
+
+  /**
+   * A statement about to run through `ctx.store.exec` or `.prepare`. A plugin's SQL may name only
+   * its own tables (`mod_<id>__*`): any other table is a core table (or another module's), and
+   * `ATTACH`, `DETACH`, `PRAGMA` and `VACUUM` are not for a plugin. With enforcement on that is
+   * refused; with it off a statement that changes a core table is audited and goes ahead. It reads
+   * the text of the statement, nothing more.
+   */
+  sql(sql: string): void {
+    const scan = scanSql(sql);
+    const banned = BANNED_SQL.find((k) => scan.words.has(k));
+    if (banned) {
+      this.outside(
+        'store',
+        banned.toUpperCase(),
+        `The plugin "${this.deps.id}" may not run ${banned.toUpperCase()} through ctx.store.`
+      );
+      return;
+    }
+    const core = this.coreTable(scan.names);
+    if (!core) return;
+    // Off, only a write is worth a row; on, a read of the gateway's own tables is refused too.
+    if (!this.enforcing && !changesData(scan)) return;
+    this.outside(
+      'store',
+      core,
+      `The plugin "${this.deps.id}" may not use the table "${core}" in SQL: its SQL may name only its own tables (${tablePrefix(this.deps.id)}*).`
+    );
+  }
+
+  private coreSet: { version: number; names: Set<string> } | null = null;
+
+  /** The first name in `names` that is a table or view of the gateway or of another module. */
+  private coreTable(names: string[]): string | undefined {
+    const db = getStore();
+    const version = Number(db.prepare('PRAGMA schema_version').get()?.schema_version ?? -1);
+    if (!this.coreSet || this.coreSet.version !== version) {
+      const own = tablePrefix(this.deps.id);
+      this.coreSet = {
+        version,
+        names: new Set(
+          db
+            .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+            .all()
+            .map((r) => String(r.name).toLowerCase())
+            .filter((n) => !n.startsWith(own))
+        ),
+      };
+    }
+    const set = this.coreSet.names;
+    return names.find((n) => set.has(n) || n.startsWith('sqlite_'));
+  }
+
+  /**
+   * Environment variables a command may not be given: they change which program or library runs
+   * (`PATH`, `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `GIT_EXEC_PATH`, `GIT_CONFIG_*`, `BASH_ENV`, …).
+   */
+  env(keys: string[]): void {
+    for (const key of keys) {
+      if (!BLOCKED_ENV.test(key)) continue;
+      this.outside(
+        'exec',
+        `env:${key}`,
+        `The plugin "${this.deps.id}" may not set ${key} for a command: it changes which program or library runs.`
+      );
+    }
   }
 
   /** `cmd` exactly as declared. */

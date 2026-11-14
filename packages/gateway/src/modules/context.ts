@@ -213,8 +213,15 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
     store: {
       table: (name) => `${prefix}${checkTable(name)}`,
       rows: (name) => tenantTable(`${prefix}${checkTable(name)}`),
-      prepare: (sql) => getStore().prepare(sql),
-      exec: (sql) => getStore().exec(sql),
+      // The text of a statement is checked: a plugin's SQL may name only its own tables.
+      prepare(sql) {
+        guard.sql(sql);
+        return getStore().prepare(sql);
+      },
+      exec(sql) {
+        guard.sql(sql);
+        getStore().exec(sql);
+      },
       transaction: (fn) => getStore().transaction(fn),
     },
     secrets: {

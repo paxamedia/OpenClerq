@@ -175,3 +175,84 @@ describe('paths', () => {
     }
   });
 });
+
+describe('SQL through the context', () => {
+  const db = () => getStore();
+
+  it('refuses a statement that names a core table, and any table that is not the plugin’s own', () => {
+    const g = guard();
+    for (const sql of [
+      'SELECT * FROM settings',
+      "UPDATE 'settings' SET value = 'x'",
+      'DELETE FROM "audit_log"',
+      'SELECT * FROM sqlite_master',
+      'SELECT * FROM main.runs',
+    ]) {
+      expect(() => g.sql(sql), sql).toThrow(PluginPermissionError);
+    }
+    // Another module's table is not this plugin's.
+    db().exec('CREATE TABLE mod_other__things (id INTEGER)');
+    expect(() => g.sql('SELECT * FROM mod_other__things')).toThrow(PluginPermissionError);
+  });
+
+  it('lets a plugin name its own tables, and does not mind words that are not tables', () => {
+    db().exec('CREATE TABLE mod_g__things (id INTEGER, name TEXT, tenant_id TEXT)');
+    const g = guard();
+    expect(() =>
+      g.sql('SELECT id, name FROM mod_g__things WHERE tenant_id = ? ORDER BY id')
+    ).not.toThrow();
+    expect(() =>
+      g.sql("INSERT INTO mod_g__things (name, tenant_id) VALUES ('a', 'default')")
+    ).not.toThrow();
+    expect(rows()).toEqual([]);
+  });
+
+  it('notices a table created after the guard last looked', () => {
+    const g = guard();
+    expect(() => g.sql('SELECT * FROM mod_late__t')).not.toThrow();
+    db().exec('CREATE TABLE mod_late__t (id INTEGER)');
+    expect(() => g.sql('SELECT * FROM mod_late__t')).toThrow(PluginPermissionError);
+  });
+
+  it('refuses ATTACH, DETACH, PRAGMA and VACUUM', () => {
+    for (const sql of ["ATTACH 'x' AS y", 'DETACH y', 'PRAGMA user_version', 'VACUUM']) {
+      expect(() => guard().sql(sql), sql).toThrow(/may not run/);
+    }
+  });
+
+  it('with enforcement off, audits a write to a core table and not a read, and goes ahead', () => {
+    enforcing = false;
+    const g = guard();
+    expect(() => g.sql('SELECT * FROM settings')).not.toThrow();
+    expect(rows()).toEqual([]);
+    expect(() => g.sql("UPDATE settings SET value = 'x'")).not.toThrow();
+    expect(rows().map((r) => r.action)).toEqual(['plugin.permission.undeclared']);
+    expect(() => g.sql('PRAGMA user_version')).not.toThrow();
+    expect(rows()).toHaveLength(2);
+  });
+});
+
+describe('what a command may be given', () => {
+  it('refuses variables that choose the program or library, in any case', () => {
+    for (const key of [
+      'PATH',
+      'path',
+      'LD_PRELOAD',
+      'DYLD_INSERT_LIBRARIES',
+      'NODE_OPTIONS',
+      'GIT_EXEC_PATH',
+      'GIT_CONFIG_COUNT',
+      'BASH_ENV',
+      'ENV',
+    ]) {
+      expect(() => guard().env([key]), key).toThrow(PluginPermissionError);
+    }
+    expect(() => guard().env(['HOME_LIKE', 'GREETING', 'LANG'])).not.toThrow();
+  });
+
+  it('only audits them when enforcement is off', () => {
+    enforcing = false;
+    expect(() => guard().env(['PATH'])).not.toThrow();
+    expect(rows().map((r) => JSON.parse(String(r.detail)).subject)).toEqual(['env:PATH']);
+  });
+});

@@ -8,6 +8,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { ExecOptions, ExecResult, PluginExec, PluginFetch, PluginFs } from '@clerq/plugin-sdk';
@@ -32,6 +33,40 @@ export interface IoDeps {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * The file a command name stands for, found once, on the gateway's own PATH: that file is what is
+ * run, whatever environment the command is given. A name with a slash is that path (absolute), or,
+ * when enforcement is off, relative to the working directory.
+ */
+export function resolveCommand(cmd: string, cwd: string | undefined, enforcing: boolean): string {
+  if (path.isAbsolute(cmd)) return cmd;
+  if (/[\\/]/.test(cmd)) {
+    if (enforcing) {
+      throw new Error(
+        'ctx.exec needs an absolute path or a bare command name, not a path relative to somewhere.'
+      );
+    }
+    return path.resolve(cwd ?? process.cwd(), cmd);
+  }
+  const exts =
+    process.platform === 'win32'
+      ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';')]
+      : [''];
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const candidate = path.join(dir, cmd + ext);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        /* not here */
+      }
+    }
+  }
+  throw new Error(`Could not start "${cmd}": it is not on the gateway's PATH.`);
+}
+
 function killTree(child: ChildProcess): void {
   try {
     if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
@@ -46,7 +81,8 @@ function run(
   args: string[],
   opts: ExecOptions,
   signal: AbortSignal,
-  running: Set<ChildProcess>
+  running: Set<ChildProcess>,
+  name: string = cmd
 ): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     const env: Record<string, string> = {};
@@ -65,7 +101,7 @@ function run(
         windowsHide: true,
       });
     } catch (e) {
-      return reject(new Error(`Could not start "${cmd}": ${(e as Error).message}`));
+      return reject(new Error(`Could not start "${name}": ${(e as Error).message}`));
     }
     running.add(child);
     const cap = Math.max(1, opts.maxOutputBytes ?? DEFAULT_OUTPUT_BYTES);
@@ -101,7 +137,7 @@ function run(
       fn();
     };
     child.on('error', (e) =>
-      finish(() => reject(new Error(`Could not start "${cmd}": ${e.message}`)))
+      finish(() => reject(new Error(`Could not start "${name}": ${e.message}`)))
     );
     child.on('close', (code, sig) =>
       finish(() =>
@@ -120,6 +156,35 @@ function run(
   });
 }
 
+/**
+ * The fields of a `RequestInit` that are passed on. Anything else, a runtime's own option such as
+ * undici's `dispatcher`, could carry a request somewhere the host check did not see, so it is dropped.
+ */
+const INIT_KEYS = [
+  'method',
+  'headers',
+  'body',
+  'redirect',
+  'signal',
+  'referrer',
+  'referrerPolicy',
+  'mode',
+  'credentials',
+  'cache',
+  'integrity',
+  'keepalive',
+  'duplex',
+  'priority',
+  'window',
+] as const;
+
+function standardInit(init: RequestInit): RequestInit {
+  const out: Record<string, unknown> = {};
+  for (const k of INIT_KEYS)
+    if (init[k as keyof RequestInit] !== undefined) out[k] = init[k as keyof RequestInit];
+  return out as RequestInit;
+}
+
 const SENSITIVE_ON_REDIRECT = ['authorization', 'cookie', 'proxy-authorization'];
 
 export function createIo(deps: IoDeps): { exec: PluginExec; fetch: PluginFetch; fs: PluginFs } {
@@ -134,10 +199,15 @@ export function createIo(deps: IoDeps): { exec: PluginExec; fetch: PluginFetch; 
       throw new Error('ctx.exec takes its arguments as a list of strings.');
     }
     deps.guard.command(cmd);
-    return run(cmd, args, opts, deps.signal, running);
+    deps.guard.env(Object.keys(opts.env ?? {}));
+    // The declared name is checked; the file it stands for is looked up here, once, on the
+    // gateway's PATH, and that file is run. A PATH in `opts.env` cannot point it elsewhere.
+    const file = resolveCommand(cmd, opts.cwd, deps.guard.enforcing);
+    return run(file, args, opts, deps.signal, running, cmd);
   };
 
-  const fetchChecked: PluginFetch = async (input, init = {}) => {
+  const fetchChecked: PluginFetch = async (input, rawInit = {}) => {
+    const init = standardInit(rawInit);
     deps.assertLive();
     let url: URL;
     try {
