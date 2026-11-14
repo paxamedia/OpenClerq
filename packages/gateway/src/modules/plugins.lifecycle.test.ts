@@ -5,7 +5,7 @@
  * gateway does not serve, and legacy modules beside plugins.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,7 +71,8 @@ describe('the order of the hooks', () => {
     );
     events('sequence').length = 0;
     await start();
-    expect(events('sequence')).toEqual(['import', 'upgrade:1.0.0:table=yes', 'register', 'start']);
+    // (The entry is the same file as before, so this process already has it: no second import.)
+    expect(events('sequence')).toEqual(['upgrade:1.0.0:table=yes', 'register', 'start']);
   });
 
   it('calls upgrade only when the version changed since the last start', async () => {
@@ -243,7 +244,11 @@ describe('everything a plugin registered through its context is removed', () => 
     const item = (await (await post('/api/modules/swept/item')).json()) as { id: string };
     expect((await post(`/inbox/items/${item.id}/respond`)).status).toBe(200);
 
+    const cleared = vi.spyOn(globalThis, 'clearInterval');
     await post('/plugins/swept/disable');
+    // The context's own timers are cancelled, not left to notice they are stopped.
+    expect(cleared).toHaveBeenCalled();
+    cleared.mockRestore();
     const mark = () => events('swept').length;
     const at = mark();
     emit('module.other.two', {});

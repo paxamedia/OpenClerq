@@ -6,6 +6,8 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import {
   auditRows,
@@ -446,5 +448,79 @@ describe('what the helpers do beyond the check', () => {
     ]);
     const p = (await listPlugins(gw))['no-llm'];
     expect(p.permissions).toMatchObject({ llm: true, memory: { read: ['fact'], write: ['note'] } });
+  });
+});
+
+describe('redirects, with a real network stack', () => {
+  const servers: http.Server[] = [];
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((srv) => new Promise((r) => srv.close(r))));
+  });
+
+  /** Two servers on loopback: A redirects to what it is told, B counts who reaches it. */
+  async function twoServers() {
+    let reachedB = 0;
+    const b = http.createServer((_req, res) => {
+      reachedB += 1;
+      res.end('B');
+    });
+    await new Promise<void>((r) => b.listen(0, '127.0.0.1', r));
+    const portB = (b.address() as AddressInfo).port;
+    const a = http.createServer((req, res) => {
+      if (req.url === '/to-b') {
+        res.writeHead(302, { location: `http://127.0.0.1:${portB}/x` }).end();
+      } else if (req.url === '/to-self') {
+        res.writeHead(302, { location: '/ok' }).end();
+      } else {
+        res.end('A');
+      }
+    });
+    await new Promise<void>((r) => a.listen(0, '127.0.0.1', r));
+    servers.push(a, b);
+    return { portA: (a.address() as AddressInfo).port, portB, reachedB: () => reachedB };
+  }
+
+  const plugin = (portA: number) =>
+    writePlugin(s.modules, {
+      id: 'checked',
+      hooks: TRY,
+      permissions: { net: [`127.0.0.1:${portA}`] },
+    });
+
+  it('does not follow a redirect from a declared host to one that is not, when it is on', async () => {
+    const { portA, portB, reachedB } = await twoServers();
+    plugin(portA);
+    await seedEnforce(s);
+    const gw = (running = await startGateway(s));
+    await approve(gw);
+    expect(await attempt(gw, 'fetch', { url: `http://127.0.0.1:${portA}/to-b` })).toMatchObject(
+      denied('net', `127.0.0.1:${portB}`)
+    );
+    // The request never reached it: it was refused before it was made.
+    expect(reachedB()).toBe(0);
+    // A redirect inside the declared host is followed.
+    expect(await attempt(gw, 'fetch', { url: `http://127.0.0.1:${portA}/to-self` })).toMatchObject({
+      ok: true,
+      value: 200,
+    });
+    // And one the caller asked not to follow is handed back as it is.
+    expect(
+      await attempt(gw, 'fetch', { url: `http://127.0.0.1:${portA}/to-b`, redirect: 'manual' })
+    ).toMatchObject({ ok: true, value: 302 });
+    expect(reachedB()).toBe(0);
+  });
+
+  it('follows it, and audits it, when enforcement is off', async () => {
+    const { portA, portB, reachedB } = await twoServers();
+    plugin(portA);
+    const gw = (running = await startGateway(s));
+    expect(await attempt(gw, 'fetch', { url: `http://127.0.0.1:${portA}/to-b` })).toMatchObject({
+      ok: true,
+      value: 200,
+    });
+    expect(reachedB()).toBe(1);
+    expect(rows('plugin.permission.undeclared').map((r) => r.detail.subject)).toEqual([
+      `127.0.0.1:${portB}`,
+    ]);
   });
 });

@@ -117,12 +117,14 @@ const MODULE_ID = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
  * contract, which took an array and pushed handlers onto it, still works: the
  * context has `push`. A plugin may also export `start`, `stop` and `upgrade`.
  *
- * `bust` makes the import a fresh one: a plugin that was stopped and started again
- * must run the code that is on disk now, not the copy Node already holds.
+ * `entryPath` is where to import from instead of the entry's own place: the host stages
+ * a plugin's entry at a path named by what it holds, so what runs is exactly what was
+ * approved, and a new version of the same plugin is a new module to Node and to Bun alike
+ * (neither can be made to import a changed file again from the same path).
  */
 export async function importEntry(
   d: Pick<DiscoveredModule, 'kind' | 'manifest' | 'dir' | 'plugin'>,
-  bust?: string
+  opts: { entryPath?: string } = {}
 ): Promise<Pick<LoadedModule, 'routeHandlers' | 'register' | 'hooks' | 'error'>> {
   const { dir: moduleDir, manifest } = d;
   const isPlugin = d.kind === 'plugin';
@@ -136,15 +138,14 @@ export async function importEntry(
           path.join(moduleDir, 'dist', 'routes.cjs'),
           path.join(moduleDir, 'build', 'routes.js'),
         ];
-  const p = candidates.find((c) => fssync.existsSync(c));
+  const p = opts.entryPath ?? candidates.find((c) => fssync.existsSync(c));
   if (!p) {
     return isPlugin && declared
       ? { routeHandlers: [], error: `The server entry ${declared} does not exist.` }
       : { routeHandlers: [] };
   }
   try {
-    const href = pathToFileURL(p).href + (bust ? `?v=${encodeURIComponent(bust)}` : '');
-    const mod = (await import(href)) as Record<string, unknown>;
+    const mod = (await import(pathToFileURL(p).href)) as Record<string, unknown>;
     const def = mod.default as Record<string, unknown> | ((...a: unknown[]) => unknown) | undefined;
     const pick = (name: string): ((...a: unknown[]) => unknown) | undefined => {
       if (typeof mod[name] === 'function') return mod[name] as (...a: unknown[]) => unknown;
@@ -189,8 +190,12 @@ export async function importEntry(
         : {}),
     };
   } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
+    let error = e instanceof Error ? e.message : String(e);
     console.warn(`[Clerq] Failed to load module entry ${p}:`, error);
+    if (isPlugin && /Cannot find (module|package)|ERR_MODULE_NOT_FOUND/.test(error)) {
+      error +=
+        ' A plugin’s server entry must be one self-contained file: bundle what it imports into it.';
+    }
     return { routeHandlers: [], error };
   }
 }

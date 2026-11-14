@@ -17,10 +17,11 @@
  * a plugin can be stopped and started again without restarting the gateway.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import express, { type Express, type RequestHandler, type Router } from 'express';
-import { audit, migrateModule, type Migration } from '@clerq/store';
+import { audit, clerqHome, migrateModule, type Migration } from '@clerq/store';
 import type { PluginPermissions } from '@clerq/plugin-sdk';
 import { engineProblem, EMPTY_PERMISSIONS } from '@clerq/plugin-sdk/manifest';
 import {
@@ -81,6 +82,8 @@ export interface Facts {
   declared: PluginPermissions;
   permissionsHash: string | null;
   checksum: string | null;
+  /** Every file the checksum covers, with its own hash. */
+  files: Array<{ path: string; sha256: string }>;
   /** Why part of the facts could not be read (the checksum), when it could not. */
   readProblem?: string;
 }
@@ -112,6 +115,15 @@ export interface HostedModule {
   current: Facts;
   /** The code and declarations that are running; set while enabled. */
   loaded?: { checksum: string | null; permissionsHash: string | null };
+  /**
+   * What this process imported of a legacy module, by checksum. A module's code is loaded
+   * once per start, from where it lies: neither Node nor Bun will import a changed file
+   * again from the same path, so a changed legacy module waits for a restart.
+   */
+  imported?: {
+    checksum: string | null;
+    loaded: Pick<LoadedModule, 'routeHandlers' | 'register' | 'hooks' | 'error'>;
+  };
   /** `start()` finished, so `stop()` is owed. */
   started: boolean;
   /** Work on this plugin, one step at a time. */
@@ -168,12 +180,15 @@ export function readFacts(dir: string): Facts | { problem: string } {
       ? (discovered.plugin?.permissions ?? EMPTY_PERMISSIONS)
       : declaredPermissions(discovered.manifest).permissions;
   let checksum: string | null = null;
+  let files: Facts['files'] = [];
   let problem: string | undefined;
   try {
-    checksum = pluginChecksumDetail(dir, {
+    const detail = pluginChecksumDetail(dir, {
       manifestText: discovered.manifestText,
       manifest: discovered.manifest,
-    }).checksum;
+    });
+    checksum = detail.checksum;
+    files = detail.files;
   } catch (e) {
     problem = e instanceof PluginFilesError ? e.message : message(e);
   }
@@ -182,6 +197,7 @@ export function readFacts(dir: string): Facts | { problem: string } {
     declared,
     permissionsHash: hashPermissions(declared),
     checksum,
+    files,
     ...(problem ? { readProblem: problem } : {}),
   };
 }
@@ -439,6 +455,7 @@ export class ModuleHost {
           declared: EMPTY_PERMISSIONS,
           permissionsHash: null,
           checksum: null,
+          files: [],
           readProblem: read.problem,
         }
       : read;
@@ -482,6 +499,7 @@ export class ModuleHost {
             declared: entry.declared,
             permissionsHash: entry.current.permissionsHash,
             checksum: null,
+            files: [],
             readProblem: facts.problem,
           }
         : facts;
@@ -651,8 +669,31 @@ export class ModuleHost {
       return this.failEntry(entry, `The plugin's files could not be read: ${message(e)}`);
     }
 
-    // A fresh import, so code that changed while the plugin was stopped is the code that runs.
-    const loaded = await importEntry(d, checksum ?? undefined);
+    let loaded: Pick<LoadedModule, 'routeHandlers' | 'register' | 'hooks' | 'error'>;
+    if (isPlugin) {
+      // The entry is copied to a path named by its hash, and that copy is what is imported: what
+      // runs is exactly what was approved, and a new version is a new module for Node and Bun.
+      const staged = stageEntry(d, entry.current);
+      if ('changed' in staged) {
+        if (depth >= 2) {
+          return this.failEntry(entry, 'The plugin kept changing while it was being loaded.');
+        }
+        this.adopt(entry, readFacts(d.dir));
+        return this.settle(entry, false, depth + 1);
+      }
+      if ('error' in staged) return this.failEntry(entry, staged.error);
+      loaded = await importEntry(d, { entryPath: staged.path });
+    } else if (entry.imported && entry.imported.checksum === checksum) {
+      loaded = entry.imported.loaded;
+    } else if (entry.imported) {
+      return this.failEntry(
+        entry,
+        'Its files changed since OpenClerq started. Restart OpenClerq to run the new version.'
+      );
+    } else {
+      loaded = await importEntry(d);
+      if (!loaded.error) entry.imported = { checksum, loaded };
+    }
     entry.module = {
       id,
       manifest: d.manifest,
@@ -721,7 +762,14 @@ export class ModuleHost {
     };
     try {
       // A module that ships fewer migrations than its data has applied fails here, with its own message.
-      const ran = migrateModule(getStore(), id, readMigrations(d.dir));
+      const ran = migrateModule(
+        getStore(),
+        id,
+        readMigrations(
+          d.dir,
+          isPlugin ? new Map(entry.current.files.map((f) => [f.path, f.sha256])) : undefined
+        )
+      );
       if (ran.length > 0) logger.info('Module migrated', { moduleId: id, applied: ran });
       const from = row.startedVersion;
       const version = String(d.manifest.version ?? '');
@@ -859,6 +907,60 @@ export class ModuleHost {
   }
 }
 
+const sha256 = (data: Buffer) => crypto.createHash('sha256').update(data).digest('hex');
+
+/** Where staged copies of plugin entries live: `~/.clerq/plugin-cache/<id>/<hash of the entry>/`. */
+export function stageRoot(): string {
+  return path.join(clerqHome(), 'plugin-cache');
+}
+
+/**
+ * Copy a plugin's server entry to a path named by its own hash, after checking that it is
+ * the file the approval was for. `changed` says the file is not what was read when the
+ * decision was made; `path: undefined` that there is no entry (the host then says so).
+ * Copies of other versions of the plugin are removed. Only the entry is copied: one
+ * self-contained file is the contract, so a plugin that imports a neighbour cannot load.
+ */
+export function stageEntry(
+  d: DiscoveredModule,
+  facts: Pick<Facts, 'files'>
+): { path: string | undefined } | { changed: true } | { error: string } {
+  const server = d.plugin?.entry.server;
+  if (!server) return { path: undefined };
+  const rel = server.replace(/\\/g, '/').replace(/^\.\//, '');
+  const source = path.resolve(d.dir, rel);
+  let bytes: Buffer;
+  try {
+    if (!fs.statSync(source).isFile()) return { error: `The server entry ${rel} is not a file.` };
+    bytes = fs.readFileSync(source);
+  } catch {
+    return { path: undefined };
+  }
+  const digest = sha256(bytes);
+  if (facts.files.find((f) => f.path === rel)?.sha256 !== digest) return { changed: true };
+  const folder = path.join(stageRoot(), d.id);
+  const target = path.join(folder, digest.slice(0, 32), path.basename(rel));
+  try {
+    let present = false;
+    try {
+      present = sha256(fs.readFileSync(target)) === digest;
+    } catch {
+      /* not staged yet */
+    }
+    if (!present) {
+      fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(target, bytes, { mode: 0o600 });
+    }
+    for (const other of fs.readdirSync(folder)) {
+      if (other !== digest.slice(0, 32))
+        fs.rmSync(path.join(folder, other), { recursive: true, force: true });
+    }
+  } catch (e) {
+    return { error: `The server entry could not be staged for loading: ${message(e)}` };
+  }
+  return { path: target };
+}
+
 /** `<module>/dist/ui`, or the plugin's own `entry.ui`, when it ships a UI. */
 export function uiDir(moduleDir: string, entryUi?: string): string | null {
   const dir = path.join(moduleDir, entryUi ?? path.join('dist', 'ui'));
@@ -867,19 +969,27 @@ export function uiDir(moduleDir: string, entryUi?: string): string | null {
 
 const MIGRATION_FILE = /^(\d+)[_-]([\w-]+)\.sql$/;
 
-/** `<module>/migrations/0001_name.sql`, …: the number is the id, in order. */
-export function readMigrations(moduleDir: string): Migration[] {
+/**
+ * `<module>/migrations/0001_name.sql`, …: the number is the id, in order. With `verify` (file
+ * hashes by path, as the checksum was made) a file that is not what was approved is refused.
+ */
+export function readMigrations(
+  moduleDir: string,
+  verify?: ReadonlyMap<string, string>
+): Migration[] {
   const dir = path.join(moduleDir, 'migrations');
   if (!fs.existsSync(dir)) return [];
   return fs
     .readdirSync(dir)
     .map((f) => ({ f, m: MIGRATION_FILE.exec(f) }))
     .filter((x): x is { f: string; m: RegExpExecArray } => x.m !== null)
-    .map(({ f, m }) => ({
-      id: Number(m[1]),
-      name: m[2],
-      sql: fs.readFileSync(path.join(dir, f), 'utf8'),
-    }))
+    .map(({ f, m }) => {
+      const bytes = fs.readFileSync(path.join(dir, f));
+      if (verify && verify.get(`migrations/${f}`) !== sha256(bytes)) {
+        throw new Error(`The migration ${f} changed while the plugin was being loaded.`);
+      }
+      return { id: Number(m[1]), name: m[2], sql: bytes.toString('utf8') };
+    })
     .sort((a, b) => a.id - b.id);
 }
 
