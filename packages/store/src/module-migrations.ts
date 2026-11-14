@@ -154,6 +154,16 @@ export function migrateModule(db: Database, moduleId: string, migrations: Migrat
       .all(moduleId)
       .map((r) => [Number(r.id), String(r.checksum)])
   );
+  // Data a newer copy of the module wrote: this copy does not know what it
+  // changed, so it is not started on it. Like a changed migration, refused.
+  const shipped = sorted.length > 0 ? sorted[sorted.length - 1].id : 0;
+  const newest = Math.max(0, ...applied.keys());
+  if (newest > shipped) {
+    throw new ModuleMigrationError(
+      `This module's data was written by a newer version of it (migration ${newest}); ` +
+        `this copy knows up to migration ${shipped}. Install the newer version of the module.`
+    );
+  }
   const ran: number[] = [];
   for (const m of sorted) {
     const sum = checksum(m.sql);

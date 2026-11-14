@@ -44,6 +44,32 @@ describe('module migrations', () => {
     ).toThrow(/changed after it was applied/);
   });
 
+  it('refuses data a newer copy of the module wrote, in words, and changes nothing', () => {
+    const next = {
+      id: 2,
+      name: 'tags',
+      sql: 'ALTER TABLE mod_hello_world__items ADD COLUMN tag TEXT;',
+    };
+    migrateModule(db, 'hello-world', [items, next]);
+    // The module is now installed at an older version, which ships only migration 1.
+    expect(() => migrateModule(db, 'hello-world', [items])).toThrow(
+      "This module's data was written by a newer version of it (migration 2); " +
+        'this copy knows up to migration 1. Install the newer version of the module.'
+    );
+    // One module's data is no other's business.
+    expect(migrateModule(db, 'other-module', [])).toEqual([]);
+    expect(
+      db
+        .prepare('SELECT count(*) AS n FROM module_migrations WHERE module_id = ?')
+        .get('hello-world')
+    ).toEqual({ n: 2 });
+  });
+
+  it('refuses a module that now ships no migrations at all over data it has', () => {
+    migrateModule(db, 'hello-world', [items]);
+    expect(() => migrateModule(db, 'hello-world', [])).toThrow(/newer version/);
+  });
+
   it('rolls back a migration that fails', () => {
     const bad = {
       id: 1,
