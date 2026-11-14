@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::thread::JoinHandle;
+use tauri::Manager;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
@@ -384,6 +385,15 @@ fn log_writer<W: Write + Send + 'static>(
     (tx, thread)
 }
 
+/// The folder of plugins this app carries inside `resources` (`bundled-plugins/`, see
+/// `bundle.resources` in tauri.conf.json), when it is there. The gateway reads it as
+/// `CLERQ_BUNDLED_PLUGINS_DIR`: each folder in it is a plugin, approved if it is exactly
+/// what the gateway lists as shipped.
+fn bundled_plugins_in(resources: &Path) -> Option<PathBuf> {
+    let dir = resources.join("bundled-plugins");
+    dir.is_dir().then_some(dir)
+}
+
 /// Starts the bundled gateway sidecar, pointed at the bundled calculation engine.
 fn spawn_gateway(app: &tauri::App) {
     if let Ok(shell) = app.shell().sidecar("clerq-gateway") {
@@ -397,6 +407,14 @@ fn spawn_gateway(app: &tauri::App) {
                 .env("CLERQ_HOST", "127.0.0.1");
             if let Some(ref dir) = exe_dir {
                 cmd = cmd.current_dir(dir);
+            }
+            if let Some(dir) = app
+                .path()
+                .resource_dir()
+                .ok()
+                .and_then(|resources| bundled_plugins_in(&resources))
+            {
+                cmd = cmd.env("CLERQ_BUNDLED_PLUGINS_DIR", dir.to_string_lossy().as_ref());
             }
             match cmd.spawn() {
                 Ok((mut rx, _child)) => {
@@ -455,7 +473,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{form_page, gateway_line, log_writer, upsert_env_line};
+    use super::{bundled_plugins_in, form_page, gateway_line, log_writer, upsert_env_line};
     use std::collections::BTreeMap;
     use std::io::Write;
     use std::sync::mpsc::TrySendError;
@@ -696,5 +714,24 @@ mod tests {
         assert!(form_page(&url, &two).is_err());
         assert!(form_page(&url, &manifest_fields(&"x".repeat(64 * 1024 + 1))).is_err());
         assert!(form_page(&url, &manifest_fields(&"x".repeat(64 * 1024))).is_ok());
+    }
+
+    #[test]
+    fn finds_the_plugins_the_app_carries_only_when_the_folder_is_there() {
+        let root =
+            std::env::temp_dir().join(format!("clerq-bundled-plugins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(bundled_plugins_in(&root), None);
+        // A file of that name is not a folder of plugins.
+        std::fs::write(root.join("bundled-plugins"), "x").unwrap();
+        assert_eq!(bundled_plugins_in(&root), None);
+        std::fs::remove_file(root.join("bundled-plugins")).unwrap();
+        std::fs::create_dir_all(root.join("bundled-plugins").join("chat")).unwrap();
+        assert_eq!(
+            bundled_plugins_in(&root),
+            Some(root.join("bundled-plugins"))
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

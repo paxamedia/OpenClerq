@@ -4,8 +4,12 @@
  * is exactly the listed one is approved when it is first seen, so it needs no
  * review; the same plugin with any file changed is treated like any other.
  *
- * None is bundled yet: the list is empty. The chat console moves onto the plugin
- * SDK in the next task and is the first. Editing a bundled plugin means updating
- * its line here in the same commit (a test recomputes every line).
+ * `chat` is the chat console (`packages/plugin-chat`): a manifest and no server code,
+ * so what its checksum covers is its `manifest.json`, the declaration of the core
+ * endpoints and the kinds of memory its page uses. Its page is part of the app, not
+ * of this folder. Editing a bundled plugin means updating its line here in the same
+ * commit: `bundled-plugins.test.ts` recomputes every line from the plugin's folder.
  */
-export const BUNDLED_PLUGINS: Readonly<Record<string, string>> = Object.freeze({});
+export const BUNDLED_PLUGINS: Readonly<Record<string, string>> = Object.freeze({
+  chat: '9adbd8b49f1d89ddf7da6085d4b58002d6220df41746b35347e82c1bbf664718',
+});

@@ -1,0 +1,36 @@
+{
+  "name": "@clerq/plugin-chat",
+  "version": "0.5.1",
+  "private": true,
+  "description": "The OpenClerq chat console, as a first-party plugin on @clerq/plugin-sdk: its manifest and its UI",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest.json": "./manifest.json"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clerq/gateway-client": "workspace:*",
+    "@clerq/plugin-sdk": "workspace:*",
+    "@clerq/web": "workspace:*",
+    "lucide-react": "1.51.0"
+  },
+  "peerDependencies": {
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@clerq/gateway": "workspace:*",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "jsdom": "^31.0.1",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.5"
+  }
+}

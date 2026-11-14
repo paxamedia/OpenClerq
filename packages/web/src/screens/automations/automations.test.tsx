@@ -7,7 +7,7 @@ import { LiveProvider, LiveStore } from '../../app/live';
 import type { ModuleProps } from '../../app/modules';
 import { createFixtureClient, FIXTURE_NOW } from '../../fixtures';
 import { ToastProvider } from '../../ui/Toast';
-import { AutomationsScreen } from './Automations';
+import { AuthoredBy, AutomationsScreen } from './Automations';
 import { modelHint, RunWithModel, runWithModel, STRICT_NOTE } from './RunWithModel';
 import { catchUpWords, missedSince, missedWords, runNow } from './words';
 
@@ -169,5 +169,14 @@ describe('running with a chosen model', () => {
     expect(runAutomation).toHaveBeenCalledWith('aut_1', 'anthropic/claude-haiku-5-5');
     await expect(runWithModel(fake, 'aut_1', '   ')).rejects.toThrow('Name the model');
     expect(runAutomation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('an automation a chat wrote', () => {
+  it('is marked, linking to the chat', () => {
+    const markup = page(<AuthoredBy by="chat ses_3" />);
+    expect(markup).toContain('Written by a chat');
+    expect(markup).toContain('href="#/m/chat/ses_3"');
+    expect(page(<AuthoredBy by={null} />)).toBe('');
   });
 });

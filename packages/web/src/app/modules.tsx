@@ -6,7 +6,7 @@
  * as a third-party module would, so either can be left out.
  */
 
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import type {
   PaletteCommand,
   PluginProps,
@@ -15,6 +15,8 @@ import type {
   PluginUIContext,
   RailEntry,
 } from '@clerq/plugin-sdk/ui';
+
+import { EnvironmentContext } from './client';
 
 export type { PaletteCommand, RailEntry };
 
@@ -33,10 +35,25 @@ export type ModuleRenderer = PluginRenderer;
 /** The route base of a module's pages. */
 export const moduleBase = (id: string): string => `/m/${encodeURIComponent(id)}`;
 
-export const renderBundled = (module: PluginUI, props: PluginProps): ReactNode => {
+/**
+ * Draws a bundled plugin with the client the shell gave it: whatever its components read
+ * with `useClient()` is `props.client`, which is the app's own, or, with plugin checks on,
+ * one limited to what the plugin declared.
+ */
+function BundledPlugin({ module, props }: { module: PluginUI; props: PluginProps }) {
+  const { client, host } = props;
+  const env = useMemo(() => ({ client, host }), [client, host]);
   const Component = module.component;
-  return <Component {...props} />;
-};
+  return (
+    <EnvironmentContext.Provider value={env}>
+      <Component {...props} />
+    </EnvironmentContext.Provider>
+  );
+}
+
+export const renderBundled = (module: PluginUI, props: PluginProps): ReactNode => (
+  <BundledPlugin module={module} props={props} />
+);
 
 const PINS_KEY = 'clerq-pinned-modules';
 

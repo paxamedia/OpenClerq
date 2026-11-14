@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 1,
+  "id": "chat",
+  "name": "Chat console",
+  "version": "1.0.0",
+  "description": "Talk to any model you have a key for, raw or managed. The console's page is part of the app; the sessions, the managed loop and the drafts it uses are the gateway's own. In a folder you attach, managed mode can read and write files and run commands; the console itself uses neither.",
+  "engines": { "api": 1 },
+  "permissions": {
+    "api": [
+      "GET /providers",
+      "GET /sessions",
+      "POST /sessions",
+      "GET /sessions/:id",
+      "POST /sessions/:id/update",
+      "DELETE /sessions/:id",
+      "POST /sessions/:id/send",
+      "POST /sessions/:id/compare",
+      "POST /sessions/:id/mode-diff",
+      "POST /sessions/:id/promote",
+      "GET /sessions/:id/drafts/:draftId",
+      "POST /sessions/:id/drafts/:draftId/dry-run",
+      "POST /sessions/:id/drafts/:draftId/save",
+      "POST /approvals/:id/approve",
+      "POST /approvals/:id/deny",
+      "POST /runs/:id/cancel"
+    ],
+    "llm": true,
+    "memory": {
+      "read": ["fact", "preference", "decision", "procedure", "note"],
+      "write": ["fact", "preference", "decision", "procedure", "note"]
+    }
+  }
+}

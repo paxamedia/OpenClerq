@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import tauriConf from '../src-tauri/tauri.conf.json';
 import { BUNDLED_MODULES, isTurnedOff } from './bundled';
 
 const chat = BUNDLED_MODULES.find((m) => m.manifest.id === 'chat')!;
@@ -32,5 +33,16 @@ describe('bundled modules', () => {
     };
     expect(isTurnedOff(old, chat)).toBe(true);
     expect(isTurnedOff(old, automations)).toBe(false);
+  });
+
+  it('carries a plugin’s manifest to the gateway for each bundled module that is one, and for no other', () => {
+    // The gateway approves a bundled plugin by its checksum; the manifest it checks is the one
+    // the app carries. Taking Chat out of BUNDLED_MODULES takes its manifest out with it.
+    const carried = Object.values(tauriConf.bundle.resources as Record<string, string>)
+      .filter((to) => to.startsWith('bundled-plugins/'))
+      .map((to) => to.split('/')[1])
+      .sort();
+    expect(carried).toEqual(['chat']);
+    expect(BUNDLED_MODULES.map((m) => m.manifest.id)).toEqual(expect.arrayContaining(carried));
   });
 });

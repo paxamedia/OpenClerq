@@ -75,6 +75,16 @@ export { Split, type SplitProps } from './ui/Split';
 // The app, its contract with its host, and the modules that ship with it.
 export { OpenClerqApp, type OpenClerqAppProps } from './App';
 export {
+  PLUGIN_TOKEN_TTL_S,
+  ScopedToken,
+  defaultScopedClient,
+  usePluginAccess,
+  whyNotRunning,
+  type MintedToken,
+  type PluginAccess,
+  type ScopedClientFactory,
+} from './app/plugin-access';
+export {
   useClient,
   useHost,
   type AppConfig,
@@ -120,7 +130,6 @@ export { applyTheme, setTheme, storedTheme, useTheme, THEME_KEY, type Theme } fr
 export { describeCron, nextFirings, parseCron } from './app/cron';
 export * as format from './app/format';
 export { automationsModule, AUTOMATIONS_ID } from './screens/automations';
-export { chatModule, CHAT_ID } from './screens/chat';
 
 // Screens on their own, for an app that lays them out itself.
 export { Home } from './screens/home/Home';
@@ -141,7 +150,6 @@ export {
 export { Settings } from './screens/settings/Settings';
 export { Developer } from './screens/developer/Developer';
 export { AutomationsScreen } from './screens/automations/Automations';
-export { ChatScreen } from './screens/chat/Chat';
 export { Shell, type ShellProps } from './shell/Shell';
 export {
   Page,

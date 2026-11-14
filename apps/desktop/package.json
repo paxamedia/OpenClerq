@@ -15,6 +15,7 @@
   "dependencies": {
     "@clerq/gateway-client": "workspace:*",
     "@clerq/module-schema": "workspace:*",
+    "@clerq/plugin-chat": "workspace:*",
     "@clerq/web": "workspace:*",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-notification": "~2.3.3",

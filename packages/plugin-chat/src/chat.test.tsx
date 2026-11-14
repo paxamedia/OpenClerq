@@ -2,22 +2,21 @@ import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, ModeDiff } from '@clerq/gateway-client';
-import { EnvironmentContext } from '../../app/client';
-import { createFixtureClient, FIXTURE_NOW } from '../../fixtures';
-import { ToastProvider } from '../../ui/Toast';
+import { createFixtureClient, FIXTURE_NOW } from '@clerq/web/fixtures';
+import { PluginTestFrame } from '@clerq/web/testing';
 import { questionFor } from './Chat';
-import { AuthoredBy } from '../automations/Automations';
-import { DraftFacts, DryRunResult, LiveActivity, ModeDiffBody, toolLabel } from './Managed';
+import {
+  DraftFacts,
+  DryRunResult,
+  LiveActivity,
+  ModeDiffBody,
+  skillLine,
+  toolLabel,
+} from './Managed';
 
 const client = createFixtureClient({ now: FIXTURE_NOW });
 const html = (node: ReactElement) =>
-  renderToStaticMarkup(
-    <EnvironmentContext.Provider
-      value={{ client, host: { kind: 'web', version: '0.6.0', openUrl: () => {} } }}
-    >
-      <ToastProvider>{node}</ToastProvider>
-    </EnvironmentContext.Provider>
-  );
+  renderToStaticMarkup(<PluginTestFrame client={client}>{node}</PluginTestFrame>);
 
 describe('managed chat', () => {
   it('names tools in words', () => {
@@ -116,13 +115,6 @@ describe('managed chat', () => {
     expect(markup).toContain('/Users/me/code/shop · Full access');
   });
 
-  it('marks an automation a chat wrote, linking to the chat', () => {
-    const markup = html(<AuthoredBy by="chat ses_3" />);
-    expect(markup).toContain('Written by a chat');
-    expect(markup).toContain('href="#/m/chat/ses_3"');
-    expect(html(<AuthoredBy by={null} />)).toBe('');
-  });
-
   it('finds the question an answer replies to', () => {
     const messages = [
       { id: 1, role: 'user', content: 'first', createdAt: '' },
@@ -133,5 +125,27 @@ describe('managed chat', () => {
     expect(questionFor(messages, messages[3])).toBe('second');
     expect(questionFor(messages, messages[1])).toBe('first');
     expect(questionFor(messages, null)).toBe('');
+  });
+});
+
+describe('the chat’s mode diff', () => {
+  const diff = (over: Record<string, unknown>) =>
+    ({
+      skill: { slug: 'vat-core', name: 'VAT' },
+      skillPolicy: { used: { trust: 'trusted' }, notes: [] },
+      ...over,
+    }) as unknown as Parameters<typeof skillLine>[0];
+
+  it('says the skill and where it stands', () => {
+    expect(skillLine(diff({}))).toBe('VAT (trusted)');
+    expect(skillLine(diff({ skillPolicy: { used: { trust: 'modified' }, notes: [] } }))).toBe(
+      'VAT (changed since you trusted it)'
+    );
+    expect(skillLine(diff({ skillPolicy: { used: { trust: 'untrusted' }, notes: [] } }))).toBe(
+      'VAT (not trusted)'
+    );
+    expect(skillLine(diff({ skill: null }))).toBe('None');
+    // A gateway that does not say (an older one) is shown as before.
+    expect(skillLine(diff({ skillPolicy: undefined }))).toBe('VAT');
   });
 });

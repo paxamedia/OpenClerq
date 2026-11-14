@@ -6,27 +6,35 @@
 
 import { useEffect, useState } from 'react';
 import { Check, FileCode, FlaskConical, FolderOpen, Save, X } from 'lucide-react';
-import type {
-  Approval,
-  ChatDraft,
-  ChatPermissionMode,
-  ChatSession,
-  DraftDryRun,
-  ModeDiff,
+import {
+  toolLabel,
+  type Approval,
+  type ChatDraft,
+  type ChatPermissionMode,
+  type ChatSession,
+  type DraftDryRun,
+  type ModeDiff,
 } from '@clerq/gateway-client';
-import { Button } from '../../ui/Button';
-import { CodeBlock, KeyValue, ProgressLine } from '../../ui/Display';
-import { Input, Select } from '../../ui/Field';
-import { Dialog } from '../../ui/Modal';
-import { StatusTag, type Tone } from '../../ui/Status';
-import { useToast } from '../../ui/Toast';
-import { useClient } from '../../app/client';
-import { describeCron } from '../../app/cron';
-import { errorMessage, exactTime, money } from '../../app/format';
-import { toolLabel } from '../../app/tools';
-import { When } from '../common';
+import {
+  Button,
+  CodeBlock,
+  Dialog,
+  Input,
+  KeyValue,
+  ProgressLine,
+  Select,
+  StatusTag,
+  When,
+  describeCron,
+  errorMessage,
+  exactTime,
+  money,
+  useClient,
+  useToast,
+  type Tone,
+} from '@clerq/web/plugin-ui';
 
-export { toolLabel } from '../../app/tools';
+export { toolLabel };
 
 const TOOL_TONES: Record<string, { tone: Tone; label: string }> = {
   running: { tone: 'accent', label: 'Working' },

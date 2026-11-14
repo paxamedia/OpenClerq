@@ -433,7 +433,10 @@ export class ModuleHost {
   }
 
   private async add(d: DiscoveredModule): Promise<void> {
-    if (this.entries.has(d.id)) return;
+    if (this.entries.has(d.id)) {
+      console.warn(`[Clerq] Skipping module in ${d.dir}: id "${d.id}" is already loaded`);
+      return;
+    }
     const entry = this.makeEntry(d);
     this.entries.set(d.id, entry);
     this.ensureRow(entry);

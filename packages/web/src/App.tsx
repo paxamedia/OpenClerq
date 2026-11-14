@@ -30,6 +30,7 @@ import {
   type Host,
 } from './app/client';
 import { hitRoute, moduleRoute, useExtensions, useGatewayModules } from './app/extensions';
+import { usePluginAccess, type ScopedClientFactory } from './app/plugin-access';
 import { visit } from './app/history';
 import { LiveProvider, useLive, type LiveStore } from './app/live';
 import {
@@ -56,6 +57,7 @@ import { gatewayModule } from './screens/InstalledModule';
 import { Settings, SETTINGS_SECTIONS } from './screens/settings/Settings';
 import { Developer } from './screens/developer/Developer';
 import { NotFound } from './screens/NotFound';
+import { PluginNotice } from './screens/PluginNotice';
 import { Foundations } from './foundations/Foundations';
 
 const CORE: RailEntry[] = [
@@ -150,6 +152,13 @@ export interface OpenClerqAppProps {
   renderModule?: ModuleRenderer;
   /** A prepared cache, for fixtures and tests. */
   store?: LiveStore;
+  /**
+   * Makes the client a bundled plugin is given when plugin checks are on: one over its own
+   * module UI token. The default is `createGatewayClient` from `@clerq/gateway-client`.
+   */
+  scopedClient?: ScopedClientFactory;
+  /** How long such a token lives, in seconds. Default 15 minutes; it is renewed before it ends. */
+  pluginTokenSeconds?: number;
 }
 
 export function OpenClerqApp({
@@ -158,8 +167,13 @@ export function OpenClerqApp({
   modules = [],
   renderModule = renderBundled,
   store,
+  scopedClient,
+  pluginTokenSeconds,
 }: OpenClerqAppProps) {
-  const env = useMemo(() => ({ client, host }), [client, host]);
+  const env = useMemo(
+    () => ({ client, host, scopedClient, pluginTokenSeconds }),
+    [client, host, scopedClient, pluginTokenSeconds]
+  );
   return (
     <EnvironmentContext.Provider value={env}>
       <LiveProvider client={client} store={store}>
@@ -217,6 +231,8 @@ function AppFrame({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const modules = useAllModules(bundled);
+  // What client each plugin is given, or why it cannot run: see app/plugin-access.
+  const accessOf = usePluginAccess(modules);
   // Until the user pins or unpins, every module is pinned, including ones added later.
   const [pinned, setPinned] = useState<string[] | null>(storedPins);
   const pins = useMemo(() => pinned ?? modules.map((m) => m.id), [pinned, modules]);
@@ -336,19 +352,25 @@ function AppFrame({
         run: () => setTheme('auto'),
       },
     ];
-    const fromModules = modules.flatMap(
-      (m) => m.commands?.({ client, navigate, base: moduleBase(m.id) }) ?? []
-    );
+    const fromModules = modules.flatMap((m) => {
+      const access = accessOf(m);
+      return access.status === 'ready'
+        ? (m.commands?.({ client: access.client, navigate, base: moduleBase(m.id) }) ?? [])
+        : [];
+    });
     return [...go, ...fromModules, ...settings, ...theme];
-  }, [entries, modules, client]);
+  }, [entries, modules, accessOf]);
 
   const search = useCallback(
     async (query: string): Promise<PaletteCommand[]> => {
-      const tasks: Array<Promise<PaletteCommand[]>> = modules.map((m) =>
-        m.search
-          ? m.search(query, { client, navigate, base: moduleBase(m.id) }).catch(() => [])
-          : Promise.resolve([])
-      );
+      const tasks: Array<Promise<PaletteCommand[]>> = modules.map((m) => {
+        const access = accessOf(m);
+        return m.search && access.status === 'ready'
+          ? m
+              .search(query, { client: access.client, navigate, base: moduleBase(m.id) })
+              .catch(() => [])
+          : Promise.resolve([]);
+      });
       // Records and every module's search extension, through the gateway.
       tasks.push(
         client
@@ -367,7 +389,7 @@ function AppFrame({
       const seen = new Set<string>();
       return lists.flat().filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
     },
-    [modules, client]
+    [modules, client, accessOf]
   );
 
   let page: ReactNode;
@@ -391,19 +413,25 @@ function AppFrame({
   else if (first === 'dev' && second === 'gallery') page = <Foundations embedded />;
   else if (first === 'm' && second) {
     const mod = modules.find((m) => m.id === second);
-    page = mod ? (
-      renderModule(mod, {
-        route,
-        parts: segments.slice(2),
-        base: moduleBase(mod.id),
-        client,
-        host,
-        config,
-        navigate,
-      })
-    ) : (
-      <NotFound what="module" />
-    );
+    const access = mod ? accessOf(mod) : null;
+    page =
+      mod && access ? (
+        access.status === 'ready' ? (
+          renderModule(mod, {
+            route,
+            parts: segments.slice(2),
+            base: moduleBase(mod.id),
+            client: access.client,
+            host,
+            config,
+            navigate,
+          })
+        ) : (
+          <PluginNotice name={mod.name} access={access} />
+        )
+      ) : (
+        <NotFound what="module" />
+      );
   } else if (MOVED[first]) page = null;
   else page = <NotFound />;
 

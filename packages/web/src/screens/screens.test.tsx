@@ -1,17 +1,27 @@
+import { MessageSquare } from 'lucide-react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import type { PluginUI } from '@clerq/plugin-sdk/ui';
 import { describe, expect, it } from 'vitest';
 import { OpenClerqApp } from '../App';
 import { createFixtureClient } from '../fixtures';
 import { matchCommands } from '../shell/Palette';
 import { automationsModule } from './automations';
 import { gatesOf, lineOf, scheduleOf, summarize, TEMPLATE, withSchedule } from './automations/spec';
-import { chatModule } from './chat';
 import { parseDiff, splitRows } from './runs/Diff';
 import type { Approval, InboxItem } from '@clerq/gateway-client';
 import { actionLabel, keyAction, type KeyState } from './inbox/Inbox';
 import { gatewayModule, innerPath } from './InstalledModule';
 import { parseHash } from '../app/router';
 import { forgetTokens, hasDotSegment, moduleUiUrl, reusableToken } from '../shell/ModuleFrame';
+
+/** A plugin that is not part of the app, standing where the chat console stands in a real one. */
+const chatModule: PluginUI = {
+  id: 'chat',
+  name: 'Chat',
+  icon: MessageSquare,
+  rail: [{ id: 'chat', label: 'Chat', icon: MessageSquare, path: '/m/chat', order: 40 }],
+  component: () => null,
+};
 
 describe('the app', () => {
   it('draws the rail with core pages and the modules it is given', () => {

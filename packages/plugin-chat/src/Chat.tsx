@@ -15,32 +15,44 @@ import type {
   ComparisonColumn,
   PipelineMode,
 } from '@clerq/gateway-client';
-import { Button, IconButton } from '../../ui/Button';
-import { Checkbox, SegmentedControl } from '../../ui/Choice';
-import { CodeBlock, KeyValue, ProgressLine } from '../../ui/Display';
-import { Select, Textarea } from '../../ui/Field';
-import { Dialog, Drawer } from '../../ui/Modal';
-import { Split } from '../../ui/Split';
-import { useToast } from '../../ui/Toast';
-import { cx } from '../../ui/cx';
-import { CompareBars, metricText, metricValue } from '../../charts/charts';
-import { useClient } from '../../app/client';
-import { useProviders, useSessions } from '../../app/data';
-import { duration, errorMessage, money, tokens } from '../../app/format';
-import { useLive, useResource } from '../../app/live';
-import type { ModuleProps } from '../../app/modules';
-import { navigate } from '../../app/router';
 import {
+  Button,
+  Checkbox,
+  CodeBlock,
+  CompareBars,
+  Dialog,
+  Drawer,
   EmptyState,
   ErrorState,
+  IconButton,
+  KeyValue,
   Loaded,
   Page,
   PageHeader,
   PageSkeleton,
   PHONE_QUERY,
+  ProgressLine,
+  SegmentedControl,
+  Select,
+  Split,
+  Textarea,
+  When,
+  cx,
+  duration,
+  errorMessage,
+  metricText,
+  metricValue,
+  money,
+  navigate,
+  tokens,
+  useClient,
+  useLive,
   useMedia,
-} from '../../shell/layout';
-import { When } from '../common';
+  useResource,
+  useToast,
+} from '@clerq/web/plugin-ui';
+import type { PluginProps } from '@clerq/plugin-sdk/ui';
+import { useProviders, useSessions } from './data';
 import {
   DraftCard,
   FolderDialog,
@@ -610,7 +622,7 @@ export function questionFor(messages: ChatMessage[], answer: ChatMessage | null)
   return '';
 }
 
-export function ChatScreen({ parts, base }: ModuleProps) {
+export function ChatScreen({ parts, base }: PluginProps) {
   const client = useClient();
   const live = useLive();
   const toast = useToast();

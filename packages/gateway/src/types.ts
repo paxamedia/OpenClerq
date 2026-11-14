@@ -11,9 +11,16 @@ export interface GatewayConfig {
   /** Directory containing pluggable modules (or CLERQ_MODULES_DIR env). */
   modulesDir?: string;
   /**
+   * Directory containing the plugins that ship with the app (or CLERQ_BUNDLED_PLUGINS_DIR env):
+   * plugin folders, read before `modulesDir`, so that folder cannot take a bundled plugin's id.
+   * The desktop app points it at the folders it carries; a plugin there is approved only if it is
+   * listed in `plugins.bundled` with exactly its checksum.
+   */
+  bundledPluginsDir?: string;
+  /**
    * Plugin host overrides. `bundled` lists first-party plugins shipped with the
    * gateway, by id and the checksum they ship with: one found with exactly that
-   * checksum is approved when it is first seen. None is bundled yet. Tests pass a
+   * checksum is approved when it is first seen (default: `BUNDLED_PLUGINS`). Tests pass a
    * `fetch` for `ctx.fetch` and a shorter limit for hooks.
    */
   plugins?: {

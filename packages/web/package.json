@@ -6,7 +6,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./fixtures": "./src/fixtures/index.ts"
+    "./fixtures": "./src/fixtures/index.ts",
+    "./plugin-ui": "./src/plugin-ui.ts",
+    "./testing": "./src/testing.tsx"
   },
   "scripts": {
     "build": "tsc --noEmit",

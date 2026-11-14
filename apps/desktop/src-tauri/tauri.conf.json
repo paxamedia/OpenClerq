@@ -61,7 +61,9 @@
       "providerShortName": null,
       "signingIdentity": null
     },
-    "resources": [],
+    "resources": {
+      "../../../packages/plugin-chat/manifest.json": "bundled-plugins/chat/manifest.json"
+    },
     "externalBin": ["binaries/clerq-gateway", "binaries/clerq-calc"],
     "createUpdaterArtifacts": true
   },

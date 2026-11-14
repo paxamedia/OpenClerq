@@ -8,7 +8,10 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { automationsModule, chatModule, OpenClerqApp, type AppConfig, type Host } from '../src';
+import { automationsModule, OpenClerqApp, type AppConfig, type Host } from '../src';
+// The chat console is a plugin package that depends on this one, so it is imported by path and not
+// as a dependency (which would make the two depend on each other).
+import { chatPlugin } from '../../plugin-chat/src';
 import { createFixtureClient } from '../src/fixtures';
 
 const params = new URLSearchParams(location.search);
@@ -30,6 +33,6 @@ const host: Host = {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <OpenClerqApp client={client} host={host} modules={[automationsModule, chatModule]} />
+    <OpenClerqApp client={client} host={host} modules={[automationsModule, chatPlugin]} />
   </React.StrictMode>
 );

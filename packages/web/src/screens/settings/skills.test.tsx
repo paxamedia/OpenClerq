@@ -6,7 +6,6 @@ import { EnvironmentContext } from '../../app/client';
 import { LiveProvider, LiveStore } from '../../app/live';
 import { createFixtureClient, FIXTURE_NOW } from '../../fixtures';
 import { ToastProvider } from '../../ui/Toast';
-import { skillLine } from '../chat/Managed';
 import { ENFORCE_NOTE, EnforceDialog, EnforceSwitch } from './plugins';
 import {
   declaresSummary,
@@ -369,27 +368,5 @@ describe('deciding', () => {
     expect(html(<EnforceDialog open names={[]} onClose={noop} onConfirm={noop} />)).toContain(
       'A skill you have not trusted will stop being used.'
     );
-  });
-});
-
-describe('the chat’s mode diff', () => {
-  const diff = (over: Record<string, unknown>) =>
-    ({
-      skill: { slug: 'vat-core', name: 'VAT' },
-      skillPolicy: { used: { trust: 'trusted' }, notes: [] },
-      ...over,
-    }) as unknown as Parameters<typeof skillLine>[0];
-
-  it('says the skill and where it stands', () => {
-    expect(skillLine(diff({}))).toBe('VAT (trusted)');
-    expect(skillLine(diff({ skillPolicy: { used: { trust: 'modified' }, notes: [] } }))).toBe(
-      'VAT (changed since you trusted it)'
-    );
-    expect(skillLine(diff({ skillPolicy: { used: { trust: 'untrusted' }, notes: [] } }))).toBe(
-      'VAT (not trusted)'
-    );
-    expect(skillLine(diff({ skill: null }))).toBe('None');
-    // A gateway that does not say (an older one) is shown as before.
-    expect(skillLine(diff({ skillPolicy: undefined }))).toBe('VAT');
   });
 });

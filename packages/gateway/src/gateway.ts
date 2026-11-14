@@ -1548,6 +1548,10 @@ export function createGateway(config: GatewayConfig = {}): Gateway {
       });
     }
     try {
+      // The plugins that ship with the app come first, so a folder in the modules directory cannot
+      // take a bundled plugin's id.
+      const bundledDir = config.bundledPluginsDir ?? process.env.CLERQ_BUNDLED_PLUGINS_DIR;
+      if (bundledDir) await modules.loadAll(bundledDir);
       await modules.loadAll(config.modulesDir ?? process.env.CLERQ_MODULES_DIR);
       if (triggersPausedAt !== null) modules.triggers.pause();
     } catch (e) {
