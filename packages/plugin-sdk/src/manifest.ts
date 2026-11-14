@@ -59,7 +59,7 @@ export interface PluginManifestInput {
   engines: { api: number };
   /** Paths relative to the plugin's directory. */
   entry?: {
-    /** One self-contained ES module that exports `definePlugin({ ... })` as its default. */
+    /** An ES module that exports `definePlugin({ ... })` as its default. The folder it is in is the plugin's code. */
     server?: string;
     /** A directory served at `/api/modules/<id>/ui/`, with an `index.html`. */
     ui?: string;

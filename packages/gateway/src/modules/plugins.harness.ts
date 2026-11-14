@@ -233,3 +233,9 @@ export function auditRows(prefix: string): Array<{
 }
 
 export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Wait until `check` is true, for at most `ms`: a timing a loaded machine can stretch is not a behaviour. */
+export async function until(check: () => boolean, ms = 3000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!check() && Date.now() < end) await sleep(10);
+}

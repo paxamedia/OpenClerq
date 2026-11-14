@@ -164,22 +164,52 @@ describe('the checksum of a plugin', () => {
     expect(() => readManifestFile(dir)).toThrow('must be a JSON object');
   });
 
-  it('reads a legacy module by its entry points, its UI and its skills', () => {
-    expect(codePaths({ id: 'x' })).toEqual([
-      'dist/routes.js',
-      'dist/routes.cjs',
-      'build/routes.js',
-      'dist/ui',
+  it('covers the whole folder the entry is in, the UI, the skills and the migrations', () => {
+    expect(codePaths(manifest())).toEqual(['dist', 'dist/ui', 'skills', 'migrations']);
+    // The entry's folder is the tree; at the root only the entry file itself is code.
+    expect(codePaths(manifest({ entry: { server: 'server.js' } }))).toEqual([
+      'server.js',
       'skills',
       'migrations',
     ]);
+    expect(codePaths(manifest({ entry: { server: 'build/server/main.js', ui: 'web' } }))).toEqual([
+      'build/server',
+      'web',
+      'skills',
+      'migrations',
+    ]);
+  });
+
+  it('reads a legacy module by its entry points’ folders, its UI and its skills', () => {
+    expect(codePaths({ id: 'x' })).toEqual(['dist', 'build', 'dist/ui', 'skills', 'migrations']);
     expect(codePaths({ id: 'x', entryPoints: { routes: ['./lib/main.js'] } })).toEqual([
-      'lib/main.js',
+      'lib',
       'dist/ui',
       'skills',
       'migrations',
     ]);
-    expect(codePaths(manifest())).toEqual(['dist/server.js', 'dist/ui', 'skills', 'migrations']);
+  });
+
+  it('changes when a file the entry imports from its own folder changes, but not for one outside it', () => {
+    write('dist/lib/helper.js', 'export const x = 1;');
+    const before = pluginChecksum(dir);
+    write('dist/lib/helper.js', 'export const x = 2;');
+    const edited = pluginChecksum(dir);
+    expect(edited).not.toBe(before);
+    write('dist/other.js', 'export const y = 1;');
+    expect(pluginChecksum(dir)).not.toBe(edited);
+    // Not under the entry's folder, the UI, the skills or the migrations: not code.
+    const now = pluginChecksum(dir);
+    write('lib/outside.js', 'export const z = 1;');
+    write('server-notes.md', 'x');
+    expect(pluginChecksum(dir)).toBe(now);
+  });
+
+  it('covers only the file for an entry at the plugin’s root', () => {
+    write('manifest.json', JSON.stringify(manifest({ entry: { server: 'server.js' } })));
+    write('server.js', 'export default {};');
+    const { files } = pluginChecksumDetail(dir);
+    expect(files.map((f) => f.path)).toEqual(['manifest.json', 'server.js', 'skills/one/SKILL.md']);
   });
 });
 

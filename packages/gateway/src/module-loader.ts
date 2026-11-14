@@ -63,6 +63,11 @@ export interface LoadedModule {
   manifest: ModuleManifestStub;
   dir: string;
   kind?: ModuleKind;
+  /**
+   * The staged copy the module runs from: its skills and UI are read from here, not from `dir`.
+   * Absent for a module that was loaded without the host (`loadModulesFromDir`).
+   */
+  stageDir?: string;
   /** Routes from a module that exports a `routes` array (the pre-0.6 contract). */
   routeHandlers: ModuleRouteHandler[];
   /** `register(ctx)`, from a module that exports one or a default `{ register }`. */
@@ -117,16 +122,17 @@ const MODULE_ID = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
  * contract, which took an array and pushed handlers onto it, still works: the
  * context has `push`. A plugin may also export `start`, `stop` and `upgrade`.
  *
- * `entryPath` is where to import from instead of the entry's own place: the host stages
- * a plugin's entry at a path named by what it holds, so what runs is exactly what was
- * approved, and a new version of the same plugin is a new module to Node and to Bun alike
- * (neither can be made to import a changed file again from the same path).
+ * `dir` is the folder the entry is looked for in, instead of the module's own: the host stages
+ * the plugin (a copy of exactly the files that were hashed, in a folder named by the hash) and
+ * imports from there, so what runs is what was approved, and a new version is a new module to
+ * Node and to Bun alike (neither can be made to import a changed file again from the same path).
  */
 export async function importEntry(
   d: Pick<DiscoveredModule, 'kind' | 'manifest' | 'dir' | 'plugin'>,
-  opts: { entryPath?: string } = {}
+  opts: { dir?: string } = {}
 ): Promise<Pick<LoadedModule, 'routeHandlers' | 'register' | 'hooks' | 'error'>> {
-  const { dir: moduleDir, manifest } = d;
+  const { manifest } = d;
+  const moduleDir = opts.dir ?? d.dir;
   const isPlugin = d.kind === 'plugin';
   const declared = isPlugin ? d.plugin?.entry.server : manifest.entryPoints?.routes?.[0];
   const candidates = declared
@@ -138,7 +144,7 @@ export async function importEntry(
           path.join(moduleDir, 'dist', 'routes.cjs'),
           path.join(moduleDir, 'build', 'routes.js'),
         ];
-  const p = opts.entryPath ?? candidates.find((c) => fssync.existsSync(c));
+  const p = candidates.find((c) => fssync.existsSync(c));
   if (!p) {
     return isPlugin && declared
       ? { routeHandlers: [], error: `The server entry ${declared} does not exist.` }
@@ -305,7 +311,7 @@ export function skillsDirOf(manifest: ModuleManifestStub): string {
 export function getModuleSkillsDirs(modules: LoadedModule[]): string[] {
   const dirs: string[] = [];
   for (const mod of modules) {
-    const skillsPath = path.join(mod.dir, skillsDirOf(mod.manifest));
+    const skillsPath = path.join(mod.stageDir ?? mod.dir, skillsDirOf(mod.manifest));
     if (fssync.existsSync(skillsPath) && fssync.statSync(skillsPath).isDirectory()) {
       dirs.push(skillsPath);
     }

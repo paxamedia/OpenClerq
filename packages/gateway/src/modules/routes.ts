@@ -49,7 +49,8 @@ export function mountModuleRoutes(app: Express, host: ModuleHost): void {
           error: h.error ?? null,
           coreEndpoints: coreEndpointsOf(h.module.manifest),
           ui:
-            h.state === 'enabled' && uiDir(h.module.dir, h.discovered.plugin?.entry.ui)
+            h.state === 'enabled' &&
+            uiDir(h.module.stageDir ?? h.module.dir, h.discovered.plugin?.entry.ui)
               ? `/api/modules/${h.module.id}/ui/`
               : null,
           triggers: host.triggers.list(h.module.id),

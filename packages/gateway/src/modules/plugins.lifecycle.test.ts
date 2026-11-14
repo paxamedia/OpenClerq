@@ -17,6 +17,7 @@ import {
   scratch,
   sleep,
   startGateway,
+  until,
   writePlugin,
   type Running,
   type Scratch,
@@ -71,8 +72,8 @@ describe('the order of the hooks', () => {
     );
     events('sequence').length = 0;
     await start();
-    // (The entry is the same file as before, so this process already has it: no second import.)
-    expect(events('sequence')).toEqual(['upgrade:1.0.0:table=yes', 'register', 'start']);
+    // (The manifest changed, so the plugin is a new copy and a new module: it is imported again.)
+    expect(events('sequence')).toEqual(['import', 'upgrade:1.0.0:table=yes', 'register', 'start']);
   });
 
   it('calls upgrade only when the version changed since the last start', async () => {
@@ -235,7 +236,7 @@ describe('everything a plugin registered through its context is removed', () => 
     const post = (p: string) => gw.api(p, { method: 'POST', body: '{}' });
 
     // While it runs, all of it works.
-    await sleep(60);
+    await until(() => events('swept').includes('tick'));
     expect(events('swept')).toContain('tick');
     emit('module.other.one', {});
     expect(events('swept')).toContain('event');

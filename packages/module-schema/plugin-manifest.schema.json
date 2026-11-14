@@ -56,7 +56,7 @@
           "type": "string",
           "minLength": 1,
           "pattern": "^(?![\\\\/])(?![A-Za-z]:)(?!.*(^|[\\\\/])\\.\\.([\\\\/]|$))[^\\u0000]+$",
-          "description": "One self-contained ES module that exports definePlugin({ ... }) as its default."
+          "description": "An ES module that exports definePlugin({ ... }) as its default. The folder it is in is the plugin's code: it is hashed, approved and run from a copy."
         },
         "ui": {
           "type": "string",

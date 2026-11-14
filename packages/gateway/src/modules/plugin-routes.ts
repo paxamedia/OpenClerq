@@ -116,7 +116,8 @@ export function pluginInfo(h: HostedModule): PluginInfo {
       (h.loaded?.checksum !== facts.checksum ||
         h.loaded?.permissionsHash !== facts.permissionsHash),
     ui:
-      h.state === 'enabled' && uiDir(h.discovered.dir, h.discovered.plugin?.entry.ui)
+      h.state === 'enabled' &&
+      uiDir(h.module.stageDir ?? h.discovered.dir, h.discovered.plugin?.entry.ui)
         ? `/api/modules/${id}/ui/`
         : null,
   };

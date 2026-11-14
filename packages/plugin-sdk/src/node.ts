@@ -68,23 +68,39 @@ export function readManifestFile(dir: string): ManifestFile {
 }
 
 /**
- * The paths under a plugin's directory whose files are its code, relative and
- * with `/`: what the manifest names (`entry.server`, `entry.ui`, `skills`; for a
- * legacy module its `entryPoints.routes`, or the default entries, `dist/ui` and
- * `skills`), and `migrations`, which run against the store.
+ * The folder an entry file lives in, as the path whose whole tree is code (`dist` for
+ * `dist/server.js`), or the file itself when it sits at the plugin's root: the whole plugin
+ * folder is not code, so a root-level entry covers only itself.
+ */
+function entryTree(entry: string): string {
+  const parts = entry.replace(/\\/g, '/').replace(/^\.\//, '').split('/');
+  return parts.length > 1 ? parts.slice(0, -1).join('/') : parts[0];
+}
+
+/**
+ * The paths under a plugin's directory whose files are its code, relative and with `/`: the
+ * **whole folder tree** the server entry is in (`dist` for `dist/server.js`; so what the entry
+ * imports from its own folder is covered), the UI folder, the skills folder and `migrations`,
+ * which run against the store. For a legacy module the entry is `entryPoints.routes` or the
+ * default `dist/routes.js`, `dist/routes.cjs` and `build/routes.js`, the UI `dist/ui` and the
+ * skills `skills`. Nothing else is code, and nothing else is copied when a plugin is staged.
  */
 export function codePaths(manifest: Record<string, unknown>): string[] {
   const out: string[] = [];
   const text = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
   if (manifest.manifestVersion !== undefined) {
     const entry = (manifest.entry ?? {}) as Record<string, unknown>;
-    if (text(entry.server)) out.push(entry.server);
+    if (text(entry.server)) out.push(entryTree(entry.server));
     if (text(entry.ui)) out.push(entry.ui);
     if (text(manifest.skills)) out.push(manifest.skills);
   } else {
     const ep = (manifest.entryPoints ?? {}) as Record<string, unknown>;
     const declared = Array.isArray(ep.routes) ? ep.routes.filter(text) : [];
-    out.push(...(declared.length > 0 ? declared : LEGACY_ENTRIES), 'dist/ui', 'skills');
+    out.push(
+      ...(declared.length > 0 ? declared : LEGACY_ENTRIES).map(entryTree),
+      'dist/ui',
+      'skills'
+    );
   }
   out.push('migrations');
   return [...new Set(out.map((p) => p.replace(/\\/g, '/').replace(/^\.\//, '')))];
@@ -99,12 +115,13 @@ export interface ChecksumDetail {
 
 /**
  * The checksum of a plugin: a SHA-256 over its `manifest.json` and every file
- * under the paths its manifest names as code (see `codePaths`), by path. It
- * changes when any of those files changes, appears or goes. Files the operating
- * system adds on its own (`.DS_Store`, `Thumbs.db`) are not counted.
+ * under the paths its manifest names as code (see `codePaths`: the server entry's
+ * whole folder, the UI, the skills and the migrations), by path. It changes when
+ * any of those files changes, appears or goes. Files the operating system adds on
+ * its own (`.DS_Store`, `Thumbs.db`) are not counted.
  *
- * It covers the files named, not what they import from elsewhere: ship the server
- * entry as one self-contained file.
+ * It covers those folders and nothing outside them. The host copies exactly these
+ * files, as hashed, and runs and serves the plugin from the copy.
  *
  * `manifestText` is the manifest the caller already read, so the value is of the
  * text it validated and not of a file that changed in between.

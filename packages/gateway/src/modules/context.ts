@@ -194,7 +194,8 @@ export function createModuleContext(mod: LoadedModule, deps: ContextDeps): Conte
 
   const ctx: ContextHandle['ctx'] = {
     id,
-    dir: mod.dir,
+    // A plugin sees the staged copy: the files that were hashed and approved, and no others.
+    dir: mod.kind === 'plugin' ? (mod.stageDir ?? mod.dir) : mod.dir,
     version: String(mod.manifest.version ?? '0.0.0'),
     config: loadConfig(mod),
     permissions: Object.freeze(deps.declared),
