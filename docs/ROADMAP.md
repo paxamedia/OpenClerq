@@ -293,6 +293,7 @@ publish:
   branch: 'auto/{{automation}}/{{date}}'
   pull_request: draft
   on_no_changes: skip
+  auth: auto # auto | app | token: the GitHub App's token where installed (docs/GITHUB.md)
   notify: [desktop]
 
 budget:

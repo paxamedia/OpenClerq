@@ -643,11 +643,12 @@ cloned into `~/.clerq/workspaces/<name>-<hash>` (under a temporary name, then mo
 time per entry) and recorded in `repos` with its URL, the clone's path and the secret it is reached
 with. Each run fetches the base branch and cuts its worktree from `origin/<base>`; the branch is
 deleted from the clone once pushed. Every forge credential comes from one function
-(`RunnerDeps.forgeCredentials`, by forge, project and purpose: fetch, push, pull request), by
-default the vault secret `publish.token_secret` (`GITHUB_TOKEN`, or `GITLAB_TOKEN` for GitLab),
-so an installation token can replace it later. git gets it as an HTTP header for the forge's host
-in the environment of the one command (`forgeAuthEnv()`), never in the argv, the URL or the clone's
-config. A public repository clones without one. The diff stored with the run, and gate output, are
+(`RunnerDeps.forgeCredentials`, by forge, project and purpose: fetch, push, pull request): the
+gateway's default, `githubAppCredentials()`, is an installation token of the user's GitHub App
+([below](#the-github-app)) where it is installed on the repository and otherwise the vault secret
+`publish.token_secret` (`GITHUB_TOKEN`, or `GITLAB_TOKEN` for GitLab), as `publish.auth` says. git gets
+it as an HTTP header for the forge's host in the environment of the one command (`forgeAuthEnv()`),
+never in the argv, the URL or the clone's config. A public repository clones without one. The diff stored with the run, and gate output, are
 redacted of the vault values the run holds; a diff that contained one makes the push wait for
 approval.
 
@@ -663,7 +664,12 @@ last one queued (it is what is shown when no automation targets the repository).
 read: the vault is asked for its names (`RunnerDeps.secretNames`). A request reads `runs` once for
 every repository (counts and last run in one windowed query; `runs` has no `repo_id` index) and the
 automations once. A folder that has gone is listed with `exists: false`. The routes are behind the
-same token check as every other, and a scoped token reaches them only if its scopes name them.
+same token check as every other, and a scoped token reaches them only if its scopes name them. For a
+GitHub repository each answer also says what a run would reach it with, `reachedWith` (the GitHub App
+where it is installed, else the secret), per repository and per automation by its `publish.auth`:
+`RunnerDeps.forgeApp` asks the installation lookup (cached; never a token) for the distinct
+repositories of the request, in parallel and with a five-second wait, and `reachFor()` applies the
+same precedence a run does to what comes back.
 
 `POST /repos` adds a row by hand (the command line's `clerq repo add`): the target is read by the
 spec's own parser (`parseRepoTarget`), a local one must be the top folder of a git work tree, and the
@@ -673,6 +679,41 @@ name). With `check` a remote is reached by one hardened `git ls-remote` with the
 forge hook gives for purpose `fetch`, and nothing is stored for one that cannot be reached; the token
 is in that command's environment only and is scrubbed from what git says. See
 [API.md](API.md#adding-a-repository).
+
+#### The GitHub App
+
+Each user brings their own GitHub App ([GITHUB.md](GITHUB.md) says why and how). `packages/gateway/src/github/`:
+
+- `config.ts`: the connection (`settings` key `github.app`: app id, slug, name, client id, owner, URLs;
+  no secret), the two fixed vault names for the private key and client secret, and the API and web
+  bases (`CLERQ_GITHUB_API`, `CLERQ_GITHUB_WEB`: internal settings so a test can point the gateway at a
+  fake server; self-hosted GitHub Enterprise stays refused).
+- `jwt.ts`: the app's RS256 JWT (`iss` the App ID, `iat` a minute back, `exp` nine minutes ahead) with
+  `node:crypto` and no library; it runs under Bun too (checked on 1.3.10).
+- `api.ts`: one request to GitHub: a timeout, no redirect followed, and no credential, request body or
+  response body in an error (GitHub's own `message`, cut short).
+- `app.ts` (`GithubApp`): `installationFor(owner/name)` (`GET /repos/{owner}/{repo}/installation`, cached
+  five minutes, a "not installed" thirty seconds, one request for a burst), `installations()`, and
+  `mint()`: `POST /app/installations/{id}/access_tokens` with `repositories: [name]` and the
+  permissions of the purpose together. A holder (the run's id) keeps its token until five minutes
+  before it expires; with no holder (`POST /repos` check) nothing is kept. `release()` revokes with
+  `DELETE /installation/token`, once, and a failure is logged without the token. A token wider than
+  asked for (permissions, repositories) is revoked at once and refused. State is in memory only.
+- `credentials.ts`: `githubAppCredentials()` is the decision, by `publish.auth`; `dryRun` answers with
+  the source and makes nothing (the spec preview).
+- `manifest.ts`, `connect.ts`, `routes.ts`: the manifest flow (single-use random state held in memory for
+  ten minutes, bound to the callback's host, the account and the permissions asked for), import,
+  status and disconnect. The key and secret are written to the vault and the settings row together, or
+  put back.
+- `fake-github.ts`: the fake GitHub API the tests run against (it checks the JWT, the token's
+  permissions and repository, revocation and a manifest code's single use).
+
+A run (`execute()` in `runner.ts`) holds what it is given in `HeldCredentials`: each credential's
+token (and its Basic form) joins the run's redaction set, the error that ends the run is scrubbed of
+them, and `releaseAll()` in `finally` ends them after the worktree is gone. The push and the pull
+request ask the hook again right before they act, since an approval can take hours. `/github/*` is
+`OPERATOR_ONLY` (no scoped token reaches it, whatever its scopes say); the callback is the one
+exemption, `GET` and that exact path, checked in `isPublic()` after `/v1` has been taken off.
 
 ---
 

@@ -131,6 +131,102 @@ added**, and the body carries `check`. For one already listed, the answer is `20
 it, and `check.credential` says only the secret's name, whether the hook found one and where it came
 from. Like every route it needs the token; a scoped token reaches it only if its scopes name it.
 
+## The GitHub App
+
+Connecting the user's own GitHub App, and what a run does with it, is in [GITHUB.md](GITHUB.md).
+These routes were added in API version 1 (new routes are additions). All need the gateway token and
+are not reachable with a scoped token (`403`); `GET /github/app/callback` alone takes none.
+
+`POST /github/app/manifest` with `{ "baseUrl": "http://127.0.0.1:18790", "owner"?: "<org>", "name"?: "…" }`
+makes a manifest and a state for GitHub's manifest flow:
+
+```json
+{
+  "url": "https://github.com/settings/apps/new?state=<64 hex>",
+  "manifest": {
+    "name": "OpenClerq-3fa91c",
+    "public": false,
+    "redirect_url": "…/v1/github/app/callback",
+    "default_permissions": { "contents": "write", "pull_requests": "write", "metadata": "read" },
+    "hook_attributes": { "url": "…", "active": false },
+    "…": "…"
+  },
+  "state": "<64 hex>",
+  "expiresAt": "2026-11-14T10:10:00.000Z",
+  "redirectUrl": "http://127.0.0.1:18790/v1/github/app/callback"
+}
+```
+
+With `owner`, `url` is under `/organizations/<org>/settings/apps/new`. `400` with `error`:
+`invalid_base_url` (not an address, or plain http to anything but `127.0.0.1`, `localhost` or `[::1]`,
+or with a user name, query or fragment), `invalid_owner`, `invalid_name`. `409 app_already_connected`.
+The state is 32 random bytes, kept in memory, valid ten minutes, once.
+
+`GET /github/app/callback?code=…&state=…` is GitHub's redirect: an HTML page, no token, `GET` only (the
+exemption is this exact path, in both the `/v1` and bare forms). It spends the state whatever happens.
+`200` "Connected…" with the install link; `400` for an unknown, used or expired state, the wrong
+`Host`, a bad code, an app under another account than asked or with a wider permission than asked, or
+a key that cannot be read or that the vault refuses; `409` when an app is connected already; `502` when GitHub refuses the code;
+`503` when the vault has no key. Nothing is stored on any of them.
+
+`POST /github/app/import` with `{ appId, clientId, privateKey, clientSecret? }` proves the key with a
+JWT and `GET /app`, then stores the app and the secrets: `201` (`{ connected: true, app, replacedKey: false }`),
+or `200` with `replacedKey: true` for a new key of the app already connected. `400 invalid_request`
+(a field is missing or malformed), `409 app_already_connected` (another app), `422` with `error`
+`invalid_private_key` (not an RSA PEM), `github_rejected` (GitHub's own `message`) or
+`client_id_mismatch`, `502 github_unreachable`, `503 vault_unavailable`.
+
+`GET /github/app` answers `{ "connected": false }`, or
+
+```json
+{
+  "connected": true,
+  "app": {
+    "appId": 424242,
+    "slug": "…",
+    "name": "…",
+    "clientId": "Iv23li…",
+    "owner": { "login": "…", "type": "User" },
+    "htmlUrl": "…",
+    "source": "manifest",
+    "createdAt": "…",
+    "installUrl": "…",
+    "settingsUrl": "…"
+  },
+  "secrets": { "privateKey": true, "clientSecret": false },
+  "installations": [
+    {
+      "id": 1,
+      "account": "acme",
+      "accountType": "Organization",
+      "repositorySelection": "selected",
+      "suspended": false,
+      "permissions": { "…": "…" },
+      "htmlUrl": "…"
+    }
+  ],
+  "installationsError": "…"
+}
+```
+
+`secrets` says whether each is stored, never what it is. `installations` is from GitHub (null, with
+`installationsError`, when GitHub could not be asked), cached for a minute; `?refresh=1` asks again.
+`DELETE /github/app` answers `{ disconnected: true, slug, appDeletedOnGitHub: false, settingsUrl, message }`
+(`404 app_not_connected` when none): the app on GitHub is not touched.
+
+Other additions in the same change:
+
+- `GET /repos`, `GET /repos/:id` and the answer of `POST /repos` carry `reachedWith` on each GitHub
+  repository, `{ via: "app" | "secret" | "none" | "unknown", app?: { slug, installationId? }, secret?, note? }`
+  (null for a local repository and for GitLab), and each automation's `credential` gains `auth` (its
+  `publish.auth`) and its own `reachedWith`. Asking never makes a token.
+- A spec may set `publish.auth: auto | app | token`; `app` is refused for a `gitlab:` repository.
+- `POST /secrets` and `DELETE /secrets/<name>` refuse `GITHUB_APP_PRIVATE_KEY` and
+  `GITHUB_APP_CLIENT_SECRET` (`400`).
+- A run's clone, fetch, push and pull request steps carry `credential` (the source, never a token) and,
+  for the app, `pushedAs` / `openedBy` (`<slug>[bot]`). `POST /repos` with `check` may say
+  `github-app:<slug>/installation/<id>` as its `credential.source`.
+
 ## The 1.x promise
 
 Within API version 1, changes are additive only:

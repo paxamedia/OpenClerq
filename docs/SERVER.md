@@ -378,6 +378,12 @@ What any proxy in front of it must do:
   (`/api/modules/…`) sit outside it. If your clients speak `/v1` only, expose that prefix and
   nothing else.
 
+- **Keep the `Host` header, if you connect a GitHub App through the proxy.** `GET /v1/github/app/callback`
+  is where GitHub sends your browser after creating the app, and the one route that takes no token (it
+  needs the single-use state instead). The gateway refuses it when the `Host` is not the address the
+  manifest named (`baseUrl`, which must be `https://` for a server): the Caddy example below keeps
+  it, and so does the nginx one with `proxy_set_header Host $host`. See [GITHUB.md](GITHUB.md).
+
 The gateway does not read `X-Forwarded-*` headers, so the proxy's address is the client address
 as far as the gateway is concerned.
 
@@ -601,7 +607,8 @@ image's own `/data`, owned by 10001 with mode 0700, is what the volume starts fr
 `/data` between two containers (or with a desktop app): one gateway per data directory.
 
 **Repositories.** `github:` and `gitlab:` targets are cloned into `/data/.clerq/workspaces`, with a
-token from the vault (`GITHUB_TOKEN`, `GITLAB_TOKEN`) or the spec's `publish.token_secret`. A
+token from the vault (`GITHUB_TOKEN`, `GITLAB_TOKEN`) or the spec's `publish.token_secret`, or, for a
+GitHub repository your own [GitHub App](GITHUB.md) is installed on, a short-lived token of the app. A
 repository on the host is reached by mounting it (`-v /srv/repos/app:/repos/app`), which must be
 writable by uid 10001 because a run adds its worktree to the repository's own `.git`; git must also
 trust it (`docker exec openclerq git config --global --add safe.directory /repos/app`).

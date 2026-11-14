@@ -71,7 +71,7 @@ docker run -d --name openclerq -p 127.0.0.1:18790:18790 -v openclerq-data:/data 
 
 The installer starts nothing, edits none of your files and refuses to run as root unless you pass `--system`; [SERVER](docs/SERVER.md) shows how to check a download by hand, run it under systemd, read the token, use a reverse proxy and what the image holds. To build it yourself: `node scripts/package-server.js`.
 
-**From a terminal:** `clerq` signs in to a gateway (this computer's or a server's), adds repositories, applies an automation from a YAML file, runs it and follows it, and answers its approvals: `clerq login`, `repo add`, `automation apply -f`, `run --follow`, `logs`, `approve`. The server installer and the container image above include it; see [CLI](docs/CLI.md).
+**From a terminal:** `clerq` signs in to a gateway (this computer's or a server's), adds repositories, applies an automation from a YAML file, runs it and follows it, and answers its approvals: `clerq login`, `repo add`, `automation apply -f`, `run --follow`, `logs`, `approve`. The server installer and the container image above include it; see [CLI](docs/CLI.md). **GitHub:** connect a GitHub App of your own and runs push and open pull requests with tokens that last at most an hour and cover one repository, instead of a personal token; see [GitHub](docs/GITHUB.md).
 
 **Releases:** Tagging `v*` (e.g. `v0.1.0`) triggers a [GitHub Actions release workflow](.github/workflows/release.yml) that builds macOS and Windows installers, the server tarballs (with `SHA256SUMS` and `install.sh`) and the container image, and publishes them to [GitHub Releases](https://github.com/paxamedia/OpenClerq/releases) and `ghcr.io`. For signed macOS builds and in-app updates, see [Distribution](docs/DISTRIBUTION.md).
 
@@ -251,6 +251,7 @@ clerq/
 | [TOOLS](docs/TOOLS.md)                               | Built‑in tools (filesystem, HTTP) and how to extend them       |
 | [SERVER](docs/SERVER.md)                             | The headless server: systemd, settings, data, reverse proxy    |
 | [CLI](docs/CLI.md)                                   | The `clerq` command line: sign in, apply, run, follow, approve |
+| [GITHUB](docs/GITHUB.md)                             | Your own GitHub App: short-lived, per-repository tokens        |
 | [SECURITY](docs/SECURITY.md)                         | Threat model, binding rules, release checklist                 |
 | [DISTRIBUTION](docs/DISTRIBUTION.md)                 | Code signing, notarization, and the updater                    |
 | [INSTALLER_DISCLAIMER](docs/INSTALLER_DISCLAIMER.md) | Permissions and disclaimer for installers and distribution     |

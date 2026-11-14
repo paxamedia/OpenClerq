@@ -337,8 +337,11 @@ approval".
 
 ## What it does not do
 
-- There is no GitHub sign-in (`clerq login` takes a gateway token), and no Windows build: the
-  release holds `clerq` for Linux and macOS only.
+- There is no GitHub sign-in (`clerq login` takes a gateway token) and no `clerq github` command yet:
+  the gateway can connect your own GitHub App through its routes ([GITHUB.md](GITHUB.md)), and
+  `repo add --check` then reaches a GitHub repository with a short-lived token of the app where it
+  is installed (the answer says `github-app:<slug>/installation/<id>`), else with the vault secret.
+  There is no Windows build either: the release holds `clerq` for Linux and macOS only.
 - It cannot remove a repository or delete an automation (`disable` switches one off), and there is no
   command that lists runs: `automation show` and `repo show` give a last run's id, and `logs <name>` the
   latest run of an automation.
