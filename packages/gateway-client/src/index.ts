@@ -1266,6 +1266,8 @@ interface Connection {
   baseUrl(): string;
   token(): string | null;
   tenant(): string | null;
+  /** Asked once when a request that carried `rejected` as its token is answered 401; see `GatewayClientOptions.onUnauthorized`. */
+  refresh?(rejected: string): Promise<void>;
 }
 
 /** Every call of a client, bound to one connection. `gateway` and `createGatewayClient` both make theirs here. */
@@ -1299,7 +1301,31 @@ function buildClient(conn: Connection) {
    * CLI's tests), and with 'manual' it does not.
    */
   async function gatewayFetch(url: string, init?: RequestInit): Promise<Response> {
-    const res = await fetch(url, { ...init, redirect: 'manual' });
+    let res = await fetch(url, { ...init, redirect: 'manual' });
+    // A token the gateway no longer honours (revoked, or ended): when the client was given a way
+    // to get another, ask for one and send the same request once more. The gateway refuses before
+    // it does anything, so sending it again cannot do a thing twice. Only once, and only for a
+    // request that carried a token.
+    if (res.status === 401 && conn.refresh) {
+      const sent = /^Bearer (.+)$/.exec(new Headers(init?.headers).get('authorization') ?? '')?.[1];
+      if (sent) {
+        try {
+          await conn.refresh(sent);
+        } catch {
+          /* the first answer stands */
+        }
+        const now = conn.token();
+        if (now && now !== sent) {
+          void res.body?.cancel().catch(() => undefined);
+          res = await fetch(url, {
+            ...init,
+            // Every caller here gives its headers as a plain object.
+            headers: { ...(init?.headers as Record<string, string>), ...authHeaders() },
+            redirect: 'manual',
+          });
+        }
+      }
+    }
     if (isRedirect(res)) {
       void res.body?.cancel().catch(() => undefined);
       throw redirectRefusal(baseUrl());
@@ -2516,6 +2542,13 @@ export interface GatewayClientOptions {
   token?: string | null | (() => string | null);
   /** Act in one tenant (sent as X-Clerq-Tenant). Default: the token's own. */
   tenant?: string | null;
+  /**
+   * Called with the token a request carried when the gateway answers it 401, so a token that was
+   * revoked or has ended can be replaced at once. When it returns (or resolves) and `token` now gives
+   * another one, the request is sent again, once. It is not called for a request that carried no
+   * token, and a second 401 is the answer.
+   */
+  onUnauthorized?: (rejectedToken: string) => Promise<void> | void;
 }
 
 /** Every call the gateway answers, as methods. `gateway` is one; `createGatewayClient` makes another. */
@@ -2534,6 +2567,9 @@ export function createGatewayClient(options: GatewayClientOptions = {}): Gateway
     baseUrl: () => baseUrl,
     token: () => (typeof token === 'function' ? token() : token)?.trim() || null,
     tenant: () => tenant,
+    ...(options.onUnauthorized
+      ? { refresh: async (rejected: string) => void (await options.onUnauthorized?.(rejected)) }
+      : {}),
   });
 }
 

@@ -1056,3 +1056,100 @@ describe('createGatewayClient', () => {
 function redirectTo(): Response {
   return new Response(null, { status: 302, headers: { location: 'http://elsewhere.example/' } });
 }
+
+describe('a token the gateway refuses', () => {
+  const stub401Once = (...okTokens: string[]) =>
+    stubFetch((_url, init) => {
+      const auth = (init?.headers as Record<string, string>).Authorization;
+      return okTokens.some((t) => auth === `Bearer ${t}`)
+        ? Response.json({ sessions: [] })
+        : new Response('{"error":"unauthorized"}', { status: 401 });
+    });
+
+  it('is replaced at once when the client was given a way to, and the request is sent again once', async () => {
+    let current = 'clqm_old';
+    const refused: string[] = [];
+    stub401Once('clqm_new');
+    const scoped = createGatewayClient({
+      token: () => current,
+      onUnauthorized: async (t) => {
+        refused.push(t);
+        current = 'clqm_new';
+      },
+    });
+    await expect(scoped.sessions()).resolves.toEqual({ sessions: [] });
+    expect(refused).toEqual(['clqm_old']);
+    expect(calls).toHaveLength(2);
+    expect((calls[0][1]?.headers as Record<string, string>).Authorization).toBe('Bearer clqm_old');
+    expect((calls[1][1]?.headers as Record<string, string>).Authorization).toBe('Bearer clqm_new');
+  });
+
+  it('sends a streamed message again too, with its body, before anything was read', async () => {
+    let current = 'clqm_old';
+    stubFetch((_url, init) =>
+      (init?.headers as Record<string, string>).Authorization === 'Bearer clqm_new'
+        ? sse([frame({ type: 'delta', text: 'hi' }), frame({ type: 'done', runId: 'r', message })])
+        : new Response('{"error":"unauthorized"}', { status: 401 })
+    );
+    const scoped = createGatewayClient({
+      token: () => current,
+      onUnauthorized: () => {
+        current = 'clqm_new';
+      },
+    });
+    const deltas: string[] = [];
+    await scoped.sendMessage('ses_1', { text: 'hello' }, (d) => deltas.push(d));
+    expect(deltas).toEqual(['hi']);
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(calls[1][1]?.body as string)).toMatchObject({ text: 'hello', stream: true });
+  });
+
+  it('is answered as it was when the token stays the same, or the way to a new one fails, or the new one is refused too', async () => {
+    stub401Once();
+    const same = createGatewayClient({ token: 'clqm_x', onUnauthorized: () => undefined });
+    await expect(same.sessions()).rejects.toMatchObject({ status: 401 });
+    expect(calls).toHaveLength(1);
+
+    stub401Once();
+    const failing = createGatewayClient({
+      token: 'clqm_x',
+      onUnauthorized: () => {
+        throw new Error('no token to be had');
+      },
+    });
+    await expect(failing.sessions()).rejects.toMatchObject({ status: 401 });
+    expect(calls).toHaveLength(1);
+
+    stub401Once();
+    let n = 0;
+    const always = createGatewayClient({
+      token: () => `clqm_${n}`,
+      onUnauthorized: () => void n++,
+    });
+    await expect(always.sessions()).rejects.toMatchObject({ status: 401 });
+    // Once: the request, one more, and then the answer.
+    expect(calls).toHaveLength(2);
+    expect(n).toBe(1);
+  });
+
+  it('is not asked about when the request carried no token, and a client without a way to ask is as before', async () => {
+    stub401Once();
+    const asked = vi.fn();
+    await expect(createGatewayClient({ onUnauthorized: asked }).sessions()).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(asked).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+    stub401Once();
+    await expect(createGatewayClient({ token: 't' }).sessions()).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('leaves the shared client alone: it has no way to ask, so a 401 is the answer', async () => {
+    stub401Once();
+    await expect(gateway.sessions()).rejects.toMatchObject({ status: 401 });
+    expect(calls).toHaveLength(1);
+  });
+});
