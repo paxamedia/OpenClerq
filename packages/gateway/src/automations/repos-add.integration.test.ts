@@ -306,6 +306,23 @@ describe('a local repository', () => {
     expect(rows()).toHaveLength(before);
   });
 
+  it('says so when git will not use a folder because another user owns it', async () => {
+    const dir = makeRepo(path.join(root, 'not-mine'));
+    // git's own switch for pretending the folder belongs to someone else.
+    process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = '1';
+    try {
+      const res = await add({ target: `local:${dir}` });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe('not_a_repository');
+      expect(body.message).toContain('belongs to another user');
+      expect(body.message).toContain(`git config --global --add safe.directory ${dir}`);
+    } finally {
+      delete process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER;
+    }
+    expect(rows().some((r) => r.local_path === dir)).toBe(false);
+  });
+
   it('refuses a bare repository, which has no work tree', async () => {
     const bare = path.join(root, 'just-bare.git');
     sh(root, 'init', '-q', '--bare', bare);

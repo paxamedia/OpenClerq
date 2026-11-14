@@ -427,6 +427,19 @@ async function checkLocal(repoPath: string): Promise<string> {
     throw new AddRepoError(400, 'not_a_repository', `${resolved} is not a folder.`);
   }
   if (!(await isRepo(resolved))) {
+    // git refuses a folder another user owns: say that, not that it is no repository.
+    const asked = await git(['rev-parse', '--is-inside-work-tree'], {
+      cwd: resolved,
+      allowFailure: true,
+    }).catch(() => null);
+    if (asked && /dubious ownership/i.test(asked.stderr)) {
+      throw new AddRepoError(
+        400,
+        'not_a_repository',
+        `git will not use ${resolved}: it belongs to another user than the one the gateway runs as. ` +
+          `As that account, run: git config --global --add safe.directory ${resolved}`
+      );
+    }
     throw new AddRepoError(
       400,
       'not_a_repository',
