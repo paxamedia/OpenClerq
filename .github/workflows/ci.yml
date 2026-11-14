@@ -126,8 +126,25 @@ jobs:
       - name: Smoke test
         run: node apps/server/scripts/smoke.mjs apps/server/dist/${{ matrix.bun }}/clerq-server
 
-      - name: Install shellcheck
-        run: command -v shellcheck || { sudo apt-get update && sudo apt-get install -y shellcheck; }
+      # The same shellcheck on both CPUs: the official static build at a fixed version, checked
+      # against the checksum recorded here (taken from that release's own download; the release
+      # publishes none). The runner images carry different versions (the arm64 one has none,
+      # and Ubuntu's own package is older than the x64 image's), and they disagree about what to
+      # report. The scripts are also clean under 0.10 and 0.11.
+      - name: Install shellcheck 0.11.0
+        run: |
+          version=v0.11.0
+          case "$(uname -m)" in
+            x86_64) arch=x86_64; sha256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 ;;
+            aarch64) arch=aarch64; sha256=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588 ;;
+            *) echo "No shellcheck build for $(uname -m)" >&2; exit 1 ;;
+          esac
+          archive="shellcheck-$version.linux.$arch.tar.xz"
+          curl -fsSLO "https://github.com/koalaman/shellcheck/releases/download/$version/$archive"
+          echo "$sha256  $archive" | sha256sum --check -
+          tar -xJf "$archive"
+          sudo install -m 0755 "shellcheck-$version/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
 
       # install.sh against a fake release folder (the tarball, SHA256SUMS, install.sh)
       # served on 127.0.0.1, into a temporary folder. The runner's passwordless sudo

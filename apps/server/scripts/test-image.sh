@@ -37,7 +37,7 @@ done
 name="clerq-image-test-$$"
 vol="$name-data"
 work=$(mktemp -d "${TMPDIR:-/tmp}/clerq-test-image.XXXXXX")
-# shellcheck disable=SC2329 # run by the trap below
+# shellcheck disable=SC2317,SC2329 # called through trap
 cleanup() {
   docker rm -f -v "$name" "$name-2" "$name-3" >/dev/null 2>&1 || true
   docker volume rm -f "$vol" >/dev/null 2>&1 || true

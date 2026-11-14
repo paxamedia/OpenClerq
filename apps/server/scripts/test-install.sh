@@ -30,9 +30,11 @@
 # script's Linux branches as far as this machine's shell and tools behave as Linux's; run it
 # under dash too (`dash test-install.sh ...`). It cannot show GNU tool behaviour.
 # Exits 0 when every check passed, else 1.
-# shellcheck disable=SC2329,SC2012
-# (SC2329: check() runs the helpers below by name. SC2012: ls is only used to list a
-# folder this script made, whose file names are known.)
+# shellcheck disable=SC2012
+# (ls is only used to list a folder this script made, whose file names are known.)
+# The helper functions below, and cleanup, are reached through check() or trap, not by a
+# direct call, which shellcheck 0.10 reports as SC2317 (0.11: SC2329); each carries a
+# directive of its own for both codes. A version that lacks SC2329 ignores that code.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -61,6 +63,7 @@ root=$(cd "$root" && pwd -P)
 server_pid=""
 http_pid=""
 system_installed=0
+# shellcheck disable=SC2317,SC2329 # called through trap
 cleanup() {
   if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; fi
   if [ -n "$http_pid" ]; then kill "$http_pid" 2>/dev/null || true; fi
@@ -100,12 +103,18 @@ check() { # description, then a command that succeeds when the claim holds
   shift
   if "$@" >/dev/null 2>&1; then ok "$desc"; else bad "$desc"; fi
 }
+# shellcheck disable=SC2317,SC2329 # called through check
 has() { grep -qF -- "$2" "$1"; } # file text
+# shellcheck disable=SC2317,SC2329 # called through check
 lacks() { ! grep -qF -- "$2" "$1"; }
+# shellcheck disable=SC2317,SC2329 # called through check
 empty_dir() { [ -z "$(ls -A "$1")" ]; }
+# shellcheck disable=SC2317,SC2329 # called through check
 same_file() { [ "$(cksum <"$1")" = "$2" ]; }
+# shellcheck disable=SC2317,SC2329 # called through check
 last_line_is() { [ "$(tail -n 1 "$1")" = "$2" ]; } # file text
-says() { "$1" "$2" 2>&1 | grep -qF -- "$3"; }      # program argument text it prints
+# shellcheck disable=SC2317,SC2329 # called through check
+says() { "$1" "$2" 2>&1 | grep -qF -- "$3"; } # program argument text it prints
 # run <label> <command...>: output in $root/<label>.out, exit status in $status
 run() {
   label=$1
@@ -206,8 +215,10 @@ run badbase env HOME="$h" CLERQ_DOWNLOAD_BASE="http://example.com/x" CLERQ_INSTA
 if [ "$status" -ne 0 ] && has "$root/badbase.out" "must start with https://"; then ok "plain http to another computer is refused"; else bad "plain http to another computer is refused" "$root/badbase.out"; fi
 
 # ---- 3. read from a pipe, as curl | sh does
+# shellcheck disable=SC2002 # the script must arrive on stdin, which `sh < file` would also do but is not what curl | sh is
 cat "$installer" | env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$root/bin3" sh >"$root/three.out" 2>&1 && status=0 || status=$?
 if [ "$status" -eq 0 ] && [ -x "$root/bin3/clerq-server" ]; then ok "it installs when the script arrives on stdin"; else bad "it installs when the script arrives on stdin" "$root/three.out"; fi
+# shellcheck disable=SC2002 # as above
 cat "$installer" | sh -s -- --help >"$root/help.out" 2>&1 && status=0 || status=$?
 if [ "$status" -eq 0 ] && has "$root/help.out" "--systemd-user"; then ok "sh -s -- --help prints the usage"; else bad "sh -s -- --help prints the usage" "$root/help.out"; fi
 run opt env HOME="$h" CLERQ_DOWNLOAD_BASE="$base/good" CLERQ_INSTALL_DIR="$root/bin3b" sh "$installer" --frobnicate
